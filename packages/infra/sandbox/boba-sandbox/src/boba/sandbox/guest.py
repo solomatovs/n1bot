@@ -19,7 +19,6 @@ import array
 import asyncio
 import ctypes
 import errno
-import importlib
 import json
 import logging
 import os
@@ -31,13 +30,13 @@ import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
-from types import ModuleType
 from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.toolkit.entry import EntryFlag, InputWire, OutputWire, ToolMain
-from boba.toolkit.facade import PayloadTool, WarmupHooks
+from boba.toolkit.facade import PayloadTool
+from boba.toolkit.manifest import ToolPlugin
 from boba.toolkit.payload import PayloadLogging
 from boba.toolkit.timing import Elapsed
 from boba.workspace.binaries import TrustedBinaries
@@ -90,7 +89,6 @@ class ZygoteArgs(BaseModel):
     reap_poll_sec: float = Field(gt=0)
     log_level: str = Field(min_length=1)
     """Уровень логера приложения: зигота и тела инструментов пишут им же."""
-    modules: tuple[str, ...] = ()
 
     @classmethod
     def parse(cls, argv: Sequence[str]) -> ZygoteArgs:
@@ -98,14 +96,12 @@ class ZygoteArgs(BaseModel):
         parser.add_argument(cls.SOCKET_FD, type=int, required=True)
         parser.add_argument(cls.REAP_POLL_SEC, type=float, required=True)
         parser.add_argument(cls.LOG_LEVEL, type=str, required=True)
-        parser.add_argument("modules", nargs="*")
 
         parsed = parser.parse_args(list(argv))
         return cls(
             socket_fd=parsed.socket_fd,
             reap_poll_sec=parsed.reap_poll_sec,
             log_level=parsed.log_level,
-            modules=tuple(parsed.modules),
         )
 
     def render(self) -> list[str]:
@@ -117,7 +113,6 @@ class ZygoteArgs(BaseModel):
             str(self.reap_poll_sec),
             self.LOG_LEVEL,
             self.log_level,
-            *self.modules,
         ]
 
 
@@ -180,8 +175,8 @@ class CallFd(IntEnum):
     STDOUT = 1
     STDERR = 2
     RESULT = 3
-    INJECTED = 4
-    """Канал injected-конфига: хост пишет, тело читает до EOF."""
+    ARGS = 4
+    """Канал аргументов вызова: хост пишет, тело читает до EOF."""
     CONTROL = 5
     GATE = 6
     """Готовность барьера группы: тело пишет, хост читает."""
@@ -341,8 +336,6 @@ class CallRequest(BaseModel):
     op: str = "call"
     call_id: str = Field(min_length=1)
     argv: tuple[str, ...] = Field(min_length=1)
-    module: str = ""
-    """Модуль тела: не прогретый зиготой догружается в процессе вызова."""
     limits: ChildLimits
     isolate: bool
     mounts: CallMounts
@@ -437,32 +430,27 @@ class CallSetupFailed(BaseModel):
     detail: str = ""
 
 
-class WarmupCall(BaseModel):
-    """Один прогрев: чей хук звать и с каким конфигом."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    module: str = Field(min_length=1)
-    hook: str = Field(min_length=1)
-    config: dict[str, Any]
-
-
 class WarmupMessage(BaseModel):
-    """Первое сообщение хоста: прогревы модулей, объявленные их авторами."""
+    """Первое сообщение хоста: секция плагина, которой зигота прогревается.
+
+    Каждый прогрев объявления плагина разбирает её своей моделью конфига.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     op: str = "warmup"
-    calls: tuple[WarmupCall, ...]
+    config: dict[str, Any]
 
 
 class ZygoteReady(BaseModel):
-    """Зигота прогрелась и принимает вызовы."""
+    """Зигота прогрелась и принимает вызовы; manifest — отпечаток манифеста
+    её плагина, по нему хост узнаёт подменённый образ."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     op: str = "ready"
     warmup_ms: int
+    manifest: str
 
 
 class ZygoteWire:
@@ -1117,9 +1105,7 @@ class HostMask:
     @staticmethod
     def _boot_id() -> str:
         raw = os.urandom(16).hex()
-        return (
-            f"{raw[0:8]}-{raw[8:12]}-{raw[12:16]}-{raw[16:20]}-{raw[20:32]}\n"
-        )
+        return f"{raw[0:8]}-{raw[8:12]}-{raw[12:16]}-{raw[16:20]}-{raw[20:32]}\n"
 
 
 class ZygoteMain:
@@ -1132,13 +1118,11 @@ class ZygoteMain:
         self,
         sock: socket.socket,
         tools: Sequence[PayloadTool],
-        modules: Mapping[str, ModuleType],
         reap_poll_sec: float,
     ) -> None:
         self._reap_poll_sec = reap_poll_sec
         self._sock = sock
         self._tools = tools
-        self._modules = modules
         self._children: dict[int, tuple[str, socket.socket]] = {}
 
         # смерть ребёнка будит select немедленно: exit-репорт без опроса
@@ -1154,79 +1138,44 @@ class ZygoteMain:
             return
 
     @classmethod
-    def run(cls, args: ZygoteArgs) -> int:
-        """Вход процесса: прогрев модулей, ready, цикл обслуживания."""
+    def run(cls, args: ZygoteArgs, plugin: ToolPlugin, manifest: str) -> int:
+        """Вход процесса: прогревы плагина, ready с отпечатком его манифеста
+        manifest, цикл обслуживания."""
         PayloadLogging.setup(args.log_level)
 
         sock = socket.socket(fileno=args.socket_fd)
 
-        module_names = args.modules
-
         warmup = Elapsed()
-        tools: list[PayloadTool] = []
-        modules: dict[str, ModuleType] = {}
-        for name in module_names:
-            module = importlib.import_module(name)
-            modules[name] = module
-            tools.extend(module.TOOLS)
-
-        cls._run_warmups(sock, modules)
+        cls._run_warmups(sock, plugin)
 
         logger.info(
-            "zygote up %dms after exec, warmed %d module(s) with %d tool(s) in %dms",
+            "zygote up %dms after exec, plugin %s with %d tool(s) warmed in %dms",
             ProcessAge.ms(),
-            len(module_names),
-            len(tools),
+            plugin.id,
+            len(plugin.tools),
             warmup.ms(),
         )
 
         cls._block_new_userns()
 
-        main = cls(sock, tools, modules, args.reap_poll_sec)
-        ZygoteWire.send(sock, ZygoteReady(warmup_ms=warmup.ms()))
+        main = cls(sock, plugin.tools, args.reap_poll_sec)
+        ZygoteWire.send(sock, ZygoteReady(warmup_ms=warmup.ms(), manifest=manifest))
 
         return main.serve()
 
     @classmethod
-    def _run_warmups(cls, sock: socket.socket, modules: dict[str, ModuleType]) -> None:
-        """Первое сообщение хоста — прогревы; они исполняются до ready.
-
-        Хуки объявлены авторами инструментов через @warmup и лежат в реестре
-        фасада; хост присылает конфиг на каждый. Объявленный хук без конфига —
-        нарушение контракта: молча пропустить его нельзя, иначе прогрев
-        случался бы на каждом вызове.
-        """
+    def _run_warmups(cls, sock: socket.socket, plugin: ToolPlugin) -> None:
+        """Первое сообщение хоста — секция плагина; прогревы объявления
+        исполняются с ней до ready."""
         message, _fds = ZygoteWire.recv(sock)
         warmup = WarmupMessage.model_validate(message)
 
-        sent = {(call.module, call.hook): call for call in warmup.calls}
-
-        for name in modules:
-            for hook in WarmupHooks.of(name):
-                call = sent.pop((name, hook.name), None)
-                if call is None:
-                    sent_names = sorted(f"{m}.{h}" for m, h in sent)
-                    msg = (
-                        f"zygote warmup: module {name} declares warmup "
-                        f"{hook.name!r}, but the host sent no config for it "
-                        f"(received: {sent_names})"
-                    )
-                    raise ZygoteProtocolError(msg)
-
-                elapsed = Elapsed()
-                asyncio.run(hook.body(hook.config_model.model_validate(call.config)))
-                logger.info(
-                    "zygote: %s.%s warmed up in %dms", name, hook.name, elapsed.ms()
-                )
-
-        for module, hook_name in sent:
-            declared = sorted(h.name for h in WarmupHooks.of(module))
-            msg = (
-                f"zygote warmup: host sent warmup {hook_name!r} for module "
-                f"{module}, but no such hook is declared there "
-                f"(declared: {declared})"
+        for hook in plugin.warmups:
+            elapsed = Elapsed()
+            asyncio.run(hook.run(warmup.config))
+            logger.info(
+                "zygote: %s.%s warmed up in %dms", hook.module, hook.name, elapsed.ms()
             )
-            raise ZygoteProtocolError(msg)
 
     @classmethod
     def _block_new_userns(cls) -> None:
@@ -1337,7 +1286,7 @@ class ZygoteMain:
             CallFd.STDOUT,
             CallFd.STDERR,
             CallFd.RESULT,
-            CallFd.INJECTED,
+            CallFd.ARGS,
             CallFd.GATE,
             CallFd.VERDICT,
             CallFd.PROGRESS,
@@ -1515,8 +1464,8 @@ class ZygoteMain:
         argv = list(request.argv)
         argv.append(EntryFlag.FD_RESULT.value)
         argv.append(str(fds[CallFd.RESULT]))
-        argv.append(EntryFlag.INJECTED_FD.value)
-        argv.append(str(fds[CallFd.INJECTED]))
+        argv.append(EntryFlag.ARGS_FD.value)
+        argv.append(str(fds[CallFd.ARGS]))
         argv.append(EntryFlag.FD_GATE.value)
         argv.append(str(fds[CallFd.GATE]))
         argv.append(EntryFlag.FD_VERDICT.value)
@@ -1665,18 +1614,9 @@ class ZygoteMain:
         _, status = os.waitpid(pid, 0)
         return WaitStatus.exit_code(status)
 
-    def _tools_for(self, request: CallRequest) -> Sequence[PayloadTool]:
-        """Тулы вызова: прогретые зиготой плюс модуль запроса, если его не грели."""
-        if not request.module or request.module in self._modules:
-            return self._tools
-
-        module = importlib.import_module(request.module)
-
-        return [*self._tools, *module.TOOLS]
-
     def _body_here(self, request: CallRequest, argv: list[str]) -> int:
         """Тело в самом исполнителе: модуль отдаёт код возврата."""
-        code = ToolMain.run(self._tools_for(request), argv)
+        code = ToolMain.run(self._tools, argv)
         self._flush_streams()
 
         return code
@@ -1686,7 +1626,7 @@ class ZygoteMain:
         # так гарантирует init, в голом запуске — только pdeathsig
         FuseMounter.set_pdeathsig()
 
-        code = ToolMain.run(self._tools_for(request), argv)
+        code = ToolMain.run(self._tools, argv)
 
         # os._exit не сбрасывает буферы: печать тела иначе не доедет до канала
         self._flush_streams()
@@ -1798,12 +1738,3 @@ class _CallMounts:
 
         for store in self._stores.values():
             store.release_all()
-
-
-def main(argv: Sequence[str]) -> int:
-    """Аргументы запуска зиготы; модули — тела инструментов её секции."""
-    return ZygoteMain.run(ZygoteArgs.parse(argv))
-
-
-if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))

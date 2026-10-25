@@ -18,12 +18,11 @@ from typing import ClassVar, TypeAlias
 from uuid import uuid4
 
 import pytest
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from test_sandbox_disguise import HostOwner
 
 from boba.config import bind
 from boba.runtime.launchers import EnvPaths
-from boba.runtime.plugins import EntryPointPlugins
 from boba.sandbox import SandboxProfile
 from boba.sandbox.zygote import (
     ZygoteState,
@@ -77,12 +76,14 @@ class SandboxSection:
 
 
 class Sections:
-    """Sandboxed-плагины установленных пакетов и их профили сборкой приложения."""
+    """Плагины конфига сервиса — секции [tool.<id>] — и их профили сборкой
+    приложения по манифесту."""
 
     @classmethod
     def of(cls, raw_config: DictConfig) -> list[SandboxSection]:
         sections: list[SandboxSection] = []
-        for name in EntryPointPlugins().discover():
+        for key in OmegaConf.select(raw_config, "tool", default={}):
+            name = str(key)
             profile = section_profile(raw_config, name)
             sections.append(SandboxSection(name=name, profile=profile))
 

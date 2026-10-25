@@ -22,14 +22,13 @@ from pydantic import BaseModel, Field, SecretStr
 
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool, warmup
+from boba.toolkit.manifest import ToolPlugin
 from boba.toolkit.ports import Inbound, Outbound, StreamGroup
 from boba.toolkit.result import MarkdownResult
 
 
 class ChannelConfig(BaseModel):
-    """Конфиг с секретом для проверки stdin-доставки."""
-
-    SECTION: ClassVar[str] = "tool.fx"
+    """Конфиг с секретом для проверки доставки каналом аргументов."""
 
     token: SecretStr
 
@@ -224,5 +223,6 @@ TOOLS: Final = ToolMain.toolset(
     fx_echo, fx_chatter, fx_probe_tmp, fx_warm_state, fx_stream, fx_merge, fx_gated
 )
 
-if __name__ == "__main__":
-    sys.exit(ToolMain.run(TOOLS))
+PLUGIN: Final = ToolPlugin(id="fx", tools=TOOLS, warmups=(warm_cache,))
+"""Объявление фейкового плагина: зигота тестов служит его программой
+`python -m boba.sandbox.program --declared fake_channel_tool:PLUGIN`."""

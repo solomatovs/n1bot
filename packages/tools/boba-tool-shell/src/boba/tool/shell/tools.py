@@ -256,6 +256,3 @@ def bash(
 
 
 TOOLS: Final = ToolMain.toolset(bash)
-
-if __name__ == "__main__":
-    raise SystemExit(ToolMain.run(TOOLS))

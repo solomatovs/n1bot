@@ -8,12 +8,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 
 from boba.connection_broker.tools import ConnectionTools
 from boba.connection_broker.user_connections import StoreRef
 from boba.identity.context import CallContexts
-from boba.runtime.plugins import ToolPlugin
 from boba.toolrun.hosted import HostedTool
 
 __all__ = ["ChatPlugins"]
@@ -23,7 +22,7 @@ class ChatPlugins:
     """Инструменты, которые чат исполняет сам.
 
     Создаётся сборкой чата из держателя контекста вызова процесса и отдаёт
-    сборке реестра его входы: собственные инструменты и таблицу плагинов.
+    сборке реестра его собственные инструменты; плагинов в конфиге чата нет.
     """
 
     def __init__(self, contexts: CallContexts) -> None:
@@ -32,7 +31,3 @@ class ChatPlugins:
     def own_tools(self, store_ref: StoreRef) -> Sequence[HostedTool]:
         """Собственный сервер инструментов чата: каталог соединений."""
         return ConnectionTools(store_ref, self._contexts).build()
-
-    def table(self) -> Mapping[str, ToolPlugin]:
-        """Таблица плагинов чата: пустая, плагины исполняет сервис."""
-        return {}

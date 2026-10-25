@@ -19,7 +19,6 @@ import logging
 import signal
 import time
 import uuid
-from collections.abc import Sequence
 from enum import StrEnum
 from typing import ClassVar
 
@@ -205,12 +204,8 @@ class LifecycleJournal:
         text = f"attempt {number}/{total} after {Elapsed.of(backoff_sec)} backoff"
         self._line(LifecyclePhase.ATTEMPT, text, logging.INFO)
 
-    def spawned(self, pid: int, root: str, modules: Sequence[str]) -> None:
-        listed = ", ".join(modules)
-        if not listed:
-            listed = "none"
-
-        text = f"pid={pid}, root={root}, modules={listed}"
+    def spawned(self, pid: int, root: str) -> None:
+        text = f"pid={pid}, root={root}"
         self._line(LifecyclePhase.SPAWNED, text, logging.INFO)
 
     def ready(self, pid: int, warmup_ms: int) -> None:

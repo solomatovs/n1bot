@@ -120,7 +120,9 @@ class PumpDags(ParamSource):
                 ora.ora_stream_out,
                 ora.ora_stream_in,
             ),
-            stand.process_launcher(self.THREAD, workdir, self.TIMEOUT_SEC),
+            stand.process_launcher(
+                self.THREAD, workdir, self.TIMEOUT_SEC, self._plugins(stand)
+            ),
         )
 
         registry = stand.registry(stand.access(self.ROLE, StandIdentity.PROFILE), ())
@@ -129,6 +131,15 @@ class PumpDags(ParamSource):
             by_name[tool.name] = tool
 
         self._runner = registry.runner(by_name, DirectCalls())
+
+    @staticmethod
+    def _plugins(stand: ToolStand) -> list[str]:
+        """Объявления плагинов насосов: тела идут их программой."""
+        refs: list[str] = []
+        for plugin_id in ("pg", "ch", "ora"):
+            refs.append(stand.plugin_ref(plugin_id))
+
+        return refs
 
     def bind_all(self, tools: Sequence[HostedTool]) -> None:
         self._hooks.bind_all(tools, self._connection_hook)

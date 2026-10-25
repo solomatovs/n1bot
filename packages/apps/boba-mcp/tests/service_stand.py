@@ -66,10 +66,10 @@ from boba.stand import fake_connection
 from boba.stand.service_signin import ServiceSignIn
 from boba.stand.toolstand import ToolStand
 from boba.stand_core import fake_caller, fake_toolmod
-from boba.stand_core.fake_toolmod import FakeConfig
 from boba.toolkit.chain import CallAmbient
 from boba.toolrun.callvalues import CallContextValues
-from boba.toolrun.injected import InjectedConfig, StaticConfig
+from boba.toolrun.hosted import PluginSection
+from boba.toolrun.injected import InjectedConfig, StaticConfig, StaticSection
 from boba.toolrun.stream_calls import StreamGroupsConfig
 from boba.toolrun.streams import CallJournals
 from boba.workspace.binaries import TrustedBinaries
@@ -116,6 +116,13 @@ class ServiceStand:
     соединения, клиенту без запечатывания — заданные соединения сервера."""
 
     ANALYST: ClassVar[str] = "analyst"
+
+    PLUGINS: ClassVar[tuple[str, ...]] = (
+        "boba.stand_core.fake_toolmod:PLUGIN",
+        "boba.stand_core.fake_caller:PLUGIN",
+        "boba.stand.fake_connection:PLUGIN",
+    )
+    """Объявления фейковых модулей: тела идут их программой плагина."""
 
     DWH: ClassVar[str] = "dwh"
 
@@ -176,7 +183,7 @@ class ServiceStand:
             (
                 CallContextValues(contexts),
                 params,
-                InjectedConfig(self._config_of, StaticConfig()),
+                InjectedConfig(StaticSection()),
             ),
         )
         tools = stand.launch(
@@ -191,7 +198,8 @@ class ServiceStand:
                 fake_caller.fake_query,
                 fake_connection.fake_connection_host,
             ),
-            stand.process_launcher("dag-service", workdir, 60.0),
+            stand.process_launcher("dag-service", workdir, 60.0, self.PLUGINS),
+            PluginSection(values={"token": "t0ken", "limit": 5}),
         )
 
         names: list[str] = []
@@ -363,10 +371,6 @@ class ServiceStand:
         finally:
             server.should_exit = True
             await task
-
-    @staticmethod
-    def _config_of(name: str, annotation: object) -> object:
-        return FakeConfig(token=SecretStr("t0ken"), limit=5)
 
 
 if __name__ == "__main__":

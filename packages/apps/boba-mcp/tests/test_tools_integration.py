@@ -20,12 +20,13 @@ from psycopg import sql
 
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.config import bind
-from boba.connection_broker.tickets import ServiceTickets
+from boba.connection_broker.tickets import SectionTickets, ServiceTickets
+from boba.connections.manifest import ConnectionTypes
 from boba.db.pgvector.migrations import Migrations
 from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.db.postgres.connection import PostgresConfig
 from boba.stand.database import TestDatabase
-from boba.stand.sandbox import section_profile
+from boba.stand.sandbox import plugin_launch, section_profile
 from boba.stand.shell import ShellRun
 from boba.stand.toolsetup import Call, ToolSetup
 from boba.stand.zygote import ROOTFS_IMAGE, SandboxCgroup, ZygoteStand
@@ -43,7 +44,8 @@ from boba.toolkit.result import (
     ToolResultBase,
     VisualResult,
 )
-from boba.toolrun.injected import InjectedConfig, StaticConfig
+from boba.toolrun.hosted import HostedTool, PluginSection, ToolSchema
+from boba.toolrun.injected import InjectedConfig, ParamSource, StaticSection
 from boba.transport.http.connection import HttpConnection
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -102,7 +104,7 @@ def stop_zygotes(zygote_stand: ZygoteStand):
 @pytest.fixture(scope="module")
 def bash_tool(zygote_stand: ZygoteStand, raw_config):
     cfg = ToolSetup.config(raw_config, "tool.bash", BashToolConfig)
-    launcher = ToolSetup.caller(zygote_stand, raw_config, "bash", [ShellRun.MODULE])
+    launcher = ToolSetup.caller(zygote_stand, raw_config, "bash")
 
     return ShellRun.tool(launcher, cfg)
 
@@ -116,14 +118,12 @@ def doc_tools(zygote_stand: ZygoteStand, raw_config):
 
     module = reload(doc_module)
 
-    launcher = ToolSetup.caller(zygote_stand, raw_config, "doc", [module.__name__])
+    launcher = ToolSetup.caller(zygote_stand, raw_config, "doc")
+    config = InjectedConfig(StaticSection())
 
-    def resolve(name: str, annotation: Any) -> object:
-        return bind(raw_config, path=annotation.SECTION, model=annotation)
-
-    config = InjectedConfig(resolve, StaticConfig())
-
-    return ToolSetup.launched(module.TOOLS, launcher, (config,))
+    return ToolSetup.launched(
+        module.TOOLS, launcher, (config,), _section(raw_config, "doc")
+    )
 
 
 @pytest.fixture(scope="module")
@@ -135,7 +135,7 @@ def chart_tool(zygote_stand: ZygoteStand, raw_config):
 
     module = reload(chart_module)
 
-    launcher = ToolSetup.caller(zygote_stand, raw_config, "chart", [module.__name__])
+    launcher = ToolSetup.caller(zygote_stand, raw_config, "chart")
 
     return ToolSetup.launched([module.visualize], launcher, ())[module.visualize.name]
 
@@ -149,14 +149,33 @@ def web_tools(zygote_stand: ZygoteStand, raw_config):
 
     module = reload(web_module)
 
-    launcher = ToolSetup.caller(zygote_stand, raw_config, "web", [module.__name__])
+    launcher = ToolSetup.caller(zygote_stand, raw_config, "web")
+    sources = (GivenConnections(), InjectedConfig(StaticSection()))
 
-    def resolve(name: str, annotation: Any) -> object:
-        return ToolSetup.web_config(raw_config)
+    return ToolSetup.launched(
+        module.TOOLS, launcher, sources, _section(raw_config, "web")
+    )
 
-    config = InjectedConfig(resolve, StaticConfig())
 
-    return ToolSetup.launched(module.TOOLS, launcher, (config,))
+class GivenConnections(ParamSource):
+    """Реализация ParamSource для тестов тел: профиль соединения тест даёт
+    сам аргументом вызова, без каталога соединений и запечатывания.
+
+    В приложении параметр-соединение на хосте — имя, а профиль подставляет
+    обвязка; здесь в схему хоста ставится поле с профилем как есть, и
+    обёртка запуска отдаёт его телу.
+    """
+
+    def __init__(self) -> None:
+        self._schemas = ToolSchema()
+
+    def bind_all(self, tools: Sequence[HostedTool]) -> None:
+        for tool in tools:
+            fields: dict[str, tuple[Any, Any]] = {}
+            for param in tool.inputs.connections:
+                fields[param] = (Any, None)
+
+            tool.args_schema = self._schemas.rebuild(tool.args_schema, fields, ())
 
 
 @pytest.fixture(scope="module")
@@ -181,16 +200,12 @@ def confluence_tools(zygote_stand: ZygoteStand, raw_config):
 
     module = reload(confluence_module)
 
-    launcher = ToolSetup.caller(
-        zygote_stand, raw_config, "confluence", [module.__name__]
+    launcher = ToolSetup.caller(zygote_stand, raw_config, "confluence")
+    config = InjectedConfig(StaticSection())
+
+    return ToolSetup.launched(
+        module.TOOLS, launcher, (config,), _section(raw_config, "confluence")
     )
-
-    def resolve(name: str, annotation: Any) -> object:
-        return bind(raw_config, path=annotation.SECTION, model=annotation)
-
-    config = InjectedConfig(resolve, StaticConfig())
-
-    return ToolSetup.launched(module.TOOLS, launcher, (config,))
 
 
 @pytest.fixture(scope="module")
@@ -208,14 +223,12 @@ def pg_tools(zygote_stand: ZygoteStand, raw_config):
 
     module = reload(pg_module)
 
-    launcher = ToolSetup.caller(zygote_stand, raw_config, "pg", [module.__name__])
+    launcher = ToolSetup.caller(zygote_stand, raw_config, "pg")
+    sources = (GivenConnections(), InjectedConfig(StaticSection()))
 
-    def resolve(name: str, annotation: Any) -> object:
-        return ToolSetup.pg_config(raw_config)
-
-    config = InjectedConfig(resolve, StaticConfig())
-
-    return ToolSetup.launched(module.TOOLS, launcher, (config,))
+    return ToolSetup.launched(
+        module.TOOLS, launcher, sources, _section(raw_config, "pg")
+    )
 
 
 @pytest.fixture(scope="module")
@@ -323,22 +336,42 @@ def ingest_tools(
 
     module = reload(ingest_module)
 
-    launcher = ToolSetup.caller(zygote_stand, raw_config, "ingest", [module.__name__])
+    launcher = ToolSetup.caller(zygote_stand, raw_config, "ingest")
+    section = _section(raw_config, "ingest", kb_collection, kb_store)
 
-    def resolve(name: str, annotation: Any) -> object:
-        sandboxed = ToolSetup.sandbox_raw(raw_config)
-        cfg = bind(sandboxed, path=annotation.SECTION, model=annotation)
-        return cfg.model_copy(
-            update={"collection": kb_collection, "connection": kb_store.connection}
-        )
-
-    config = InjectedConfig(resolve, ServiceTickets(_credentials))
-
-    return ToolSetup.launched(module.TOOLS, launcher, (config,))
+    return ToolSetup.launched(module.TOOLS, launcher, (_ticketed(),), section)
 
 
 def _credentials() -> KerberosCredentialSource:
     return KerberosCredentialSource(None, NoRefresh())
+
+
+def _ticketed() -> InjectedConfig:
+    """Секция плагина с keytab-профилем уезжает телу с билетом вызова."""
+    return InjectedConfig(
+        SectionTickets(ServiceTickets(_credentials), ConnectionTypes.discover)
+    )
+
+
+def _section(
+    raw_config: Any,
+    plugin_id: str,
+    collection: str = "",
+    store: ConfluenceIngestConfig | None = None,
+) -> PluginSection:
+    """Секция плагина сырыми значениями конфига, как её читает сервис; у
+    хранилища базы знаний — тестовая коллекция и база набора."""
+    launch = plugin_launch(ToolSetup.sandbox_raw(raw_config), plugin_id)
+    values = dict(launch.section)
+    if store is not None:
+        connection = dict(values["connection"])
+        connection["dbname"] = store.connection.dbname
+        values["connection"] = connection
+        values["collection"] = collection
+
+    return PluginSection(
+        values=values, connections=launch.manifest.connections_in_config
+    )
 
 
 @pytest.fixture(scope="module")
@@ -357,21 +390,22 @@ def kb_tools(
 
     module = reload(kb_module)
 
-    launcher = ToolSetup.caller(zygote_stand, raw_config, "kb", [module.__name__])
+    launcher = ToolSetup.caller(zygote_stand, raw_config, "kb")
+    section = _section(raw_config, "kb", kb_collection, kb_store)
 
-    def resolve(name: str, annotation: Any) -> object:
-        sandboxed = ToolSetup.sandbox_raw(raw_config)
-        cfg = bind(sandboxed, path=annotation.SECTION, model=annotation)
-        if "collection" not in type(cfg).model_fields:
-            return cfg
+    return ToolSetup.launched(module.TOOLS, launcher, (_ticketed(),), section)
 
-        return cfg.model_copy(
-            update={"collection": kb_collection, "connection": kb_store.connection}
-        )
 
-    config = InjectedConfig(resolve, ServiceTickets(_credentials))
+@pytest.fixture(scope="module")
+def kb_ix_tools(zygote_stand: ZygoteStand, raw_config):
+    """kb-функции поиска по схеме ix: секция как в бою, индексы базы приложения."""
+    import boba.tool.kb.tools as kb_module
 
-    return ToolSetup.launched(module.TOOLS, launcher, (config,))
+    launcher = ToolSetup.caller(zygote_stand, raw_config, "kb")
+
+    return ToolSetup.launched(
+        kb_module.TOOLS, launcher, (_ticketed(),), _section(raw_config, "kb")
+    )
 
 
 @pytest.fixture(scope="module")
@@ -1122,8 +1156,8 @@ class TestKbTools:
 class TestKbIxTools:
     """kb по схеме ix: эмбеддинг и SQL идут в песочнице, ищут по индексам dev-стенда."""
 
-    async def test_catalog_lists_surfaces(self, kb_tools) -> None:
-        result = await Call.ok(kb_tools["kb_catalog2"])
+    async def test_catalog_lists_surfaces(self, kb_ix_tools) -> None:
+        result = await Call.ok(kb_ix_tools["kb_catalog2"])
         if not (isinstance(result, TableResult)):
             raise AssertionError("isinstance(result, TableResult)")
         surfaces = []
@@ -1132,9 +1166,9 @@ class TestKbIxTools:
         if "cfl_page" not in surfaces:
             raise AssertionError(f"cfl_page in {surfaces}")
 
-    async def test_fts_search_then_node_reads_the_page(self, kb_tools) -> None:
+    async def test_fts_search_then_node_reads_the_page(self, kb_ix_tools) -> None:
         found = await Call.ok(
-            kb_tools["kb_fts_search2"],
+            kb_ix_tools["kb_fts_search2"],
             query="page",
             surfaces=["cfl_page"],
             aspects=["title", "body"],
@@ -1148,13 +1182,18 @@ class TestKbIxTools:
             raise AssertionError(f"в выдаче нет нужных колонок: {sorted(columns)}")
 
         node_id = int(found.rows[0]["node_id"])
-        card = await Call.ok(kb_tools["kb_node2"], node_id=node_id, aspects=["title"])
+        card = await Call.ok(
+            kb_ix_tools["kb_node2"], node_id=node_id, aspects=["title"]
+        )
         if f"node {node_id}" not in card.text:
             raise AssertionError(f"node heading in {card.text[:200]!r}")
 
-    async def test_vector_search_returns_hits(self, kb_tools) -> None:
+    async def test_vector_search_returns_hits(self, kb_ix_tools) -> None:
         result = await Call.ok(
-            kb_tools["kb_vector_search2"], query="how to configure", offset=0, limit=3
+            kb_ix_tools["kb_vector_search2"],
+            query="how to configure",
+            offset=0,
+            limit=3,
         )
         if not (result.rows):
             raise AssertionError("result.rows")

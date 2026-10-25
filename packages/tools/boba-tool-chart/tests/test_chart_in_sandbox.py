@@ -11,22 +11,14 @@ from typing import Any
 import pytest
 
 from boba.sandbox import SandboxToolConfig
-from boba.sandbox.zygote import ZygotePolicy, ZygoteToolCaller
 from boba.stand.sandbox import needs_sandbox, needs_userns, sandbox_profile
 from boba.stand.toolsetup import ToolSetup
 from boba.stand.zygote import ZygoteStand
-from boba.toolkit.chain import CallAmbient
 from boba.toolkit.launcher import PayloadFailureError
 from boba.toolkit.result import VisualResult
 
-ZYGOTE = ZygotePolicy(
-    start_timeout_sec=60.0,
-    max_start_attempts=1,
-    restart_backoff_sec=0.05,
-    healthy_after_sec=0.5,
-    stop_wait_sec=5.0,
-    call_poll_sec=0.05,
-)
+CHART = "boba.tool.chart.plugin:MANIFEST"
+"""Объявление плагина chart: зигота стенда служит его инструменты."""
 
 
 def _tool(zygote_stand: ZygoteStand) -> Any:
@@ -35,14 +27,9 @@ def _tool(zygote_stand: ZygoteStand) -> Any:
 
     module = reload(chart_module)
 
-    sandbox = SandboxToolConfig.model_validate(
-        {"profile": sandbox_profile("boba-tool-chart")}
-    )
+    sandbox = SandboxToolConfig.model_validate({"profile": sandbox_profile("chart")})
     profile = sandbox.profile
-    supervisor = zygote_stand.registry().obtain(
-        "chart-test", profile, [chart_module.__name__], ZYGOTE
-    )
-    launcher = ZygoteToolCaller("chart-test", supervisor, profile, CallAmbient())
+    launcher = zygote_stand.caller("chart-test", profile, [CHART])
 
     return ToolSetup.launched(module.TOOLS, launcher, ())[module.visualize.name]
 

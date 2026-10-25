@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from pydantic.json_schema import SkipJsonSchema
 
 from boba.kerberos import KerberosAuthBase, TicketAuth
+from boba.toolkit.manifest import ConnectionProfile
 
 __all__ = [
     "ClientIdentity",
@@ -60,8 +61,11 @@ class ConnectionSource(BaseModel):
         return self.id.int != 0
 
 
-class ConnectionBase(BaseModel):
-    """Профиль соединения; наследник сужает kind до Literal своего значения."""
+class ConnectionBase(ConnectionProfile):
+    """Профиль соединения; наследник сужает kind до Literal своего значения.
+
+    Наследует ConnectionProfile: по нему построитель манифеста плагина
+    узнаёт параметр-соединение и профиль в конфиге плагина."""
 
     kind: str = Field(description="Дискриминатор типа: значение задаёт наследник.")
     source: SkipJsonSchema[ConnectionSource] = Field(

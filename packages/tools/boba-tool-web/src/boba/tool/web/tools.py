@@ -17,7 +17,6 @@ ResultTooLargeError — содержимое превысило max_result_chars
 
 from __future__ import annotations
 
-import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -350,6 +349,3 @@ async def web_address(connection: WebTarget) -> TableResult:
 
 
 TOOLS: Final = ToolMain.toolset(web_fetch_page, web_grep_page, web_address)
-
-if __name__ == "__main__":
-    sys.exit(ToolMain.run(TOOLS))

@@ -9,6 +9,7 @@ import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -362,10 +363,11 @@ class TestSubprocessAbort:
     def test_cancel_kills_running_process(self, zygote_stand: ZygoteStand) -> None:
         profile = _sandbox_config().profile
 
-        supervisor = zygote_stand.registry().obtain(
-            "cancel-bash", profile, (ShellRun.MODULE,), _ZYGOTE
+        section = replace(zygote_stand.section("cancel-bash", profile), policy=_ZYGOTE)
+        supervisor = zygote_stand.registry().obtain(section)
+        caller = ZygoteToolCaller(
+            "cancel-bash", supervisor, section.profile, CallAmbient()
         )
-        caller = ZygoteToolCaller("cancel-bash", supervisor, profile, CallAmbient())
 
         tool_ = ShellRun.tool(caller, self.LIMITS)
         with run_cancellation() as c:

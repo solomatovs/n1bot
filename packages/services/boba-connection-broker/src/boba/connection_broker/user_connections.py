@@ -1,7 +1,8 @@
 """Соединения пользователя: параметр инструмента и профиль по имени.
 
-Инструмент объявляет соединение параметром `Annotated[<Профиль>, UserConnection]`.
-Модель видит на этом месте строку. Здесь две части пути соединения:
+Инструмент объявляет соединение параметром `Annotated[<Профиль>, UserConnection]`;
+манифест плагина называет такой параметр и вид соединения. Модель видит на
+этом месте строку. Здесь две части пути соединения:
 
 - ConnectionParamHooks ставит на такие параметры обвязку, которая отдаст телу
   профиль, а в схеме инструмента делает параметр строкой с пометкой вида и
@@ -48,7 +49,6 @@ from boba.core.secrets import SecretReveal
 from boba.identity.context import CallContexts
 from boba.identity.errors import RefusalError
 from boba.kerberos import TicketAuth
-from boba.toolkit.entry import ToolArgv
 from boba.toolkit.facade import NotLogged
 from boba.toolrun.hosted import HostedTool, ToolSchema
 from boba.toolrun.injected import AsyncInjected, ToolConfigError
@@ -81,14 +81,14 @@ HookFactory = Callable[[str, str, str], AsyncInjected]
 class ConnectionParamHooks:
     """Постановка обвязок на параметры-соединения инструментов.
 
-    Инструмент объявляет соединение параметром с моделью профиля. Здесь
-    каждый такой параметр получает обвязку, которая отдаст телу профиль, а в
-    схеме инструмента становится строкой с ключами SealedParamSchema:
-    пометкой вида, по которой клиент узнаёт параметр, и веткой
-    запечатанного значения. Значение в лог не пишется: там запечатанное
-    соединение. Вид берётся из типа параметра —
-    реестр знает, какому пакету принадлежит модель профиля. Откуда обвязка
-    возьмёт профиль, решает вызывающий фабрикой make (SealedConnectionParams).
+    Манифест плагина называет параметры-соединения инструмента и их вид.
+    Здесь каждый такой параметр получает обвязку, которая отдаст телу
+    профиль, а в схеме инструмента становится строкой с ключами
+    SealedParamSchema: пометкой вида, по которой клиент узнаёт параметр, и
+    веткой запечатанного значения. Значение в лог не пишется: там
+    запечатанное соединение. Вид, которого сервер не знает, — отказ сборки:
+    виды соединений — код сервера. Откуда обвязка возьмёт профиль, решает
+    вызывающий фабрикой make (SealedConnectionParams).
     """
 
     def __init__(self, types_ref: TypesRef) -> None:
@@ -98,20 +98,18 @@ class ConnectionParamHooks:
         self._declared = SealedParamSchema()
 
     def bind_all(self, tools: Sequence[HostedTool], make: HookFactory) -> None:
-        """Зовётся до InjectedConfig: параметры читаются со схемы, пока она
-        полная."""
+        """Обвязки параметров-соединений каждого инструмента плагина."""
         for tool in tools:
             self._bind_one(tool, make)
 
     def _bind_one(self, tool: HostedTool, make: HookFactory) -> None:
-        schema = tool.args_schema
-        fields = ToolArgv.connection_fields(schema)
-        if not fields:
+        declared = tool.inputs.connections
+        if not declared:
             return
 
         shown: dict[str, tuple[Any, FieldInfo]] = {}
-        for param, annotation in fields.items():
-            kind = self._kind_of(tool.name, param, annotation)
+        for param, kind in declared.items():
+            self._require_kind(tool.name, param, kind)
 
             self._bodies.hook_all([tool], make(tool.name, param, kind))
             shown[param] = self.field(ConnectionOffer(kind=kind, sealed=True, names={}))
@@ -120,7 +118,7 @@ class ConnectionParamHooks:
                 "tool %s: %s is a %s connection of the caller", tool.name, param, kind
             )
 
-        tool.args_schema = self._schemas.rebuild(schema, shown, ())
+        tool.args_schema = self._schemas.rebuild(tool.args_schema, shown, ())
 
     def field(
         self, offer: ConnectionOffer, *checks: AfterValidator
@@ -134,28 +132,14 @@ class ConnectionParamHooks:
 
         return marked, info
 
-    def _kind_of(self, tool: str, param: str, annotation: object) -> str:
-        """Вид соединения по модели профиля параметра."""
-        if not isinstance(annotation, type):
-            msg = (
-                f"tool {tool!r}: {param} must be annotated with a connection "
-                f"model, got {annotation!r}"
-            )
-            raise ToolConfigError(msg)
-
-        if not issubclass(annotation, ConnectionBase):
-            msg = (
-                f"tool {tool!r}: {param} is annotated with {annotation.__name__}, "
-                "which is not a connection model"
-            )
-            raise ToolConfigError(msg)
-
+    def _require_kind(self, tool: str, param: str, kind: str) -> None:
+        """Вид соединения из манифеста известен серверу: вид — код сервера."""
         try:
-            return self._types_ref().kind_of(annotation)
+            self._types_ref().manifest_of(kind)
         except UnknownConnectionKindError as exc:
             msg = (
-                f"tool {tool!r}: {param} needs connection type "
-                f"{annotation.__name__}, whose package is not installed: {exc}"
+                f"tool {tool!r}: {param} needs connection type {kind!r}, which "
+                f"this server does not know: {exc}"
             )
             raise ToolConfigError(msg) from exc
 

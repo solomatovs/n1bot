@@ -19,7 +19,6 @@ psycopg.Error — СУБД отклонила запрос.
 
 from __future__ import annotations
 
-import sys
 from collections.abc import Iterable, Iterator, Sequence
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Final
@@ -537,6 +536,3 @@ async def describe_delete_edge(
 TOOLS: Final = ToolMain.toolset(
     describe_edge, describe_list_edges, describe_delete_edge
 )
-
-if __name__ == "__main__":
-    sys.exit(ToolMain.run(TOOLS))

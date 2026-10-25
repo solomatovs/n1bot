@@ -11,7 +11,6 @@ ConfluencePayloadError — ответ не той формы, которую ж�
 from __future__ import annotations
 
 import json
-import sys
 from collections.abc import AsyncGenerator, Iterable, Iterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from enum import StrEnum
@@ -486,6 +485,3 @@ TOOLS: Final = ToolMain.toolset(
     confluence_spaces,
     confluence_address,
 )
-
-if __name__ == "__main__":
-    sys.exit(ToolMain.run(TOOLS))

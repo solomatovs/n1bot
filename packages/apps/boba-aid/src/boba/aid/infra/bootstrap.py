@@ -360,7 +360,6 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     contexts = CallContexts()
     runs = Runs(contexts)
     plugins = ChatPlugins(contexts)
-    container.provide(runtime.plugin_table, plugins.table)
     container.provide(runtime.call_contexts, contexts)
     container.provide(runtime.runs, runs)
     # журналов у чата нет, но реестр собственных инструментов читает их держатель

@@ -8,7 +8,6 @@ ocr                     = "${ocr}"
 
 [sandbox]
     workspace = true
-    images    = ["${env.models}/rapidocr.ext4:/var/cache/rapidocr"]
     [sandbox.limits]
         process_memory_bytes = 17179869184
         group_memory_bytes   = 4294967296

@@ -1,25 +1,29 @@
-"""Загрузчик tool-плагинов: секция [tool.<name>] -> инструменты хоста с обвязками.
+"""Плагины инструментов процесса: комплекты, манифесты и инструменты хоста.
 
-Плагины обнаруживаются entry points группы boba.tools у установленных пакетов;
-конфиг каждого приходит файлом conf/plugins/<name>.toml (слой AppLayers).
+Плагин процесса — секция [tool.<id>] из conf/plugins/<id>.toml (слой
+AppLayers) и программа плагина, которую исполняет способ запуска
+(boba.runtime.launchers). Сервер кода плагинов не импортирует: манифест
+он получает от программы данными, хранилище готовит её подкомандой setup,
+инструменты хоста собирает из объявлений манифеста.
 
 Ошибки:
-RuntimeError — конфиг противоречит плагину: у установленного плагина нет
-    conf/plugins/<name>.toml, entry point отдал не манифест, секции плагинов
-    совпали, способ запуска из [tool_launcher] не согласован с секциями
-    (см. boba.runtime.launchers).
-ToolConfigError — injected-параметр инструмента не привязан к секции конфига.
+RuntimeError — конфиг противоречит плагину: комплект неполон, программа не
+    отдала манифест или не подготовила хранилище, список инструментов
+    секции называет то, чего плагин не объявил, способ запуска из
+    [tool_launcher] не согласован с секциями (см. boba.runtime.launchers).
+ToolConfigError — служебному параметру инструмента нечего подставить либо
+    вид соединения из манифеста серверу неизвестен.
 StreamGroupsConfigError — нет секции [stream_groups] со сроками групп
     потоковых вызовов.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Coroutine, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from importlib.metadata import entry_points
-from typing import Any
+from typing import Any, ClassVar
 
 from omegaconf import DictConfig, OmegaConf
 from pydantic import BaseModel, ConfigDict
@@ -27,20 +31,17 @@ from pydantic import BaseModel, ConfigDict
 from boba.access import GrantCheck, ToolAccess, ToolGrants
 from boba.chat.profiles import ProfilesSection, RolesSection
 from boba.config import bind
-from boba.connection_broker.tickets import ServiceTickets
-from boba.runtime.launchers import SectionLaunchers
+from boba.connection_broker.tickets import SectionTickets, ServiceTickets
+from boba.runtime.launchers import PluginLaunch, SectionLaunchers
 from boba.runtime.refs import ExecRefs
-from boba.toolkit.entry import ToolArgv, ToolEntryError
-from boba.toolkit.facade import PayloadTool
-from boba.toolkit.launcher import ToolLauncher
-from boba.toolkit.manifest import LaunchSpec, PluginStart, ToolPluginManifest
+from boba.toolkit.manifest import PluginManifest, ToolDecl
 from boba.toolkit.ports import StreamSpecs
 from boba.toolkit.types import StringList
 from boba.toolrun.callvalues import CallContextValues
 from boba.toolrun.dev_null import DevNullTool
-from boba.toolrun.hosted import HostedTool, ToolHosting
-from boba.toolrun.injected import InjectedConfig, ToolConfigError
-from boba.toolrun.registry import LaunchedTools, ToolChain, ToolRegistry
+from boba.toolrun.hosted import HostedTool, PluginSection, ToolHosting
+from boba.toolrun.injected import InjectedConfig, SectionArming
+from boba.toolrun.registry import ToolChain, ToolRegistry
 from boba.toolrun.stream_calls import (
     StreamGroupsConfig,
     StreamGroupsConfigError,
@@ -48,40 +49,19 @@ from boba.toolrun.stream_calls import (
 
 __all__ = [
     "ConfigGrants",
-    "EntryPointPlugins",
+    "PluginKit",
+    "PluginKits",
     "PluginMeta",
-    "PluginTable",
     "ToolLoader",
-    "ToolPlugin",
 ]
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
-class ToolPlugin:
-    """Один tool-плагин: функции модуля из секции [tool.<name>].
-
-    Плагин приходит entry point'ом установленного пакета; его секция
-    tool.<section> обязана прийти файлом conf/plugins/<section>.toml, тела
-    исполняются отдельным процессом способом из [tool_launcher].
-    """
-
-    section: str
-    module_tools: tuple[PayloadTool, ...] = ()
-    """Объявления инструментов модуля: из них обёртка запуска собирает
-    инструменты хоста."""
-    modules: tuple[str, ...] = ()
-    """Модули тел module_tools: их прогревает зигота секции."""
-    package: str = ""
-    """Дистрибутив entry point'а: по нему ищется образ корня песочницы
-    plugins/<package>/rootfs.ext4."""
-    start: PluginStart[Any] | None = None
-    """Хранилище плагина из манифеста: его таблицы boba-mcp создаёт на старте."""
-
-
 class PluginMeta(BaseModel):
-    """Meta-конфиг плагина: что framework читает из [tool.<name>]."""
+    """Ключи фреймворка в [tool.<id>]: включён ли плагин, его инструменты и
+    заданные соединения сервера. Остальные ключи секции проверяет сам
+    плагин подкомандой manifest."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -92,18 +72,104 @@ class PluginMeta(BaseModel):
     инструмента → имена из [connections]."""
 
 
-class ToolLoader:
-    """Сборка реестра инструментов из включённых секций [tool.<name>].
+@dataclass(frozen=True)
+class PluginKit:
+    """Включённый плагин после старта: что запускать (манифест и секция),
+    ключи фреймворка и секция с профилями соединений для инструментов."""
 
-    Инструменты хоста собираются из объявлений TOOLS заново на каждую
-    загрузку (bootstrap, DI-провайдер): объявления — синглтоны процесса, и
-    обвязки на них не ложатся.
+    launch: PluginLaunch
+    meta: PluginMeta
+    section: PluginSection
+
+
+class PluginKits:
+    """Комплекты плагинов процесса из его конфига.
+
+    Создаёт его провайдер процесса со способом запуска и довооружением
+    секций. load() проверяет полноту комплектов, получает манифесты
+    включённых плагинов от их программ одновременно и готовит хранилища
+    тех, чей манифест объявил setup: секция уезжает подкоманде с билетами
+    вместо keytab-профилей.
+    """
+
+    SECTION: ClassVar[str] = "tool"
+
+    def __init__(
+        self, raw: DictConfig, launchers: SectionLaunchers, arming: SectionArming
+    ) -> None:
+        self._raw = raw
+        self._launchers = launchers
+        self._arming = arming
+
+    async def load(self) -> dict[str, PluginKit]:
+        ids = list(self._ids())
+        self._launchers.check_kits(ids)
+
+        enabled: list[tuple[str, PluginMeta, dict[str, Any]]] = []
+        for plugin_id in ids:
+            meta = bind(self._raw, f"{self.SECTION}.{plugin_id}", PluginMeta)
+            if not meta.enable:
+                continue
+
+            enabled.append((plugin_id, meta, self._values(plugin_id)))
+
+        manifests = await asyncio.gather(*self._manifests(enabled))
+
+        kits: dict[str, PluginKit] = {}
+        for (plugin_id, meta, values), manifest in zip(enabled, manifests, strict=True):
+            launch = PluginLaunch(manifest=manifest, section=values)
+            section = PluginSection(
+                values=values, connections=manifest.connections_in_config
+            )
+            await self._set_up(launch, section)
+            kits[plugin_id] = PluginKit(launch=launch, meta=meta, section=section)
+
+        return kits
+
+    def _ids(self) -> Iterator[str]:
+        node = OmegaConf.select(self._raw, self.SECTION)
+        if node is None:
+            return
+
+        for key in node:
+            yield str(key)
+
+    def _values(self, plugin_id: str) -> dict[str, Any]:
+        node = OmegaConf.select(self._raw, f"{self.SECTION}.{plugin_id}")
+        container = OmegaConf.to_container(node, resolve=True)
+        values: dict[str, Any] = {}
+        if isinstance(container, dict):
+            for key, value in container.items():
+                values[str(key)] = value
+
+        return values
+
+    def _manifests(
+        self, enabled: Sequence[tuple[str, PluginMeta, dict[str, Any]]]
+    ) -> Iterator[Coroutine[Any, Any, PluginManifest]]:
+        for plugin_id, _meta, values in enabled:
+            yield asyncio.to_thread(self._launchers.manifest_of, plugin_id, values)
+
+    async def _set_up(self, launch: PluginLaunch, section: PluginSection) -> None:
+        if not launch.manifest.setup:
+            return
+
+        armed = await self._arming.armed(launch.id, section)
+        await asyncio.to_thread(self._launchers.setup, launch, armed)
+        logger.info("plugin %s: storage is ready", launch.id)
+
+
+class ToolLoader:
+    """Сборка реестра инструментов из включённых плагинов процесса.
+
+    Инструменты хоста собираются из объявлений манифестов заново на каждую
+    загрузку (bootstrap, DI-провайдер): обвязки ложатся на свежие объекты.
     """
 
     def __init__(  # noqa: PLR0913 — загрузчик собирается всеми входами процесса
         self,
         raw_config: DictConfig,
-        plugins: Mapping[str, ToolPlugin],
+        kits: Mapping[str, PluginKit],
         refs: ExecRefs,
         launchers: SectionLaunchers,
         grants: ToolGrants,
@@ -112,7 +178,7 @@ class ToolLoader:
         self._raw = raw_config
         self._launchers = launchers
         """Способ запуска процесса: один на все сборки инструментов."""
-        self._plugins = plugins
+        self._kits = kits
         self._own_tools = tuple(own_tools)
         """Собственные инструменты процесса: идут под теми же обвязками, что
         и инструменты плагинов, а за портом инструментов образуют отдельный
@@ -126,44 +192,33 @@ class ToolLoader:
         self._sealed = refs.connection_params
         """Соединения инструментов: обвязки параметров-соединений, правило
         аргументов узлов и возможность сервера с ключом."""
+        tickets = SectionTickets(
+            ServiceTickets(refs.credentials), refs.connection_types
+        )
         self._chain = ToolChain(
             self._stream_cfg,
             refs.journals,
             refs.contexts,
             refs.ambient,
-            (
-                CallContextValues(refs.contexts),
-                self._sealed,
-                InjectedConfig(
-                    self._config_resolver(), ServiceTickets(refs.credentials)
-                ),
-            ),
+            (CallContextValues(refs.contexts), self._sealed, InjectedConfig(tickets)),
         )
         self._grants = grants
 
     def load(self) -> ToolRegistry:
-
         tools: list[HostedTool] = []
         specs = StreamSpecs({})
-        for name, plugin in self._plugins.items():
-            section = OmegaConf.select(self._raw, f"tool.{name}")
-            if section is None:
-                msg = (
-                    f"conf/plugins/{name}.toml is missing: the installed "
-                    f"plugin {name!r} requires its config"
-                )
-                raise RuntimeError(msg)
-
-            meta = bind(self._raw, f"tool.{name}", PluginMeta)
-            if not meta.enable:
-                continue
-
+        for plugin_id, kit in self._kits.items():
+            meta = kit.meta
             self._sealed.listed(meta.connections)
-            plugged = self._plugin_tools(plugin, meta, self._launchers)
+
+            launcher = self._launchers.launcher_of(
+                kit.launch, self._contexts, self._ambient
+            )
+            plugged = self._chain.launch(self._enabled(kit), launcher, kit.section)
             built = plugged.tools
             tools.extend(built)
             specs = specs.merged(plugged.specs)
-            self._listed(name, "connections", meta.connections, built)
+            self._listed(plugin_id, "connections", meta.connections, built)
 
             # живой вывод есть у отдельных процессов: кнопка потока
             # рисуется на шагах инструментов
@@ -196,6 +251,29 @@ class ToolLoader:
         )
 
     @staticmethod
+    def _enabled(kit: PluginKit) -> list[ToolDecl]:
+        """Объявления инструментов из списка tools секции; имя, которого
+        плагин не объявил, — отказ."""
+        declared: dict[str, ToolDecl] = {}
+        for decl in kit.launch.manifest.tools:
+            declared[decl.name] = decl
+
+        stray = sorted(set(kit.meta.tools) - set(declared))
+        if stray:
+            msg = (
+                f"[tool.{kit.launch.id}] tools names {stray}, which plugin "
+                f"{kit.launch.id!r} does not declare: it has {sorted(declared)}"
+            )
+            raise RuntimeError(msg)
+
+        enabled: list[ToolDecl] = []
+        for name, decl in declared.items():
+            if name in kit.meta.tools:
+                enabled.append(decl)
+
+        return enabled
+
+    @staticmethod
     def _stream_writers(
         tools: Sequence[HostedTool], specs: StreamSpecs
     ) -> Iterator[str]:
@@ -216,56 +294,6 @@ class ToolLoader:
             raise StreamGroupsConfigError(msg)
 
         return bind(self._raw, section, StreamGroupsConfig)
-
-    def _plugin_tools(
-        self,
-        plugin: ToolPlugin,
-        meta: PluginMeta,
-        launchers: SectionLaunchers,
-    ) -> LaunchedTools:
-        """Инструменты плагина: функции модуля под launcher'ом секции."""
-        spec = LaunchSpec(
-            section=plugin.section,
-            modules=plugin.modules,
-            package=plugin.package,
-        )
-        launcher = launchers.launcher_of(spec, self._contexts, self._ambient)
-
-        return self._module_tools(plugin, meta, launcher)
-
-    def _module_tools(
-        self,
-        plugin: ToolPlugin,
-        meta: PluginMeta,
-        launcher: ToolLauncher,
-    ) -> LaunchedTools:
-        """Функции модуля новой модели: обёртка запуска + partial конфига."""
-        enabled: list[PayloadTool] = []
-        for tool in plugin.module_tools:
-            if tool.name not in meta.tools:
-                continue
-
-            enabled.append(tool)
-
-        return self._chain.launch(enabled, launcher)
-
-    def _config_resolver(self) -> Callable[[str, Any], object]:
-        """Значения injected-параметров: модель собирается из своей секции."""
-        raw = self._raw
-
-        def resolve(param: str, annotation: Any) -> object:
-            try:
-                section = ToolArgv.section_of(param, annotation)
-            except ToolEntryError as exc:
-                msg = (
-                    f"injected parameter {param!r} annotated {annotation!r}: "
-                    f"no config section resolves for it: {exc}"
-                )
-                raise ToolConfigError(msg) from exc
-
-            return bind(raw, section, annotation)
-
-        return resolve
 
     @staticmethod
     def _listed(
@@ -311,68 +339,3 @@ class ConfigGrants:
         profiles = bind(self._raw, "profiles", ProfilesSection).root
 
         return ToolGrants(roles=roles, profiles=profiles, check=check)
-
-
-PluginTable = Callable[[], Mapping[str, ToolPlugin]]
-"""Таблица плагинов процесса: общая часть плюс своё (у чата — chat-only инструменты)."""
-
-
-class EntryPointPlugins:
-    """Обнаружение установленных tool-плагинов: entry points группы boba.tools.
-
-    Пакет объявляет манифест в pyproject; установленный пакет виден без
-    перечисления в коде, удалённый — исчезает из таблицы.
-    """
-
-    def __init__(self) -> None:
-        self._hosting = ToolHosting()
-
-    def discover(self) -> dict[str, ToolPlugin]:
-        """Таблица плагинов установленных пакетов; дубликат секции — отказ."""
-        table: dict[str, ToolPlugin] = {}
-
-        for entry in entry_points(group=ToolPluginManifest.GROUP):
-            manifest = entry.load()
-            if not isinstance(manifest, ToolPluginManifest):
-                found = type(manifest).__name__
-                msg = (
-                    f"entry point {entry.name!r} of group "
-                    f"{ToolPluginManifest.GROUP}: expected a ToolPluginManifest, "
-                    f"got {found}"
-                )
-                raise RuntimeError(msg)
-
-            if manifest.section in table:
-                msg = (
-                    f"entry point {entry.name!r}: tool plugin section "
-                    f"{manifest.section!r} is already declared by package "
-                    f"{table[manifest.section].package!r}"
-                )
-                raise RuntimeError(msg)
-
-            package = self._package_of(entry)
-            table[manifest.section] = self._plugin_of(manifest, package)
-
-        return table
-
-    @staticmethod
-    def _package_of(entry: Any) -> str:
-        """Дистрибутив entry point'а; по нему ищется образ корня плагина."""
-        dist = getattr(entry, "dist", None)
-        if dist is None:
-            msg = (
-                f"entry point {entry.name!r} of group {ToolPluginManifest.GROUP} "
-                "carries no distribution: the owning package is unknown"
-            )
-            raise RuntimeError(msg)
-
-        return dist.name
-
-    def _plugin_of(self, manifest: ToolPluginManifest, package: str) -> ToolPlugin:
-        return ToolPlugin(
-            section=manifest.section,
-            module_tools=manifest.tools,
-            modules=self._hosting.modules_of(manifest.tools),
-            package=package,
-            start=manifest.start,
-        )

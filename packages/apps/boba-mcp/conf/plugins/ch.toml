@@ -17,11 +17,5 @@ tools      = [
 max_bytes  = 1000000
 
 [sandbox]
-    network = true
-    binds   = [
-        "/etc/resolv.conf:/etc/resolv.conf",
-        "/etc/hosts:/etc/hosts",
-        "${env.krb}/krb5.conf:/etc/krb5.conf"
-    ]
     [sandbox.limits]
         group_memory_bytes = 1073741824

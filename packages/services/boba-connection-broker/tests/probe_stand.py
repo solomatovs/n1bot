@@ -30,8 +30,9 @@ from boba.toolkit.calls import ToolCallBase
 from boba.toolkit.chain import CallAmbient
 from boba.toolkit.dag import DagNode, NodeOutcome, ToolServer
 from boba.toolkit.facade import PayloadTool, UserConnection, tool
+from boba.toolkit.manifest import ManifestBuilder
 from boba.toolkit.result import TableResult
-from boba.toolrun.hosted import DirectCalls, HostedTool
+from boba.toolrun.hosted import DirectCalls, HostedTool, ToolInputs
 from boba.toolrun.injected import StaticConfig
 from boba.toolrun.stream_calls import StreamGroupsConfig
 from boba.toolrun.streams import CallJournals
@@ -103,11 +104,18 @@ class ProbeTools:
 
         return tool
 
-    def tool(self, name: str, fields: dict[str, Any]) -> HostedTool:
-        """Инструмент, чьё тело запоминает полученные аргументы как есть."""
+    def tool(
+        self, name: str, fields: dict[str, Any], connections: dict[str, str]
+    ) -> HostedTool:
+        """Инструмент, чьё тело запоминает полученные аргументы как есть;
+        connections — параметры-соединения и их вид, как их называет
+        манифест плагина."""
         schema = create_model(f"{name}_args", __base__=ToolCallBase, **fields)
 
-        return self._probes.recorder(name, schema)
+        recorder = self._probes.recorder(name, schema)
+        recorder.inputs = ToolInputs(connections=connections)
+
+        return recorder
 
     def one_connection(self) -> HostedTool:
         fields = {
@@ -115,7 +123,7 @@ class ProbeTools:
             "sql": (str, ...),
         }
 
-        return self.tool("probe_query", fields)
+        return self.tool("probe_query", fields, {"connection": "probe"})
 
     def two_connections(self) -> HostedTool:
         fields = {
@@ -123,7 +131,7 @@ class ProbeTools:
             "target": (Annotated[ProbeConnection, UserConnection], ...),
         }
 
-        return self.tool("probe_copy", fields)
+        return self.tool("probe_copy", fields, {"source": "probe", "target": "probe"})
 
     async def call(self, tool: HostedTool, args: dict[str, Any]) -> dict[str, Any]:
         """Вызов инструмента от LOGIN; итог — аргументы, которые получило его
@@ -208,7 +216,14 @@ class SealedStand:
             CallAmbient(),
             (),
         )
-        self.params.bind_all(stand.host([self._query_tool(), self._copy_tool()]))
+        payloads = [self._query_tool(), self._copy_tool()]
+        hosted = stand.host(payloads)
+        builder = ManifestBuilder()
+        for payload, bridged in zip(payloads, hosted, strict=True):
+            connections = builder.tool(payload).connections
+            bridged.inputs = ToolInputs(connections=connections)
+
+        self.params.bind_all(hosted)
 
         store = Rows(rows)
         self.connections = ArmedConnections(

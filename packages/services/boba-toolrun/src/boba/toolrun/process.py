@@ -1,16 +1,15 @@
 """Запуск инструмента обычным субпроцессом хоста: dev-режим без песочницы.
 
-Реализация порта ToolLauncher для разработки и отладки: команда модуля
-исполняется интерпретатором приложения из workdir. Контракт процесса тот
-же, что в песочнице (argv, кадры на stdin, каналы конверта/кадров/конфига
-номерами в флагах --fd-*), но изоляции, cgroup-лимитов и прогрева модулей
-нет. Механика исполнения общая с песочницей и живёт в boba.toolkit.pump:
-вход тела пишет вызывающий через CallInput, каналы читает насос своим
-потоком.
+Реализация порта ToolLauncher для разработки и отладки: подкоманда call
+программы плагина исполняется интерпретатором приложения из workdir.
+Контракт процесса тот же, что в песочнице (argv, кадры на stdin, каналы
+конверта/кадров/аргументов номерами в флагах --fd-*), но изоляции,
+cgroup-лимитов и прогрева модулей нет. Механика исполнения общая с
+песочницей и живёт в boba.toolkit.pump: вход тела пишет вызывающий через
+CallInput, каналы читает насос своим потоком.
 
 Ошибки:
-ProcessCallError — процесс не запустился, не отдал конверт либо команда
-    не является командой модуля инструментов.
+ProcessCallError — процесс не запустился либо не отдал конверт.
 ChannelOverflowError — канал вызова превысил потолок, вызов убит.
 ToolStopped — вызов остановлен пользователем.
 """
@@ -21,7 +20,6 @@ import logging
 import os
 import signal
 import subprocess
-import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
@@ -105,13 +103,13 @@ class ProcessLauncherConfig(BaseModel):
 class _CallPipes:
     """Пайпы вызова модуля сверх stdio: конверт (result), отчёты о ходе
     работы (progress), выходы и готовность барьера (gate) из тела,
-    injected-конфиг, ответ барьера (verdict) и входы после первого — в тело.
+    аргументы вызова, ответ барьера (verdict) и входы после первого — в тело.
 
     Субпроцесс даёт из коробки только stdin/stdout/stderr — остальные
     каналы открываются здесь. Входы и выходы симметричны: у каждого канала
     свой пайп; stdin процесса порта не несёт. Дескрипторы тела наследуются
     с теми же номерами (pass_fds), и эти номера дописываются в команду
-    флагами --fd-result/--injected-fd/--fd-gate/--fd-verdict/--fd-progress/
+    флагами --fd-result/--args-fd/--fd-gate/--fd-verdict/--fd-progress/
     --fd-in/--fd-out (argv_flags). Записывающие концы входов забирает CallInputs вызова
     (take_inputs), концы барьера — HostGate (take_verdict), читающие концы
     выходов — перекачка (take_outputs) либо насос (claim_frames).
@@ -122,7 +120,7 @@ class _CallPipes:
     ) -> None:
         self._host_open = True
         self._child_open = True
-        self._injected_taken = False
+        self._args_taken = False
         self._outputs_taken = False
         self._claimed: int | None = None
         self._inputs_taken = False
@@ -131,7 +129,7 @@ class _CallPipes:
         self._out_specs = tuple(outputs)
 
         self.result_r, self.result_w = os.pipe()
-        self.injected_r, self.injected_w = os.pipe()
+        self.args_r, self.args_w = os.pipe()
         self.gate_r, self.gate_w = os.pipe()
         self.verdict_r, self.verdict_w = os.pipe()
         self.progress_r, self.progress_w = os.pipe()
@@ -153,8 +151,8 @@ class _CallPipes:
         flags = [
             EntryFlag.FD_RESULT.value,
             str(self.result_w),
-            EntryFlag.INJECTED_FD.value,
-            str(self.injected_r),
+            EntryFlag.ARGS_FD.value,
+            str(self.args_r),
             EntryFlag.FD_GATE.value,
             str(self.gate_w),
             EntryFlag.FD_VERDICT.value,
@@ -173,7 +171,7 @@ class _CallPipes:
     def child_fds(self) -> tuple[int, ...]:
         fds = [
             self.result_w,
-            self.injected_r,
+            self.args_r,
             self.gate_w,
             self.verdict_r,
             self.progress_w,
@@ -217,17 +215,17 @@ class _CallPipes:
 
         return tuple(fds)
 
-    def take_injected(self) -> int:
+    def take_args(self) -> int:
         """Отдать канал конфига писателю: закрытия каналов его не трогают."""
-        if self._injected_taken:
+        if self._args_taken:
             msg = (
-                "process call pipes: the injected channel was already taken "
+                "process call pipes: the arguments channel was already taken "
                 "by a writer, a second take is refused"
             )
             raise LauncherError(msg)
 
-        self._injected_taken = True
-        return self.injected_w
+        self._args_taken = True
+        return self.args_w
 
     def take_outputs(self) -> tuple[int, ...]:
         """Отдать читающие концы всех выходов перекачке: насос их не читает,
@@ -332,11 +330,11 @@ class _CallPipes:
             with suppress(OSError):
                 os.close(self.verdict_w)
 
-        if self._injected_taken:
+        if self._args_taken:
             return
 
         with suppress(OSError):
-            os.close(self.injected_w)
+            os.close(self.args_w)
 
     def close_all(self) -> None:
         self.close_child_ends()
@@ -394,11 +392,10 @@ class ProcessToolCaller(ToolLauncher):
     """Реализация протокола ToolLauncher субпроцессом хоста.
 
     open() спавнит тело и отдаёт PumpedCall для потокового вызова.
-    Создаётся фабрикой лончеров по одному на инструмент (имя идёт в логи).
+    Создаётся способом запуска процессом хоста (ProcessLaunchers) на плагин
+    и стендами тестов. program — префикс команды вызова до имени
+    инструмента: у плагина `python -m boba.sandbox.program <id> call`.
     """
-
-    ARGV_HEAD: ClassVar[int] = 3
-    """python3 -m <module> — префикс команды модуля инструментов."""
 
     POLL_SEC: ClassVar[float] = 0.05
 
@@ -417,8 +414,10 @@ class ProcessToolCaller(ToolLauncher):
         cfg: ProcessLauncherConfig,
         contexts: CallContexts,
         ambient: CallAmbient,
+        program: Sequence[str],
     ) -> None:
         self._tool = tool
+        self._program = tuple(program)
         self._cfg = cfg
         self._contexts = contexts
         self._ambient = ambient
@@ -444,7 +443,7 @@ class ProcessToolCaller(ToolLauncher):
         self, command: ToolCommand, *, tap: bool
     ) -> tuple[ToolCall, tuple[int, ...]]:
         """Общий открыватель вызова модуля; tap отдаёт выходы наружу."""
-        argv = self._module_argv(command)
+        argv = (*self._program, *command.argv)
 
         envelope = CappedChannel(
             self._cfg.channel_limit_bytes, ToolChannel.RESULT.value
@@ -499,9 +498,9 @@ class ProcessToolCaller(ToolLauncher):
             raise
 
         # насос уже жив: запись конфига блокируется только скоростью тела
-        config_input = CallInput(live.channels.take_injected())
-        config_input.send_bytes(command.config)
-        config_input.finish()
+        args_input = CallInput(live.channels.take_args())
+        args_input.send_bytes(command.args)
+        args_input.finish()
 
         return call, frames_fds
 
@@ -513,26 +512,6 @@ class ProcessToolCaller(ToolLauncher):
             run.timed_out,
             run.stderr,
         )
-
-    def _module_argv(self, command: ToolCommand) -> tuple[str, ...]:
-        """Команда модуля интерпретатором приложения вместо python3 из PATH."""
-        argv = command.argv
-        if len(argv) <= self.ARGV_HEAD:
-            msg = (
-                f"{self._tool}: not a tool module command, expected "
-                f"python -m <module> <tool> ..., got {argv[:3]}"
-            )
-            raise ProcessCallError(msg)
-
-        if argv[1] != "-m":
-            msg = (
-                f"{self._tool}: not a tool module command, expected "
-                f"python -m <module> <tool> ..., got {argv[:3]}"
-            )
-            raise ProcessCallError(msg)
-
-        # интерпретатор приложения вместо python3 из PATH образа песочницы
-        return (sys.executable, *argv[1:])
 
     def _call_workdir(self) -> str:
         """Рабочий каталог тела: своя папка области вызова, как /workspace в песочнице.

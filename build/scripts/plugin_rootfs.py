@@ -14,6 +14,8 @@ imports — модули smoke-проверки образа (по строке)
 data    — гостевые пути данных по закрытию: точки монтирования (по строке).
 sources — файлы пакетов закрытия, от которых зависит образ корня (по строке).
 list    — пакеты репозитория с entry points группы boba.tools (по строке).
+ids     — плагины репозитория: имена entry points группы boba.tools (по строке).
+package — пакет плагина: вызов plugin_rootfs.py package <корень packages> <id>.
 """
 
 import re
@@ -103,6 +105,22 @@ class Projects:
 
     def with_tools(self) -> list[str]:
         return self.with_group(GROUP)
+
+    def plugin_ids(self) -> list[str]:
+        """Плагины: имена entry points группы boba.tools у всех пакетов."""
+        ids: list[str] = []
+        for points in self._entry_points.values():
+            ids.extend(points.get(GROUP, {}))
+
+        return sorted(ids)
+
+    def package_of(self, plugin_id: str) -> list[str]:
+        """Пакет, объявивший плагин plugin_id; нет такого — пусто."""
+        for name, points in self._entry_points.items():
+            if plugin_id in points.get(GROUP, {}):
+                return [name]
+
+        return []
 
     def with_group(self, group: str) -> list[str]:
         """Пакеты, объявившие entry points группы."""
@@ -293,6 +311,14 @@ def main(argv: list[str]) -> int:
 
     if command == "list":
         lines = projects.with_tools()
+    elif command == "ids":
+        lines = projects.plugin_ids()
+    elif command == "package":
+        if len(argv) < 4:
+            print(__doc__, file=sys.stderr)
+            return 2
+
+        lines = projects.package_of(argv[3])
     else:
         if len(argv) < 4:
             print(__doc__, file=sys.stderr)

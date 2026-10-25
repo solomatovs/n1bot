@@ -1,4 +1,5 @@
-"""Сеть песочницы: профиль с network=true обязан резолвить имена.
+"""Сеть песочницы: профиль плагина, которому манифест объявил сеть, обязан
+резолвить имена.
 
 Профили берутся из конфига сервиса boba-mcp (фикстура raw_config набора) тем
 же вызовом, что и загрузчик плагинов, — проверяется ровно то окружение, в
@@ -19,7 +20,6 @@ from typing import ClassVar
 import pytest
 from omegaconf import DictConfig, OmegaConf
 
-from boba.runtime.plugins import EntryPointPlugins
 from boba.sandbox.profile import SandboxProfile
 from boba.sandbox.runner import has_bwrap
 from boba.stand.sandbox import section_profile
@@ -51,14 +51,9 @@ class SandboxToolProfiles:
         self._raw = raw
 
     def networked(self) -> dict[str, SandboxProfile]:
-        """Инструменты, которым конфиг разрешил сеть."""
-        installed = EntryPointPlugins().discover()
-
+        """Плагины, которым манифест объявил сеть."""
         profiles: dict[str, SandboxProfile] = {}
         for name in self._tool_names():
-            if name not in installed:
-                continue
-
             section = OmegaConf.select(self._raw, f"tool.{name}.sandbox")
             if section is None:
                 continue
@@ -98,7 +93,7 @@ def _networked(raw_config: DictConfig) -> list[tuple[str, SandboxProfile]]:
         items.append((name, profile))
 
     if not items:
-        pytest.fail("в конфиге нет ни одного инструмента с network=true")
+        pytest.fail("в конфиге нет ни одного плагина, которому манифест объявил сеть")
 
     return items
 

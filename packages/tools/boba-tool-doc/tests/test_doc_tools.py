@@ -12,7 +12,7 @@ from boba.doc.document import BoxedHit, DocumentError
 from boba.stand_core.progress import HeardProgress
 from boba.stand_core.samples import SamplePdf
 from boba.tool.doc.tools import TOOLS, DocToolSection
-from boba.toolkit.entry import ToolArgv
+from boba.toolkit.manifest import InjectedRole, ManifestBuilder
 from boba.toolkit.ports import ToolProgress
 from boba.toolkit.result import MarkdownResult, TableResult
 
@@ -207,10 +207,11 @@ class TestSchemas:
 
     @pytest.mark.parametrize("name", _NAMES)
     def test_cfg_is_hidden_from_llm(self, name: str) -> None:
-        """cfg объявлен injected: обёртка запуска снимает его со схемы для LLM."""
-        injected = ToolArgv.injected_fields(self._tool(name).args_schema)
+        """cfg объявлен injected: манифест выносит его из схемы для LLM."""
+        decl = ManifestBuilder().tool(self._tool(name))
 
-        assert "cfg" in injected
+        assert decl.injected["cfg"] is InjectedRole.CONFIG
+        assert "cfg" not in decl.properties()
 
     @pytest.mark.parametrize("name", _NAMES)
     def test_ocr_is_the_only_optional_control(self, name: str) -> None:

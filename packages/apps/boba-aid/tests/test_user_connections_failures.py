@@ -50,7 +50,7 @@ from boba.toolkit.result import (
     ToolResultBase,
 )
 from boba.toolrun.errors import ToolErrorGuard
-from boba.toolrun.hosted import HostedTool
+from boba.toolrun.hosted import HostedTool, ToolInputs
 from boba.transport.http.connection import HttpConnection
 
 pytestmark = pytest.mark.anyio
@@ -270,7 +270,9 @@ class Guarded:
             connection=(Annotated[PostgresConfig, UserConnection], ...),
         )
 
-        return self._build(ProbeTools().recorder(self.NAME, schema), tickets)
+        return self._build(
+            ProbeTools().recorder(self.NAME, schema), "postgres", tickets
+        )
 
     def web(self):
         """Как web_fetch_page: соединение параметром, покрытие хоста URL
@@ -293,9 +295,13 @@ class Guarded:
             connection.for_url(url)
             return MarkdownResult(text="ok")
 
-        return self._build(ProbeTools().hosted(self.NAME, schema, body), None)
+        return self._build(ProbeTools().hosted(self.NAME, schema, body), "web", None)
 
-    def _build(self, tool: HostedTool, tickets: SsoTickets | None) -> HostedTool:
+    def _build(
+        self, tool: HostedTool, kind: str, tickets: SsoTickets | None
+    ) -> HostedTool:
+        # параметр-соединение объявляет манифест плагина: у пробы — входы руками
+        tool.inputs = ToolInputs(connections={"connection": kind})
         StandUserConnections(
             lambda: self._store,
             lambda: KerberosCredentialSource(

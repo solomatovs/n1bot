@@ -82,7 +82,7 @@
             "justMyCode": false,
             "stopOnEntry": false,
             "module": "boba.runtime.toolcli",
-            "args": "${input:toolCall} --config ${workspaceFolder}/packages/apps/boba-mcp/conf/config.toml --site ${workspaceFolder}/debug/mcp/conf/site.toml --injected ${workspaceFolder}/.vscode/injected/${input:toolInjected}.json",
+            "args": "${input:toolCall} --config ${workspaceFolder}/packages/apps/boba-mcp/conf/config.toml --site ${workspaceFolder}/debug/mcp/conf/site.toml --args ${workspaceFolder}/.vscode/injected/${input:toolInjected}.json",
             "env": {
                 "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/runtime/third/bin:${env:PATH}",
                 "LD_LIBRARY_PATH": "${workspaceFolder}/runtime/third/lib",
@@ -302,13 +302,13 @@
         {
             "id": "toolCall",
             "type": "promptString",
-            "description": "Tool module, tool name and its flags",
-            "default": "boba.tool.pg.tools pg_query --sql \"select 1\" --offset 0 --limit 10"
+            "description": "Plugin id and tool name",
+            "default": "pg pg_query"
         },
         {
             "id": "toolInjected",
             "type": "promptString",
-            "description": "Call config of the tool: file name in .vscode/injected without .json",
+            "description": "Call arguments of the tool as one JSON object: file name in .vscode/injected without .json",
             "default": "pg"
         }
     ]

@@ -12,14 +12,15 @@ from typing import ClassVar
 
 from boba.identity.context import CallContexts
 from boba.stand.refs import StandRefs
-from boba.tool.shell.tools import TOOLS, BashToolConfig
-from boba.toolkit.entry import ToolAddress, ToolArgv
-from boba.toolkit.facade import PayloadTool
+from boba.tool.shell.plugin import MANIFEST
+from boba.tool.shell.tools import BashToolConfig
+from boba.toolkit.entry import ToolArgv
 from boba.toolkit.launcher import CollectedCall, PayloadFailureError, ToolLauncher
+from boba.toolkit.manifest import ManifestBuilder, ToolDecl
 from boba.toolkit.protocol import ReplyError
 from boba.toolkit.result import ErrorResult, ShellResult
-from boba.toolrun.hosted import HostedTool
-from boba.toolrun.injected import InjectedConfig, StaticConfig
+from boba.toolrun.hosted import HostedTool, PluginSection
+from boba.toolrun.injected import InjectedConfig, StaticSection
 
 __all__ = ["ShellRun"]
 
@@ -27,8 +28,9 @@ __all__ = ["ShellRun"]
 class ShellRun:
     """Запуск команды bash-тулом через ToolLauncher стенда."""
 
-    MODULE: ClassVar[str] = "boba.tool.shell.tools"
-    """Модуль тела: зигота стенда грузит его, чтобы команды было кому исполнять."""
+    PLUGIN: ClassVar[str] = "boba.tool.shell.plugin:MANIFEST"
+    """Объявление bash-плагина: зигота стенда служит его инструмент всегда,
+    чтобы команды было кому исполнять."""
 
     CONTRACT: ClassVar[str] = "contract"
     """error_kind отказа стенда: bash-тул нарушил ожидаемый контракт."""
@@ -38,17 +40,17 @@ class ShellRun:
     )
 
     @classmethod
+    def decl(cls) -> ToolDecl:
+        """Объявление инструмента bash в манифесте его плагина."""
+        return ManifestBuilder().tool(MANIFEST.tools[0])
+
+    @classmethod
     def tool(cls, launcher: ToolLauncher, cfg: BashToolConfig = CONFIG) -> HostedTool:
         """Инструмент хоста bash поверх launcher'а: обёртка запуска и конфиг,
         как ставит загрузчик приложения."""
-        payload = TOOLS[0]
-        if not isinstance(payload, PayloadTool):
-            msg = f"bash TOOLS[0] is {type(payload).__name__}, PayloadTool expected"
-            raise PayloadFailureError(ErrorResult(message=msg, error_kind=cls.CONTRACT))
-
-        config = InjectedConfig(lambda name, annotation: cfg, StaticConfig())
-        stand = StandRefs(CallContexts()).tool_stand((config,))
-        (bridged,) = stand.launch([payload], launcher)
+        section = PluginSection(values=cfg.model_dump(mode="json"))
+        stand = StandRefs(CallContexts()).tool_stand((InjectedConfig(StaticSection()),))
+        (bridged,) = stand.launch([MANIFEST.tools[0]], launcher, section)
 
         return bridged
 
@@ -59,10 +61,8 @@ class ShellRun:
         command: str,
         cfg: BashToolConfig = CONFIG,
     ) -> ShellResult:
-        tool = TOOLS[0]
         rendered = ToolArgv.render(
-            ToolAddress.of(tool),
-            tool.args_schema,
+            cls.decl(),
             {"command": command, "cfg": cfg},
             input_counts={},
             output_counts={},

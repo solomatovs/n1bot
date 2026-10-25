@@ -72,17 +72,14 @@ class TestPgTools:
             raise AssertionError(f"names == self._NAMES, got {names}")
 
     def test_every_tool_takes_a_connection_parameter(self) -> None:
-        """Профиль подаёт хост: у каждого инструмента параметр с маркером."""
-        from boba.db.postgres.connection import PostgresConfig
-        from boba.toolkit.entry import ToolArgv
+        """Профиль подаёт хост: манифест называет параметр и вид соединения."""
+        from boba.toolkit.manifest import ManifestBuilder
 
+        builder = ManifestBuilder()
         for payload in PG_TOOLS:
-            fields = ToolArgv.connection_fields(payload.args_schema)
-            if list(fields) != ["connection"]:
-                raise AssertionError(f"{payload.name}: connection parameter is missing")
-
-            if fields["connection"] is not PostgresConfig:
-                raise AssertionError(f"{payload.name}: profile type must be declared")
+            connections = builder.tool(payload).connections
+            if connections != {"connection": "postgres"}:
+                raise AssertionError(f"{payload.name}: connections {connections}")
 
     def test_section_config_holds_limits_only(self) -> None:
         """Whitelist ушёл на хост: в секции остались только границы выдачи."""

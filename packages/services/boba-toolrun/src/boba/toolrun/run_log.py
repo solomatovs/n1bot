@@ -141,13 +141,14 @@ class ToolRunLogger(CallHooks[_CallScope]):
 
     @staticmethod
     def _not_logged_of(tool: HostedTool) -> frozenset[str]:
-        """Имена аргументов инструмента, помеченных в схеме NotLogged."""
+        """Имена аргументов инструмента, помеченных NotLogged в схеме хоста
+        либо пометкой манифеста у аргументов модели плагина."""
         names: list[str] = []
         for name, field in tool.args_schema.model_fields.items():
             if FieldMarks.not_logged(field):
                 names.append(name)
 
-        return frozenset(names)
+        return frozenset(names) | tool.inputs.not_logged()
 
     @classmethod
     def _log_start(

@@ -22,11 +22,11 @@ from typing import Any, ClassVar
 from uuid import uuid4
 
 import pytest
-from fake_channel_tool import ChannelConfig, fx_chatter
+from fake_channel_tool import ChannelConfig
+from fx_zygote import FxZygote
 from pydantic import SecretStr
 
 from boba.sandbox import SandboxProfile
-from boba.sandbox.guest import WarmupCall
 from boba.sandbox.zygote import ZygoteSpawner, ZygoteState
 from boba.stand.shell import ShellRun
 from boba.stand.zygote import (
@@ -38,7 +38,6 @@ from boba.stand.zygote import (
 )
 from boba.toolkit.chain import CallAmbient
 from boba.toolkit.channels import JournalChannel, ToolChannel
-from boba.toolkit.entry import ToolAddress, ToolArgv, ToolMain
 from boba.toolkit.launcher import CollectedCall, LauncherError
 from boba.toolkit.protocol import ReplyOk, ToolCommand
 from boba.toolkit.stream import (
@@ -59,13 +58,8 @@ needs_userns = pytest.mark.failif(
 
 pytestmark = [needs_sandbox, needs_userns]
 
-MODULE = "fake_channel_tool"
-"""Модуль инструментов стенда: его тела запускает зигота."""
-
-WARMUP: tuple[WarmupCall, ...] = (
-    WarmupCall(module=MODULE, hook="warm_cache", config={"greeting": "privet"}),
-)
-"""Прогрев объявлен хуком модуля: без конфига зигота не стартует."""
+FX = FxZygote()
+"""Фейковый плагин стенда: его тела запускает зигота."""
 
 CFG = ChannelConfig(token=SecretStr("defect-s3cret"))
 
@@ -147,12 +141,8 @@ def _profile(**overrides: Any) -> SandboxProfile:
 
 
 def _command(name: str, arguments: dict[str, Any]) -> ToolCommand:
-    """Команда модуля ровно как её строит обёртка запуска инструмента."""
-    address = ToolAddress(module=MODULE, name=name)
-    schema = ToolArgv.schema_of(ToolMain.toolset(fx_chatter)[0])
-    return ToolArgv.render(
-        address, schema, arguments, input_counts={}, output_counts={}
-    )
+    """Команда вызова ровно как её строит обёртка запуска инструмента."""
+    return FX.render(name, arguments)
 
 
 @pytest.fixture
@@ -176,7 +166,7 @@ class TestBodyOutputIsNotLost:
         self, zygote_stand: ZygoteStand, call_ambient: CallAmbient, section: str
     ) -> None:
         caller = zygote_stand.journaled(
-            section, _profile(), call_ambient, [MODULE], warmup_calls=WARMUP
+            section, _profile(), call_ambient, [FxZygote.REF], warmup=FxZygote.WARMUP
         )
 
         sinks = RecordingSinks()
@@ -212,7 +202,11 @@ class TestBodyLogLevel:
 
         try:
             caller = zygote_stand.journaled(
-                section, _profile(), call_ambient, [MODULE], warmup_calls=WARMUP
+                section,
+                _profile(),
+                call_ambient,
+                [FxZygote.REF],
+                warmup=FxZygote.WARMUP,
             )
             sinks = RecordingSinks()
             call_ambient.set_sinks(sinks)

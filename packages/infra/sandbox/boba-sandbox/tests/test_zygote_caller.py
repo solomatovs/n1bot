@@ -13,6 +13,7 @@ import subprocess
 import threading
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -25,14 +26,14 @@ from fake_channel_tool import (
     fx_merge,
     fx_probe_tmp,
     fx_stream,
-    fx_warm_state,
 )
+from fx_zygote import FxZygote
 from pydantic import SecretStr
 
 from boba.cancellation import ToolStopped, run_cancellation
 from boba.runtime.config import AppLayers
 from boba.sandbox import SandboxProfile
-from boba.sandbox.guest import WarmupCall
+from boba.sandbox.program import PluginCommand, ProgramExit
 from boba.sandbox.zygote import (
     ZygotePolicy,
     ZygoteSpawner,
@@ -51,9 +52,10 @@ from boba.stand.zygote import (
 )
 from boba.toolkit.chain import CallAmbient, ChannelFanOut, PipeTee
 from boba.toolkit.channels import JournalChannel, ToolChannel
-from boba.toolkit.entry import ToolAddress, ToolArgv, ToolMain
+from boba.toolkit.entry import ToolMain
 from boba.toolkit.frames import ToolFrame
 from boba.toolkit.launcher import CollectedCall, LauncherError
+from boba.toolkit.manifest import PluginManifest
 from boba.toolkit.protocol import CallGateMode, ReplyError, ReplyOk
 from boba.toolkit.stream import (
     ChannelSinks,
@@ -101,12 +103,7 @@ SLOW_START = ZygotePolicy(
 )
 """Корень образом: старт включает fuse2fs-монтирование rootfs.ext4."""
 
-WARMUP_CALLS = (
-    WarmupCall(
-        module="fake_channel_tool", hook="warm_cache", config={"greeting": "privet"}
-    ),
-)
-"""Конфиг прогрева фейкового модуля: без него зигота не стартует."""
+FX = FxZygote()
 
 
 def _bin_dirs() -> list[str]:
@@ -206,24 +203,12 @@ class RecordingSinks(ChannelSinks):
 
 def _command(text: str) -> Any:
     """ToolCommand для fx_echo — ровно как его строит обёртка запуска."""
-    address = ToolAddress(module="fake_channel_tool", name="fx_echo")
-    schema = ToolArgv.schema_of(FX_ECHO)
-    return ToolArgv.render(
-        address, schema, {"text": text, "cfg": CFG}, input_counts={}, output_counts={}
-    )
+    return FX.render("fx_echo", {"text": text, "cfg": CFG})
 
 
 def _stream_command(prefix: str) -> Any:
-    """ToolCommand потокового инструмента: io-параметр в конфиг не попадает."""
-    address = ToolAddress(module="fake_channel_tool", name="fx_stream")
-    schema = ToolArgv.schema_of(FX_STREAM)
-    return ToolArgv.render(
-        address,
-        schema,
-        {"prefix": prefix, "cfg": CFG},
-        input_counts={},
-        output_counts={},
-    )
+    """ToolCommand потокового инструмента: io-параметр в аргументы не попадает."""
+    return FX.render("fx_stream", {"prefix": prefix, "cfg": CFG})
 
 
 @pytest.fixture
@@ -232,15 +217,15 @@ def zygote(call_ambient: CallAmbient) -> Any:
 
     def make(profile: SandboxProfile) -> ZygoteToolCaller:
         spawner = ZygoteSpawner(
-            profile, ["fake_channel_tool"], FAST, AppLayers.interpreter()
+            profile, FX.program("python3"), FAST, AppLayers.interpreter()
         )
         supervisor = ZygoteSupervisor(
             "fx",
             spawner.spawn,
             FAST,
             stderr_tail_bytes=profile.host.stderr_tail_bytes,
-            warmup_calls=WARMUP_CALLS,
-            modules=["fake_channel_tool"],
+            warmup=FxZygote.WARMUP,
+            manifest=FX.digest(),
             root=spawner.root_label(),
         )
         supervisor.start()
@@ -276,7 +261,7 @@ class TestRunTool:
         if "zc-s3cret" in " ".join(command.argv):
             raise AssertionError(f"секрет в argv: {command.argv}")
 
-        if b"zc-s3cret" not in command.config:
+        if b"zc-s3cret" not in command.args:
             raise AssertionError("секрет не доехал конфигом вызова")
 
     def test_expected_failure_travels_as_reply_error(self, zygote: Any) -> None:
@@ -332,11 +317,7 @@ class TestRunTool:
         """Дети изолированы, вложенные userns закрыты (max_user_namespaces=0)."""
         caller = zygote(_profile())
 
-        address = ToolAddress(module="fake_channel_tool", name="fx_probe_tmp")
-        schema = ToolArgv.schema_of(FX_PROBE)
-        command = ToolArgv.render(
-            address, schema, {"marker": "solo"}, input_counts={}, output_counts={}
-        )
+        command = FX.render("fx_probe_tmp", {"marker": "solo"})
 
         outcome = CollectedCall.of(caller, command)
 
@@ -362,7 +343,7 @@ class TestSpawner:
         )
 
         spawner = ZygoteSpawner(
-            profile, ["fake_channel_tool"], FAST, AppLayers.interpreter()
+            profile, FX.program("python3"), FAST, AppLayers.interpreter()
         )
 
         if spawner.root_label() != f"image {ROOTFS_IMAGE}":
@@ -372,6 +353,52 @@ class TestSpawner:
         """Приватный /tmp ребёнка требует размера: нулевого tmp не бывает."""
         with pytest.raises(ValueError, match="tmp"):
             _profile(tmp=0)
+
+
+class TestOneShotCommand:
+    """Короткая команда в песочнице без зиготы: так сервер зовёт подкоманду
+    manifest программы плагина."""
+
+    SECTION: ClassVar[dict[str, str]] = {"token": "t0ken", "greeting": "privet"}
+
+    def test_manifest_comes_from_the_sandboxed_program(
+        self, zygote_stand: ZygoteStand
+    ) -> None:
+        done = zygote_stand.registry().run(
+            _profile(),
+            FAST,
+            FX.command("python3", PluginCommand.MANIFEST),
+            json.dumps(self.SECTION).encode(),
+        )
+
+        if done.returncode != ProgramExit.OK:
+            raise AssertionError(f"rc={done.returncode}: {done.stderr!r}")
+
+        manifest = PluginManifest.model_validate_json(done.stdout)
+        if manifest.id != "fx":
+            raise AssertionError(f"manifest.id={manifest.id!r}")
+
+        if manifest.digest() != FX.digest():
+            raise AssertionError("отпечаток манифеста из песочницы не тот, что у хоста")
+
+    def test_unfit_section_is_refused_with_the_reason(
+        self, zygote_stand: ZygoteStand
+    ) -> None:
+        done = zygote_stand.registry().run(
+            _profile(),
+            FAST,
+            FX.command("python3", PluginCommand.MANIFEST),
+            b"{}",
+        )
+
+        if done.returncode != ProgramExit.CONFIG:
+            raise AssertionError(f"rc={done.returncode}: {done.stderr!r}")
+
+        if b"[tool.fx] does not fit ChannelConfig" not in done.stderr:
+            raise AssertionError(f"причина отказа: {done.stderr!r}")
+
+        if done.stdout:
+            raise AssertionError(f"манифест напечатан при отказе: {done.stdout!r}")
 
 
 needs_delegation = SandboxCgroup().required()
@@ -419,10 +446,10 @@ class TestRegistry:
         profile = _profile()
 
         first = zygote_stand.registry().obtain(
-            "fx-reg", profile, ["fake_channel_tool"], FAST, warmup_calls=WARMUP_CALLS
+            FX.section(zygote_stand, "fx-reg", profile, FAST)
         )
         second = zygote_stand.registry().obtain(
-            "fx-reg", profile, ["fake_channel_tool"], FAST, warmup_calls=WARMUP_CALLS
+            FX.section(zygote_stand, "fx-reg", profile, FAST)
         )
 
         if first is not second:
@@ -437,7 +464,7 @@ class TestRegistry:
         profile = _profile()
 
         first = zygote_stand.registry().obtain(
-            "fx-reg", profile, ["fake_channel_tool"], FAST, warmup_calls=WARMUP_CALLS
+            FX.section(zygote_stand, "fx-reg", profile, FAST)
         )
         zygote_stand.stop()
 
@@ -445,7 +472,7 @@ class TestRegistry:
             raise AssertionError(f"state={first.state}")
 
         second = zygote_stand.registry().obtain(
-            "fx-reg", profile, ["fake_channel_tool"], FAST, warmup_calls=WARMUP_CALLS
+            FX.section(zygote_stand, "fx-reg", profile, FAST)
         )
 
         if second is first:
@@ -465,14 +492,7 @@ class TestWarmup:
         zygote_stand.stop()
 
     def _call_warm_state(self, caller: ZygoteToolCaller) -> str:
-        address = ToolAddress(module="fake_channel_tool", name="fx_warm_state")
-        schema = ToolArgv.schema_of(
-            next(t for t in ToolMain.toolset(fx_warm_state) if t)
-        )
-        outcome = CollectedCall.of(
-            caller,
-            ToolArgv.render(address, schema, {}, input_counts={}, output_counts={}),
-        )
+        outcome = CollectedCall.of(caller, FX.render("fx_warm_state", {}))
 
         if not isinstance(outcome.reply, ReplyOk):
             raise AssertionError(f"reply={outcome.reply}")
@@ -483,27 +503,22 @@ class TestWarmup:
         self, zygote_stand: ZygoteStand
     ) -> None:
         profile = _profile()
-        supervisor = zygote_stand.registry().obtain(
-            "fx-warm",
-            profile,
-            ["fake_channel_tool"],
-            FAST,
-            warmup_calls=WARMUP_CALLS,
-        )
-        caller = ZygoteToolCaller("fx-warm", supervisor, profile, CallAmbient())
+        section = FX.section(zygote_stand, "fx-warm", profile, FAST)
+        supervisor = zygote_stand.registry().obtain(section)
+        caller = ZygoteToolCaller("fx-warm", supervisor, section.profile, CallAmbient())
 
         state = self._call_warm_state(caller)
         if state != "warmed:privet":
             raise AssertionError(f"кэш прогрева не унаследован: {state!r}")
 
     def test_missing_config_fails_the_start(self, zygote_stand: ZygoteStand) -> None:
-        """Молчаливой деградации нет: без конфига хука зигота не поднимается."""
+        """Молчаливой деградации нет: секция без ключей прогрева зиготу не
+        поднимает."""
         profile = _profile()
+        section = FX.section(zygote_stand, "fx-plain", profile, FAST, {})
 
         with pytest.raises(LauncherError, match="not ready"):
-            zygote_stand.registry().obtain(
-                "fx-plain", profile, ["fake_channel_tool"], FAST
-            )
+            zygote_stand.registry().obtain(section)
 
 
 def _mkfs_template(tmp_path: Path) -> str:
@@ -558,11 +573,14 @@ class TestWorkspaceImages:
         self, zygote_stand: ZygoteStand, tmp_path: Path, user_id: str
     ) -> ZygoteToolCaller:
         profile = _image_profile(tmp_path)
-        supervisor = zygote_stand.registry().obtain(
-            "fx-ws", profile, ["fake_channel_tool"], FAST, warmup_calls=WARMUP_CALLS
-        )
+        section = FX.section(zygote_stand, "fx-ws", profile, FAST)
+        supervisor = zygote_stand.registry().obtain(section)
         return ZygoteToolCaller(
-            "fx-ws", supervisor, profile, CallAmbient(), lambda: {"user_id": user_id}
+            "fx-ws",
+            supervisor,
+            section.profile,
+            CallAmbient(),
+            lambda: {"user_id": user_id},
         )
 
     def _workspace_listing(self, caller: ZygoteToolCaller) -> str:
@@ -663,11 +681,10 @@ class TestImageRootfs:
     def _on_profile(
         self, zygote_stand: ZygoteStand, name: str, profile: SandboxProfile
     ) -> ZygoteToolCaller:
-        supervisor = zygote_stand.registry().obtain(
-            name, profile, ["fake_channel_tool"], SLOW_START, warmup_calls=WARMUP_CALLS
-        )
+        section = FX.section(zygote_stand, name, profile, SLOW_START)
+        supervisor = zygote_stand.registry().obtain(section)
         return ZygoteToolCaller(
-            name, supervisor, profile, CallAmbient(), lambda: {"user_id": "7"}
+            name, supervisor, section.profile, CallAmbient(), lambda: {"user_id": "7"}
         )
 
     FSTYPE_SEPARATOR: ClassVar[str] = " - "
@@ -710,11 +727,7 @@ class TestImageRootfs:
     ) -> None:
         caller = self._caller(zygote_stand, "fx-img-iso", tmp_path)
 
-        address = ToolAddress(module="fake_channel_tool", name="fx_probe_tmp")
-        schema = ToolArgv.schema_of(FX_PROBE)
-        command = ToolArgv.render(
-            address, schema, {"marker": "img.txt"}, input_counts={}, output_counts={}
-        )
+        command = FX.render("fx_probe_tmp", {"marker": "img.txt"})
 
         outcome = CollectedCall.of(caller, command)
         if not isinstance(outcome.reply, ReplyOk):
@@ -762,9 +775,14 @@ class TestShell:
         self, zygote_stand: ZygoteStand, tmp_path: Path, user_id: str = "7"
     ) -> ZygoteToolCaller:
         profile = _image_profile(tmp_path, timeout_sec=5)
-        supervisor = zygote_stand.registry().obtain("fx-sh", profile, (), FAST)
+        section = replace(zygote_stand.section("fx-sh", profile), policy=FAST)
+        supervisor = zygote_stand.registry().obtain(section)
         return ZygoteToolCaller(
-            "fx-sh", supervisor, profile, CallAmbient(), lambda: {"user_id": user_id}
+            "fx-sh",
+            supervisor,
+            section.profile,
+            CallAmbient(),
+            lambda: {"user_id": user_id},
         )
 
     def test_stdout_stderr_closed_stdin_and_exit_code(
@@ -849,15 +867,7 @@ class TestManyInputs:
     и доходят до тела своими дескрипторами."""
 
     def _merge(self, inputs: int) -> Any:
-        address = ToolAddress(module="fake_channel_tool", name="fx_merge")
-        schema = ToolArgv.schema_of(FX_MERGE)
-        return ToolArgv.render(
-            address,
-            schema,
-            {"cfg": CFG},
-            input_counts={"feeds": inputs},
-            output_counts={},
-        )
+        return FX.render("fx_merge", {"cfg": CFG}, input_counts={"feeds": inputs})
 
     def test_each_input_reaches_its_port(self, zygote: Any) -> None:
         caller = zygote(_profile())
@@ -1046,14 +1056,7 @@ class TestGateInSandbox:
     """Барьер группы через зиготу: пайпы gate/verdict доезжают до тела."""
 
     def _gated(self, gate: CallGateMode) -> Any:
-        address = ToolAddress(module="fake_channel_tool", name="fx_gated")
-        command = ToolArgv.render(
-            address,
-            ToolArgv.schema_of(FX_GATED),
-            {"cfg": CFG},
-            input_counts={},
-            output_counts={},
-        )
+        command = FX.render("fx_gated", {"cfg": CFG})
         return command.model_copy(update={"gate": gate})
 
     def test_auto_gate_lets_a_lone_call_commit(self, zygote: Any) -> None:

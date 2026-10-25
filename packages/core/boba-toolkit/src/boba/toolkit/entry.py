@@ -1,18 +1,18 @@
-"""Гостевая сторона вызова: CLI модуля инструментов и разбор его команды.
+"""Гостевая сторона вызова: вход тела инструмента и разбор его аргументов.
 
-Каждый модуль инструментов — обычная программа: `python -m <модуль> <имя>
---флаги`. Одну и ту же команду исполняет launcher приложения и человек в
-терминале; здесь живёт всё, что превращает команду в вызов тела: разбор
-argv в kwargs (ToolArgv), каналы вызова из аргументов (CallWiring), сам
-вход run (ToolMain). Хост передаёт каналы номерами дескрипторов в флагах
-(--injected-fd, --fd-result, --fd-frames, --fd-in на каждый вход); человек
-передаёт конфиг файлом --injected и читает результат из stdout. Входы
-несут только прикладные кадры и при ручном запуске пусты.
+Вызов инструмента — подкоманда `call <имя>` программы плагина: её
+исполняет лончер приложения и человек в терминале. Здесь живёт всё, что
+превращает вызов в исполнение тела: аргументы одним JSON-объектом
+(ToolArgv), каналы вызова из флагов (CallWiring), сам вход run (ToolMain).
+Хост передаёт аргументы каналом --args-fd, а каналы — номерами
+дескрипторов во флагах (--fd-result, --fd-in на каждый вход и т. д.);
+человек передаёт аргументы файлом --args и читает результат из stdout.
+Входы несут только прикладные кадры и при ручном запуске пусты.
 
 Ошибки:
-ArgumentTooLargeError — значение аргумента не помещается в argv (MAX_ARG_STRLEN).
-ToolEntryError — нарушен контракт запуска: имени нет в TOOLS, флаги или конфиг
-    не прошли валидацию, файл --injected не читается; kind из InvokeErrorKind.
+ToolEntryError — нарушен контракт запуска: имени нет среди инструментов,
+    флаги или аргументы не прошли валидацию, файл --args не читается; kind
+    из InvokeErrorKind.
 PayloadFailureError — исполненное тело подняло исключение; оно уже упаковано
     в результат-ошибку (FailurePacker).
 """
@@ -20,7 +20,6 @@ PayloadFailureError — исполненное тело подняло искл�
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
 import logging
 import os
@@ -29,26 +28,19 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import suppress
 from enum import IntEnum, StrEnum
 from pathlib import Path
-from types import NoneType, UnionType
-from typing import (
-    Any,
-    ClassVar,
-    Self,
-    Union,
-    get_args,
-    get_origin,
-)
+from typing import Any, ClassVar, Self
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model
+from pydantic_core import to_jsonable_python
 
 from boba.core.secrets import SecretReveal
 from boba.core.validation import ValidationText
-from boba.toolkit.calls import FieldMarks
 from boba.toolkit.closing import ProcessClosers
 from boba.toolkit.facade import PayloadTool, ToolFacadeError
 from boba.toolkit.failure import FailurePacker, InvokeErrorKind
 from boba.toolkit.frames import ToolIo
 from boba.toolkit.launcher import PayloadFailureError
+from boba.toolkit.manifest import InjectedRole, ToolDecl
 from boba.toolkit.ports import (
     PortDecl,
     PortDeclarationError,
@@ -69,13 +61,11 @@ from boba.toolkit.result import FailureResult, ToolResultBase
 from boba.toolkit.timing import Elapsed
 
 __all__ = [
-    "ArgumentTooLargeError",
     "CallWiring",
     "EntryFlag",
     "InputWire",
     "OutputWire",
     "PortWire",
-    "ToolAddress",
     "ToolArgv",
     "ToolEntryError",
     "ToolMain",
@@ -83,18 +73,6 @@ __all__ = [
 
 
 logger = logging.getLogger(__name__)
-
-
-class ArgumentTooLargeError(Exception):
-    """Значение аргумента не помещается в один элемент argv."""
-
-    def __init__(self, param: str, size: int, limit: int) -> None:
-        msg = (
-            f"argument {param!r} encoded to {size} bytes, the argv value "
-            f"limit is {limit} bytes; pass large values by a channel instead"
-        )
-        super().__init__(msg)
-        self.param = param
 
 
 class ToolEntryError(Exception):
@@ -106,13 +84,11 @@ class ToolEntryError(Exception):
 
 
 class EntryFlag(StrEnum):
-    """Служебные флаги команды модуля инструментов — каналы вызова, конфиг,
-    справка; с флагами параметров тела (их порождает схема инструмента) не
-    пересекаются. На эти же имена ссылаются лончеры, дописывая флаги каналов
-    в команду."""
+    """Флаги подкоманды call — аргументы, каналы вызова, справка. На эти же
+    имена ссылаются лончеры, дописывая флаги каналов в команду."""
 
-    INJECTED = "--injected"
-    INJECTED_FD = "--injected-fd"
+    ARGS = "--args"
+    ARGS_FD = "--args-fd"
     FD_RESULT = "--fd-result"
     FD_IN = "--fd-in"
     FD_OUT = "--fd-out"
@@ -176,7 +152,7 @@ class OutputWire(PortWire):
 
 
 class CallWiring(BaseModel):
-    """Каналы вызова, разобранные из argv: номера дескрипторов конфига,
+    """Каналы вызова, разобранные из argv: номера дескрипторов аргументов,
     конверта, входов и выходов, которые лончер выдал телу.
 
     Сами дескрипторы достаются процессу наследованием, а номера едут
@@ -187,7 +163,7 @@ class CallWiring(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    injected_fd: int = -1
+    args_fd: int = -1
     result_fd: int = -1
     gate_fd: int = -1
     verdict_fd: int = -1
@@ -201,7 +177,7 @@ class CallWiring(BaseModel):
         return self.result_fd >= 0
 
     FLAGS: ClassVar[Mapping[str, str]] = {
-        EntryFlag.INJECTED_FD.value: "injected_fd",
+        EntryFlag.ARGS_FD.value: "args_fd",
         EntryFlag.FD_RESULT.value: "result_fd",
         EntryFlag.FD_GATE.value: "gate_fd",
         EntryFlag.FD_VERDICT.value: "verdict_fd",
@@ -248,98 +224,57 @@ class CallWiring(BaseModel):
         return arguments.pop(index)
 
 
-class ToolAddress(BaseModel):
-    """Адрес инструмента для командной строки: модуль тела и имя в TOOLS —
-    из них собирается префикс команды `python -m <модуль> <имя>`.
-
-    Захватывается при постановке обёртки запуска, пока тело не подменено;
-    вычислять на вызове нельзя — __module__ обёртки укажет не туда.
-    """
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    module: str = Field(min_length=1)
-    name: str = Field(min_length=1)
-
-    @classmethod
-    def of(cls, tool: PayloadTool) -> ToolAddress:
-        body = tool.coroutine or tool.func
-        if body is None:
-            msg = (
-                f"tool {tool.name!r} has neither coroutine nor func: "
-                "its module path for the command line cannot be resolved"
-            )
-            raise ToolEntryError(InvokeErrorKind.INTERNAL_ERROR, msg)
-
-        return cls(module=body.__module__, name=tool.name)
-
-    PYTHON: ClassVar[str] = "python3"
-    """Интерпретатор по PATH окружения запуска: python песочницы — не python
-    приложения, абсолютный sys.executable внутрь не переносится."""
-
-    def argv_head(self) -> list[str]:
-        return [self.PYTHON, "-m", self.module, self.name]
-
-
 class ToolArgv:
-    """Переводит kwargs вызова в argv команды и обратно по args_schema
-    инструмента — одна логика у обёртки запуска (хост) и CLI (гость).
+    """Аргументы вызова через границу процесса: один JSON-объект, ключи —
+    имена параметров тела.
 
-    Правило одно: параметр, видимый LLM, — флаг argv; параметр с injected-
-    метадатой — ключ в JSON конфига, который едет телу каналом --injected-fd.
-    Текстовые значения едут как есть, остальные — JSON'ом в значении флага.
-
-    Особый случай — порты Inbound/Outbound (boba.toolkit.ports): это каналы
-    вызова, а не значения. Хост их не сериализует, гость строит и
-    подставляет свои объекты.
+    Хост собирает объект по объявлению инструмента из манифеста (render):
+    аргументы модели как прислала модель, значения служебных параметров —
+    секция конфига, контекст вызова, профили соединений. Гость разбирает
+    объект по модели вызова тела (parse) и проверяет каждое значение её
+    полем: аргументы модели хост не проверяет. Порты Inbound/Outbound,
+    барьер группы и отчёты о ходе работы — каналы вызова, а не значения:
+    гость строит их сам.
     """
-
-    MAX_VALUE_BYTES: ClassVar[int] = 131_071
-    """MAX_ARG_STRLEN минус завершающий нуль; ровно 131072 даёт E2BIG."""
 
     @classmethod
     def render(
         cls,
-        address: ToolAddress,
-        schema: type[BaseModel],
+        decl: ToolDecl,
         kwargs: Mapping[str, object],
         input_counts: Mapping[str, int],
         output_counts: Mapping[str, int],
     ) -> ToolCommand:
-        """LLM-аргументы во флаги, injected-параметры в конфиг вызова.
+        """Аргументы вызова и каналы портов по объявлению decl.
 
         input_counts и output_counts — сколько каналов у портов вызова по
         имени порта. Одиночный порт без записи получает ровно один канал,
         порт-список без записи — ни одного.
         """
-        argv = address.argv_head()
+        payload: dict[str, Any] = {}
+        for name in decl.properties():
+            if name not in kwargs:
+                continue
 
-        config_payload: dict[str, Any] = {}
-        for name, field in schema.model_fields.items():
-            if cls.is_io(field.annotation):
+            payload[name] = to_jsonable_python(kwargs[name])
+
+        for name, role in decl.injected.items():
+            if role is InjectedRole.PROGRESS:
                 continue
 
             if name not in kwargs:
                 continue
 
-            value = kwargs[name]
-            if FieldMarks.injected(field):
-                config_payload[name] = cls.reveal(field.annotation, value)
+            payload[name] = cls.reveal(kwargs[name])
+
+        for name in decl.connections:
+            if name not in kwargs:
                 continue
 
-            if FieldMarks.connection(field):
-                config_payload[name] = cls.reveal(field.annotation, value)
-                continue
+            payload[name] = cls.reveal(kwargs[name])
 
-            if value is None:
-                continue
-
-            encoded = cls._encode(name, field.annotation, value)
-            argv.append(cls.flag_of(name))
-            argv.append(encoded)
-
-        config = json.dumps(config_payload, ensure_ascii=False).encode("utf-8")
-        spec = StreamSpec.of_schema(schema)
+        args = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        spec = decl.stream
 
         inputs: list[CallInputSpec] = []
         for port, raw_port in cls._channels(spec, spec.inbound(), input_counts):
@@ -350,8 +285,8 @@ class ToolArgv:
             outputs.append(CallOutputSpec(port=port, raw=raw_port))
 
         return ToolCommand(
-            argv=tuple(argv),
-            config=config,
+            argv=(decl.name,),
+            args=args,
             inputs=tuple(inputs),
             outputs=tuple(outputs),
         )
@@ -406,40 +341,74 @@ class ToolArgv:
         cls,
         tool: PayloadTool,
         argv: Sequence[str],
-        config: bytes,
+        args: bytes,
     ) -> dict[str, Any]:
-        """Обратный разбор: флаги и конфиг вызова в kwargs тела."""
-        schema = cls.schema_of(tool)
-        by_flag: dict[str, str] = {}
-        for name in schema.model_fields:
-            by_flag[cls.flag_of(name)] = name
+        """Обратный разбор: JSON аргументов вызова в kwargs тела, каждое
+        значение проверено полем модели вызова; отсутствующее необязательное
+        поле получает свой дефолт, лишний ключ — отказ."""
+        if argv:
+            msg = (
+                f"tool {tool.name!r} takes its arguments as one JSON object by "
+                f"{EntryFlag.ARGS_FD} or {EntryFlag.ARGS}, got extra argv "
+                f"{list(argv)[:3]}"
+            )
+            raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg)
+
+        payload = cls._payload(args)
+        model = cls._args_model(tool)
+
+        try:
+            call = model.model_validate(payload)
+        except ValidationError as exc:
+            # значения не пересказываем: в аргументах едут пароли и токены
+            msg = (
+                f"tool {tool.name!r}: arguments do not match its declaration: "
+                f"{ValidationText.of(exc)}"
+            )
+            raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg) from None
 
         kwargs: dict[str, Any] = {}
-        pending = list(argv)
-        while pending:
-            flag = pending.pop(0)
-            name = by_flag.get(flag)
-            if name is None:
-                known = ", ".join(sorted(by_flag))
-                msg = (
-                    f"unknown flag {flag!r} for tool {tool.name!r}; "
-                    f"known flags: {known}"
-                )
-                raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg)
+        for name in model.model_fields:
+            kwargs[name] = getattr(call, name)
 
-            if not pending:
-                msg = (
-                    f"flag {flag!r} of tool {tool.name!r} expects a value, "
-                    "got the end of argv"
-                )
-                raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg)
-
-            raw = pending.pop(0)
-            field = schema.model_fields[name]
-            kwargs[name] = cls._decode(name, field.annotation, raw)
-
-        kwargs.update(cls._parse_config(schema, config))
         return kwargs
+
+    @classmethod
+    def _args_model(cls, tool: PayloadTool) -> type[BaseModel]:
+        """Модель аргументов вызова: поля тела без каналов, лишний ключ — отказ."""
+        fields: dict[str, Any] = {}
+        for name, field in cls.schema_of(tool).model_fields.items():
+            if cls.is_io(field.annotation):
+                continue
+
+            fields[name] = (field.annotation, field)
+
+        return create_model(
+            f"{tool.name}_args",
+            __config__=ConfigDict(extra="forbid", arbitrary_types_allowed=True),
+            **fields,
+        )
+
+    @staticmethod
+    def _payload(args: bytes) -> Mapping[str, object]:
+        """JSON-объект аргументов; пустой канал — вызов без аргументов."""
+        if not args:
+            return {}
+
+        try:
+            payload = json.loads(args.decode("utf-8"))
+        except ValueError as exc:
+            msg = f"call arguments ({len(args)} bytes) are not valid JSON: {exc}"
+            raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg) from exc
+
+        if not isinstance(payload, dict):
+            msg = (
+                "call arguments must be a JSON object keyed by parameter names, "
+                f"got {type(payload).__name__}"
+            )
+            raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg)
+
+        return payload
 
     @classmethod
     def schema_of(cls, tool: PayloadTool) -> type[BaseModel]:
@@ -452,32 +421,6 @@ class ToolArgv:
             raise ToolEntryError(InvokeErrorKind.INTERNAL_ERROR, msg)
 
         return schema
-
-    @classmethod
-    def injected_fields(cls, schema: type[BaseModel]) -> dict[str, Any]:
-        """Injected-параметры схемы: имя -> аннотация. Порты не в счёт."""
-        fields: dict[str, Any] = {}
-        for name, field in schema.model_fields.items():
-            if cls.is_io(field.annotation):
-                continue
-
-            if FieldMarks.injected(field):
-                fields[name] = field.annotation
-
-        return fields
-
-    @classmethod
-    def connection_fields(cls, schema: type[BaseModel]) -> dict[str, Any]:
-        """Параметры-соединения схемы: имя -> аннотация профиля."""
-        fields: dict[str, Any] = {}
-        for name, field in schema.model_fields.items():
-            if cls.is_io(field.annotation):
-                continue
-
-            if FieldMarks.connection(field):
-                fields[name] = field.annotation
-
-        return fields
 
     @classmethod
     def port_fields(cls, schema: type[BaseModel]) -> dict[str, Any]:
@@ -522,82 +465,8 @@ class ToolArgv:
         return tuple(names)
 
     @staticmethod
-    def flag_of(param: str) -> str:
-        return "--" + param.replace("_", "-")
-
-    @classmethod
-    def _encode(cls, name: str, annotation: Any, value: object) -> str:
-        if cls._texty(annotation):
-            encoded = str(value)
-        else:
-            encoded = TypeAdapter(annotation).dump_json(value).decode("utf-8")
-
-        size = len(encoded.encode("utf-8"))
-        if size > cls.MAX_VALUE_BYTES:
-            raise ArgumentTooLargeError(name, size, cls.MAX_VALUE_BYTES)
-
-        return encoded
-
-    @classmethod
-    def _decode(cls, name: str, annotation: Any, raw: str) -> Any:
-        try:
-            if cls._texty(annotation):
-                return TypeAdapter(annotation).validate_python(raw)
-            return TypeAdapter(annotation).validate_json(raw)
-        except ValidationError as exc:
-            # значение не пересказываем: в cfg инструмента едут пароли и токены,
-            # а traceback печатает причину сам, мимо FailureText
-            detail = ValidationText.of(exc)
-            msg = (
-                f"argument {name!r} does not match its declared type "
-                f"{annotation!r}: {detail}"
-            )
-            raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg) from None
-        except ValueError as exc:
-            msg = f"argument {name!r} could not be decoded as {annotation!r}: {exc}"
-            raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg) from exc
-
-    @staticmethod
-    def _texty(annotation: Any) -> bool:
-        """Строковый параметр: значение едет как есть, без JSON-кавычек."""
-        if annotation is str:
-            return True
-
-        if get_origin(annotation) in (Union, UnionType):
-            return set(get_args(annotation)) == {str, NoneType}
-
-        return False
-
-    @staticmethod
-    def section_of(name: str, annotation: Any) -> str:
-        """Секция toml, из которой собирается injected-модель параметра."""
-        section = getattr(annotation, "SECTION", None)
-        if not isinstance(section, str):
-            msg = (
-                f"injected parameter {name!r}: model {annotation!r} must define "
-                f"SECTION as the toml section name, got {section!r}"
-            )
-            raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg)
-
-        if not isinstance(annotation, type):
-            msg = (
-                f"injected parameter {name!r} must be annotated with a pydantic "
-                f"model class, got {annotation!r}"
-            )
-            raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg)
-
-        if not issubclass(annotation, BaseModel):
-            msg = (
-                f"injected parameter {name!r} must subclass pydantic BaseModel, "
-                f"got {annotation.__name__}"
-            )
-            raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg)
-
-        return section
-
-    @staticmethod
-    def reveal(annotation: Any, value: object) -> Any:
-        """JSON-совместимый дамп значения канала конфига с раскрытыми секретами.
+    def reveal(value: object) -> Any:
+        """JSON-совместимый дамп служебного значения с раскрытыми секретами.
 
         Канал доверенный: по нему едут секции конфига и профили соединений,
         и секреты в них нужны телу живыми.
@@ -609,51 +478,7 @@ class ToolArgv:
         if isinstance(value, BaseModel):
             return SecretReveal.dumped(value)
 
-        return TypeAdapter(annotation).dump_python(value, mode="json")
-
-    @classmethod
-    def _parse_config(cls, schema: type[BaseModel], config: bytes) -> dict[str, Any]:
-        """Ключи канала конфига в kwargs: injected-модели и профили соединений."""
-        expected = dict(cls.injected_fields(schema))
-        expected.update(cls.connection_fields(schema))
-        if not expected:
-            return {}
-
-        payload: object = {}
-        if config:
-            try:
-                payload = json.loads(config.decode("utf-8"))
-            except ValueError as exc:
-                msg = f"call config ({len(config)} bytes) is not valid JSON: {exc}"
-                raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg) from exc
-
-        if not isinstance(payload, dict):
-            msg = (
-                "call config must be a JSON object keyed by parameter names, "
-                f"got {type(payload).__name__}"
-            )
-            raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg)
-
-        kwargs: dict[str, Any] = {}
-        for name, annotation in expected.items():
-            if name not in payload:
-                present = ", ".join(sorted(payload))
-                msg = (
-                    f"parameter {name!r} is missing from the call config; "
-                    f"config keys: [{present}]"
-                )
-                raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg)
-
-            try:
-                kwargs[name] = TypeAdapter(annotation).validate_python(payload[name])
-            except ValidationError as exc:
-                msg = (
-                    f"call config for parameter {name!r} does not match "
-                    f"{annotation!r}: {exc}"
-                )
-                raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg) from exc
-
-        return kwargs
+        return to_jsonable_python(value)
 
 
 class ToolMain:
@@ -661,8 +486,8 @@ class ToolMain:
 
     Конверт пишется в дескриптор из --fd-result, когда он передан, — так
     зовёт launcher; без него content печатается в stdout — так зовёт
-    человек. Injected-конфиг приезжает каналом --injected-fd (лончер) либо
-    файлом --injected (человек); сборка его из toml приложения — дело CLI
+    человек. Аргументы приезжают JSON-объектом каналом --args-fd (лончер)
+    либо файлом --args (человек); сборка служебных значений — дело хоста
     над модулем. Тело, объявившее порты Inbound/Outbound (boba.toolkit.ports),
     получает их готовыми: у запуска лончером они привязаны к каналам вызова,
     у человека отвязаны.
@@ -753,11 +578,11 @@ class ToolMain:
         if want_artifact:
             arguments.remove(EntryFlag.ARTIFACT)
 
-        injected_path = cls._pop_path(arguments, EntryFlag.INJECTED)
+        args_path = cls._pop_path(arguments, EntryFlag.ARGS)
 
-        config_read = Elapsed()
-        config = cls._config_source(tool, wiring, injected_path)
-        kwargs = ToolArgv.parse(tool, arguments, config)
+        args_read = Elapsed()
+        args = cls._args_source(wiring, args_path)
+        kwargs = ToolArgv.parse(tool, arguments, args)
         kwargs.update(cls._build_ports(tool, wiring))
         kwargs.update(cls._build_groups(tool, wiring))
         progress = ToolProgress(wiring.progress_fd)
@@ -765,10 +590,10 @@ class ToolMain:
             kwargs[name] = progress
 
         logger.info(
-            "tool[%s]: args ready in %dms (config %d bytes)",
+            "tool[%s]: args ready in %dms (%d bytes)",
             tool.name,
-            config_read.ms(),
-            len(config),
+            args_read.ms(),
+            len(args),
         )
 
         try:
@@ -936,37 +761,23 @@ class ToolMain:
         return owned
 
     @classmethod
-    def _config_source(
-        cls, tool: PayloadTool, wiring: CallWiring, injected_path: str | None
-    ) -> bytes:
-        """Injected-конфиг: канал --injected-fd лончера либо файл --injected.
+    def _args_source(cls, wiring: CallWiring, args_path: str | None) -> bytes:
+        """Аргументы вызова: канал --args-fd лончера либо файл --args; без
+        обоих — вызов без аргументов. stdin аргументов не несёт никогда — он
+        принадлежит прикладным кадрам входа."""
+        if args_path is not None:
+            return cls._args_from_file(args_path)
 
-        Источник однозначен по режиму запуска; stdin конфиг не несёт никогда
-        — он принадлежит прикладным кадрам входа.
-        """
-        if injected_path is not None:
-            return cls._config_from_file(injected_path)
+        if wiring.args_fd >= 0:
+            return cls._args_from_fd(wiring.args_fd)
 
-        if wiring.injected_fd >= 0:
-            return cls._config_from_fd(wiring.injected_fd)
-
-        schema = ToolArgv.schema_of(tool)
-        if not ToolArgv.injected_fields(schema):
-            if not ToolArgv.connection_fields(schema):
-                return b"{}"
-
-        msg = (
-            f"tool {tool.name!r} needs an injected config and none was given: "
-            f"the launcher passes {EntryFlag.INJECTED_FD} <fd>, a human passes "
-            f"{EntryFlag.INJECTED} <path>"
-        )
-        raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg)
+        return b""
 
     READ_BYTES: ClassVar[int] = 65536
 
     @classmethod
-    def _config_from_fd(cls, fd: int) -> bytes:
-        """Канал конфига от лончера: читается до EOF и закрывается."""
+    def _args_from_fd(cls, fd: int) -> bytes:
+        """Канал аргументов от лончера: читается до EOF и закрывается."""
         chunks: list[bytes] = []
 
         try:
@@ -977,7 +788,7 @@ class ToolMain:
 
                 chunks.append(chunk)
         except OSError as exc:
-            msg = f"reading injected config from fd {fd} failed: {exc}"
+            msg = f"reading call arguments from fd {fd} failed: {exc}"
             raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg) from exc
         finally:
             with suppress(OSError):
@@ -986,12 +797,12 @@ class ToolMain:
         return b"".join(chunks)
 
     @staticmethod
-    def _config_from_file(path: str) -> bytes:
-        """Файл с тем же JSON, что лончер шлёт каналом конфига."""
+    def _args_from_file(path: str) -> bytes:
+        """Файл с тем же JSON, что лончер шлёт каналом аргументов."""
         try:
             return Path(path).read_bytes()
         except OSError as exc:
-            msg = f"reading injected config file {path!r} failed: {exc}"
+            msg = f"reading call arguments file {path!r} failed: {exc}"
             raise ToolEntryError(InvokeErrorKind.INVALID_REQUEST, msg) from exc
 
     @classmethod
@@ -1055,25 +866,21 @@ class ToolMain:
 
     @classmethod
     def _tool_help(cls, tool: PayloadTool) -> str:
+        """Первая строка описания и параметры тела: ключи JSON аргументов."""
         schema = ToolArgv.schema_of(tool)
 
         lines: list[str] = []
-        body = tool.coroutine or tool.func
-        if body is not None:
-            doc = inspect.getdoc(body)
-            if doc:
-                lines.append(doc.splitlines()[0])
-
-        hidden = dict(ToolArgv.injected_fields(schema))
-        hidden.update(ToolArgv.connection_fields(schema))
+        first = tool.description.splitlines()
+        if first:
+            lines.append(first[0])
 
         for name, field in schema.model_fields.items():
-            if name in hidden:
+            if ToolArgv.is_io(field.annotation):
                 continue
 
             description = field.description or ""
-            lines.append(f"  {ToolArgv.flag_of(name)} {description}".rstrip())
+            lines.append(f"  {name} {description}".rstrip())
 
-        injected_help = "call config as JSON: injected sections and connections"
-        lines.append(f"  {EntryFlag.INJECTED} PATH  {injected_help}")
+        args_help = "call arguments as one JSON object keyed by the names above"
+        lines.append(f"  {EntryFlag.ARGS} PATH  {args_help}")
         return "\n".join(lines)

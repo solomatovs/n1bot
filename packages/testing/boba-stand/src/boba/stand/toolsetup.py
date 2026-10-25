@@ -18,15 +18,17 @@ from boba.identity.context import CallContexts
 from boba.kerberos import KeytabAuth
 from boba.krb import KeytabCredentials, ServiceTicketIssuer
 from boba.runtime.launchers import ZygoteLaunchers
+from boba.sandbox.program import PluginEntry
 from boba.sandbox.zygote import ZygotePolicy, ZygoteToolCaller
 from boba.stand.refs import StandRefs
-from boba.stand.sandbox import section_profile
+from boba.stand.sandbox import plugin_launch
+from boba.stand.toolstand import ToolStand
 from boba.stand.zygote import ZygoteStand
 from boba.tool.pg.tools import PgToolConfig
 from boba.tool.web.tools import WebToolsConfig
-from boba.toolkit.chain import CallAmbient
 from boba.toolkit.facade import PayloadTool
 from boba.toolkit.launcher import ToolLauncher
+from boba.toolrun.hosted import PluginSection
 from boba.toolrun.injected import ParamSource
 from boba.transport.http.connection import HttpConnection
 
@@ -100,22 +102,16 @@ class ToolSetup:
         return copied
 
     @staticmethod
-    def caller(
-        zygote_stand: ZygoteStand, raw: Any, section: str, modules: Sequence[str] = ()
-    ) -> ZygoteToolCaller:
-        """Зигота секции конфига: тот же путь запуска, что в приложении."""
+    def caller(zygote_stand: ZygoteStand, raw: Any, section: str) -> ZygoteToolCaller:
+        """Зигота плагина section из конфига: профиль и прогрев — как в
+        приложении, тело — объявление плагина рядом с bash-тулом стенда."""
         raw = ToolSetup.sandbox_raw(raw)
-        connection = section_profile(raw, section)
+        launch = plugin_launch(raw, section)
+        profile = ZygoteLaunchers(raw).profile_of(launch)
+        refs = [PluginEntry().ref(section)]
 
-        supervisor = zygote_stand.registry().obtain(
-            section,
-            connection,
-            modules,
-            ZYGOTE,
-            warmup_calls=ZygoteLaunchers.warmup_configs(section, modules, raw),
-        )
-        return ZygoteToolCaller(
-            section, supervisor, connection, CallAmbient(), ToolSetup.path_vars
+        return zygote_stand.caller(
+            section, profile, refs, ToolSetup.path_vars, launch.section
         )
 
     @staticmethod
@@ -135,12 +131,13 @@ class ToolSetup:
         payloads: Sequence[PayloadTool],
         launcher: ToolLauncher,
         sources: Sequence[ParamSource],
+        section: PluginSection = ToolStand.NO_SECTION,
     ) -> dict[str, Any]:
         """Инструменты секции по именам под обёрткой запуска launcher и
         источниками параметров sources — как их ставит загрузчик."""
         stand = StandRefs(CallContexts()).tool_stand(sources)
 
-        return ToolSetup.by_name(stand.launch(payloads, launcher))
+        return ToolSetup.by_name(stand.launch(payloads, launcher, section))
 
     @staticmethod
     def by_name(built: list[Any]) -> dict[str, Any]:

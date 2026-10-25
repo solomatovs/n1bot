@@ -33,8 +33,7 @@ from boba.connections.sealed import (
 from boba.core.secrets import SecretReveal
 from boba.identity.errors import RefusalError
 from boba.stand_core.context import CallStand
-from boba.toolkit.calls import SchemaMark
-from boba.toolkit.entry import ToolArgv
+from boba.toolkit.calls import FieldMarks, SchemaMark
 from boba.toolrun.injected import StaticConfig
 
 pytestmark = pytest.mark.anyio
@@ -83,7 +82,7 @@ class TestSchemaDeclaredToTheClient:
         field = schema.model_fields["connection"]
         if field.annotation is not str:
             raise AssertionError(f"параметр стал строкой: {field.annotation}")
-        if ToolArgv.connection_fields(schema):
+        if FieldMarks.connection(field):
             raise AssertionError("маркер соединения со схемы снят")
 
         declared = field.json_schema_extra

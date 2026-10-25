@@ -16,7 +16,6 @@ psycopg.Error — СУБД отклонила запрос.
 
 from __future__ import annotations
 
-import sys
 from collections.abc import Iterable, Iterator, Sequence
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Final
@@ -418,6 +417,3 @@ async def describe_delete_node(
 TOOLS: Final = ToolMain.toolset(
     describe_node, describe_list_nodes, describe_delete_node
 )
-
-if __name__ == "__main__":
-    sys.exit(ToolMain.run(TOOLS))

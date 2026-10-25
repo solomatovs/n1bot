@@ -49,7 +49,7 @@ from boba.stand.site import Stand
 from boba.stand.toolstand import ProbeTools
 from boba.stand_core.context import CallStand
 from boba.toolkit.facade import UserConnection
-from boba.toolrun.hosted import HostedTool
+from boba.toolrun.hosted import HostedTool, ToolInputs
 from boba.transport.http.connection import HttpConnection
 
 pytestmark = pytest.mark.anyio
@@ -182,7 +182,9 @@ class Capture:
             connection=(Annotated[PostgresConfig, UserConnection], ...),
         )
 
-        return self._bound(self._probes.recorder("capture", schema), tickets)
+        return self._bound(
+            self._probes.recorder("capture", schema), "postgres", tickets
+        )
 
     def web_tool(self, tickets: SsoTickets) -> HostedTool:
         schema = create_model(
@@ -191,10 +193,14 @@ class Capture:
             connection=(Annotated[HttpConnection, UserConnection], ...),
         )
 
-        return self._bound(self._probes.recorder("capture_web", schema), tickets)
+        return self._bound(self._probes.recorder("capture_web", schema), "web", tickets)
 
-    def _bound(self, tool: HostedTool, tickets: SsoTickets | None) -> HostedTool:
-        """Инструмент под обвязкой соединений пользователя стенда."""
+    def _bound(
+        self, tool: HostedTool, kind: str, tickets: SsoTickets | None
+    ) -> HostedTool:
+        """Инструмент под обвязкой соединений пользователя стенда; параметр-
+        соединение вида kind пробе объявляют входы, как манифест плагина."""
+        tool.inputs = ToolInputs(connections={"connection": kind})
         StandUserConnections(
             lambda: self._store,
             lambda: KerberosCredentialSource(

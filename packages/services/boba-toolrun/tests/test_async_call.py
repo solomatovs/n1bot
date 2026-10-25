@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from pathlib import Path
 
 from pydantic import SecretStr
 
 from boba.identity.context import CallContexts
+from boba.sandbox.program import PluginCommand, PluginEntry
 from boba.stand_core.fake_toolmod import FakeChunkHead, FakeConfig
 from boba.toolkit.chain import CallAmbient
 from boba.toolkit.frames import ToolFrame
@@ -18,7 +20,13 @@ from boba.toolrun.streaming import AsyncToolCall
 
 CFG = FakeConfig(token=SecretStr("t0ken"), limit=5)
 
-STREAM_ARGV = ("python3", "-m", "boba.stand_core.fake_toolmod", "fake_stream")
+PROGRAM = (
+    *PluginEntry().declared_argv(
+        sys.executable, ("boba.stand_core.fake_toolmod:PLUGIN",)
+    ),
+    PluginCommand.CALL.value,
+)
+"""Тела фейковых инструментов: подкоманда call программы плагина."""
 
 
 def _launcher(workdir: Path) -> ProcessToolCaller:
@@ -36,14 +44,15 @@ def _launcher(workdir: Path) -> ProcessToolCaller:
         ProcessLauncherConfig.model_validate(values),
         CallContexts(),
         CallAmbient(),
+        PROGRAM,
     )
 
 
 def _command(prefix: str) -> ToolCommand:
-    config = json.dumps({"cfg": CFG.revealed()}).encode("utf-8")
+    args = json.dumps({"cfg": CFG.revealed(), "prefix": prefix}).encode("utf-8")
     return ToolCommand(
-        argv=(*STREAM_ARGV, "--prefix", prefix),
-        config=config,
+        argv=("fake_stream",),
+        args=args,
         inputs=(CallInputSpec(port="feed", raw=False),),
         outputs=(CallOutputSpec(port="out", raw=False),),
     )

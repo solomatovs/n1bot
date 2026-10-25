@@ -9,14 +9,17 @@ import gc
 import json
 import os
 import signal
+import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 from pydantic import SecretStr
 
 from boba.cancellation import ToolStopped, run_cancellation
 from boba.identity.context import CallContexts
+from boba.sandbox.program import PluginCommand, PluginEntry
 from boba.stand_core.fake_toolmod import (
     TOOLS,
     FakeChunkHead,
@@ -35,7 +38,13 @@ from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
 
 CFG = FakeConfig(token=SecretStr("t0ken"), limit=5)
 
-MODULE = "boba.stand_core.fake_toolmod"
+PROGRAM = (
+    *PluginEntry().declared_argv(
+        sys.executable, ("boba.stand_core.fake_toolmod:PLUGIN",)
+    ),
+    PluginCommand.CALL.value,
+)
+"""Тела фейковых инструментов: подкоманда call программы плагина."""
 
 STREAM_TOOL = ToolMain.toolset(fake_stream)[0]
 RELAY_TOOL = ToolMain.toolset(fake_relay)[0]
@@ -57,12 +66,13 @@ def _launcher(workdir: Path, **overrides: object) -> ProcessToolCaller:
         ProcessLauncherConfig.model_validate(values),
         CallContexts(),
         CallAmbient(),
+        PROGRAM,
     )
 
 
-def _command(tool_name: str, *flags: str) -> ToolCommand:
-    config = json.dumps({"cfg": CFG.revealed()}).encode("utf-8")
-    argv = ("python3", "-m", MODULE, tool_name, *flags)
+def _command(tool_name: str, **args: Any) -> ToolCommand:
+    payload = json.dumps({"cfg": CFG.revealed(), **args}).encode("utf-8")
+    argv = (tool_name,)
     spec = _spec(tool_name)
 
     inputs: list[CallInputSpec] = []
@@ -74,7 +84,7 @@ def _command(tool_name: str, *flags: str) -> ToolCommand:
         outputs.append(CallOutputSpec(port=port.name, raw=port.raw))
 
     return ToolCommand(
-        argv=argv, config=config, inputs=tuple(inputs), outputs=tuple(outputs)
+        argv=argv, args=payload, inputs=tuple(inputs), outputs=tuple(outputs)
     )
 
 
@@ -127,7 +137,7 @@ class TestDeafBody:
         добьёт тело; после смерти вызов объясняется итогом, а не зависает."""
         launcher = _launcher(tmp_path, timeout_sec=2.0)
 
-        with launcher.open(_command("fake_deaf", "--sleep-sec", "30")) as call:
+        with launcher.open(_command("fake_deaf", sleep_sec=30)) as call:
             payload = ToolFrame.of(FakePidHead(pid=0), b"\x00" * (4 * 1024 * 1024))
 
             started = time.monotonic()
@@ -194,7 +204,7 @@ class TestForeignKind:
         кончается конвертом ошибки, а не молчаливым пропуском данных."""
         launcher = _launcher(tmp_path)
 
-        with launcher.open(_command("fake_stream", "--prefix", "k:")) as call:
+        with launcher.open(_command("fake_stream", prefix="k:")) as call:
             call.inputs()[0].send(ToolFrame.of(FakePidHead(pid=1), b"alien"))
             call.done_sending()
 
@@ -228,7 +238,7 @@ class TestSingleReader:
     def test_second_frames_reader_is_refused(self, tmp_path: Path) -> None:
         launcher = _launcher(tmp_path)
 
-        with launcher.open(_command("fake_stream", "--prefix", "x:")) as call:
+        with launcher.open(_command("fake_stream", prefix="x:")) as call:
             call.frames()
 
             with pytest.raises(LauncherError, match="already have a reader"):
@@ -244,7 +254,7 @@ class TestResources:
         launcher = _launcher(tmp_path, timeout_sec=15.0)
 
         def one_ok() -> None:
-            with launcher.open(_command("fake_stream", "--prefix", "p:")) as call:
+            with launcher.open(_command("fake_stream", prefix="p:")) as call:
                 call.inputs()[0].send(ToolFrame.of(FakeChunkHead(seq=1), b"data"))
                 call.done_sending()
                 list(call.frames())

@@ -39,7 +39,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -59,7 +59,6 @@ from boba.sandbox.guest import (
     ImageMount,
     ImageMounting,
     SetupFailure,
-    WarmupCall,
     WarmupMessage,
     ZygoteArgs,
     ZygoteWire,
@@ -120,6 +119,7 @@ __all__ = [
     "ZygoteOutcome",
     "ZygotePolicy",
     "ZygoteRegistry",
+    "ZygoteSection",
     "ZygoteSpawner",
     "ZygoteStartError",
     "ZygoteState",
@@ -247,7 +247,7 @@ class ZygoteOutcome(BaseModel):
 
 class _CallChannels:
     """Все дескрипторы одного вызова, которые супервизор шлёт зиготе через
-    SCM_RIGHTS: пайпы stdin/stdout/stderr/result/injected, control-сокет,
+    SCM_RIGHTS: пайпы stdin/stdout/stderr/result/args, control-сокет,
     пайпы барьера и отчётов о ходе работы, каталог cgroup-leaf'а и пайпы
     входов и выходов.
 
@@ -255,7 +255,7 @@ class _CallChannels:
     ними cgroup, затем входы и выходы, каждый своим пайпом. После отправки child-концы
     закрываются здесь, host-концы разбирают владельцы: stdin и входы
     забирает CallInputs (take_stdin, take_inputs), канал конфига — писатель
-    конфига (take_injected), выходы — перекачка (take_outputs) либо насос
+    аргументов (take_args), выходы — перекачка (take_outputs) либо насос
     (claim_frames), остальное читает насос и закрывает close_host_ends.
     """
 
@@ -270,7 +270,7 @@ class _CallChannels:
         self.stdout_r, self.stdout_w = os.pipe()
         self.stderr_r, self.stderr_w = os.pipe()
         self.result_r, self.result_w = os.pipe()
-        self.injected_r, self.injected_w = os.pipe()
+        self.args_r, self.args_w = os.pipe()
         self.gate_r, self.gate_w = os.pipe()
         self.verdict_r, self.verdict_w = os.pipe()
         self.progress_r, self.progress_w = os.pipe()
@@ -279,7 +279,7 @@ class _CallChannels:
         )
         self.control_host.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
         self._stdin_open = True
-        self._injected_open = True
+        self._args_open = True
         self._outputs_taken = False
         self._claimed: int | None = None
         self._inputs_open = True
@@ -305,7 +305,7 @@ class _CallChannels:
             self.stdout_w,
             self.stderr_w,
             self.result_w,
-            self.injected_r,
+            self.args_r,
             self.control_child.fileno(),
             self.gate_w,
             self.verdict_r,
@@ -327,7 +327,7 @@ class _CallChannels:
         os.close(self.stdout_w)
         os.close(self.stderr_w)
         os.close(self.result_w)
-        os.close(self.injected_r)
+        os.close(self.args_r)
         self.control_child.close()
         os.close(self.gate_w)
         os.close(self.verdict_r)
@@ -375,14 +375,14 @@ class _CallChannels:
 
         return tuple(fds)
 
-    def take_injected(self) -> int:
+    def take_args(self) -> int:
         """Отдать канал конфига писателю: каналы его больше не закрывают."""
-        if not self._injected_open:
-            msg = "call injected channel is already taken or closed"
+        if not self._args_open:
+            msg = "call arguments channel is already taken or closed"
             raise LauncherError(msg)
 
-        self._injected_open = False
-        return self.injected_w
+        self._args_open = False
+        return self.args_w
 
     def take_outputs(self) -> tuple[int, ...]:
         """Отдать читающие концы всех выходов перекачке: насос их не читает,
@@ -455,7 +455,7 @@ class _CallChannels:
         self.close_stdin()
         self._close_inputs()
         self._close_gate()
-        self._close_injected()
+        self._close_args()
         self._close_outputs()
         os.close(self.stdout_r)
         os.close(self.stderr_r)
@@ -480,12 +480,12 @@ class _CallChannels:
         for _, write_fd in self._ins:
             os.close(write_fd)
 
-    def _close_injected(self) -> None:
-        if not self._injected_open:
+    def _close_args(self) -> None:
+        if not self._args_open:
             return
 
-        self._injected_open = False
-        os.close(self.injected_w)
+        self._args_open = False
+        os.close(self.args_w)
 
     def _close_outputs(self) -> None:
         if self._outputs_taken:
@@ -514,15 +514,17 @@ class ZygoteSupervisor:
         spawner: Spawner,
         policy: ZygotePolicy,
         stderr_tail_bytes: int,
-        warmup_calls: Sequence[WarmupCall] = (),
-        modules: Sequence[str] = (),
+        warmup: Mapping[str, Any],
+        manifest: str,
         root: str = "",
     ) -> None:
         self._name = name
         self._spawner = spawner
         self._policy = policy
-        self._warmup = WarmupMessage(calls=tuple(warmup_calls))
-        self._modules = tuple(modules)
+        self._warmup = WarmupMessage(config=dict(warmup))
+        self._manifest = manifest
+        """Отпечаток манифеста плагина: зигота обязана назвать его при
+        готовности, иначе образ подменили после чтения манифеста."""
         self._root = root
         self._journal = LifecycleJournal(name)
         self._tail_bytes = stderr_tail_bytes
@@ -643,7 +645,7 @@ class ZygoteSupervisor:
             self._state = ZygoteState.STARTING
             self._attempts = 0
 
-        self._journal.open(IncidentReason.START, f"modules={len(self._modules)}")
+        self._journal.open(IncidentReason.START, f"manifest={self._manifest[:12]}")
 
         while True:
             self._journal.attempt(
@@ -729,7 +731,6 @@ class ZygoteSupervisor:
         mounting: ImageMounting | None = None,
         staging: Sequence[str] = (),
         cwd: str = "",
-        module: str = "",
         inputs: Sequence[CallInputSpec] = (),
         outputs: Sequence[CallOutputSpec] = (),
     ) -> _WiredCall:
@@ -758,7 +759,6 @@ class ZygoteSupervisor:
         request = CallRequest(
             call_id=call_id,
             argv=tuple(argv),
-            module=module,
             limits=limits,
             isolate=isolate,
             mounts=mounts,
@@ -838,7 +838,7 @@ class ZygoteSupervisor:
         call_id: str,
         argv: Sequence[str],
         stdin: bytes,
-        config: bytes,
+        args: bytes,
         limits: ChildLimits,
         sinks: Mapping[ToolChannel, ChunkSink],
         *,
@@ -867,7 +867,7 @@ class ZygoteSupervisor:
         )
 
         entry = CallInput(wired.channels.take_stdin())
-        config_input = CallInput(wired.channels.take_injected())
+        args_input = CallInput(wired.channels.take_args())
         gate = HostGate(wired.channels.take_verdict(), CallGateMode.AUTO)
 
         def pump_run(cancellation: RunCancellation) -> ZygoteOutcome:
@@ -885,13 +885,13 @@ class ZygoteSupervisor:
         except BaseException:
             # ход уже отменён: насос не родился, проводку прибираем сами
             entry.abandon()
-            config_input.abandon()
+            args_input.abandon()
             gate.close()
             self.abandon_wired(wired)
             raise
 
-        config_input.send_bytes(config)
-        config_input.finish()
+        args_input.send_bytes(args)
+        args_input.finish()
 
         entry.send_bytes(stdin)
         entry.finish()
@@ -927,7 +927,7 @@ class ZygoteSupervisor:
 
         self._stderr = ChannelTail(self._tail_bytes)
         self._pump_stderr(proc)
-        self._journal.spawned(proc.pid, self._root, self._modules)
+        self._journal.spawned(proc.pid, self._root)
 
         host_sock.settimeout(self._policy.start_timeout_sec)
         try:
@@ -946,6 +946,17 @@ class ZygoteSupervisor:
         if message.get("op") != "ready":
             self._last_failure = (
                 f"expected op=ready from pid {proc.pid}, got {str(message)[:200]}"
+            )
+            self._journal.failed(self._last_failure, self._stderr.text().strip())
+            self._abandon(proc, host_sock)
+            return False
+
+        named = message.get("manifest")
+        if named != self._manifest:
+            self._last_failure = (
+                f"zygote pid {proc.pid} serves a plugin with manifest {named!r}, "
+                f"the server read manifest {self._manifest!r} at start: the plugin "
+                "image was replaced, restart the server to read it again"
             )
             self._journal.failed(self._last_failure, self._stderr.text().strip())
             self._abandon(proc, host_sock)
@@ -1249,11 +1260,12 @@ class ZygoteSpawner:
     (ZygoteArgv) с корнем из монтирования -> зигота. Внешний слой видит
     только явный список путей, и источники биндов вложенного слоя он берёт
     у того же ZygoteArgv, что пишет его argv. tmpfs на /tmp обязателен — из
-    него дети получают приватный размерный /tmp.
+    него дети получают приватный размерный /tmp. program — команда зиготы в
+    корне песочницы: у плагина это `/plugin/run zygote`, аргументы
+    ZygoteArgs дописываются за ней. run() исполняет в той же песочнице
+    короткую команду до конца — подкоманды manifest и setup программы
+    плагина.
     """
-
-    PYTHON: ClassVar[str] = "python3"
-    MODULE: ClassVar[str] = "boba.sandbox.guest"
 
     APP_LOGGER: ClassVar[str] = "boba"
     """Чей уровень наследует зигота: настройка живёт в конфиге приложения."""
@@ -1261,7 +1273,7 @@ class ZygoteSpawner:
     def __init__(
         self,
         profile: SandboxProfile,
-        modules: Sequence[str],
+        program: Sequence[str],
         policy: ZygotePolicy,
         interpreter: LauncherInterpreter,
     ) -> None:
@@ -1284,7 +1296,7 @@ class ZygoteSpawner:
         self._call_mounts = self.call_mounts()
         self._with_images = profile.mounts.workspace is not None
         self._profile = bare
-        self._modules = tuple(modules)
+        self._program = tuple(program)
         self._chain = LauncherChain(
             interpreter, bare.host.binaries, bare.host.mounting.to_options()
         )
@@ -1304,11 +1316,10 @@ class ZygoteSpawner:
             socket_fd=fd,
             reap_poll_sec=self._profile.isolation.reap_poll_sec,
             log_level=self.log_level(),
-            modules=self._modules,
         )
-        command = [self.PYTHON, "-m", self.MODULE, *args.render()]
+        command = [*self._program, *args.render()]
 
-        argv = self._argv(command, env, fd)
+        argv = self._argv(command, env, (fd,))
 
         proc = subprocess.Popen(  # noqa: S603
             argv,
@@ -1339,7 +1350,38 @@ class ZygoteSpawner:
 
         CoreWindow(cores).pin(pid)
 
-    def _argv(self, command: list[str], env: Mapping[str, str], fd: int) -> list[str]:
+    def run(
+        self, command: Sequence[str], stdin: bytes
+    ) -> subprocess.CompletedProcess[bytes]:
+        """Короткая команда в песочнице секции до конца: stdin — данные
+        команды, stdout и stderr собираются целиком, срок — старт зиготы.
+
+        Ошибки:
+        ZygoteStartError — команда не уложилась в срок либо не запустилась.
+        """
+        env = dict(self._profile.isolation.env)
+        argv = self._argv(list(command), env, ())
+        timeout = self._policy.start_timeout_sec
+        try:
+            return subprocess.run(  # noqa: S603 — argv собран цепочкой лаунчера
+                argv, input=stdin, capture_output=True, timeout=timeout, check=False
+            )
+        except subprocess.TimeoutExpired as exc:
+            msg = (
+                f"sandbox command {list(command)} over {self._profile.rootfs} did "
+                f"not finish in {timeout}s"
+            )
+            raise ZygoteStartError(msg) from exc
+        except OSError as exc:
+            msg = (
+                f"sandbox command {list(command)} over {self._profile.rootfs} "
+                f"did not start: {exc}"
+            )
+            raise ZygoteStartError(msg) from exc
+
+    def _argv(
+        self, command: list[str], env: Mapping[str, str], fds: tuple[int, ...]
+    ) -> list[str]:
         self._chain.check()
 
         # вложенный bwrap стартует уже смонтированным корнем, а не образом
@@ -1354,7 +1396,7 @@ class ZygoteSpawner:
             template="",
             op=[LauncherMode.RUN.value, shlex.join(inner_argv)],
             limits=ResourceLimits(),
-            pass_fds=(fd,),
+            pass_fds=fds,
             nested=self._nested.sources(),
             network=self._profile.isolation.network,
             replace=True,
@@ -1390,9 +1432,6 @@ class ZygoteToolCaller(ToolLauncher):
     cgroup-leaf (_acquire_leaf/_release_leaf), диагностика сбоев лимитами
     профиля (_diagnose).
     """
-
-    ARGV_HEAD: ClassVar[int] = 3
-    """python3 -m <module> — префикс команды модуля инструментов."""
 
     def __init__(
         self,
@@ -1446,8 +1485,6 @@ class ZygoteToolCaller(ToolLauncher):
         self, command: ToolCommand, *, tap: bool
     ) -> tuple[ToolCall, tuple[int, ...]]:
         """Общий открыватель вызова модуля; tap отдаёт выходы наружу."""
-        argv_tail = self._argv_tail(command)
-        module = command.argv[self.ARGV_HEAD - 1]
         plan = self._plan()
 
         envelope = CappedChannel(
@@ -1470,7 +1507,7 @@ class ZygoteToolCaller(ToolLauncher):
         try:
             wired = self._supervisor.begin(
                 uuid.uuid4().hex,
-                argv_tail,
+                command.argv,
                 plan.limits,
                 isolate=True,
                 mounts=self._call_mounts,
@@ -1479,7 +1516,6 @@ class ZygoteToolCaller(ToolLauncher):
                 mounting=plan.mounting,
                 staging=plan.staging,
                 cwd=plan.cwd,
-                module=module,
                 inputs=command.inputs,
                 outputs=command.outputs,
             )
@@ -1538,9 +1574,9 @@ class ZygoteToolCaller(ToolLauncher):
             raise
 
         # насос уже жив: запись конфига блокируется только скоростью тела
-        config_input = CallInput(wired.channels.take_injected())
-        config_input.send_bytes(command.config)
-        config_input.finish()
+        args_input = CallInput(wired.channels.take_args())
+        args_input.send_bytes(command.args)
+        args_input.finish()
 
         return call, frames_fds
 
@@ -1695,18 +1731,6 @@ class ZygoteToolCaller(ToolLauncher):
             copy_chunk_bytes=launcher.copy_chunk_bytes,
         )
 
-    def _argv_tail(self, command: ToolCommand) -> tuple[str, ...]:
-        """Команда модуля без префикса python: имя тула и флаги."""
-        argv = command.argv
-        if len(argv) <= self.ARGV_HEAD or argv[1] != "-m":
-            msg = (
-                f"zygote {self._tool}: expected a `python -m <tool>` command, "
-                f"got argv {argv[:3]}"
-            )
-            raise ZygoteCallError(msg)
-
-        return argv[self.ARGV_HEAD :]
-
 
 @dataclass(frozen=True)
 class _CallPlan:
@@ -1723,6 +1747,21 @@ class _CallPlan:
     cwd: str
 
 
+@dataclass(frozen=True)
+class ZygoteSection:
+    """Секция песочницы для реестра зигот: имя, профиль, команда зиготы,
+    политика жизни, секция конфига для прогревов и отпечаток манифеста
+    плагина, который зигота обязана назвать. Собирает его способ запуска в
+    песочнице (ZygoteLaunchers) и стенды тестов."""
+
+    name: str
+    profile: SandboxProfile
+    program: tuple[str, ...]
+    policy: ZygotePolicy
+    warmup: Mapping[str, Any]
+    manifest: str
+
+
 class ZygoteRegistry:
     """Реестр супервизоров процесса: одна живая зигота на tool-секцию,
     сколько бы раз ни собирались инструменты.
@@ -1733,7 +1772,9 @@ class ZygoteRegistry:
     повторный obtain отдаёт уже поднятый супервизор. Сборка приложения
     поднимает секции одновременно: prepare начинает подъём в фоне, settle
     дожидается всех и отдаёт первую неудачу. stop_all гасит всех на
-    shutdown приложения.
+    shutdown приложения. run() исполняет короткую команду в песочнице
+    профиля без зиготы — так сервер зовёт подкоманды manifest и setup
+    программы плагина.
     """
 
     def __init__(self, interpreter: LauncherInterpreter) -> None:
@@ -1743,39 +1784,42 @@ class ZygoteRegistry:
         self._starts: dict[str, Future[None]] = {}
         self._sections = ThreadPoolExecutor(thread_name_prefix="zygote-section")
 
-    def obtain(
-        self,
-        name: str,
-        profile: SandboxProfile,
-        modules: Sequence[str],
-        policy: ZygotePolicy,
-        warmup_calls: Sequence[WarmupCall] = (),
-    ) -> ZygoteSupervisor:
+    def obtain(self, section: ZygoteSection) -> ZygoteSupervisor:
         """Живой супервизор секции; при отсутствии — поднять и запомнить.
 
         start() зовётся и для найденного супервизора: он идемпотентен и ждёт,
         если зиготу в этот момент поднимает другой поток.
         """
-        supervisor = self._entry(name, profile, modules, policy, warmup_calls)
+        supervisor = self._entry(section)
         supervisor.start()
         return supervisor
 
-    def prepare(
-        self,
-        name: str,
-        profile: SandboxProfile,
-        modules: Sequence[str],
-        policy: ZygotePolicy,
-        warmup_calls: Sequence[WarmupCall] = (),
-    ) -> ZygoteSupervisor:
+    def prepare(self, section: ZygoteSection) -> ZygoteSupervisor:
         """Супервизор секции, как у obtain, но подъём зиготы идёт в фоне:
         секции поднимаются одновременно, исход подъёма отдаёт settle()."""
-        supervisor = self._entry(name, profile, modules, policy, warmup_calls)
+        supervisor = self._entry(section)
         with self._lock:
-            if name not in self._starts:
-                self._starts[name] = self._sections.submit(supervisor.start)
+            if section.name not in self._starts:
+                self._starts[section.name] = self._sections.submit(supervisor.start)
 
         return supervisor
+
+    def run(
+        self,
+        profile: SandboxProfile,
+        policy: ZygotePolicy,
+        command: Sequence[str],
+        stdin: bytes,
+    ) -> subprocess.CompletedProcess[bytes]:
+        """Команда command в песочнице profile до конца, со сроком старта
+        зиготы policy.
+
+        Ошибки:
+        ZygoteStartError — команда не запустилась или не уложилась в срок.
+        """
+        spawner = ZygoteSpawner(profile, (), policy, self._interpreter)
+
+        return spawner.run(command, stdin)
 
     def settle(self) -> None:
         """Дожидается подъёма всех секций, начатого prepare; неудача любой —
@@ -1802,14 +1846,8 @@ class ZygoteRegistry:
         for stop in stopping:
             stop.result()
 
-    def _entry(
-        self,
-        name: str,
-        profile: SandboxProfile,
-        modules: Sequence[str],
-        policy: ZygotePolicy,
-        warmup_calls: Sequence[WarmupCall],
-    ) -> ZygoteSupervisor:
+    def _entry(self, section: ZygoteSection) -> ZygoteSupervisor:
+        name = section.name
         with self._lock:
             supervisor = self._entries.get(name)
             if supervisor is not None:
@@ -1819,14 +1857,16 @@ class ZygoteRegistry:
                 if name in self._starts:
                     return supervisor
 
-            spawner = ZygoteSpawner(profile, modules, policy, self._interpreter)
+            spawner = ZygoteSpawner(
+                section.profile, section.program, section.policy, self._interpreter
+            )
             supervisor = ZygoteSupervisor(
                 name,
                 spawner.spawn,
-                policy,
-                stderr_tail_bytes=profile.host.stderr_tail_bytes,
-                warmup_calls=warmup_calls,
-                modules=modules,
+                section.policy,
+                stderr_tail_bytes=section.profile.host.stderr_tail_bytes,
+                warmup=section.warmup,
+                manifest=section.manifest,
                 root=spawner.root_label(),
             )
             self._entries[name] = supervisor

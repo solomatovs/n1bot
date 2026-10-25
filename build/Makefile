@@ -132,8 +132,11 @@ SHELL           := /bin/bash
 PYTHON          ?= $(SRC_DIR)/.venv/bin/python
 VERSION_PY      := $(PYTHON) $(SCRIPTS_DIR)/version.py
 VERSION         := $(shell $(VERSION_PY) show $(SRC_DIR)/packages)
-# плагины приложения — пакеты с entry points группы boba.tools; списка в extras нет
+# плагины приложения — пакеты с entry points группы boba.tools; списка в extras нет.
+# Плагин — имя entry point'а (id): у пакета их может быть несколько, у каждого свой образ
 PLUGIN_PACKAGES := $(shell $(PYTHON) $(SCRIPTS_DIR)/plugin_rootfs.py list $(SRC_DIR)/packages)
+PLUGIN_IDS      := $(shell $(PYTHON) $(SCRIPTS_DIR)/plugin_rootfs.py ids $(SRC_DIR)/packages)
+plugin-package   = $(shell $(PYTHON) $(SCRIPTS_DIR)/plugin_rootfs.py package $(SRC_DIR)/packages $(1))
 BOBA_TAG        ?= $(VERSION)
 # второй тег образов base, build и testapps; пусто — только BOBA_TAG
 LATEST_TAG      ?= latest
@@ -315,7 +318,7 @@ RUNTIME_LIBS    := $(THIRD_DIR)/lib/libstdc++.so.6 $(THIRD_DIR)/lib/libgcc_s.so.
 SANDBOX_PARTS   := $(THIRD_DIR)/bin/bwrap $(THIRD_DIR)/bin/fuse2fs $(RUNTIME_LIBS) \
                    $(SANDBOX_DIR)/workspace.ext4
 # образы корней всех плагинов репозитория
-PLUGIN_IMAGES    = $(PLUGIN_PACKAGES:%=$(SANDBOX_DIR)/plugins/%/rootfs.ext4)
+PLUGIN_IMAGES    = $(PLUGIN_IDS:%=$(SANDBOX_DIR)/plugins/%.ext4)
 # приложения, которые исполняют инструменты в песочнице
 SANDBOX_APPS    := $(strip $(foreach app,$(APPS),$(if $(SANDBOX_$(app)),$(app))))
 # mke2fs из сборки: им make делает workspace.ext4 и rootfs плагинов вне docker build
@@ -655,9 +658,9 @@ define HELP
 
 Песочница и плагины:
   sandbox               песочница приложений, исполняющих инструменты: $(SANDBOX_APPS)
-  plugin-rootfs         образ корня одного плагина: PLUGIN=<пакет>
-  plugin-rootfs-all     образы корней всех плагинов с entry points boba.tools, всегда заново,
-                        по PARALLEL одновременно (лог — release/logs/plugin-rootfs/<пакет>.log)
+  plugin-rootfs         образ корня одного плагина: PLUGIN=<id> -> runtime/sandbox/plugins/<id>.ext4
+  plugin-rootfs-all     образы корней всех плагинов (entry points boba.tools), всегда заново,
+                        по PARALLEL одновременно (лог — release/logs/plugin-rootfs/<id>.log)
   models-image          образы данных песочницы ($(MODEL_IMAGES)): ext4 рядом с каталогом модели,
                         секции монтируют их read-only вместо каталога; пересобираются по файлам моделей
 
@@ -882,12 +885,15 @@ $(SANDBOX_PARTS) $(SANDBOX_TOOLS) &: $(SANDBOX_INPUTS) $(BASE_DIR)/Dockerfile $(
         $(SCRIPTS_DIR)/e2fsprogs-$(E2FSPROGS_VERSION)-ro-mount.patch
 	@$(MAKE) -f "$(MAKEFILE)" sandbox
 
-# образ корня одного плагина: цель читает декларации [tool.boba.sandbox] пакета
-PLUGIN_ROOTFS    = $(SANDBOX_DIR)/plugins/$(PLUGIN)/rootfs.ext4
+# образ корня одного плагина: цель читает декларации [tool.boba.sandbox] его пакета и кладёт
+# в корень программу плагина /plugin/run — подкоманды manifest, setup, zygote и call
+PLUGIN_ROOTFS    = $(SANDBOX_DIR)/plugins/$(PLUGIN).ext4
+PLUGIN_PACKAGE   = $(call plugin-package,$(PLUGIN))
 
 .PHONY: plugin-rootfs
 plugin-rootfs: version-check
-	@$(if $(PLUGIN),,$(error нужен PLUGIN=<имя пакета>: make plugin-rootfs PLUGIN=boba-tool-postgres))
+	@$(if $(PLUGIN),,$(error нужен PLUGIN=<id плагина>: make plugin-rootfs PLUGIN=pg))
+	$(if $(PLUGIN_PACKAGE),,$(error плагина $(PLUGIN) нет среди entry points boba.tools: $(PLUGIN_IDS)))
 	$(call check,$(SANDBOX_INPUTS),запусти: make fetch)
 	$(call check,$(SANDBOX_TOOLS),запусти: make sandbox)
 	echo "== образ корня плагина $(PLUGIN) =="
@@ -898,13 +904,18 @@ plugin-rootfs: version-check
 	trap 'docker rm -f $$root_cid $$site_cid > /dev/null 2>&1 || true; rm -rf "$$tmp" "$$stage"' EXIT
 	tmp=$$(mktemp -d)
 	stage=$$(mktemp -d "$(STAGE_TEMPLATE)")
-	$(call docker-image,plugin-root,$$tmp/root.iid,$(PLUGIN_ARGS) --build-arg PLUGIN=$(PLUGIN))
-	$(call docker-image,plugin-site-out,$$tmp/site.iid,$(PLUGIN_ARGS) --build-arg PLUGIN=$(PLUGIN))
+	$(call docker-image,plugin-root,$$tmp/root.iid,$(PLUGIN_ARGS) --build-arg PLUGIN=$(PLUGIN_PACKAGE))
+	$(call docker-image,plugin-site-out,$$tmp/site.iid,$(PLUGIN_ARGS) --build-arg PLUGIN=$(PLUGIN_PACKAGE))
 	root_cid=$$(docker create "$$(cat "$$tmp/root.iid")" /bin/true)
 	site_cid=$$(docker create "$$(cat "$$tmp/site.iid")" /bin/true)
+	# программа плагина: python образа над его объявлением, найденным по id
+	mkdir -p "$$tmp/run/plugin"
+	printf '#!/bin/sh\nexec python3 -m boba.sandbox.program %s "$$@"\n' "$(PLUGIN)" > "$$tmp/run/plugin/run"
+	chmod 0755 "$$tmp/run/plugin/run"
 	{
 	docker cp "$$root_cid:/." -
 	docker cp "$$site_cid:/usr" -
+	tar -C "$$tmp/run" --owner=0 --group=0 -cf - plugin
 	} | $(call mke2fs-run,mkrootfs.sh,$$stage,/out/rootfs.ext4 $(PYTHON_VERSION) 16 $(JOBS))
 	mkdir -p "$(dir $(PLUGIN_ROOTFS))"
 	mv -f "$$stage/rootfs.ext4" "$(PLUGIN_ROOTFS)"
@@ -917,7 +928,7 @@ PLUGIN_ROOT_SRCS := $(BASE_DIR)/Dockerfile $(SCRIPTS_DIR)/plugin_rootfs.py $(SCR
                     $(SRC_DIR)/pyproject.toml $(SRC_DIR)/uv.lock
 
 .SECONDEXPANSION:
-$(SANDBOX_DIR)/plugins/%/rootfs.ext4: $$(call plugin-sources,$$*) $(PLUGIN_ROOT_SRCS) | $(SANDBOX_INPUTS) $(SANDBOX_TOOLS)
+$(SANDBOX_DIR)/plugins/%.ext4: $$(call plugin-sources,$$(call plugin-package,$$*)) $(PLUGIN_ROOT_SRCS) | $(SANDBOX_INPUTS) $(SANDBOX_TOOLS)
 	@mkdir -p "$(dir $(PLUGIN_STALE))"
 	echo "$*" >> "$(PLUGIN_STALE)"
 
@@ -939,11 +950,11 @@ endef
 # образы всех плагинов с entry points группы boba.tools
 .PHONY: plugin-rootfs-all
 plugin-rootfs-all: version-check
-	@if [ -z "$(PLUGIN_PACKAGES)" ]; then
+	@if [ -z "$(PLUGIN_IDS)" ]; then
 	    echo "плагинов с entry points boba.tools в $(SRC_DIR)/packages не найдено — проверь $(PYTHON): нужен .venv репозитория (source dev.sh)" >&2
 	    exit 1
 	fi
-	$(call plugin-rootfs-many,$(PLUGIN_PACKAGES))
+	$(call plugin-rootfs-many,$(PLUGIN_IDS))
 
 # образы данных песочницы: веса моделей ext4-файлом из уже скачанного; входы проверяются,
 # а не делаются — модели кладёт fetch
@@ -1109,12 +1120,13 @@ build: version-check $(if $(APP_SANDBOX),$(SANDBOX_DIR)/workspace.ext4 $(PLUGIN_
 	tmp=$$(mktemp -d)
 	if [ -n "$(APP_SANDBOX)" ]; then
 	    # в образ уезжает каталог целиком: образ плагина, которого больше нет, там лишний
-	    for dir in "$(SANDBOX_DIR)/plugins"/*/; do
-	        name=$$(basename "$$dir")
-	        case " $(PLUGIN_PACKAGES) " in
-	            *" $$name "*) ;;
-	            *) echo "$$dir: в репозитории нет плагина $$name — удали каталог" >&2; exit 1 ;;
+	    for entry in "$(SANDBOX_DIR)/plugins"/*; do
+	        name=$$(basename "$$entry" .ext4)
+	        case " $(PLUGIN_IDS) " in
+	            *" $$name "*) [ -f "$$entry" ] && continue ;;
 	        esac
+	        echo "$$entry: в репозитории нет плагина $$name с образом <id>.ext4 — удали его" >&2
+	        exit 1
 	    done
 	    echo "== основа $(SANDBOX_IMAGE): runtime-sandbox, модели и образы плагинов из $(RUNTIME_DIR) =="
 	    $(call docker-image,runtime-sandbox,$$tmp/runtime-sandbox.iid,$(APP_ARGS))

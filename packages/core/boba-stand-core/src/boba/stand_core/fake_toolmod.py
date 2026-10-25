@@ -1,7 +1,7 @@
 """Фейковый модуль инструментов для контрактных тестов ToolMain.
 
-Запускается настоящим subprocess'ом: `python -m fake_toolmod <имя> --флаги`
-с PYTHONPATH на каталог тестов. Кроме образцовых тел здесь живут вредные:
+Запускается настоящим subprocess'ом программой плагина над его объявлением
+PLUGIN. Кроме образцовых тел здесь живут вредные:
 глухое (не читает вход), заложник (виснет, назвав свой pid) и генератор
 битого потока кадров — ими тесты надёжности валят вызов. fake_merge —
 потребитель нескольких потоков: все входы приходят ему разом. fake_emit,
@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field, SecretStr
 from boba.core.secrets import SecretRevealing
 from boba.toolkit.entry import EntryFlag, ToolMain
 from boba.toolkit.facade import Injected, tool
+from boba.toolkit.manifest import ToolPlugin
 from boba.toolkit.ports import (
     Inbound,
     Outbound,
@@ -385,5 +386,6 @@ TOOLS: Final = ToolMain.toolset(
     fake_head,
 )
 
-if __name__ == "__main__":
-    sys.exit(ToolMain.run(TOOLS))
+PLUGIN: Final = ToolPlugin(id="fake", tools=TOOLS)
+"""Объявление плагина модуля: тесты зовут его программой плагина
+`python -m boba.sandbox.program --declared <модуль>:PLUGIN`."""

@@ -21,11 +21,10 @@ import pytest
 from boba.sandbox import (
     SandboxToolConfig,
 )
-from boba.sandbox.zygote import ZygotePolicy, ZygoteToolCaller
+from boba.sandbox.zygote import ZygoteToolCaller
 from boba.stand.sandbox import needs_sandbox, needs_userns, sandbox_profile
 from boba.stand.shell import ShellRun
 from boba.stand.zygote import ZygoteStand
-from boba.toolkit.chain import CallAmbient
 from boba.toolkit.launcher import CollectedCall, LauncherError, ToolOutcome
 from boba.toolkit.protocol import ReplyError, ReplyOk, ToolCommand
 
@@ -48,16 +47,9 @@ trailer<</Root 1 0 R/Size 8>>
 %%EOF"""
 
 
-DOC_MODULE = "boba.tool.doc.tools"
-
-ZYGOTE = ZygotePolicy(
-    start_timeout_sec=60.0,
-    max_start_attempts=1,
-    restart_backoff_sec=0.05,
-    healthy_after_sec=0.5,
-    stop_wait_sec=5.0,
-    call_poll_sec=0.05,
-)
+DOC_PLUGIN = "boba.tool.doc.plugin:MANIFEST"
+"""Объявление плагина doc: его инструменты служит зигота в корне пакета
+Confluence — там стоят те же ридеры."""
 
 
 def _caller(
@@ -66,15 +58,14 @@ def _caller(
     """Зигота под каждый набор путей и лимитов: имя секции — ключ реестра."""
     sandbox = SandboxToolConfig.model_validate(
         {
-            "profile": sandbox_profile("boba-tool-confluence", docs_dir, **kw),
+            "profile": sandbox_profile("confluence", docs_dir, **kw),
             "override": {},
         }
     )
     profile = sandbox.profile
 
     section = f"doc-test-{docs_dir}-{sorted(kw.items())}"
-    supervisor = zygote_stand.registry().obtain(section, profile, [DOC_MODULE], ZYGOTE)
-    return ZygoteToolCaller(section, supervisor, profile, CallAmbient())
+    return zygote_stand.caller(section, profile, [DOC_PLUGIN])
 
 
 def _cfg(**kw: Any) -> dict[str, Any]:
@@ -92,13 +83,8 @@ def _run_doc(
     flags: Mapping[str, str | int],
     cfg: dict[str, Any],
 ) -> ToolOutcome:
-    argv: list[str] = ["python3", "-m", "boba.tool.doc.tools", tool]
-    for flag, value in flags.items():
-        argv.append(f"--{flag}")
-        argv.append(str(value))
-
-    config = json.dumps({"cfg": cfg}).encode("utf-8")
-    return CollectedCall.of(caller, ToolCommand(argv=tuple(argv), config=config))
+    args = json.dumps({**flags, "cfg": cfg}).encode("utf-8")
+    return CollectedCall.of(caller, ToolCommand(argv=(tool,), args=args))
 
 
 @pytest.fixture
@@ -222,7 +208,7 @@ class TestDocumentsInSandbox:
         outcome = _run_doc(
             _caller(zygote_stand, docs),
             "read_document",
-            {"path": "/workspace/report.pdf", "pages": "1-2", "ocr-enabled": "true"},
+            {"path": "/workspace/report.pdf", "pages": "1-2", "ocr_enabled": True},
             _cfg(),
         )
 
@@ -342,11 +328,9 @@ class TestRootfsContents:
     )
     def test_module_is_installed(self, zygote_stand: ZygoteStand, module: str) -> None:
         sandbox = SandboxToolConfig.model_validate(
-            {"profile": sandbox_profile("boba-tool-confluence")}
+            {"profile": sandbox_profile("ingest")}
         )
-        profile = sandbox.profile
-        supervisor = zygote_stand.registry().obtain("rootfs-test", profile, (), ZYGOTE)
-        caller = ZygoteToolCaller("rootfs-test", supervisor, profile, CallAmbient())
+        caller = zygote_stand.caller("rootfs-test", sandbox.profile)
         try:
             outcome = ShellRun.call_text(caller, f"python3 -c 'import {module}'")
         finally:
@@ -368,11 +352,9 @@ class TestEmbedderInSandbox:
 
     def test_weights_are_mounted(self, zygote_stand: ZygoteStand) -> None:
         sandbox = SandboxToolConfig.model_validate(
-            {"profile": sandbox_profile("boba-tool-confluence")}
+            {"profile": sandbox_profile("ingest")}
         )
-        profile = sandbox.profile
-        supervisor = zygote_stand.registry().obtain("kb-test", profile, (), ZYGOTE)
-        caller = ZygoteToolCaller("kb-test", supervisor, profile, CallAmbient())
+        caller = zygote_stand.caller("kb-test", sandbox.profile)
         try:
             outcome = ShellRun.call_text(
                 caller, f"test -d {self.WEIGHTS} && ls {self.WEIGHTS}"

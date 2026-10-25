@@ -1,8 +1,11 @@
 """Инструмент хоста и его вызов: исполняемая сторона порта инструментов.
 
-Автор объявляет тело декоратором `@tool` фасада (PayloadTool); здесь оно
-становится исполняемым объектом хоста HostedTool — имя, описание, схема
-аргументов и одно async-тело, на которое ложатся обвязки. Тело получает
+Инструмент хоста HostedTool — имя, описание, схема аргументов и одно
+async-тело, на которое ложатся обвязки. Собственный инструмент процесса
+строится из объявления фасада `@tool` (PayloadTool, ToolHosting);
+инструмент плагина — из его объявления в манифесте, и аргументы модели
+такого инструмента хост не проверяет, а передаёт телу как есть
+(ToolInputs). Тело получает
 вызов объектом HostedCall (инструмент, идентификатор вызова, аргументы) и
 отдаёт результат семейства ToolResultBase. Вызов инструмента — узел DagNode
 (идентификатор вызова, имя, аргументы), итог — NodeOutcome; клиенту порта
@@ -20,16 +23,14 @@ pydantic.ValidationError — аргументы вызова не проходя
 
 from __future__ import annotations
 
-import textwrap
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import partial
 from typing import Any, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, create_model
-from pydantic.fields import FieldInfo
+from pydantic import BaseModel, create_model
 
-from boba.toolkit.calls import CallViews, FieldView
+from boba.toolkit.calls import CallSchema, CallViews, FieldView, SchemaMark
 from boba.toolkit.dag import (
     DagNode,
     NodeBody,
@@ -39,8 +40,8 @@ from boba.toolkit.dag import (
     ToolCard,
     ToolHints,
 )
-from boba.toolkit.entry import ToolAddress
 from boba.toolkit.facade import PayloadTool
+from boba.toolkit.manifest import ConfigConnection, InjectedRole
 from boba.toolkit.result import ToolResultBase
 
 __all__ = [
@@ -48,7 +49,9 @@ __all__ = [
     "DirectCalls",
     "HostedCall",
     "HostedTool",
+    "PluginSection",
     "ToolHosting",
+    "ToolInputs",
     "ToolSchema",
 ]
 
@@ -83,13 +86,81 @@ class DirectCalls(NodeCalls):
         return await body(node)
 
 
+@dataclass(frozen=True)
+class PluginSection:
+    """Секция [tool.<id>] плагина значениями JSON и профили соединений в ней
+    по манифесту: её получают injected-параметры роли config. Собирает её
+    загрузчик плагинов из конфига процесса."""
+
+    values: Mapping[str, Any] = field(default_factory=dict)
+    connections: tuple[ConfigConnection, ...] = ()
+
+
+@dataclass(frozen=True)
+class ToolInputs:
+    """Входы инструмента плагина по его объявлению в манифесте.
+
+    passed — JSON Schema аргументов модели: хост ставит их в карточку и
+    отдаёт телу как есть, проверяет их тело. injected — роли служебных
+    параметров, connections — параметры-соединения и их вид, section —
+    секция плагина для роли config. Источники значений (ParamSource) ставят
+    по ним свои обвязки. Пустой — собственный инструмент процесса: его
+    аргументы описывает модель args_schema.
+    """
+
+    passed: Mapping[str, Any] = field(default_factory=dict)
+    injected: Mapping[str, InjectedRole] = field(default_factory=dict)
+    connections: Mapping[str, str] = field(default_factory=dict)
+    section: PluginSection = field(default_factory=PluginSection)
+
+    def properties(self) -> Mapping[str, Any]:
+        """Аргументы модели: имя → схема."""
+        declared = self.passed.get(SchemaMark.PROPERTIES)
+        if not isinstance(declared, Mapping):
+            return {}
+
+        return declared
+
+    def required(self) -> tuple[str, ...]:
+        declared = self.passed.get("required")
+        if not isinstance(declared, list):
+            return ()
+
+        names: list[str] = []
+        for name in declared:
+            names.append(str(name))
+
+        return tuple(names)
+
+    def defs(self) -> Mapping[str, Any]:
+        declared = self.passed.get("$defs")
+        if not isinstance(declared, Mapping):
+            return {}
+
+        return declared
+
+    def not_logged(self) -> frozenset[str]:
+        """Аргументы модели, значения которых в лог не идут."""
+        return frozenset(SchemaMark.NOT_LOGGED.params(self.passed))
+
+    def role_params(self, role: InjectedRole) -> tuple[str, ...]:
+        """Служебные параметры роли role."""
+        names: list[str] = []
+        for name, declared in self.injected.items():
+            if declared is role:
+                names.append(name)
+
+        return tuple(names)
+
+
 @dataclass
 class HostedTool:
     """Исполняемый инструмент хоста: имя, описание, схема аргументов и тело.
 
     Создаёт его ToolHosting из PayloadTool фасада (тело исполняется в своём
-    процессе) либо обёртка запуска ToolProcessWrap (тело — перенос вызова в
-    отдельный процесс). Поля изменяемы: обвязки (ToolBody) оборачивают тело,
+    процессе) либо обёртка запуска ToolProcessWrap по объявлению инструмента
+    плагина (тело — перенос вызова в программу плагина, входы — inputs).
+    Поля изменяемы: обвязки (ToolBody) оборачивают тело,
     источники значений и поля вызова пересобирают схему. views — вид
     аргументов вызова для ленты клиента по модели вызова автора: пересборка
     схемы его не меняет; None — модели вызова у инструмента нет. run() исполняет
@@ -104,6 +175,7 @@ class HostedTool:
     views: Mapping[str, FieldView] | None
     body: AsyncCall
     hints: ToolHints = field(default_factory=ToolHints)
+    inputs: ToolInputs = field(default_factory=ToolInputs)
     _outcomes: NodeOutcomes = field(
         default_factory=NodeOutcomes, init=False, repr=False, compare=False
     )
@@ -145,12 +217,17 @@ class HostedTool:
 
     def _validated(self, args: Mapping[str, Any]) -> dict[str, Any]:
         """Аргументы тела: каждое поле схемы значением проверенной модели —
-        присланным либо дефолтом; чего в схеме нет, до тела не доходит."""
+        присланным либо дефолтом; аргументы модели плагина — как прислала
+        модель; чего нет ни там, ни там, до тела не доходит."""
         call = self.args_schema.model_validate(dict(args))
 
         kwargs: dict[str, Any] = {}
         for name in self.args_schema.model_fields:
             kwargs[name] = getattr(call, name)
+
+        for name in self.inputs.properties():
+            if name in args:
+                kwargs[name] = args[name]
 
         return kwargs
 
@@ -161,8 +238,12 @@ class ToolSchema:
     Единственное место, где поля схемы добавляются и снимаются и где схема
     превращается в карточку для клиента. Создаётся каждым, кто правит схему
     (источники значений, поля вызова, поля каналов) либо отдаёт карточки
-    (исполнитель, порт инструментов).
+    (исполнитель, порт инструментов). У инструмента плагина карточка
+    сливает аргументы модели из манифеста с полями хоста.
     """
+
+    def __init__(self) -> None:
+        self._calls = CallSchema()
 
     def rebuild(
         self,
@@ -194,27 +275,38 @@ class ToolSchema:
     def card_of(self, tool: HostedTool) -> ToolCard:
         """Карточка инструмента хоста tool."""
         return self.card(
-            tool.name, tool.description, tool.args_schema, tool.views, tool.hints
+            tool.name,
+            tool.description,
+            tool.args_schema,
+            tool.views,
+            tool.hints,
+            tool.inputs,
         )
 
-    def card(
+    def card(  # noqa: PLR0913 — карточка собирается из всех частей инструмента
         self,
         name: str,
         description: str,
         schema: type[BaseModel],
         views: Mapping[str, FieldView] | None,
         hints: ToolHints | None = None,
+        inputs: ToolInputs | None = None,
     ) -> ToolCard:
         """Карточка инструмента: JSON-схема вызова названа именем инструмента
         и описана его описанием; views — вид аргументов для ленты клиента,
-        hints — пометки для решения о подтверждении, None — без пометок."""
+        hints — пометки для решения о подтверждении, None — без пометок;
+        inputs — аргументы модели инструмента плагина, None — их нет."""
         if hints is None:
             hints = ToolHints()
+
+        parameters = self._calls.of(name, description, schema.model_fields)
+        if inputs is not None:
+            parameters = self._merged(parameters, inputs)
 
         return ToolCard(
             name=name,
             description=description,
-            parameters=self._call_schema(name, description, schema),
+            parameters=parameters,
             views=views,
             output=None,
             hints=hints,
@@ -228,43 +320,40 @@ class ToolSchema:
 
         return cards
 
-    def _call_schema(
-        self, name: str, description: str, schema: type[BaseModel]
-    ) -> dict[str, Any]:
-        """JSON-схема вызова: поля схемы с их описанием, дефолтом и
-        ограничениями; служебные атрибуты модели вызова в неё не идут."""
-        fields: dict[str, Any] = {}
-        for field_name, info in schema.model_fields.items():
-            fields[field_name] = (info.annotation, self._shown(info))
+    def clashes(self, tool: HostedTool) -> tuple[str, ...]:
+        """Поля хоста, совпавшие с аргументами модели плагина или с её $defs."""
+        clashing: list[str] = []
+        for name in tool.args_schema.model_fields:
+            if name in tool.inputs.properties():
+                clashing.append(name)
 
-        model = create_model(
-            name, __config__=ConfigDict(arbitrary_types_allowed=True), **fields
-        )
-        model.__doc__ = textwrap.dedent(description)
+        own = self._calls.of(tool.name, "", tool.args_schema.model_fields)
+        for name in own.get("$defs", {}):
+            if name in tool.inputs.defs():
+                clashing.append(f"$defs/{name}")
 
-        return model.model_json_schema()
+        return tuple(clashing)
 
     @staticmethod
-    def _shown(info: FieldInfo) -> FieldInfo:
-        """Поле для схемы клиента: описание, дефолт, метадата ограничений и
-        ключи схемы, которые поле объявило само (json_schema_extra)."""
-        if info.default_factory is not None:
-            shown = FieldInfo(
-                description=info.description,
-                default_factory=info.default_factory,
-                json_schema_extra=info.json_schema_extra,
-            )
-        else:
-            shown = FieldInfo(
-                description=info.description,
-                default=info.default,
-                json_schema_extra=info.json_schema_extra,
-            )
+    def _merged(parameters: dict[str, Any], inputs: ToolInputs) -> dict[str, Any]:
+        """Схема вызова: аргументы модели плагина, за ними поля хоста."""
+        merged = dict(parameters)
 
-        if info.metadata:
-            shown.metadata = info.metadata
+        properties = dict(inputs.properties())
+        properties.update(parameters.get(SchemaMark.PROPERTIES, {}))
+        merged[SchemaMark.PROPERTIES] = properties
 
-        return shown
+        required = list(inputs.required())
+        required.extend(parameters.get("required", ()))
+        if required:
+            merged["required"] = required
+
+        defs = dict(inputs.defs())
+        defs.update(parameters.get("$defs", {}))
+        if defs:
+            merged["$defs"] = defs
+
+        return merged
 
 
 class ToolHosting:
@@ -281,6 +370,7 @@ class ToolHosting:
         self._views = CallViews()
 
     def hosted(self, tool: PayloadTool) -> HostedTool:
+        """Инструмент хоста с телом автора в своём процессе."""
         return HostedTool(
             name=tool.name,
             description=tool.description,
@@ -297,17 +387,6 @@ class ToolHosting:
             hosted.append(self.hosted(tool))
 
         return tuple(hosted)
-
-    @staticmethod
-    def modules_of(tools: Sequence[PayloadTool]) -> tuple[str, ...]:
-        """Уникальные модули тел, в порядке объявления."""
-        modules: list[str] = []
-        for tool in tools:
-            module = ToolAddress.of(tool).module
-            if module not in modules:
-                modules.append(module)
-
-        return tuple(modules)
 
     @staticmethod
     async def _authored(tool: PayloadTool, call: HostedCall) -> ToolResultBase:

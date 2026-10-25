@@ -1,26 +1,30 @@
 """Билет вызова вместо keytab в статическом конфиге инструмента.
 
 Тело инструмента получает готовый билет, keytab остаётся у приложения:
-обвязка ServiceTickets обязана стоять на всех инструментах секции, чей
-injected-конфиг несёт keytab-секцию любой вложенности, и только на них.
+обвязка SectionTickets обязана стоять на всех инструментах плагина, чья
+секция несёт по указателю манифеста профиль с keytab, и только на них.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, Any, ClassVar
+from typing import Any, ClassVar
 
 import pytest
 from pydantic import BaseModel, create_model
 
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
-from boba.connection_broker.tickets import ServiceTickets
+from boba.connection_broker.tickets import SectionTickets, ServiceTickets
 from boba.connections.credentials import ConnectionSections
+from boba.connections.manifest import ConnectionTypes
 from boba.db.postgres.connection import PostgresConfig
 from boba.kerberos import KeytabAuth, TicketAuth
 from boba.stand.site import Stand
 from boba.stand.toolstand import ProbeTools
-from boba.toolkit.facade import Injected
+from boba.toolkit.calls import ToolCallBase
+from boba.toolkit.entry import ToolArgv
+from boba.toolkit.manifest import ConfigConnection, InjectedRole
+from boba.toolrun.hosted import PluginSection, ToolInputs
 from boba.toolrun.injected import InjectedConfig
 
 STAND = Stand.required()
@@ -72,15 +76,18 @@ class Fixtures:
         )
 
     @classmethod
+    def connection_raw(cls, ccache: Path) -> dict[str, Any]:
+        """Профиль с keytab, как он лежит в toml секции плагина."""
+        return {
+            "host": STAND.pg_host,
+            "dbname": "boba",
+            "connect_timeout": 5,
+            "auth": cls.keytab(ccache).model_dump(mode="json"),
+        }
+
+    @classmethod
     def connection(cls, ccache: Path) -> PostgresConfig:
-        return PostgresConfig.model_validate(
-            {
-                "host": STAND.pg_host,
-                "dbname": "boba",
-                "connect_timeout": 5,
-                "auth": cls.keytab(ccache).model_dump(mode="json"),
-            }
-        )
+        return PostgresConfig.model_validate(cls.connection_raw(ccache))
 
     @classmethod
     def plain(cls) -> PostgresConfig:
@@ -92,24 +99,32 @@ class Fixtures:
             }
         )
 
+    POINTERS: ClassVar[tuple[ConfigConnection, ...]] = (
+        ConfigConnection(pointer="/connection", kind="postgres"),
+    )
+    """Профиль соединения в секции, как его называет манифест плагина."""
+
+    @classmethod
+    def section(cls, connection: dict[str, Any]) -> PluginSection:
+        """Секция плагина значениями JSON, как её отдаёт конфиг процесса."""
+        values = {"connection": connection, "collection": "kb"}
+
+        return PluginSection(values=values, connections=cls.POINTERS)
+
     @staticmethod
-    def tool(config: BaseModel) -> ProbeTool:
-        schema = create_model(
-            "ProbeArgs",
-            sql=(str, ...),
-            cfg=(Annotated[type(config), Injected], ...),
-        )
+    def tool(section: PluginSection) -> ProbeTool:
+        schema = create_model("ProbeArgs", __base__=ToolCallBase, sql=(str, ...))
 
         probe = ProbeTool(schema)
-        tool = probe.hosted
-
-        def resolve(name: str, annotation: Any) -> object:
-            return config
+        probe.hosted.inputs = ToolInputs(
+            injected={"cfg": InjectedRole.CONFIG}, section=section
+        )
 
         def credentials() -> KerberosCredentialSource:
             return KerberosCredentialSource(None, NoRefresh())
 
-        InjectedConfig(resolve, ServiceTickets(credentials)).bind_all([tool])
+        tickets = SectionTickets(ServiceTickets(credentials), ConnectionTypes.discover)
+        InjectedConfig(tickets).bind_all([probe.hosted])
         return probe
 
 
@@ -135,13 +150,11 @@ class TestArmingIsNeededWhereKeytabLives:
 @live_kdc
 class TestTicketReplacesKeytab:
     async def test_body_receives_a_ticket(self, tmp_path: Path) -> None:
-        config = ToolConfig(connection=Fixtures.connection(tmp_path / "cc"))
+        section = Fixtures.section(Fixtures.connection_raw(tmp_path / "cc"))
 
-        kwargs = await Fixtures.tool(config).called({"sql": "select 1"})
+        kwargs = await Fixtures.tool(section).called({"sql": "select 1"})
 
-        shipped = kwargs["cfg"]
-        if not isinstance(shipped, ToolConfig):
-            raise AssertionError(f"конфиг потерял тип: {type(shipped)}")
+        shipped = ToolConfig.model_validate(kwargs["cfg"])
         if not isinstance(shipped.connection.auth, TicketAuth):
             raise AssertionError("телу ушёл не билет")
         if shipped.connection.auth.service != STAND.pg_spn:
@@ -151,20 +164,22 @@ class TestTicketReplacesKeytab:
 
     async def test_static_config_keeps_its_keytab(self, tmp_path: Path) -> None:
         """Обвязка не портит базовый конфиг: следующий вызов выпустит новый билет."""
-        config = ToolConfig(connection=Fixtures.connection(tmp_path / "cc"))
-        tool = Fixtures.tool(config)
+        section = Fixtures.section(Fixtures.connection_raw(tmp_path / "cc"))
+        tool = Fixtures.tool(section)
 
         await tool.called({"sql": "select 1"})
 
-        if not isinstance(config.connection.auth, KeytabAuth):
-            raise AssertionError("базовый конфиг переписан билетом")
+        kept = ToolConfig.model_validate(section.values)
+        if not isinstance(kept.connection.auth, KeytabAuth):
+            raise AssertionError("секция плагина переписана билетом")
 
 
 class TestPlainConfigIsLeftAlone:
     async def test_body_receives_the_config_as_is(self) -> None:
-        config = ToolConfig(connection=Fixtures.plain())
+        plain = ToolArgv.reveal(Fixtures.plain())
+        section = Fixtures.section(plain)
 
-        kwargs = await Fixtures.tool(config).called({"sql": "select 1"})
+        kwargs = await Fixtures.tool(section).called({"sql": "select 1"})
 
-        if kwargs["cfg"] is not config:
+        if kwargs["cfg"] is not section.values:
             raise AssertionError("обвязка поставлена там, где kerberos не нужен")

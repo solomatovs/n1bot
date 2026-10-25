@@ -14,7 +14,6 @@ LlmError — эмбеддер недоступен, не загрузился и
 from __future__ import annotations
 
 import logging
-import sys
 from collections.abc import Mapping
 from typing import Annotated, Any, Final
 
@@ -225,6 +224,3 @@ async def kb_fts_search(
 
 
 TOOLS: Final = ToolMain.toolset(kb_vector_search, kb_fts_search)
-
-if __name__ == "__main__":
-    sys.exit(ToolMain.run(TOOLS))

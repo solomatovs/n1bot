@@ -1,7 +1,8 @@
 """Цепочка обвязок вызова, реестр собранных инструментов и решение о
 доступности под роли и профиль.
 
-Ошибки: своих не выпускает.
+Ошибки:
+ToolConfigError — поле хоста совпало с аргументом модели инструмента плагина.
 """
 
 from __future__ import annotations
@@ -14,17 +15,16 @@ from boba.access import ToolAccess
 from boba.identity.context import CallContexts
 from boba.toolkit.chain import CallAmbient
 from boba.toolkit.dag import NodeCalls, ToolServer, ToolServers
-from boba.toolkit.entry import ToolArgv
-from boba.toolkit.facade import PayloadTool
 from boba.toolkit.launcher import ToolLauncher
+from boba.toolkit.manifest import ToolDecl
 from boba.toolkit.ports import StreamSpec, StreamSpecs
 from boba.toolrun.access import ToolAccessGuard
 from boba.toolrun.call_id import CallFields
 from boba.toolrun.cancellation import CancellableTools
 from boba.toolrun.dag_run import DagRunner
 from boba.toolrun.errors import ToolErrorGuard
-from boba.toolrun.hosted import HostedTool, ToolSchema
-from boba.toolrun.injected import ParamSource
+from boba.toolrun.hosted import HostedTool, PluginSection, ToolSchema
+from boba.toolrun.injected import ParamSource, ToolConfigError
 from boba.toolrun.run_log import ToolRunLogger
 from boba.toolrun.stream_calls import (
     LocalDagService,
@@ -84,34 +84,24 @@ class ToolChain:
         self._errors = ToolErrorGuard()
 
     def launch(
-        self, payloads: Sequence[PayloadTool], launcher: ToolLauncher
+        self,
+        decls: Sequence[ToolDecl],
+        launcher: ToolLauncher,
+        section: PluginSection,
     ) -> LaunchedTools:
-        """Инструменты хоста одной секции: тело каждого — перенос вызова
-        исполнителю launcher, сверху — источники служебных параметров.
-        Потоковые декларации снимаются с объявлений, пока порты на схеме."""
+        """Инструменты хоста одного плагина по объявлениям манифеста: тело
+        каждого — перенос вызова исполнителю launcher, сверху — источники
+        служебных параметров; section — секция плагина для роли config."""
         tools: list[HostedTool] = []
         declared: dict[str, StreamSpec] = {}
-        for payload in payloads:
-            tools.append(self._wrap.hosted(payload, launcher))
-            declared[payload.name] = self._wrap.spec_of(payload)
+        for decl in decls:
+            tools.append(self._wrap.hosted(decl, launcher, section))
+            declared[decl.name] = decl.stream
 
         for source in self._sources:
             source.bind_all(tools)
 
-        for tool in tools:
-            self._unreported(tool)
-
         return LaunchedTools(tools=tools, specs=StreamSpecs(declared))
-
-    def _unreported(self, tool: HostedTool) -> None:
-        """Снимает со схемы отчёты о ходе работы ToolProgress: их строит
-        гость, вызывающий такого аргумента не передаёт."""
-        schema = tool.args_schema
-        names = ToolArgv.progress_fields(schema)
-        if not names:
-            return
-
-        tool.args_schema = self._schemas.rebuild(schema, {}, names)
 
     def seal(
         self, tools: Sequence[HostedTool], access: ToolAccess, specs: StreamSpecs
@@ -120,10 +110,27 @@ class ToolChain:
         specs — потоковые декларации этих инструментов."""
         self._channels.attach_all(tools, specs)
         self._fields.attach_all(tools)
+        for tool in tools:
+            self._unclashed(tool)
+
         self._run_log.guard_all(tools)
         self._cancellable.guard_all(tools)
         self._access.guard_all(tools, access)
         self._errors.guard_all(tools)
+
+    def _unclashed(self, tool: HostedTool) -> None:
+        """Поля хоста не совпадают с аргументами модели плагина: иначе одно
+        имя значило бы две вещи."""
+        clashing = self._schemas.clashes(tool)
+        if not clashing:
+            return
+
+        msg = (
+            f"tool {tool.name!r}: the server adds fields {list(clashing)} that the "
+            "plugin manifest already declares as model arguments; rename them "
+            "in the plugin"
+        )
+        raise ToolConfigError(msg)
 
 
 @dataclass(frozen=True)

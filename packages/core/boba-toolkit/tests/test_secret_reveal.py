@@ -8,8 +8,9 @@ from typing import Annotated, ClassVar
 from pydantic import BaseModel, Field, SecretStr, SerializationInfo, field_serializer
 
 from boba.core.secrets import SecretRevealing
-from boba.toolkit.entry import ToolAddress, ToolArgv
+from boba.toolkit.entry import ToolArgv
 from boba.toolkit.facade import Injected, tool
+from boba.toolkit.manifest import ManifestBuilder
 from boba.toolkit.result import MarkdownResult
 
 MASK = "**********"
@@ -121,10 +122,8 @@ async def deep_echo(
 
 
 def test_render_parse_roundtrip_carries_secret_off_argv() -> None:
-    address = ToolAddress.of(deep_echo)
     command = ToolArgv.render(
-        address,
-        deep_echo.args_schema,
+        ManifestBuilder().tool(deep_echo),
         {"text": "hi", "cfg": _config()},
         input_counts={},
         output_counts={},
@@ -132,9 +131,9 @@ def test_render_parse_roundtrip_carries_secret_off_argv() -> None:
 
     joined = " ".join(command.argv)
     assert "key-secret-value" not in joined
-    assert b"key-secret-value" in command.config
+    assert b"key-secret-value" in command.args
 
-    kwargs = ToolArgv.parse(deep_echo, list(command.argv[4:]), command.config)
+    kwargs = ToolArgv.parse(deep_echo, (), command.args)
 
     restored = kwargs["cfg"]
     assert isinstance(restored, DeepConfig)

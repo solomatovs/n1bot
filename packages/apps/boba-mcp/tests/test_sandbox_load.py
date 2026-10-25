@@ -20,6 +20,7 @@ import sys
 import time
 from collections.abc import Iterator, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import replace
 from enum import StrEnum
 from pathlib import Path
 from typing import ClassVar
@@ -34,9 +35,9 @@ from boba.runtime.storage import ImageStorageClient, LocalStorageConfig, Storage
 from boba.sandbox import SandboxProfile
 from boba.sandbox.cgroup import CgroupManager
 from boba.sandbox.profile import SandboxMount
+from boba.sandbox.program import PluginEntry
 from boba.sandbox.zygote import (
     ZygotePolicy,
-    ZygoteSpawner,
     ZygoteToolCaller,
 )
 from boba.stand.shell import ShellRun
@@ -350,7 +351,7 @@ class ResourceCensus(BaseModel):
         kids: set[int] = set()
 
         for pid in ProcTable.children_of(os.getpid()):
-            if ZygoteSpawner.MODULE in ProcTable.cmdline(pid):
+            if PluginEntry.MODULE in ProcTable.cmdline(pid):
                 continue
 
             kids.add(pid)
@@ -636,8 +637,11 @@ class LoadStand:
             return {"user_id": user_id, "scope_id": thread_id}
 
         section = f"bash-{sorted(overrides.items())}"
-        supervisor = self._zygotes.registry().obtain(section, profile, (), self.ZYGOTE)
-        return ZygoteToolCaller(section, supervisor, profile, self.ambient, path_vars)
+        zygote = replace(self._zygotes.section(section, profile), policy=self.ZYGOTE)
+        supervisor = self._zygotes.registry().obtain(zygote)
+        return ZygoteToolCaller(
+            section, supervisor, zygote.profile, self.ambient, path_vars
+        )
 
     def storage(self) -> ImageStorageClient:
         cfg = LocalStorageConfig.model_validate(

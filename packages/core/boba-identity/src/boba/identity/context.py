@@ -25,6 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from boba.cancellation import RunCancellation
 from boba.identity.errors import RefusalError
 from boba.identity.session import LogUserMark
+from boba.toolkit.manifest import ContextValue, InjectedRole
 
 __all__ = [
     "CallContext",
@@ -103,10 +104,12 @@ class ScopeKind(StrEnum):
     CALLER = "caller"
 
 
-class Scope(BaseModel):
+class Scope(ContextValue):
     """Где живут артефакты вызова: журнал, workspace, реестр запусков."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
+
+    ROLE: ClassVar[InjectedRole] = InjectedRole.SCOPE
 
     kind: ScopeKind
     id: str = Field(min_length=1)
@@ -161,10 +164,12 @@ class Scope(BaseModel):
         return cls(kind=ScopeKind.USER, id=str(user_id))
 
 
-class Subject(BaseModel):
+class Subject(ContextValue):
     """От чьего имени идёт вызов: права и секреты считаются по нему."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
+
+    ROLE: ClassVar[InjectedRole] = InjectedRole.SUBJECT
 
     user_id: UUID
     """Строка users."""

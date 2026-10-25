@@ -1,8 +1,12 @@
-"""Манифест плагина ch: entry point группы boba.tools."""
+"""Объявление плагина ch: entry point группы boba.tools."""
 
 from typing import Final
 
 from boba.tool.ch.tools import TOOLS
-from boba.toolkit.manifest import ToolPluginManifest
+from boba.toolkit.manifest import ToolPlugin
 
-MANIFEST: Final = ToolPluginManifest(section="ch", tools=tuple(TOOLS))
+MANIFEST: Final = ToolPlugin(
+    id="ch",
+    tools=tuple(TOOLS),
+    network=True,
+)

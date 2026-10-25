@@ -9,16 +9,15 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any
 
 import pytest
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
-from boba.runtime.launchers import ZygoteLaunchers
-from boba.runtime.plugins import EntryPointPlugins
+from boba.runtime.launchers import PluginLaunch, ZygoteLaunchers
 from boba.sandbox import SandboxProfile
+from boba.sandbox.program import PluginEntry
 from boba.stand.zygote import ROOTFS_IMAGE, RUNTIME, SandboxCgroup
-from boba.toolkit.manifest import LaunchSpec
 
 REPO = Path(__file__).resolve().parents[6]
 """Код пакетов монтируется одним каталогом: точку /usr/src несёт rootfs."""
@@ -69,19 +68,11 @@ SRC_PACKAGES = _src_packages()
 
 
 class SandboxLayout:
-    """Монтирования и env: код пакетов кладётся поверх собранного site."""
+    """Монтирования и env: код пакетов кладётся поверх собранного site.
 
-    DATA_IMAGES: ClassVar[dict[str, tuple[tuple[str, str], ...]]] = {
-        "boba-tool-knowledge": (("fastembed", "/var/cache/fastembed"),),
-        "boba-tool-confluence": (
-            ("fastembed", "/var/cache/fastembed"),
-            ("rapidocr", "/var/cache/rapidocr"),
-        ),
-        "boba-tool-doc": (("rapidocr", "/var/cache/rapidocr"),),
-    }
-    """Веса моделей по пакетам: рантайм монтирует их ext4-образами данных
-    ([sandbox].images секций), как в бою; корень несёт только пустые точки — и
-    только у пакетов, в замыкании которых объявлены data-пути."""
+    Образы весов моделей плагин объявляет манифестом (data): рантайм
+    монтирует их ext4-образами данных, как в бою; корень несёт только пустые
+    точки."""
 
     @staticmethod
     def ro_binds(docs_dir: Path | None) -> list[str]:
@@ -94,11 +85,14 @@ class SandboxLayout:
         return binds
 
     @staticmethod
-    def images(package: str) -> list[str]:
-        """Образы весов моделей пакета: собирает make models-image."""
+    def images(plugin_id: str) -> list[str]:
+        """Образы весов моделей плагина по его объявлению: собирает make
+        models-image."""
+        plugin = PluginEntry().program(plugin_id).plugin
+
         images: list[str] = []
-        for name, guest in SandboxLayout.DATA_IMAGES.get(package, ()):
-            images.append(f"{RUNTIME.model_image(name)}:{guest}")
+        for image in plugin.data:
+            images.append(f"{RUNTIME.model_image(image.name)}:{image.target}")
 
         return images
 
@@ -159,9 +153,9 @@ def _merged(base: dict[str, Any], flat: dict[str, Any]) -> dict[str, Any]:
 
 
 def sandbox_profile(
-    package: str, docs_dir: Path | None = None, **kw: Any
+    plugin_id: str, docs_dir: Path | None = None, **kw: Any
 ) -> dict[str, Any]:
-    """Профиль запуска payload'а пакета — тот же по смыслу, что в приложении."""
+    """Профиль запуска тела плагина — тот же по смыслу, что в приложении."""
     profile: dict[str, Any] = {
         "host": {
             "mounting": {
@@ -178,10 +172,10 @@ def sandbox_profile(
             "kill_grace_sec": 5,
             "cgroup_base": SandboxCgroup().base,
         },
-        "rootfs": str(RUNTIME.plugin_rootfs(package)),
+        "rootfs": str(RUNTIME.plugin_rootfs(plugin_id)),
         "mounts": {
             "ro": tuple(SandboxLayout.ro_binds(docs_dir)),
-            "images": tuple(SandboxLayout.images(package)),
+            "images": tuple(SandboxLayout.images(plugin_id)),
             "rw": (),
             "tmp": "256M",
         },
@@ -211,26 +205,26 @@ def sandbox_profile(
     return _merged(profile, kw)
 
 
-def plugin_launch_spec(section: str) -> LaunchSpec:
-    """Спека запуска секции из установленных entry points — как у приложения."""
-    table = EntryPointPlugins().discover()
-    plugin = table.get(section)
-    if plugin is None:
-        installed = sorted(table)
-        msg = f"tool plugin {section!r} is not among installed entry points {installed}"
-        raise RuntimeError(msg)
+def plugin_launch(raw: DictConfig, plugin_id: str) -> PluginLaunch:
+    """Запуск плагина, как его видит сервис: манифест от объявления плагина
+    (стенд строит его в своём процессе, как программа плагина) и секция
+    [tool.<id>] конфига raw."""
+    manifest = PluginEntry().program(plugin_id).manifest()
+    node = OmegaConf.select(raw, f"tool.{plugin_id}")
+    container = OmegaConf.to_container(node, resolve=True)
 
-    return LaunchSpec(
-        section=plugin.section,
-        modules=plugin.modules,
-        package=plugin.package,
-    )
+    section: dict[str, Any] = {}
+    if isinstance(container, dict):
+        for key, value in container.items():
+            section[str(key)] = value
+
+    return PluginLaunch(manifest=manifest, section=section)
 
 
-def section_profile(raw: DictConfig, section: str) -> SandboxProfile:
-    """Профиль секции той же сборкой, что у приложения: base + манифест.
+def section_profile(raw: DictConfig, plugin_id: str) -> SandboxProfile:
+    """Профиль плагина той же сборкой, что у приложения: base + манифест.
 
-    Пути rootfs, workspace и third/bin называет конфиг отладки сервиса: они
+    Пути образов, workspace и third/bin называет конфиг отладки сервиса: они
     указывают на общий каталог runtime.
     """
-    return ZygoteLaunchers(raw).profile_of(plugin_launch_spec(section))
+    return ZygoteLaunchers(raw).profile_of(plugin_launch(raw, plugin_id))

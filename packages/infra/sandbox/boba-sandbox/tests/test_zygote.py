@@ -21,13 +21,15 @@ from typing import Any
 
 import pytest
 from fake_channel_tool import ChannelConfig
+from fx_zygote import FxZygote
 from pydantic import SecretStr
 
 from boba.cancellation import ToolStopped, run_cancellation
-from boba.sandbox.guest import CallMounts, ChildLimits, WarmupCall, ZygoteArgs
+from boba.sandbox.guest import CallMounts, ChildLimits, ZygoteArgs
 from boba.sandbox.zygote import (
     ZygoteCallError,
     ZygotePolicy,
+    ZygoteStartError,
     ZygoteState,
     ZygoteSupervisor,
     ZygoteUnavailableError,
@@ -80,12 +82,7 @@ class Recorder:
         return bytes(self.data).decode("utf-8", errors="replace")
 
 
-WARMUP_CALLS = (
-    WarmupCall(
-        module="fake_channel_tool", hook="warm_cache", config={"greeting": "privet"}
-    ),
-)
-"""Конфиг прогрева фейкового модуля: без него зигота не поднимается."""
+FX = FxZygote()
 
 
 def _plain_spawner(fd: int) -> subprocess.Popen[bytes]:
@@ -99,11 +96,10 @@ def _plain_spawner(fd: int) -> subprocess.Popen[bytes]:
         socket_fd=fd,
         reap_poll_sec=0.05,
         log_level="INFO",
-        modules=("fake_channel_tool",),
     )
 
     return subprocess.Popen(
-        [sys.executable, "-m", "boba.sandbox.guest", *args.render()],
+        [*FX.program(sys.executable), *args.render()],
         env=env,
         pass_fds=(fd,),
         stdin=subprocess.DEVNULL,
@@ -119,9 +115,9 @@ def _broken_spawner(fd: int) -> subprocess.Popen[bytes]:
     )
 
 
-def _config_bytes() -> bytes:
-    """Injected-конфиг байтами: едет отдельным каналом --injected-fd."""
-    return json.dumps({"cfg": CFG.revealed()}).encode("utf-8")
+def _args(**kwargs: object) -> bytes:
+    """Аргументы вызова с конфигом байтами: едут отдельным каналом --args-fd."""
+    return FX.args({"cfg": CFG.revealed(), **kwargs})
 
 
 def _call_echo(
@@ -139,9 +135,9 @@ def _call_echo(
 
     outcome = supervisor.call(
         call_id,
-        ["fx_echo", "--text", text],
+        ["fx_echo"],
         b"",
-        _config_bytes(),
+        _args(text=text),
         NO_LIMITS,
         {
             ToolChannel.RESULT: result.feed,
@@ -163,14 +159,15 @@ def supervisor() -> Any:
     def make(
         spawner: Any,
         policy: ZygotePolicy = FAST,
-        warmup: Any = WARMUP_CALLS,
+        manifest: str = FX.digest(),
     ) -> ZygoteSupervisor:
         instance = ZygoteSupervisor(
             "test",
             spawner,
             policy,
             stderr_tail_bytes=4096,
-            warmup_calls=warmup,
+            warmup=FxZygote.WARMUP,
+            manifest=manifest,
         )
         born.append(instance)
         return instance
@@ -241,6 +238,18 @@ class TestLifecycle:
         if took > FAST.start_timeout_sec * FAST.max_start_attempts + 5:
             raise AssertionError(f"попытки шли слишком долго: {took:.1f}s")
 
+    def test_replaced_image_is_not_served(self, supervisor: Any) -> None:
+        """Зигота назвала отпечаток манифеста, которого сервер не читал: образ
+        подменили после старта, секция гаснет с ошибкой, а не служит чужой
+        плагин."""
+        zygote = supervisor(_plain_spawner, manifest="0" * 64)
+
+        with pytest.raises(ZygoteStartError, match="image was replaced"):
+            zygote.start()
+
+        if zygote.state is not ZygoteState.FAILED:
+            raise AssertionError(f"state={zygote.state}")
+
     def test_call_on_failed_zygote_is_an_error(self, supervisor: Any) -> None:
         """Инструмент при недоступной зиготе падает ошибкой, без деградации."""
         zygote = supervisor(_broken_spawner)
@@ -276,9 +285,9 @@ class TestLifecycle:
         with pytest.raises(ZygoteCallError, match=r"died mid-call|control closed"):
             zygote.call(
                 "t-die",
-                ["fx_echo", "--text", "slow", "--sleep-sec", "30"],
+                ["fx_echo"],
                 b"",
-                _config_bytes(),
+                _args(text="slow", sleep_sec=30),
                 NO_LIMITS,
                 {ToolChannel.RESULT: result.feed},
                 isolate=False,
@@ -445,15 +454,8 @@ class TestIsolated:
             "LANG",
             "C.UTF-8",
             "--",
-            "python3",
-            "-m",
-            "boba.sandbox.guest",
-            *ZygoteArgs(
-                socket_fd=fd,
-                reap_poll_sec=0.05,
-                log_level="INFO",
-                modules=("fake_channel_tool",),
-            ).render(),
+            *FX.program("python3"),
+            *ZygoteArgs(socket_fd=fd, reap_poll_sec=0.05, log_level="INFO").render(),
         ]
 
         layer = PrivateImageMount(ROOTFS_IMAGE, root)
@@ -495,9 +497,9 @@ class TestIsolated:
             result = Recorder()
             outcome = zygote.call(
                 f"t-tmp-{index}",
-                ["fx_probe_tmp", "--marker", f"m{index}"],
+                ["fx_probe_tmp"],
                 b"",
-                _config_bytes(),
+                FX.args({"marker": f"m{index}"}),
                 NO_LIMITS,
                 {ToolChannel.RESULT: result.feed},
                 isolate=True,
@@ -535,7 +537,7 @@ class TestGuestImports:
     def test_guest_and_zygote_do_not_import_mcp_types(self) -> None:
         code = (
             "import sys\n"
-            "import boba.sandbox.guest, boba.sandbox.zygote\n"
+            "import boba.sandbox.guest, boba.sandbox.program, boba.sandbox.zygote\n"
             "if 'mcp_types' in sys.modules:\n"
             "    raise SystemExit('the sandbox guest pulls mcp_types')\n"
         )

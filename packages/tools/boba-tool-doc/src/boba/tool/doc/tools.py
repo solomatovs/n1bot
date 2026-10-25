@@ -13,7 +13,6 @@ OcrUnavailableError — вызов просил OCR, а секция [tool.doc] 
 from __future__ import annotations
 
 import asyncio
-import sys
 from collections.abc import Generator, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
@@ -246,6 +245,3 @@ async def search_document(  # noqa: PLR0913 — окно выдачи задаё
 
 
 TOOLS: Final = ToolMain.toolset(read_document, document_outline, search_document)
-
-if __name__ == "__main__":
-    sys.exit(ToolMain.run(TOOLS))

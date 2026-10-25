@@ -1,4 +1,4 @@
-"""Объявление прогрева: реестр наполняет @warmup, контракт проверяется сразу."""
+"""Объявление прогрева: @warmup отдаёт хук, контракт проверяется сразу."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
-from boba.toolkit.facade import ToolFacadeError, WarmupHooks, warmup
+from boba.toolkit.facade import ToolFacadeError, warmup
 
 
 class Cfg(BaseModel):
@@ -20,28 +20,26 @@ def declare(fn: Any) -> Any:
 
 
 class TestWarmupDeclaration:
-    """Хук объявляет автор инструмента; хост берёт его из реестра."""
+    """Хук объявляет автор инструмента; объявление плагина его перечисляет."""
 
-    def test_hook_is_registered_with_its_config_model(self) -> None:
+    @pytest.mark.anyio
+    async def test_hook_runs_with_its_config_model(self) -> None:
+        seen: list[str] = []
+
         @warmup
         async def warm_probe(cfg: Cfg) -> None:
             """Прогрев теста."""
+            seen.append(cfg.greeting)
 
-        hooks = WarmupHooks.of(__name__)
-        names = [hook.name for hook in hooks]
-        if "warm_probe" not in names:
-            raise AssertionError(f"хук не попал в реестр: {names}")
+        if warm_probe.config_model is not Cfg:
+            raise AssertionError(f"модель конфига: {warm_probe.config_model}")
+        if warm_probe.name != "warm_probe":
+            raise AssertionError(f"имя хука: {warm_probe.name}")
 
-        hook = WarmupHooks.named(__name__, "warm_probe")
-        if hook is None:
-            raise AssertionError("named() не нашёл объявленный хук")
+        await warm_probe.run({"greeting": "privet", "enable": True})
 
-        if hook.config_model is not Cfg:
-            raise AssertionError(f"модель конфига: {hook.config_model}")
-
-    def test_module_without_hooks_has_empty_registry(self) -> None:
-        if WarmupHooks.of("boba.toolkit.entry") != ():
-            raise AssertionError("модуль без @warmup не должен иметь хуков")
+        if seen != ["privet"]:
+            raise AssertionError(f"прогрев получил секцию своей моделью: {seen}")
 
     def test_plain_function_is_refused(self) -> None:
         """Прогрев ждут корутиной: синхронное тело заблокировало бы старт."""

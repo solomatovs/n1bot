@@ -13,7 +13,6 @@ QueryBuildError — сборщик получил один параметр с �
 
 from __future__ import annotations
 
-import sys
 from collections.abc import Sequence
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Final
@@ -1618,6 +1617,3 @@ TOOLS: Final = ToolMain.toolset(
     ch_stream_out,
     ch_stream_in,
 )
-
-if __name__ == "__main__":
-    sys.exit(ToolMain.run(TOOLS))

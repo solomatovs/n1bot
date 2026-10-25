@@ -1,15 +1,17 @@
-"""Параметр-соединение: профиль едет каналом конфига, argv остаётся чистым."""
+"""Параметр-соединение: манифест называет его и вид, профиль едет каналом
+аргументов, argv остаётся чистым."""
 
 from __future__ import annotations
 
-from typing import Annotated, ClassVar, Literal
+from typing import Annotated, Literal
 
 import pytest
-from pydantic import BaseModel, Field, SecretStr, SerializationInfo, field_serializer
+from pydantic import Field, SecretStr, SerializationInfo, field_serializer
 
 from boba.core.secrets import SecretRevealing
-from boba.toolkit.entry import ToolAddress, ToolArgv, ToolEntryError
+from boba.toolkit.entry import ToolArgv, ToolEntryError
 from boba.toolkit.facade import Injected, PayloadTool, UserConnection, tool
+from boba.toolkit.manifest import ConnectionProfile, InjectedRole, ManifestBuilder
 from boba.toolkit.protocol import ToolCommand
 from boba.toolkit.result import MarkdownResult
 
@@ -17,7 +19,7 @@ PASSWORD = "connection-secret-value"
 TOKEN = "section-secret-value"
 
 
-class StoredProfile(BaseModel):
+class StoredProfile(ConnectionProfile):
     """Профиль пакета-владельца: своей базы раскрытия у него нет."""
 
     kind: Literal["stored"] = "stored"
@@ -25,7 +27,7 @@ class StoredProfile(BaseModel):
     password: SecretStr
 
 
-class GuardedProfile(BaseModel):
+class GuardedProfile(ConnectionProfile):
     """Профиль, чей секрет наружу не уезжает никогда: политика поля."""
 
     kind: Literal["guarded"] = "guarded"
@@ -39,8 +41,6 @@ class GuardedProfile(BaseModel):
 
 class SectionConfig(SecretRevealing):
     """Обычный injected-конфиг секции рядом с параметром-соединением."""
-
-    SECTION: ClassVar[str] = "tool.probe"
 
     token: SecretStr
     max_rows: int = 10
@@ -81,40 +81,35 @@ def _section() -> SectionConfig:
     return SectionConfig(token=SecretStr(TOKEN))
 
 
+BUILDER = ManifestBuilder()
+
+
 def _command(payload: PayloadTool, kwargs: dict[str, object]) -> ToolCommand:
-    address = ToolAddress.of(payload)
-
-    return ToolArgv.render(
-        address, payload.args_schema, kwargs, input_counts={}, output_counts={}
-    )
+    return ToolArgv.render(BUILDER.tool(payload), kwargs, {}, {})
 
 
-def _tail(command: ToolCommand) -> list[str]:
-    """argv без головы `python3 -m <модуль> <имя>`."""
-    return list(command.argv[4:])
+class TestManifestSplitsParameters:
+    def test_connection_is_not_an_injected_parameter(self) -> None:
+        decl = BUILDER.tool(probe_query)
 
-
-class TestSchemaSplitsParameters:
-    def test_connection_is_not_an_injected_field(self) -> None:
-        schema = probe_query.args_schema
-
-        assert list(ToolArgv.connection_fields(schema)) == ["connection"]
-        assert list(ToolArgv.injected_fields(schema)) == ["cfg"]
+        assert decl.connections == {"connection": "stored"}
+        assert decl.injected == {"cfg": InjectedRole.CONFIG}
+        assert list(decl.properties()) == ["sql"]
 
     def test_every_marked_parameter_is_collected(self) -> None:
-        fields = ToolArgv.connection_fields(probe_copy.args_schema)
+        decl = BUILDER.tool(probe_copy)
 
-        assert list(fields) == ["source", "target"]
+        assert decl.connections == {"source": "stored", "target": "stored"}
 
 
 class TestProfileTravelsOffArgv:
-    def test_argv_carries_only_llm_arguments(self) -> None:
+    def test_argv_carries_only_the_tool_name(self) -> None:
         command = _command(
             probe_query,
             {"connection": _profile(), "sql": "select 1", "cfg": _section()},
         )
 
-        assert _tail(command) == ["--sql", "select 1"]
+        assert command.argv == ("probe_query",)
 
     def test_secrets_never_reach_argv(self) -> None:
         command = _command(
@@ -132,8 +127,8 @@ class TestProfileTravelsOffArgv:
             {"connection": _profile(), "sql": "select 1", "cfg": _section()},
         )
 
-        assert PASSWORD.encode() in command.config
-        assert TOKEN.encode() in command.config
+        assert PASSWORD.encode() in command.args
+        assert TOKEN.encode() in command.args
 
 
 class TestBodyGetsModels:
@@ -143,7 +138,7 @@ class TestBodyGetsModels:
             {"connection": _profile(), "sql": "select 1", "cfg": _section()},
         )
 
-        kwargs = ToolArgv.parse(probe_query, _tail(command), command.config)
+        kwargs = ToolArgv.parse(probe_query, (), command.args)
 
         connection = kwargs["connection"]
         assert isinstance(connection, StoredProfile)
@@ -157,19 +152,14 @@ class TestBodyGetsModels:
             {"source": _profile("left"), "target": _profile("right")},
         )
 
-        kwargs = ToolArgv.parse(probe_copy, _tail(command), command.config)
+        kwargs = ToolArgv.parse(probe_copy, (), command.args)
 
         assert kwargs["source"].host == "left"
         assert kwargs["target"].host == "right"
 
     def test_missing_profile_is_an_entry_error(self) -> None:
-        command = _command(
-            probe_query,
-            {"connection": _profile(), "sql": "select 1", "cfg": _section()},
-        )
-
         with pytest.raises(ToolEntryError, match="connection"):
-            ToolArgv.parse(probe_query, _tail(command), b'{"cfg": {"token": "x"}}')
+            ToolArgv.parse(probe_query, (), b'{"sql": "x", "cfg": {"token": "x"}}')
 
 
 class TestFieldPolicyWins:
@@ -183,4 +173,4 @@ class TestFieldPolicyWins:
             },
         )
 
-        assert PASSWORD.encode() not in command.config
+        assert PASSWORD.encode() not in command.args

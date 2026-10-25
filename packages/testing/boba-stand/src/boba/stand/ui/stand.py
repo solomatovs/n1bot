@@ -307,10 +307,9 @@ class RuntimeLayout(StrEnum):
     бинарники развёртывания."""
 
     PLUGINS = "plugins"
-    ROOTFS = "rootfs.ext4"
     WORKSPACE = "workspace.ext4"
     IMAGE_SUFFIX = ".ext4"
-    SHELL_PLUGIN = "boba-tool-shell"
+    SHELL_PLUGIN = "bash"
     BIN = "bin"
 
 
@@ -357,9 +356,13 @@ class StandRuntime:
         """Модели плагинов: fastembed, rapidocr и прочие."""
         return Path(self._paths.models)
 
-    def plugin_rootfs(self, package: str) -> Path:
-        """Образ корня пакета: make plugin-rootfs PLUGIN=<пакет>."""
-        return self.sandbox / RuntimeLayout.PLUGINS / package / RuntimeLayout.ROOTFS
+    def plugin_rootfs(self, plugin_id: str) -> Path:
+        """Образ корня плагина: make plugin-rootfs PLUGIN=<id>."""
+        return (
+            self.sandbox
+            / RuntimeLayout.PLUGINS
+            / f"{plugin_id}{RuntimeLayout.IMAGE_SUFFIX}"
+        )
 
     def model_image(self, name: str) -> Path:
         """Образ весов модели name: make models-image кладёт его рядом с

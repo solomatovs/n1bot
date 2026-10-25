@@ -1,43 +1,40 @@
-"""Подстановка injected-конфига в kwargs вызова и правка схемы инструмента.
+"""Подстановка секции плагина в kwargs вызова: источник значений роли config.
 
 Служебные параметры тела подставляют источники ParamSource; цепочка обвязок
 ставит их сразу поверх обёртки запуска. InjectedConfig — источник значений
-конфига: partial кладёт статические значения в kwargs до того, как обёртка
-разложит их на argv и stdin, и снимает injected-поля с args_schema —
-инструмент хоста проверяет вход по схеме до тела; значение с keytab-секцией
-довооружается на каждый вызов (ConfigArming). AsyncInjected — база обвязок,
-которым значение нужно дождаться на каждом вызове (билет, соединения
-субъекта, контекст вызова).
+конфига: параметрам роли config инструмента плагина partial кладёт секцию
+[tool.<id>] значениями JSON; секцию с keytab-профилями соединений
+довооружение (SectionArming) заменяет на каждый вызов секцией с билетами.
+AsyncInjected — база обвязок, которым значение нужно дождаться на каждом
+вызове (билет, соединения субъекта, контекст вызова).
 
 Ошибки:
-ToolConfigError — у injected-параметра нет значения у загрузчика.
+ToolConfigError — служебному параметру нечего подставить.
 """
 
 from __future__ import annotations
 
 import logging
 from abc import abstractmethod
-from collections.abc import Callable, Sequence
-from typing import Any, Protocol, TypeAlias
+from collections.abc import Mapping, Sequence
+from typing import Any, Protocol
 
-from boba.toolkit.entry import ToolArgv
-from boba.toolrun.hosted import HostedCall, HostedTool, ToolSchema
+from boba.toolkit.manifest import InjectedRole
+from boba.toolrun.hosted import HostedCall, HostedTool, PluginSection
 from boba.toolrun.wrapping import CallHooks, ToolBody
 
 __all__ = [
     "AsyncInjected",
     "ConfigArming",
-    "ConfigResolver",
     "InjectedConfig",
     "ParamSource",
+    "SectionArming",
     "StaticConfig",
+    "StaticSection",
     "ToolConfigError",
 ]
 
 logger = logging.getLogger(__name__)
-
-ConfigResolver: TypeAlias = Callable[[str, Any], object]
-"""(имя параметра, аннотация) -> значение; собирает загрузчик из конфига."""
 
 
 class ToolConfigError(Exception):
@@ -58,10 +55,12 @@ class ParamSource(Protocol):
 
 
 class ConfigArming(Protocol):
-    """Довооружение значения injected-конфига на вызов.
+    """Довооружение значения на вызов.
 
-    Значение, которое нельзя отдавать телу как есть (keytab в секции
-    соединения), источник конфига заменяет на каждом вызове итогом armed().
+    Значение, которое нельзя отдавать телу как есть (keytab в профиле
+    соединения), заменяется на каждом вызове итогом armed(). Реализует его
+    ServiceTickets; пользуются довооружение секции плагина (SectionArming)
+    и заданные соединения сервера.
     """
 
     @abstractmethod
@@ -74,13 +73,36 @@ class ConfigArming(Protocol):
 
 
 class StaticConfig(ConfigArming):
-    """Реализация ConfigArming без довооружения: конфиг уезжает телу как есть."""
+    """Реализация ConfigArming без довооружения: значение уезжает как есть."""
 
     def needs(self, value: object) -> bool:
         return False
 
     async def armed(self, param: str, value: object) -> object:
         return value
+
+
+class SectionArming(Protocol):
+    """Довооружение секции плагина на вызов: секция с keytab-профилями
+    соединений уезжает телу секцией с билетами вызова."""
+
+    @abstractmethod
+    def needs(self, section: PluginSection) -> bool:
+        """Нужно ли секции довооружение на вызов."""
+
+    @abstractmethod
+    async def armed(self, param: str, section: PluginSection) -> Mapping[str, Any]:
+        """Значения секции для одного вызова."""
+
+
+class StaticSection(SectionArming):
+    """Реализация SectionArming без довооружения: секция уезжает как есть."""
+
+    def needs(self, section: PluginSection) -> bool:
+        return False
+
+    async def armed(self, param: str, section: PluginSection) -> Mapping[str, Any]:
+        return section.values
 
 
 class AsyncInjected(CallHooks[None]):
@@ -103,13 +125,12 @@ class AsyncInjected(CallHooks[None]):
 
 
 class InjectedConfig(ParamSource):
-    """Реализация ParamSource значениями конфига: partial поверх обёртки
-    запуска плюс снятие полей со схемы.
+    """Реализация ParamSource секцией плагина: partial поверх обёртки запуска.
 
-    Создаёт его загрузчик инструментов из резолвера конфига и довооружения
-    (ConfigArming). Значение каждого injected-параметра резолвится один раз
-    при постановке; статическое кладётся в kwargs partial'ом, требующее
-    довооружения — обвязкой на каждый вызов.
+    Создаёт его загрузчик инструментов с довооружением (SectionArming).
+    Параметр роли config получает секцию плагина из входов инструмента:
+    статическую — partial'ом, требующую довооружения — обвязкой на каждый
+    вызов. В схеме хоста этих параметров нет: модель их не видит.
     """
 
     class _Partial(CallHooks[None]):
@@ -121,43 +142,38 @@ class InjectedConfig(ParamSource):
                 call.kwargs.setdefault(key, value)
 
     class _Armed(AsyncInjected):
-        def __init__(self, arming: ConfigArming, param: str, base: object) -> None:
-            super().__init__(param, base)
+        def __init__(
+            self, arming: SectionArming, param: str, section: PluginSection
+        ) -> None:
+            super().__init__(param, section)
             self._arming = arming
+            self._section = section
 
         async def value(self, name: str, kwargs: dict[str, object]) -> object:
-            return await self._arming.armed(self._param, self._base)
+            return await self._arming.armed(self._param, self._section)
 
-    def __init__(self, resolve: ConfigResolver, arming: ConfigArming) -> None:
-        self._resolve = resolve
+    def __init__(self, arming: SectionArming) -> None:
         self._arming = arming
         self._bodies = ToolBody()
-        self._schemas = ToolSchema()
 
     def bind_all(self, tools: Sequence[HostedTool]) -> None:
         for tool in tools:
             self._bind(tool)
 
     def _bind(self, tool: HostedTool) -> None:
-        schema = tool.args_schema
-
-        values: dict[str, object] = {}
-        for param, annotation in ToolArgv.injected_fields(schema).items():
-            values[param] = self._resolve(param, annotation)
-
-        if not values:
+        params = tool.inputs.role_params(InjectedRole.CONFIG)
+        if not params:
             return
 
-        static: dict[str, object] = {}
-        for param, value in values.items():
-            if not self._arming.needs(value):
-                static[param] = value
-                continue
+        section = tool.inputs.section
+        if not self._arming.needs(section):
+            static: dict[str, object] = {}
+            for param in params:
+                static[param] = section.values
 
-            self._bodies.hook_all([tool], self._Armed(self._arming, param, value))
-            logger.info("tool %s: config %s is armed per call", tool.name, param)
-
-        if static:
             self._bodies.hook_all([tool], self._Partial(static))
+            return
 
-        tool.args_schema = self._schemas.rebuild(schema, {}, values)
+        for param in params:
+            self._bodies.hook_all([tool], self._Armed(self._arming, param, section))
+            logger.info("tool %s: config %s is armed per call", tool.name, param)

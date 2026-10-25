@@ -12,8 +12,9 @@ from pydantic import ValidationError
 from boba.db.clickhouse.connection import ClickHouseConfig, SpnegoHeaders
 from boba.tool.ch.tools import TOOLS as CH_TOOLS
 from boba.tool.ch.tools import ChToolConfig
-from boba.toolkit.entry import ToolArgv, ToolMain
+from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import PayloadTool
+from boba.toolkit.manifest import ManifestBuilder
 
 
 def ch_config() -> ChToolConfig:
@@ -46,19 +47,15 @@ class TestChTools:
             raise AssertionError(f"names == self._NAMES, got {names}")
 
     def test_every_tool_takes_a_connection_parameter(self) -> None:
-        """Профиль подаёт хост: у каждого инструмента параметр с маркером."""
+        """Профиль подаёт хост: манифест называет параметр и вид соединения."""
+        builder = ManifestBuilder()
         for payload in CH_TOOLS:
             if not isinstance(payload, PayloadTool):
                 raise AssertionError(f"{payload} is not a PayloadTool")
 
-            fields = ToolArgv.connection_fields(payload.args_schema)
-            if list(fields) != ["connection"]:
-                raise AssertionError(f"{payload.name}: connection parameter is missing")
-
-            if fields["connection"] is not ClickHouseConfig:
-                raise AssertionError(
-                    f"{payload.name}: connection type must be declared"
-                )
+            connections = builder.tool(payload).connections
+            if connections != {"connection": "clickhouse"}:
+                raise AssertionError(f"{payload.name}: connections {connections}")
 
     def test_section_config_holds_limits_only(self) -> None:
         """Whitelist ушёл на хост: в секции остались только границы выдачи."""

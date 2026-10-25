@@ -10,7 +10,6 @@ InvalidFigureSpecError — спека не разбирается или не п
 from __future__ import annotations
 
 import json
-import sys
 from typing import Annotated, Any, Final
 
 from pydantic import Field
@@ -100,6 +99,3 @@ async def visualize(
 TOOLS: Final = ToolMain.toolset(
     visualize,
 )
-
-if __name__ == "__main__":
-    sys.exit(ToolMain.run(TOOLS))

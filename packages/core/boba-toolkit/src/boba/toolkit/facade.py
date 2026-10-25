@@ -8,8 +8,7 @@
 
 Прогрев зиготы пишет автор инструмента: @warmup объявляет корутину, которая
 исполняется в зиготе один раз до готовности, и её результат дети получают
-форком. Хост берёт хуки из реестра WarmupHooks по имени модуля, а не ищет
-условленный атрибут.
+форком. Прогревы перечисляет объявление плагина (boba.toolkit.manifest).
 
 Ошибки:
 ToolFacadeError — подпись тела не годится для модели вызова: нет докстринга,
@@ -27,7 +26,6 @@ from collections.abc import Awaitable, Callable, Coroutine, Iterator, Mapping, S
 from typing import (
     Annotated,
     Any,
-    ClassVar,
     TypeAlias,
     get_args,
     get_origin,
@@ -51,7 +49,6 @@ __all__ = [
     "ToolFacadeError",
     "UserConnection",
     "WarmupHook",
-    "WarmupHooks",
     "tool",
     "warmup",
 ]
@@ -185,7 +182,12 @@ class PayloadTool(BaseModel):
 
 
 class WarmupHook(BaseModel):
-    """Объявленный прогрев модуля: корутина и модель её конфига."""
+    """Объявленный прогрев: корутина и модель её конфига.
+
+    Создаёт его декоратор @warmup из корутины автора; объявление плагина
+    (ToolPlugin) перечисляет свои прогревы, зигота исполняет каждый один раз
+    до готовности с конфигом секции плагина.
+    """
 
     model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
 
@@ -194,45 +196,23 @@ class WarmupHook(BaseModel):
     body: WarmupBody
     config_model: type[BaseModel]
 
+    async def run(self, config: Mapping[str, Any]) -> None:
+        """Исполнить прогрев с конфигом секции config, разобранным его моделью.
 
-class WarmupHooks:
-    """Реестр прогревов по модулям: наполняет @warmup, читают хост и зигота."""
-
-    _HOOKS: ClassVar[dict[str, tuple[WarmupHook, ...]]] = {}
-
-    @classmethod
-    def add(cls, hook: WarmupHook) -> None:
-        cls._HOOKS[hook.module] = (*cls._HOOKS.get(hook.module, ()), hook)
-
-    @classmethod
-    def of(cls, module: str) -> tuple[WarmupHook, ...]:
-        """Прогревы модуля в порядке объявления; пусто — модуль их не имеет."""
-        return cls._HOOKS.get(module, ())
-
-    @classmethod
-    def named(cls, module: str, name: str) -> WarmupHook | None:
-        for hook in cls.of(module):
-            if hook.name == name:
-                return hook
-
-        return None
+        Ошибки:
+        pydantic.ValidationError — секция не подходит модели конфига прогрева.
+        """
+        await self.body(self.config_model.model_validate(dict(config)))
 
 
-def warmup(fn: WarmupBody) -> WarmupBody:
-    """Корутина прогрева зиготы: исполняется до готовности, конфиг — параметром.
-
-    Возвращает функцию как есть: модуль может звать её и напрямую, реестр
-    нужен только хосту и зиготе.
-    """
-    hook = WarmupHook(
+def warmup(fn: WarmupBody) -> WarmupHook:
+    """Корутина прогрева зиготы: исполняется до готовности, конфиг — параметром."""
+    return WarmupHook(
         module=fn.__module__,
         name=fn.__name__,
         body=fn,
         config_model=_warmup_config_model(fn),
     )
-    WarmupHooks.add(hook)
-
-    return fn
 
 
 def _warmup_config_model(fn: WarmupBody) -> type[BaseModel]:

@@ -228,7 +228,7 @@ def flow_raw(service_raw_config: DictConfig, test_database: str) -> DictConfig:
 
 
 @pytest.fixture(scope="module")
-def session_service(
+async def session_service(
     runtime_stand: StandRefs,
     call_stand: CallStand,
     flow_raw: DictConfig,
@@ -236,7 +236,8 @@ def session_service(
     """Порт инструментов профиля: боевой загрузчик над хранилищем стенда,
     исполнитель и порт стенда, запечатывающий имена соединений."""
     refs = runtime_stand.of(StoreHolder.current, lambda: None)
-    registry = runtime_stand.registry(flow_raw, refs, StandRefs.granted(PROFILE, ["*"]))
+    grants = StandRefs.granted(PROFILE, ["*"])
+    registry = await runtime_stand.registry(flow_raw, refs, grants)
     tools = registry.for_session(frozenset(ROLES), PROFILE)
     return SealingStand(
         registry.server(tools, DirectCalls()),
@@ -602,16 +603,6 @@ class Replies:
 
         return artifact
 
-    def invalid(self, call_id: str) -> NodeOutcome:
-        """Отказ валидации аргументов до тела: итог помечен ошибкой вызова."""
-        reply = self._reply(call_id)
-        if not reply.errored:
-            raise AssertionError(
-                f"{call_id} must fail validation, got {reply.content!r}"
-            )
-
-        return reply
-
     def _reply(self, call_id: str) -> NodeOutcome:
         reply = self._by_call.get(call_id)
         if reply is None:
@@ -762,9 +753,11 @@ async def test_agent_describes_schema_and_links(  # noqa: PLR0915 — один �
     assert bad_edge.error_kind == "EdgeEndMissingError"
     assert expected.pg_table("payments") in bad_edge.message
 
-    bad_args = replies.invalid(CallId.BAD_ARGS)
-    assert "description" in str(bad_args.content)
-    assert "required" in str(bad_args.content).lower()
+    # аргументы модели проверяет тело плагина: отказ приходит его конвертом
+    bad_args = replies.refused(CallId.BAD_ARGS)
+    assert bad_args.error_kind == "ToolEntryError"
+    assert "description" in bad_args.message
+    assert "required" in bad_args.message.lower()
 
     # списки области: шесть узлов и три ребра со своими id
     nodes_listing = _rows(replies.ok(CallId.LIST_NODES))

@@ -16,7 +16,7 @@ from boba.access import GrantCheck, ProfileGrant, ToolGrant, ToolGrants
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.connection_broker.sealed import SealedConnectionParams
 from boba.connection_broker.store import ConnectionStore
-from boba.connection_broker.tickets import ServiceTickets
+from boba.connection_broker.tickets import SectionTickets, ServiceTickets
 from boba.connection_broker.tools import ConnectionTools
 from boba.connection_broker.user_connections import StoreRef
 from boba.connections.manifest import ConnectionTypes
@@ -26,7 +26,7 @@ from boba.identity.errors import ServiceDisabledError
 from boba.identity.run import Runs
 from boba.krb.seal import SsoTickets
 from boba.runtime.launchers import SectionLaunchers, ToolLaunchers
-from boba.runtime.plugins import EntryPointPlugins, ToolLoader
+from boba.runtime.plugins import PluginKits, ToolLoader
 from boba.runtime.refs import RuntimeRefs
 from boba.stand.toolstand import ToolStand
 from boba.toolkit.chain import CallAmbient
@@ -78,19 +78,22 @@ class StandRefs:
 
         return built
 
-    def registry(
+    async def registry(
         self, raw: DictConfig, refs: RuntimeRefs, grants: ToolGrants
     ) -> ToolRegistry:
-        """Реестр инструментов боевым загрузчиком: плагины установленных
-        пакетов, включённые в конфиге raw, и каталог соединений под правами
-        grants. raw — конфиг процесса, который инструменты исполняет (сервис
-        boba-mcp); права тест называет сам: у сервиса их задают endpoint'ы,
-        у чата — роли и профили."""
+        """Реестр инструментов боевым загрузчиком: плагины, включённые в
+        конфиге raw, с манифестами от их программ, и каталог соединений под
+        правами grants. raw — конфиг процесса, который инструменты исполняет
+        (сервис boba-mcp); права тест называет сам: у сервиса их задают
+        endpoint'ы, у чата — роли и профили."""
+        launchers = self.launchers(raw)
+        arming = SectionTickets(ServiceTickets(refs.credentials), refs.connection_types)
+        kits = await PluginKits(raw, launchers, arming).load()
         loader = ToolLoader(
             raw,
-            EntryPointPlugins().discover(),
+            kits,
             refs.execution(),
-            self.launchers(raw),
+            launchers,
             grants,
             ConnectionTools(refs.connection_store, self.contexts).build(),
         )

@@ -1,5 +1,5 @@
-"""Контракт вызова: адрес, argv, каналы флагами, конверт, CLI настоящим
-subprocess'ом."""
+"""Контракт вызова: аргументы одним JSON-объектом, каналы флагами, конверт,
+подкоманда call программы плагина настоящим subprocess'ом."""
 
 from __future__ import annotations
 
@@ -8,18 +8,17 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
-import pytest
 from pydantic import SecretStr
 
 from boba.stand_core.fake_toolmod import FakeConfig, fake_echo
 from boba.toolkit.entry import (
-    ArgumentTooLargeError,
     EntryFlag,
-    ToolAddress,
     ToolArgv,
     ToolMain,
 )
+from boba.toolkit.manifest import ManifestBuilder
 from boba.toolkit.protocol import REPLY, ReplyError, ReplyOk
 from boba.toolkit.result import ExceptionResult
 
@@ -29,17 +28,28 @@ CFG = FakeConfig(token=SecretStr("s3cret-token"), limit=5)
 
 TOOLSET = ToolMain.toolset(fake_echo)
 FAKE = TOOLSET[0]
+DECL = ManifestBuilder().tool(FAKE)
+
+PROGRAM = (
+    sys.executable,
+    "-m",
+    "boba.sandbox.program",
+    "--declared",
+    "boba.stand_core.fake_toolmod:PLUGIN",
+    "call",
+)
+"""Подкоманда call программы плагина над объявлением фейкового модуля."""
 
 
 def run_module(
     arguments: list[str],
-    config: bytes | None = None,
+    args: dict[str, Any] | None = None,
     result_fd: bool = False,
 ) -> tuple[subprocess.CompletedProcess[bytes], bytes]:
-    """Запуск fake_toolmod настоящей командой модуля, как зовёт launcher.
+    """Вызов фейкового инструмента подкомандой call, как зовёт launcher.
 
-    config едет каналом --injected-fd, конверт возвращается каналом
-    --fd-result — номера дескрипторов в аргументах, как их шлёт лончер.
+    args едут каналом --args-fd, конверт возвращается каналом --fd-result —
+    номера дескрипторов в аргументах, как их шлёт лончер.
     """
     env = dict(os.environ)
     env["PYTHONPATH"] = TESTS_DIR + os.pathsep + env.get("PYTHONPATH", "")
@@ -47,13 +57,13 @@ def run_module(
     pass_fds: list[int] = []
     extra: list[str] = []
 
-    config_r = -1
-    if config is not None:
-        config_r, config_w = os.pipe()
-        os.write(config_w, config)
-        os.close(config_w)
-        extra.extend((EntryFlag.INJECTED_FD.value, str(config_r)))
-        pass_fds.append(config_r)
+    args_r = -1
+    if args is not None:
+        args_r, args_w = os.pipe()
+        os.write(args_w, json.dumps(args).encode())
+        os.close(args_w)
+        extra.extend((EntryFlag.ARGS_FD.value, str(args_r)))
+        pass_fds.append(args_r)
 
     read_fd = -1
     write_fd = -1
@@ -63,7 +73,7 @@ def run_module(
         pass_fds.append(write_fd)
 
     proc = subprocess.run(
-        [sys.executable, "-m", "boba.stand_core.fake_toolmod", *arguments, *extra],
+        [*PROGRAM, *arguments, *extra],
         capture_output=True,
         env=env,
         pass_fds=pass_fds,
@@ -71,8 +81,8 @@ def run_module(
         check=False,
     )
 
-    if config_r >= 0:
-        os.close(config_r)
+    if args_r >= 0:
+        os.close(args_r)
 
     envelope = b""
     if result_fd:
@@ -89,64 +99,36 @@ def run_module(
     return proc, envelope
 
 
-class TestAddress:
-    def test_roundtrip(self) -> None:
-        address = ToolAddress.of(FAKE)
-
-        if address.module != "boba.stand_core.fake_toolmod":
-            raise AssertionError('address.module == "boba.stand_core.fake_toolmod"')
-        if address.name != "fake_echo":
-            raise AssertionError('address.name == "fake_echo"')
-        if address.argv_head()[1:] != [
-            "-m",
-            "boba.stand_core.fake_toolmod",
-            "fake_echo",
-        ]:
-            raise AssertionError(
-                'address.argv_head()[1:] == ["-m", "boba.stand_core.fake_toolmod", "…'
-            )
-
-
 class TestArgv:
-    def test_llm_args_go_to_flags_injected_to_config(self) -> None:
+    def test_model_args_and_injected_go_to_one_object(self) -> None:
         command = ToolArgv.render(
-            ToolAddress.of(FAKE),
-            ToolArgv.schema_of(FAKE),
+            DECL,
             {"text": "hi there", "repeat": 3, "cfg": CFG},
             input_counts={},
             output_counts={},
         )
 
-        argv = list(command.argv)
-        if argv[4:] != ["--text", "hi there", "--repeat", "3"]:
-            raise AssertionError('argv[4:] == ["--text", "hi there", "--repeat", "3"]')
+        if command.argv != ("fake_echo",):
+            raise AssertionError(f"argv: {command.argv!r}")
 
-        payload = json.loads(command.config)
+        payload = json.loads(command.args)
+        if payload["text"] != "hi there":
+            raise AssertionError(f"payload: {payload!r}")
         if payload["cfg"]["token"] != "s3cret-token":
             raise AssertionError('payload["cfg"]["token"] == "s3cret-token"')
 
     def test_secret_never_in_argv(self) -> None:
-        command = ToolArgv.render(
-            ToolAddress.of(FAKE),
-            ToolArgv.schema_of(FAKE),
-            {"text": "x", "repeat": 1, "cfg": CFG},
-            input_counts={},
-            output_counts={},
-        )
+        command = ToolArgv.render(DECL, {"text": "x", "repeat": 1, "cfg": CFG}, {}, {})
 
         if "s3cret-token" in " ".join(command.argv):
             raise AssertionError('"s3cret-token" not in " ".join(command.argv)')
 
     def test_parse_restores_kwargs(self) -> None:
         command = ToolArgv.render(
-            ToolAddress.of(FAKE),
-            ToolArgv.schema_of(FAKE),
-            {"text": "план б", "repeat": 2, "cfg": CFG},
-            input_counts={},
-            output_counts={},
+            DECL, {"text": "план б", "repeat": 2, "cfg": CFG}, {}, {}
         )
 
-        kwargs = ToolArgv.parse(FAKE, command.argv[4:], command.config)
+        kwargs = ToolArgv.parse(FAKE, (), command.args)
 
         if kwargs["text"] != "план б":
             raise AssertionError('kwargs["text"] == "план б"')
@@ -158,21 +140,38 @@ class TestArgv:
         if restored.token.get_secret_value() != "s3cret-token":
             raise AssertionError('restored.token.get_secret_value() == "s3cret-token"')
 
-    def test_oversized_argument_is_refused(self) -> None:
-        with pytest.raises(ArgumentTooLargeError):
-            ToolArgv.render(
-                ToolAddress.of(FAKE),
-                ToolArgv.schema_of(FAKE),
-                {"text": "x" * 140_000, "repeat": 1, "cfg": CFG},
-                input_counts={},
-                output_counts={},
-            )
+    def test_large_argument_goes_through_the_channel(self) -> None:
+        """Аргументы едут каналом, а не argv: потолка MAX_ARG_STRLEN нет."""
+        text = "x" * 140_000
+        command = ToolArgv.render(DECL, {"text": text, "repeat": 1, "cfg": CFG}, {}, {})
+
+        kwargs = ToolArgv.parse(FAKE, (), command.args)
+
+        if kwargs["text"] != text:
+            raise AssertionError("the large argument arrived whole")
+
+    def test_argument_is_checked_by_the_body(self) -> None:
+        """Аргументы модели проверяет тело: ограничение поля — отказ разбора
+        с именем поля, без значения в тексте."""
+        command = ToolArgv.render(DECL, {"text": "", "repeat": 0, "cfg": CFG}, {}, {})
+
+        try:
+            ToolArgv.parse(FAKE, (), command.args)
+        except Exception as exc:
+            text = str(exc)
+        else:
+            raise AssertionError("empty text and zero repeat must be refused")
+
+        if "text" not in text or "repeat" not in text:
+            raise AssertionError(f"refusal names both fields: {text!r}")
+        if "s3cret-token" in text:
+            raise AssertionError(f"refusal does not quote values: {text!r}")
 
 
 class TestToolMainAsProgram:
-    """Модуль инструментов — обычная программа: контракт argv/stdin/конверт."""
+    """Подкоманда call — обычная программа: контракт argv/каналы/конверт."""
 
-    CONFIG = json.dumps({"cfg": CFG.revealed()}).encode()
+    CONFIG: dict[str, Any] = {"cfg": CFG.revealed()}
 
     def test_help_lists_tools(self) -> None:
         proc, _ = run_module(["--help"])
@@ -184,8 +183,7 @@ class TestToolMainAsProgram:
 
     def test_human_run_prints_content(self) -> None:
         proc, _ = run_module(
-            ["fake_echo", "--text", "ping", "--repeat", "2"],
-            config=self.CONFIG,
+            ["fake_echo"], args={**self.CONFIG, "text": "ping", "repeat": 2}
         )
 
         if proc.returncode != 0:
@@ -195,8 +193,8 @@ class TestToolMainAsProgram:
 
     def test_envelope_goes_to_result_fd_not_stdout(self) -> None:
         proc, envelope = run_module(
-            ["fake_echo", "--text", "ping", "--repeat", "1"],
-            config=self.CONFIG,
+            ["fake_echo"],
+            args={**self.CONFIG, "text": "ping", "repeat": 1},
             result_fd=True,
         )
 
@@ -216,8 +214,8 @@ class TestToolMainAsProgram:
     def test_body_logs_land_on_stdout(self) -> None:
         """Логи тела — живой вывод: журнал и панель читают stdout процесса."""
         proc, envelope = run_module(
-            ["fake_echo", "--text", "ping", "--repeat", "1"],
-            config=self.CONFIG,
+            ["fake_echo"],
+            args={**self.CONFIG, "text": "ping", "repeat": 1},
             result_fd=True,
         )
 
@@ -234,8 +232,8 @@ class TestToolMainAsProgram:
 
     def test_body_error_becomes_error_envelope(self) -> None:
         proc, envelope = run_module(
-            ["fake_echo", "--text", "boom", "--repeat", "1"],
-            config=self.CONFIG,
+            ["fake_echo"],
+            args={**self.CONFIG, "text": "boom", "repeat": 1},
             result_fd=True,
         )
 
@@ -260,8 +258,8 @@ class TestToolMainAsProgram:
         """Ошибок «вне контракта» нет: любое исключение тела едет конвертом,
         трасса — в журнал процесса (stdout) и в сам результат."""
         proc, envelope = run_module(
-            ["fake_echo", "--text", "crash", "--repeat", "1"],
-            config=self.CONFIG,
+            ["fake_echo"],
+            args={**self.CONFIG, "text": "crash", "repeat": 1},
             result_fd=True,
         )
 
@@ -292,10 +290,10 @@ class TestToolMainAsProgram:
         if "unknown tool 'no_such_tool'" not in reply.failure.llm_view():
             raise AssertionError(f"llm_view: {reply.failure.llm_view()!r}")
 
-    def test_invalid_flag_is_entry_error(self) -> None:
+    def test_unknown_argument_is_entry_error(self) -> None:
         proc, envelope = run_module(
-            ["fake_echo", "--nope", "x"],
-            config=self.CONFIG,
+            ["fake_echo"],
+            args={**self.CONFIG, "text": "x", "repeat": 1, "nope": "x"},
             result_fd=True,
         )
 
@@ -309,7 +307,7 @@ class TestToolMainAsProgram:
             raise AssertionError(f"error_kind: {reply.failure.error_kind!r}")
 
     def test_missing_config_is_entry_error(self) -> None:
-        proc, _ = run_module(["fake_echo", "--text", "x", "--repeat", "1"])
+        proc, _ = run_module(["fake_echo"], args={"text": "x", "repeat": 1})
 
         if proc.returncode != ToolMain.Exit.ENTRY_ERROR:
             raise AssertionError("proc.returncode == ToolMain.Exit.ENTRY_ERROR")
@@ -318,43 +316,29 @@ class TestToolMainAsProgram:
 
     def test_broken_channel_number_is_entry_error(self) -> None:
         """Не-числовой номер канала: конверт писать некуда, причина в stderr."""
-        proc, _ = run_module(
-            ["fake_echo", "--text", "x", "--repeat", "1", "--fd-result", "nope"]
-        )
+        proc, _ = run_module(["fake_echo", "--fd-result", "nope"])
 
         if proc.returncode != ToolMain.Exit.ENTRY_ERROR:
             raise AssertionError("proc.returncode == ToolMain.Exit.ENTRY_ERROR")
         if b"expects a descriptor number" not in proc.stderr:
             raise AssertionError(f"stderr={proc.stderr!r}")
 
-    def test_injected_file_serves_the_config(self, tmp_path: Path) -> None:
-        """Ручной запуск: конфиг файлом --injected, каналов лончера нет."""
-        injected = tmp_path / "injected.json"
-        injected.write_bytes(self.CONFIG)
+    def test_args_file_serves_the_call(self, tmp_path: Path) -> None:
+        """Ручной запуск: аргументы файлом --args, каналов лончера нет."""
+        args = tmp_path / "args.json"
+        args.write_text(json.dumps({**self.CONFIG, "text": "ping", "repeat": 1}))
 
-        proc, _ = run_module(
-            [
-                "fake_echo",
-                "--text",
-                "ping",
-                "--repeat",
-                "1",
-                "--injected",
-                str(injected),
-            ]
-        )
+        proc, _ = run_module(["fake_echo", "--args", str(args)])
 
         if proc.returncode != 0:
             raise AssertionError(f"proc.returncode == 0: {proc.stderr!r}")
         if b"ping" not in proc.stdout:
             raise AssertionError('b"ping" in proc.stdout')
 
-    def test_unreadable_injected_file_is_entry_error(self, tmp_path: Path) -> None:
+    def test_unreadable_args_file_is_entry_error(self, tmp_path: Path) -> None:
         missing = tmp_path / "absent.json"
 
-        proc, _ = run_module(
-            ["fake_echo", "--text", "x", "--repeat", "1", "--injected", str(missing)]
-        )
+        proc, _ = run_module(["fake_echo", "--args", str(missing)])
 
         if proc.returncode != ToolMain.Exit.ENTRY_ERROR:
             raise AssertionError("proc.returncode == ToolMain.Exit.ENTRY_ERROR")

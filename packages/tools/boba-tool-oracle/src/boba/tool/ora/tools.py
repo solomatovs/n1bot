@@ -20,7 +20,6 @@ TransferError — стратегия схемы отказала; тип без 
 
 from __future__ import annotations
 
-import sys
 from collections.abc import Sequence
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Final
@@ -1072,6 +1071,3 @@ TOOLS: Final = ToolMain.toolset(
     ora_sequences_describe,
     ora_types_describe,
 )
-
-if __name__ == "__main__":
-    sys.exit(ToolMain.run(TOOLS))

@@ -14,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import sys
 from pathlib import Path
 from typing import Annotated, Final
 
@@ -23,6 +22,7 @@ from pydantic import Field
 from boba.identity.context import Scope, Subject
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
+from boba.toolkit.manifest import ToolPlugin
 from boba.toolkit.ports import ToolProgress
 from boba.toolkit.result import MarkdownResult
 
@@ -89,5 +89,6 @@ TOOLS: Final = ToolMain.toolset(
     fake_whoami, fake_scope, fake_progress, fake_sleep, fake_query
 )
 
-if __name__ == "__main__":
-    sys.exit(ToolMain.run(TOOLS))
+PLUGIN: Final = ToolPlugin(id="fake_caller", tools=TOOLS)
+"""Объявление плагина модуля: тесты зовут его программой плагина
+`python -m boba.sandbox.program --declared <модуль>:PLUGIN`."""

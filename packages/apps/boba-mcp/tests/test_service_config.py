@@ -22,11 +22,12 @@ from boba.connection_broker.sealed import SealedConnectionParams, ServerConnecti
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.sealed import SealKeys
 from boba.mcp_server.app import McpAppConfig
-from boba.runtime.plugins import EntryPointPlugins, PluginMeta, ToolLoader
+from boba.runtime.plugins import PluginKit, PluginMeta, ToolLoader
 from boba.runtime.refs import ExecRefs
 from boba.stand.refs import StandRefs
-from boba.stand.sandbox import section_profile
+from boba.stand.sandbox import plugin_launch, section_profile
 from boba.stand_core.context import CallStand
+from boba.toolrun.hosted import PluginSection
 from boba.toolrun.injected import StaticConfig, ToolConfigError
 
 HEAVY_SECTIONS = ("tool.ingest", "tool.kb")
@@ -139,8 +140,20 @@ class TestConnectionConfigRefusesStart:
 
     @staticmethod
     def _loader(raw: DictConfig, stand: StandRefs, refs: ExecRefs) -> ToolLoader:
-        plugins = {"pg": EntryPointPlugins().discover()["pg"]}
+        launch = plugin_launch(raw, "pg")
+        kit = PluginKit(
+            launch=launch,
+            meta=bind(raw, path="tool.pg", model=PluginMeta),
+            section=PluginSection(
+                values=launch.section,
+                connections=launch.manifest.connections_in_config,
+            ),
+        )
 
         return ToolLoader(
-            raw, plugins, refs, stand.launchers(raw), stand.granted("general", ["*"])
+            raw,
+            {"pg": kit},
+            refs,
+            stand.launchers(raw),
+            stand.granted("general", ["*"]),
         )

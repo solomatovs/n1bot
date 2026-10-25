@@ -232,24 +232,26 @@ class TestArguments:
 
 
 class TestRefusal:
-    MISSING: ClassVar[str] = "ValidationError: repeat: Field required [missing]"
+    """Аргументы модели проверяет тело плагина: отказ приходит его конвертом
+    и называет каждое непригодное поле."""
 
-    WRONG: ClassVar[str] = (
-        "ValidationError: text: String should have at least 1 character "
-        "[string_too_short]; repeat: Input should be greater than or equal to 1 "
-        "[greater_than_equal]"
+    REFUSAL: ClassVar[str] = (
+        "ToolEntryError: tool 'fake_echo': arguments do not match its declaration: "
     )
 
-    RAISED_AT: ClassVar[str] = "raised at: boba/toolrun/"
+    RAISED_AT: ClassVar[str] = "raised at: boba/toolkit/entry.py"
 
-    def _check(self, result: Any, expected: str) -> None:
+    def _check(self, result: Any, reasons: tuple[str, ...]) -> None:
         if not result.is_error:
             raise AssertionError(f"bad arguments are an error: {result}")
 
         text = result.content[0].text
         lines = text.split("\n")
-        if lines[0] != expected:
-            raise AssertionError(f"the refusal names the reasons: {text!r}")
+        if not lines[0].startswith(self.REFUSAL):
+            raise AssertionError(f"the refusal names the tool: {text!r}")
+        for reason in reasons:
+            if reason not in lines[0]:
+                raise AssertionError(f"the refusal names {reason!r}: {text!r}")
         if len(lines) != 2 or not lines[1].startswith(self.RAISED_AT):
             raise AssertionError(f"the refusal names its place: {text!r}")
 
@@ -262,12 +264,14 @@ class TestRefusal:
     async def test_missing_argument_is_named(self, client: Client[Any]) -> None:
         result = await client.call_tool_mcp("fake_echo", {"text": "hi"})
 
-        self._check(result, self.MISSING)
+        self._check(result, ("repeat:", "[missing]"))
 
     async def test_every_wrong_value_is_named(self, client: Client[Any]) -> None:
         result = await client.call_tool_mcp("fake_echo", {"text": "", "repeat": 0})
 
-        self._check(result, self.WRONG)
+        self._check(
+            result, ("text:", "[string_too_short]", "repeat:", "[greater_than_equal]")
+        )
 
 
 class TestCallIdInJournal:

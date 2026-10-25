@@ -1,8 +1,10 @@
-"""Старт плагинов с таблицами: boba-mcp на базе без расширения vector выходит
-с ошибкой, которая называет плагин, базу и недостающие расширения, а не висит.
+"""Старт плагинов с таблицами: хранилище готовит подкоманда setup программы
+плагина по секции, где keytab-профиль заменён билетом вызова.
 
-Таблицы kb создаёт сам плагин при старте процесса (PluginStart); база из
-template0 расширений не несёт, а создать их может только суперпользователь.
+Таблицы kb создаёт setup в песочнице плагина; boba-mcp на базе без
+расширения vector выходит с ошибкой, которая называет плагин, базу и
+недостающие расширения, а не висит: база из template0 расширений не несёт, а
+создать их может только суперпользователь.
 
 pytest -m integration.
 """
@@ -18,12 +20,20 @@ from typing import Any, ClassVar
 
 import psycopg
 import pytest
+from omegaconf import DictConfig, OmegaConf
 from psycopg import sql
 
+from boba.auth.credentials import KerberosCredentialSource, NoRefresh
+from boba.connection_broker.tickets import SectionTickets, ServiceTickets
+from boba.connections.manifest import ConnectionTypes
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
+from boba.runtime.plugins import PluginKits
 from boba.stand.names import StandNames
+from boba.stand.refs import StandRefs
+from boba.stand.toolsetup import ToolSetup
 from boba.stand.ui.stand import REPO_ROOT, ServiceStand, StandApp, StandPorts
+from boba.stand_core.context import CallStand
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -148,6 +158,65 @@ async def test_service_without_vector_exits_naming_the_extensions(
     output = log_path.read_text(encoding="utf-8", errors="replace")
     tail = "\n".join(output.splitlines()[-40:])
     assert code != 0, tail
-    assert "plugin 'kb' ([tool.kb]) could not prepare its tables" in output, tail
+    assert "plugin kb: `setup`" in output, tail
+    assert "preparing its storage failed" in output, tail
     assert f"/{bare_database}" in output, tail
     assert "vector, pg_trgm, unaccent, btree_gin must exist" in output, tail
+
+
+def _replaced(raw: DictConfig, path: str, key: str, value: str) -> None:
+    """Значение key в таблице path, заданной интерполяцией: таблица ложится
+    развёрнутой копией, иначе правка затёрла бы интерполяцию целиком."""
+    table = OmegaConf.to_container(OmegaConf.select(raw, path), resolve=True)
+    assert isinstance(table, dict)
+    table[key] = value
+    OmegaConf.update(raw, path, table, merge=False)
+
+
+def _credentials() -> KerberosCredentialSource:
+    return KerberosCredentialSource(None, NoRefresh())
+
+
+async def test_setup_in_the_sandbox_creates_the_kb_tables(
+    runtime_stand: StandRefs,
+    call_stand: CallStand,
+    raw_config: DictConfig,
+    test_database: str,
+    test_postgres: PostgresConfig,
+) -> None:
+    """kb объявил setup: на старте его программа в песочнице создаёт таблицы
+    в своей схеме, keytab-профиль уехал туда билетом вызова."""
+    raw = ToolSetup.sandbox_raw(raw_config)
+    schema = StandNames().of_tree("kb_setup")
+    for plugin_id in raw["tool"]:
+        OmegaConf.update(raw, f"tool.{plugin_id}.enable", plugin_id == "kb")
+
+    _replaced(raw, "tool.kb.connection", "dbname", test_database)
+    _replaced(raw, "tool.kb.tables", "pg_schema", schema)
+    arming = SectionTickets(ServiceTickets(_credentials), ConnectionTypes.discover)
+
+    async with await AsyncPostgresPool.dedicated(test_postgres) as conn:
+        await conn.execute(
+            sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema))
+        )
+
+    try:
+        kits = await PluginKits(raw, runtime_stand.launchers(raw), arming).load()
+        assert kits["kb"].launch.manifest.setup
+
+        async with await AsyncPostgresPool.dedicated(test_postgres) as conn:
+            cursor = await conn.execute(
+                "select table_name from information_schema.tables"
+                " where table_schema = %s",
+                (schema,),
+            )
+            tables = {row[0] for row in await cursor.fetchall()}
+    finally:
+        async with await AsyncPostgresPool.dedicated(test_postgres) as conn:
+            await conn.execute(
+                sql.SQL("drop schema if exists {} cascade").format(
+                    sql.Identifier(schema)
+                )
+            )
+
+    assert {"kb_chunks", "kb_collections", "kb_sources"} <= tables, tables

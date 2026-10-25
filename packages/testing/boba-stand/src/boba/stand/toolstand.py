@@ -15,6 +15,7 @@ AssertionError — у пробы спросили аргументы вызов�
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from functools import partial
 from pathlib import Path
@@ -24,14 +25,16 @@ from pydantic import BaseModel, JsonValue
 
 from boba.access import ProfileGrant, RoleConfig, ToolAccess
 from boba.identity.context import CallContexts
+from boba.sandbox.program import PluginCommand, PluginEntry
 from boba.toolkit.chain import CallAmbient
 from boba.toolkit.dag import DagNode, NodeCalls, NodeOutcome, ToolServer
 from boba.toolkit.facade import PayloadTool
 from boba.toolkit.launcher import ToolLauncher
+from boba.toolkit.manifest import ManifestBuilder, ToolDecl
 from boba.toolkit.ports import StreamSpecs
 from boba.toolkit.result import MarkdownResult, ToolResultBase
 from boba.toolrun.dev_null import DevNullTool
-from boba.toolrun.hosted import HostedCall, HostedTool, ToolHosting
+from boba.toolrun.hosted import HostedCall, HostedTool, PluginSection, ToolHosting
 from boba.toolrun.injected import ParamSource
 from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
 from boba.toolrun.registry import ToolChain, ToolRegistry
@@ -123,6 +126,9 @@ class ToolStand:
     NodeCalls, который задаёт тест.
     """
 
+    NO_SECTION: ClassVar[PluginSection] = PluginSection()
+    """Секция плагина стенда без значений: инструментам без роли config."""
+
     CHANNEL_LIMIT_BYTES: ClassVar[int] = 8_000_000
     STDERR_TAIL_BYTES: ClassVar[int] = 16384
     KILL_GRACE_SEC: ClassVar[float] = 0.5
@@ -141,15 +147,20 @@ class ToolStand:
         self._ambient = ambient
         self._chain = ToolChain(stream, journals, contexts, ambient, sources)
         self._hosting = ToolHosting()
+        self._builder = ManifestBuilder()
         self._drain = DevNullTool(ambient)
         self._tools: list[HostedTool] = []
         self._specs = StreamSpecs({})
 
     def process_launcher(
-        self, section: str, workdir: Path, timeout_sec: float
+        self, section: str, workdir: Path, timeout_sec: float, plugins: Sequence[str]
     ) -> ProcessToolCaller:
         """Запуск тел субпроцессом хоста в каталоге workdir: исполнитель
-        секции section со сроком вызова timeout_sec."""
+        секции section со сроком вызова timeout_sec; тела — программа
+        плагина над объявлениями plugins (`модуль:имя`) интерпретатором
+        теста."""
+        entry = PluginEntry()
+        program = (*entry.declared_argv(sys.executable, plugins), PluginCommand.CALL)
         config = ProcessLauncherConfig(
             provider="process",
             workdir=str(workdir),
@@ -159,16 +170,28 @@ class ToolStand:
             kill_grace_sec=self.KILL_GRACE_SEC,
         )
 
-        return ProcessToolCaller(section, config, self._contexts, self._ambient)
+        return ProcessToolCaller(
+            section, config, self._contexts, self._ambient, program
+        )
+
+    def plugin_ref(self, plugin_id: str) -> str:
+        """Ссылка `модуль:имя` на объявление установленного плагина plugin_id
+        для process_launcher."""
+        return PluginEntry().ref(plugin_id)
 
     def launch(
-        self, payloads: Sequence[PayloadTool], launcher: ToolLauncher
+        self,
+        payloads: Sequence[PayloadTool],
+        launcher: ToolLauncher,
+        section: PluginSection = NO_SECTION,
     ) -> list[HostedTool]:
         """Инструменты одной секции под обёрткой запуска launcher и
         источниками служебных параметров стенда; у каждого есть живой вывод.
-        С первым писателем каналов к инструментам стенда добавляется слив
-        dev_null, как в загрузчике."""
-        launched = self._chain.launch(payloads, launcher)
+        Объявления манифеста стенд строит из payloads сам, как программа
+        плагина; section — секция плагина для роли config. С первым
+        писателем каналов к инструментам стенда добавляется слив dev_null,
+        как в загрузчике."""
+        launched = self._chain.launch(self.decls(payloads), launcher, section)
         tools = launched.tools
         specs = launched.specs
 
@@ -182,6 +205,14 @@ class ToolStand:
         self._drained(tools, specs)
 
         return list(tools)
+
+    def decls(self, payloads: Sequence[PayloadTool]) -> list[ToolDecl]:
+        """Объявления инструментов манифеста по объявлениям фасада."""
+        decls: list[ToolDecl] = []
+        for payload in payloads:
+            decls.append(self._builder.tool(payload))
+
+        return decls
 
     def host(self, payloads: Sequence[PayloadTool]) -> list[HostedTool]:
         """Инструменты с телом в процессе теста: без обёртки запуска."""

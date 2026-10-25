@@ -8,12 +8,12 @@
 
 from __future__ import annotations
 
-import sys
 from typing import Annotated, Final
 
 from boba.db.postgres.connection import PostgresConfig
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import UserConnection, tool
+from boba.toolkit.manifest import ToolPlugin
 from boba.toolkit.result import MarkdownResult
 
 
@@ -27,5 +27,6 @@ async def fake_connection_host(
 
 TOOLS: Final = ToolMain.toolset(fake_connection_host)
 
-if __name__ == "__main__":
-    sys.exit(ToolMain.run(TOOLS))
+PLUGIN: Final = ToolPlugin(id="fake_connection", tools=TOOLS)
+"""Объявление плагина модуля: тесты зовут его программой плагина
+`python -m boba.sandbox.program --declared <модуль>:PLUGIN`."""

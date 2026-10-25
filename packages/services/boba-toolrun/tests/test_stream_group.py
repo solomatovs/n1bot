@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import sys
 import threading
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -21,6 +22,7 @@ from pydantic import BaseModel, SecretStr
 
 from boba.identity.context import CallContexts
 from boba.identity.run import Runs
+from boba.sandbox.program import PluginCommand, PluginEntry
 from boba.stand.toolstand import ProbeBody, ProbeTools, ToolStand
 from boba.stand_core.fake_toolmod import (
     FakeConfig,
@@ -66,14 +68,26 @@ from boba.toolkit.result import (
 )
 from boba.toolrun.dag_run import DagOutcome, DagRunner
 from boba.toolrun.dev_null import DevNullTool
-from boba.toolrun.hosted import DirectCalls, HostedCall, HostedTool, ToolSchema
-from boba.toolrun.injected import InjectedConfig, StaticConfig
+from boba.toolrun.hosted import (
+    DirectCalls,
+    HostedCall,
+    HostedTool,
+    PluginSection,
+    ToolSchema,
+)
+from boba.toolrun.injected import InjectedConfig, StaticSection
 from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
 from boba.toolrun.stream_calls import StreamChannelFields, StreamGroupsConfig
 from boba.toolrun.streams import CallJournals
 
 CFG = FakeConfig(token=SecretStr("t0ken"), limit=5)
-MODULE = "boba.stand_core.fake_toolmod"
+PLUGIN = "boba.stand_core.fake_toolmod:PLUGIN"
+
+PROGRAM = (
+    *PluginEntry().declared_argv(sys.executable, (PLUGIN,)),
+    PluginCommand.CALL.value,
+)
+"""Тела фейковых инструментов: подкоманда call программы плагина."""
 FAST = StreamTimings(open_sec=20.0, stall_sec=3.0, poll_sec=0.1)
 STREAM_CFG = StreamGroupsConfig(
     open_sec=20.0,
@@ -93,7 +107,7 @@ def _launcher(workdir: Path, ambient: CallAmbient) -> ProcessToolCaller:
         stderr_tail_bytes=8192,
         kill_grace_sec=0.5,
     )
-    return ProcessToolCaller("stream-group", cfg, CallContexts(), ambient)
+    return ProcessToolCaller("stream-group", cfg, CallContexts(), ambient, PROGRAM)
 
 
 @dataclass(frozen=True)
@@ -124,7 +138,7 @@ class GroupStand:
             contexts,
             CallJournals(None, Runs(contexts)),
             self._ambient,
-            (InjectedConfig(self._config_of, StaticConfig()),),
+            (InjectedConfig(StaticSection()),),
         )
         stand.launch(
             (
@@ -138,7 +152,8 @@ class GroupStand:
                 fake_split,
                 fake_shard,
             ),
-            stand.process_launcher("stream-group", workdir, 60.0),
+            stand.process_launcher("stream-group", workdir, 60.0, (PLUGIN,)),
+            PluginSection(values=CFG.revealed()),
         )
         self._specs = stand.specs()
         self._tools: dict[str, HostedTool] = {}
@@ -148,10 +163,6 @@ class GroupStand:
         StreamChannelFields(STREAM_CFG).attach_all(
             list(self._tools.values()), self._specs
         )
-
-    @staticmethod
-    def _config_of(name: str, annotation: object) -> object:
-        return CFG
 
     def adopt(self, extra: HostedTool) -> None:
         """Готовый инструмент хоста рядом с инструментами стенда."""
@@ -958,8 +969,8 @@ class TestRawFanOut:
 
         def command() -> ToolCommand:
             return ToolCommand(
-                argv=("python3", "-m", MODULE, "fake_relay"),
-                config=b'{"cfg": {"token": "t0ken", "limit": 5}}',
+                argv=("fake_relay",),
+                args=b'{"cfg": {"token": "t0ken", "limit": 5}}',
                 inputs=(CallInputSpec(port="feed", raw=True),),
                 outputs=(CallOutputSpec(port="out", raw=True),),
             )
@@ -1034,19 +1045,11 @@ class TestGateOutsideGroup:
         StreamGroup фиксирует результат как обычно."""
         launcher = _launcher(tmp_path, CallAmbient())
         command = ToolCommand(
-            argv=(
-                "python3",
-                "-m",
-                MODULE,
-                "fake_collect",
-                "--marker",
-                "lone",
-                "--fail",
-                "false",
-                "--gated",
-                "true",
+            argv=("fake_collect",),
+            args=(
+                b'{"cfg": {"token": "t0ken", "limit": 5}, '
+                b'"marker": "lone", "fail": false, "gated": true}'
             ),
-            config=b'{"cfg": {"token": "t0ken", "limit": 5}}',
             inputs=(CallInputSpec(port="feed", raw=False),),
         )
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping, Sequence
 from datetime import timedelta
-from typing import Annotated, Literal
+from typing import Annotated
 
 import pytest
 from probe_stand import (
@@ -20,12 +20,12 @@ from probe_stand import (
     SECRET,
     TYPES,
     OtherConnection,
+    ProbeConnection,
     ProbeTools,
     SealedStand,
 )
 
 from boba.connection_broker.sealed import SealedConnectionParams
-from boba.connections.base import ConnectionBase
 from boba.connections.marks import ConnectionRefusal
 from boba.connections.sealed import (
     ConnectionOffer,
@@ -257,28 +257,16 @@ class TestRefusals:
 
 
 class TestDeclarationIsChecked:
-    def test_parameter_must_be_a_connection_model(self, call_stand: CallStand) -> None:
+    def test_kind_must_be_known_to_the_server(self, call_stand: CallStand) -> None:
+        """Вид соединения — код сервера: вид из манифеста, которого сервер не
+        знает, отвергается при сборке инструментов."""
         tool = ProbeTools().tool(
-            "broken", {"connection": (Annotated[str, UserConnection], ...)}
+            "broken",
+            {"connection": (Annotated[ProbeConnection, UserConnection], ...)},
+            {"connection": "unregistered"},
         )
 
-        with pytest.raises(ToolConfigError, match="not a connection model"):
-            SealedConnectionParams(
-                SealKeys(), lambda: TYPES, call_stand.contexts, {}, StaticConfig()
-            ).bind_all([tool])
-
-    def test_type_package_must_be_installed(self, call_stand: CallStand) -> None:
-        class Unregistered(ConnectionBase):
-            kind: Literal["unregistered"] = "unregistered"
-
-            def trace(self) -> str:
-                return "unregistered"
-
-        tool = ProbeTools().tool(
-            "broken", {"connection": (Annotated[Unregistered, UserConnection], ...)}
-        )
-
-        with pytest.raises(ToolConfigError, match="not installed"):
+        with pytest.raises(ToolConfigError, match="does not know"):
             SealedConnectionParams(
                 SealKeys(), lambda: TYPES, call_stand.contexts, {}, StaticConfig()
             ).bind_all([tool])

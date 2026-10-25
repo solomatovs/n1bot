@@ -1,8 +1,12 @@
-"""Манифест плагина doc: entry point группы boba.tools."""
+"""Объявление плагина doc: entry point группы boba.tools."""
 
 from typing import Final
 
 from boba.tool.doc.tools import TOOLS
-from boba.toolkit.manifest import ToolPluginManifest
+from boba.toolkit.manifest import DataImage, ToolPlugin
 
-MANIFEST: Final = ToolPluginManifest(section="doc", tools=tuple(TOOLS))
+MANIFEST: Final = ToolPlugin(
+    id="doc",
+    tools=tuple(TOOLS),
+    data=(DataImage(name="rapidocr", target="/var/cache/rapidocr"),),
+)

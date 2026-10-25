@@ -594,15 +594,13 @@ class ImageCheck:
         return ""
 
     def _plugin_names(self) -> Iterator[str]:
-        for dist in importlib.metadata.distributions():
-            groups = {entry.group for entry in dist.entry_points}
-            if self.TOOLS_GROUP not in groups:
-                continue
-            yield dist.metadata["Name"]
+        """Плагины — имена entry points группы boba.tools: у каждого свой образ."""
+        for entry in importlib.metadata.entry_points(group=self.TOOLS_GROUP):
+            yield entry.name
 
     def _missing_images(self, names: Sequence[str]) -> Iterator[str]:
         for name in names:
-            if (self._plugins_dir / name / "rootfs.ext4").is_file():
+            if (self._plugins_dir / f"{name}.ext4").is_file():
                 continue
             yield name
 
@@ -616,7 +614,7 @@ class ImageCheck:
         missing = list(self._missing_images(names))
         if missing:
             raise ImageCheckError(
-                f"нет rootfs.ext4 в {self._plugins_dir}: {', '.join(missing)}"
+                f"нет образов <id>.ext4 в {self._plugins_dir}: {', '.join(missing)}"
             )
 
         return f"образов: {len(names)}"

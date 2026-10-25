@@ -6,11 +6,11 @@ import asyncio
 import os
 import shutil
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar
 
 import pytest
-from pydantic import BaseModel
 
 from boba.sandbox.argv import ZygoteArgv
 from boba.sandbox.profile import (
@@ -355,10 +355,9 @@ class TestBashTool:
 
         tmp_size = profile.mounts.tmp
         section = f"bash-{workspace_root.name}-{profile.limits.timeout_sec}-{tmp_size}"
-        supervisor = zygote_stand.registry().obtain(
-            section, profile, (ShellRun.MODULE,), _ZYGOTE
-        )
-        caller = ZygoteToolCaller(section, supervisor, profile, CallAmbient())
+        zygote = replace(zygote_stand.section(section, profile), policy=_ZYGOTE)
+        supervisor = zygote_stand.registry().obtain(zygote)
+        caller = ZygoteToolCaller(section, supervisor, zygote.profile, CallAmbient())
 
         return ShellRun.tool(caller, output)
 
@@ -460,9 +459,10 @@ class TestBashTool:
     ) -> None:
         """Профиль задаёт конфиг: у инструмента нет такого аргумента."""
         tool = self._make_tool(zygote_stand, tmp_path)
-        schema = cast(type[BaseModel], tool.args_schema)
-        if set(schema.model_fields) != {"command"}:
-            raise AssertionError('set(schema.model_fields) == {"command"}')
+        if set(tool.inputs.properties()) != {"command"}:
+            raise AssertionError(f"model arguments: {list(tool.inputs.properties())}")
+        if tool.args_schema.model_fields:
+            raise AssertionError(f"host fields: {list(tool.args_schema.model_fields)}")
 
     def test_pid_namespace_isolation(
         self, zygote_stand: ZygoteStand, tmp_path: Path
@@ -542,7 +542,9 @@ class TestBashTool:
         profile = SandboxToolConfig(profile=profile_dto).profile
 
         with pytest.raises(LauncherError, match="per-call path variables"):
-            zygote_stand.registry().obtain("bash-vars", profile, (), _ZYGOTE)
+            zygote_stand.registry().obtain(
+                replace(zygote_stand.section("bash-vars", profile), policy=_ZYGOTE)
+            )
 
     def test_short_output_is_not_clipped(
         self, zygote_stand: ZygoteStand, tmp_path: Path

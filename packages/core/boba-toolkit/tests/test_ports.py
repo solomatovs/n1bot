@@ -19,6 +19,7 @@ from boba.toolkit.frames import (
     ToolFrame,
     ToolIo,
 )
+from boba.toolkit.manifest import ManifestBuilder
 from boba.toolkit.ports import (
     Inbound,
     Outbound,
@@ -180,14 +181,15 @@ class TestStreamSpec:
         with pytest.raises(PortDeclarationError, match="Literal"):
             StreamPorts.kinds_of(Inbound[LooseHead])
 
-    def test_ports_are_not_argv_and_not_injected(self) -> None:
+    def test_ports_are_not_arguments_and_not_injected(self) -> None:
         schema = ToolArgv.schema_of(STREAM)
+        decl = ManifestBuilder().tool(STREAM)
 
         ports = ToolArgv.port_fields(schema)
-        injected = ToolArgv.injected_fields(schema)
 
         assert set(ports) == {"feed", "out"}
-        assert set(injected) == {"cfg"}
+        assert set(decl.injected) == {"cfg"}
+        assert not set(decl.properties()) & {"feed", "out"}
 
 
 class TestRawPorts:

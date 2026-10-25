@@ -9,10 +9,5 @@ sender    = "${site.mail.sender}"
 recipient = "${site.mail.recipient}"
 
 [sandbox]
-    network = true
-    binds   = [
-        "/etc/resolv.conf:/etc/resolv.conf",
-        "/etc/hosts:/etc/hosts"
-    ]
     [sandbox.limits]
         group_memory_bytes = 1073741824

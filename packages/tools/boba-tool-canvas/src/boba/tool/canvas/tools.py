@@ -202,6 +202,3 @@ async def diagram_save(  # noqa: PLR0913 — контекст вызова и к
 
 
 TOOLS: Final = ToolMain.toolset(canvas_open, send_file, diagram_save)
-
-if __name__ == "__main__":
-    raise SystemExit(ToolMain.run(TOOLS))

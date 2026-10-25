@@ -9,7 +9,7 @@ import re
 from importlib.metadata import entry_points
 
 from boba.toolkit.facade import PayloadTool
-from boba.toolkit.manifest import ToolPluginManifest
+from boba.toolkit.manifest import ToolPlugin
 
 READ_ONLY = re.compile(
     r"(_describe|_describe_|_list_|_list$|_search|_address$|_fetch|_grep|_spaces$"
@@ -22,10 +22,10 @@ DELETES = re.compile(r"_delete_")
 
 def plugin_tools() -> list[PayloadTool]:
     tools: list[PayloadTool] = []
-    for entry in entry_points(group=ToolPluginManifest.GROUP):
-        manifest = entry.load()
-        assert isinstance(manifest, ToolPluginManifest), entry.value
-        tools.extend(manifest.tools)
+    for entry in entry_points(group=ToolPlugin.GROUP):
+        plugin = entry.load()
+        assert isinstance(plugin, ToolPlugin), entry.value
+        tools.extend(plugin.tools)
 
     return tools
 

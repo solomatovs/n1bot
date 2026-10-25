@@ -1,12 +1,11 @@
 """Общие провайдеры процессов приложения: конфиг, сторы, реестр инструментов, входы.
 
-Заглушки (get_runtime_config, plugin_table, instance_name) кладёт процесс через provide.
+Заглушки (get_runtime_config, instance_name) кладёт процесс через provide.
 Процесс без браузера (boba-mcp) кладёт вместо get_runtime_config свой
 get_process_config: провайдеры ядра читают только секции ProcessConfig.
 
 Ошибки:
 RuntimeError — контейнер не поднят или процесс не дал значение.
-ServerStartError — плагин не подготовил свои таблицы на старте процесса.
 """
 
 import logging
@@ -23,11 +22,11 @@ from boba.chat.profiles import ChatProfiles
 from boba.config import bind
 from boba.connection_broker.sealed import SealedConnectionParams, ServerConnection
 from boba.connection_broker.store import ConnectionStore
-from boba.connection_broker.tickets import ServiceTickets
+from boba.connection_broker.tickets import SectionTickets, ServiceTickets
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.sealed import SealKeys
 from boba.connections.secrets import SecretCipher
-from boba.db.postgres import AsyncPostgresPool, PostgresError
+from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import CallContexts
 from boba.identity.directory import UserDirectory
 from boba.identity.locks import LiveLocks, MemoryLiveLocks, StaleLock
@@ -52,12 +51,11 @@ from boba.runtime.config import (
     StreamJournalConfig,
 )
 from boba.runtime.di import Container, Depends
-from boba.runtime.http import ServerStartError
 from boba.runtime.journal import DirVault, StreamJournal
 from boba.runtime.launchers import SectionLaunchers, ToolLaunchers
 from boba.runtime.locks import LockReaper, PgLiveLocks
 from boba.runtime.payloads import PgPayloadStore
-from boba.runtime.plugins import ConfigGrants, PluginMeta, PluginTable, ToolLoader
+from boba.runtime.plugins import ConfigGrants, PluginKit, PluginKits, ToolLoader
 from boba.runtime.refresh import BusRefreshSignal, LiveSessions, SessionKeeper
 from boba.runtime.refs import ExecRefs
 from boba.runtime.signin import SignInAssembly
@@ -159,15 +157,6 @@ async def payload_store(
         return MemoryPayloadStore()
 
     return PgPayloadStore(config.postgres, config.db_schema, pool)
-
-
-def plugin_table() -> PluginTable:
-    """Таблица плагинов процесса; кладёт процесс."""
-    msg = (
-        "DI provider plugin_table resolved before the process supplied "
-        "PluginTable via Container.provide"
-    )
-    raise RuntimeError(msg)
 
 
 def call_contexts() -> CallContexts:
@@ -333,47 +322,28 @@ def profile_catalog(
     return ChatProfiles(config.profiles)
 
 
+async def plugin_kits(
+    raw: Annotated[DictConfig, Depends(get_raw_config)],
+    launchers: Annotated[SectionLaunchers, Depends(tool_launchers)],
+) -> Mapping[str, PluginKit]:
+    """Включённые плагины процесса: манифесты от их программ и готовые
+    хранилища. Процесс без [tool.*] секций плагинов не имеет."""
+    arming = SectionTickets(ServiceTickets(credential_source_ref), connection_types_ref)
+
+    return await PluginKits(raw, launchers, arming).load()
+
+
 def tool_registry(  # noqa: PLR0913 — реестр собирается всеми входами процесса
     raw: Annotated[DictConfig, Depends(get_raw_config)],
-    table: Annotated[PluginTable, Depends(plugin_table)],
+    kits: Annotated[Mapping[str, PluginKit], Depends(plugin_kits)],
     grants: Annotated[ToolGrants, Depends(tool_grants)],
     own: Annotated[Sequence[HostedTool], Depends(own_tools)],
     launchers: Annotated[SectionLaunchers, Depends(tool_launchers)],
     params: Annotated[SealedConnectionParams, Depends(connection_params)],
 ) -> ToolRegistry:
-    loader = ToolLoader(raw, table(), exec_refs(params), launchers, grants, own)
+    loader = ToolLoader(raw, kits, exec_refs(params), launchers, grants, own)
 
     return loader.load()
-
-
-async def plugin_storages(
-    raw: Annotated[DictConfig, Depends(get_raw_config)],
-    table: Annotated[PluginTable, Depends(plugin_table)],
-) -> None:
-    """Старт плагинов с хранилищем: каждый включённый плагин, объявивший
-    PluginStart, создаёт свои таблицы по своей секции tool.<section>. Отказ
-    плагина валит старт процесса с именем плагина.
-
-    Ошибки:
-    ServerStartError — хранилище плагина не подготовилось.
-    """
-    for name, plugin in table().items():
-        start = plugin.start
-        if start is None:
-            continue
-
-        section = f"tool.{plugin.section}"
-        meta = bind(raw, section, PluginMeta)
-        if not meta.enable:
-            continue
-
-        cfg = bind(raw, section, start.config)
-        storage = start.storage(cfg)
-        try:
-            await storage.setup()
-        except PostgresError as exc:
-            msg = f"plugin {name!r} ([{section}]) could not prepare its tables: {exc}"
-            raise ServerStartError(msg) from exc
 
 
 async def live_locks(

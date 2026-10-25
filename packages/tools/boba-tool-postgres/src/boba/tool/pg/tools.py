@@ -19,7 +19,6 @@ TransferError — поток без кадра schema, пара для движ�
 
 from __future__ import annotations
 
-import sys
 from collections.abc import Iterator, Sequence
 from enum import IntEnum, StrEnum
 from typing import Annotated, Any, ClassVar, Final
@@ -1567,6 +1566,3 @@ TOOLS: Final = ToolMain.toolset(
     pg_sequences_describe,
     pg_types_describe,
 )
-
-if __name__ == "__main__":
-    sys.exit(ToolMain.run(TOOLS))

@@ -37,7 +37,8 @@ from boba.toolkit.dag import DagNode, WorkflowResult
 from boba.toolkit.result import (
     FailureResult,
 )
-from boba.toolrun.hosted import DirectCalls
+from boba.toolrun.hosted import DirectCalls, HostedTool, ToolSchema
+from boba.toolrun.injected import ParamSource
 from boba.toolrun.stream_calls import StreamGroupsConfig, WorkflowTool
 from boba.toolrun.streams import CallJournals
 
@@ -103,6 +104,23 @@ async def clickhouse() -> AsyncIterator[ClickHouseSide]:
     await side.drop()
 
 
+class ProfilesInArgs(ParamSource):
+    """Реализация ParamSource профилем соединения прямо в аргументах вызова:
+    каталога соединений у стенда нет, профиль параметра-соединения кладёт сам
+    тест, тело проверяет его своей моделью."""
+
+    def __init__(self) -> None:
+        self._schemas = ToolSchema()
+
+    def bind_all(self, tools: Sequence[HostedTool]) -> None:
+        for tool in tools:
+            fields: dict[str, tuple[Any, Any]] = {}
+            for param in tool.inputs.connections:
+                fields[param] = (dict[str, Any], ...)
+
+            tool.args_schema = self._schemas.rebuild(tool.args_schema, fields, ())
+
+
 class ChannelTools:
     """pg и ch насосы под цепочкой обвязок загрузчика (общий стенд
     ToolStand) за портом инструментов; вызовы идут в контексте стенда."""
@@ -114,15 +132,28 @@ class ChannelTools:
         self._calls = CallStand()
         contexts = self._calls.contexts
         stand = ToolStand(
-            STREAM_CFG, contexts, CallJournals(None, Runs(contexts)), CallAmbient(), ()
+            STREAM_CFG,
+            contexts,
+            CallJournals(None, Runs(contexts)),
+            CallAmbient(),
+            (ProfilesInArgs(),),
         )
         stand.launch(
             (pg.pg_stream_out, pg.pg_stream_in, ch.ch_stream_in),
-            stand.process_launcher(self.THREAD, workdir, 300.0),
+            stand.process_launcher(self.THREAD, workdir, 300.0, self._plugins(stand)),
         )
         self._streams = stand.server(
             stand.access(self.ROLE, StandIdentity.PROFILE), (), DirectCalls()
         )
+
+    @staticmethod
+    def _plugins(stand: ToolStand) -> list[str]:
+        """Объявления плагинов насосов: тела идут их программой."""
+        refs: list[str] = []
+        for plugin_id in ("pg", "ch"):
+            refs.append(stand.plugin_ref(plugin_id))
+
+        return refs
 
     async def respond(self, calls: Sequence[Mapping[str, Any]]) -> list[Any]:
         """Узлы одного вызова workflow, как в чате: итоги узлов в порядке

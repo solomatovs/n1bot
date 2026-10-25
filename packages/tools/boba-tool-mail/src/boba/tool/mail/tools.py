@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import smtplib
-import sys
 from email.mime.multipart import MIMEMultipart
 from typing import Annotated, ClassVar, Final
 
@@ -74,6 +73,3 @@ def mail(
 
 
 TOOLS: Final = ToolMain.toolset(mail)
-
-if __name__ == "__main__":
-    sys.exit(ToolMain.run(TOOLS))

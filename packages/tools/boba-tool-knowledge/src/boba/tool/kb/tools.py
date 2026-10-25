@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import json
 import logging
-import sys
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from enum import StrEnum
@@ -544,6 +543,3 @@ TOOLS: Final = ToolMain.toolset(
     kb_vector_search2,
     kb_node2,
 )
-
-if __name__ == "__main__":
-    sys.exit(ToolMain.run(TOOLS))

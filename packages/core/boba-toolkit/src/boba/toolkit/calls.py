@@ -17,6 +17,7 @@ ToolIntent — общая для всех инструментов подпис�
 from __future__ import annotations
 
 import json
+import textwrap
 from abc import ABC
 from collections.abc import Iterator, Mapping, Sequence
 from enum import StrEnum, nonmember
@@ -30,6 +31,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     SecretStr,
+    create_model,
 )
 from pydantic.fields import FieldInfo
 
@@ -45,6 +47,7 @@ from boba.toolkit.result import (
 
 __all__ = [
     "CallIdPrefix",
+    "CallSchema",
     "CallViews",
     "FieldMarks",
     "FieldPlacement",
@@ -145,10 +148,11 @@ class SchemaMark(StrEnum):
     что делать с аргументом.
 
     MEDIA — стандартный тип содержимого строки (показ кода, запечатанное
-    соединение). SCOPE и CONNECTION — свои пометки x-boba-…: параметр
-    области вызова, который клиент с расширением ScopeFeature прячет от
-    модели и заполняет сам, и параметр-соединение со значением вида
-    соединения. Клиент, который пометку не знает, её не замечает. CONTENT,
+    соединение). SCOPE, CONNECTION и NOT_LOGGED — свои пометки x-boba-…:
+    параметр области вызова, который клиент с расширением ScopeFeature
+    прячет от модели и заполняет сам, параметр-соединение со значением вида
+    соединения и аргумент, значение которого сервер не пишет в лог.
+    Клиент, который пометку не знает, её не замечает. CONTENT,
     CONST, ENUM, ANY_OF и DESCRIPTION — стандартные ключи, которыми схема
     параметра-соединения говорит, что предложено на его месте
     (SealedParamSchema). Единственный читатель параметров с ключом и у
@@ -159,6 +163,7 @@ class SchemaMark(StrEnum):
     MEDIA = "contentMediaType"
     SCOPE = "x-boba-scope"
     CONNECTION = "x-boba-connection"
+    NOT_LOGGED = "x-boba-not-logged"
     CONTENT = "contentSchema"
     CONST = "const"
     ENUM = "enum"
@@ -545,6 +550,55 @@ class CallViews:
     ) -> type[SchemaCall]:
         """Модель вызова инструмента tool_name с видом аргументов views."""
         return type(f"{tool_name}_call", (SchemaCall,), {"VIEWS": dict(views)})
+
+
+class CallSchema:
+    """JSON-схема вызова инструмента по полям его модели: описание, дефолт,
+    ограничения и ключи схемы, объявленные полем; служебные атрибуты модели
+    вызова в неё не идут.
+
+    Одна сборка у обеих сторон границы плагина: построитель манифеста
+    (ManifestBuilder) снимает так схему аргументов модели, карточка
+    инструмента хоста (ToolSchema) — схему своих полей.
+    """
+
+    def of(
+        self, name: str, description: str, fields: Mapping[str, FieldInfo]
+    ) -> dict[str, Any]:
+        """Схема объекта с полями fields; name и description — её title и
+        description."""
+        declared: dict[str, Any] = {}
+        for field_name, info in fields.items():
+            declared[field_name] = (info.annotation, self._shown(info))
+
+        model = create_model(
+            name, __config__=ConfigDict(arbitrary_types_allowed=True), **declared
+        )
+        model.__doc__ = textwrap.dedent(description)
+
+        return model.model_json_schema()
+
+    @staticmethod
+    def _shown(info: FieldInfo) -> FieldInfo:
+        """Поле для схемы клиента: описание, дефолт, метадата ограничений и
+        ключи схемы, которые поле объявило само (json_schema_extra)."""
+        if info.default_factory is not None:
+            shown = FieldInfo(
+                description=info.description,
+                default_factory=info.default_factory,
+                json_schema_extra=info.json_schema_extra,
+            )
+        else:
+            shown = FieldInfo(
+                description=info.description,
+                default=info.default,
+                json_schema_extra=info.json_schema_extra,
+            )
+
+        if info.metadata:
+            shown.metadata = info.metadata
+
+        return shown
 
 
 class RawCall(ToolCallBase):

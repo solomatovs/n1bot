@@ -50,7 +50,6 @@ from boba.runtime.config import ConfigArguments, ConfigFiles, ProcessConfig, Raw
 from boba.runtime.di import Container
 from boba.runtime.http import SignalledServer
 from boba.runtime.launchers import ToolLaunchers
-from boba.runtime.plugins import EntryPointPlugins
 from boba.runtime.storage import LocalStorageConfig
 
 __all__ = ["McpAppConfig", "McpEntry", "McpHost", "McpSection"]
@@ -154,7 +153,6 @@ class McpHost:
         self._config = config
         self._container = Container(level="app")
         self._container.provide(providers.get_process_config, config)
-        self._container.provide(providers.plugin_table, EntryPointPlugins().discover)
         self._container.provide(providers.seal_keys, SealKeys())
         self._container.provide(providers.server_connections, config.connections)
         self._container.provide(providers.call_contexts, CallContexts())
@@ -172,8 +170,8 @@ class McpHost:
         self._container.eager(providers.credential_source)
         self._container.eager(providers.user_directory)
         self._container.eager(providers.sign_ins)
-        self._container.eager(providers.plugin_storages)
         self._container.eager(providers.tool_launchers)
+        self._container.eager(providers.plugin_kits)
         self._container.eager(providers.tool_registry)
 
     async def serve(self) -> None:

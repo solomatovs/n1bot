@@ -14,21 +14,24 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from enum import StrEnum
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, ClassVar
 
 import pytest
 
 from boba.runtime.config import AppLayers, EnvOverride
 from boba.sandbox import BindSpec, SandboxProfile
-from boba.sandbox.guest import WarmupCall
+from boba.sandbox.program import PluginCommand, PluginEntry
 from boba.sandbox.zygote import (
     ZygotePolicy,
     ZygoteRegistry,
+    ZygoteSection,
     ZygoteToolCaller,
 )
 from boba.stand.shell import ShellRun
 from boba.stand.ui.stand import StandRuntime
 from boba.toolkit.chain import CallAmbient
+from boba.toolkit.manifest import ManifestBuilder
 
 REPO = Path(__file__).resolve().parents[6]
 RUNTIME = StandRuntime()
@@ -559,56 +562,84 @@ class ZygoteStand:
         call_poll_sec=0.05,
     )
 
+    PYTHON: ClassVar[str] = "python3"
+    """Интерпретатор корня песочницы: программа плагина зовётся им."""
+
+    NO_WARMUP: ClassVar[Mapping[str, Any]] = MappingProxyType({})
+
     def __init__(self) -> None:
         self._zygotes = ZygoteRegistry(AppLayers.interpreter())
+        self._entry = PluginEntry()
+        self._builder = ManifestBuilder()
 
     def registry(self) -> ZygoteRegistry:
         """Реестр зигот стенда для тестов, которым нужен сам супервизор."""
         return self._zygotes
 
+    def section(
+        self,
+        name: str,
+        profile: SandboxProfile,
+        plugins: Sequence[str] = (),
+        warmup: Mapping[str, Any] = NO_WARMUP,
+    ) -> ZygoteSection:
+        """Секция зиготы над объявлениями plugins (`модуль:имя`) и bash-тулом:
+        shell-команды стенда идут через него. warmup — секция конфига для
+        прогревов."""
+        refs = [ShellRun.PLUGIN]
+        for ref in plugins:
+            if ref == ShellRun.PLUGIN:
+                continue
+
+            refs.append(ref)
+
+        joined = self._entry.declared(refs).plugin
+        manifest = self._builder.manifest(joined, PluginEntry.UNKNOWN_VERSION)
+        program = self._entry.declared_argv(self.PYTHON, refs)
+
+        return ZygoteSection(
+            name=name,
+            profile=SandboxStand.with_shell(profile),
+            program=(*program, PluginCommand.ZYGOTE.value),
+            policy=self.POLICY,
+            warmup=warmup,
+            manifest=manifest.digest(),
+        )
+
     def caller(
         self,
-        section: str,
+        name: str,
         profile: SandboxProfile,
-        modules: Sequence[str] = (),
+        plugins: Sequence[str] = (),
         path_vars: Callable[[], Mapping[str, str]] = dict,
-        warmup_calls: Sequence[WarmupCall] = (),
+        warmup: Mapping[str, Any] = NO_WARMUP,
     ) -> ZygoteToolCaller:
         """Вызывающий без журнала вызова: обстановка у него своя и пустая."""
-        return self.journaled(
-            section, profile, CallAmbient(), modules, path_vars, warmup_calls
-        )
+        return self.journaled(name, profile, CallAmbient(), plugins, path_vars, warmup)
 
     def journaled(  # noqa: PLR0913 — вызывающий собирается всеми частями стенда
         self,
-        section: str,
+        name: str,
         profile: SandboxProfile,
         ambient: CallAmbient,
-        modules: Sequence[str] = (),
+        plugins: Sequence[str] = (),
         path_vars: Callable[[], Mapping[str, str]] = dict,
-        warmup_calls: Sequence[WarmupCall] = (),
+        warmup: Mapping[str, Any] = NO_WARMUP,
     ) -> ZygoteToolCaller:
         """Вызывающий с обстановкой теста: тест ставит в неё приёмники журнала."""
-        # модуль bash грузится всегда: shell-команды стенда идут через него
-        loaded = [
-            ShellRun.MODULE,
-            *(name for name in modules if name != ShellRun.MODULE),
-        ]
-        provisioned = SandboxStand.with_shell(profile)
-        supervisor = self._zygotes.obtain(
-            section, provisioned, loaded, self.POLICY, warmup_calls=warmup_calls
-        )
-        return ZygoteToolCaller(section, supervisor, provisioned, ambient, path_vars)
+        section = self.section(name, profile, plugins, warmup)
+        supervisor = self._zygotes.obtain(section)
+        return ZygoteToolCaller(name, supervisor, section.profile, ambient, path_vars)
 
     def launchers(
         self,
-        section: str,
+        name: str,
         profile: SandboxProfile,
-        modules: Sequence[str] = (),
+        plugins: Sequence[str] = (),
         path_vars: Callable[[], Mapping[str, str]] = dict,
     ) -> Callable[[str], ZygoteToolCaller]:
         """Фабрика исполнителей секции: одна зигота на все её инструменты."""
-        caller = self.caller(section, profile, modules, path_vars)
+        caller = self.caller(name, profile, plugins, path_vars)
 
         def factory(tool: str) -> ZygoteToolCaller:
             return caller

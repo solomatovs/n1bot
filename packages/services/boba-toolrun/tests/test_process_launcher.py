@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 import threading
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -12,6 +14,7 @@ from pydantic import SecretStr
 
 from boba.cancellation import ToolStopped
 from boba.identity.context import CallContexts
+from boba.sandbox.program import PluginCommand, PluginEntry
 from boba.stand.shell import ShellRun
 from boba.stand.toolsetup import ToolSetup
 from boba.stand_core.fake_toolmod import (
@@ -22,7 +25,7 @@ from boba.stand_core.fake_toolmod import (
     fake_stream,
 )
 from boba.toolkit.chain import CallAmbient
-from boba.toolkit.entry import ToolAddress, ToolArgv, ToolMain
+from boba.toolkit.entry import ToolArgv, ToolMain
 from boba.toolkit.frames import ToolFrame
 from boba.toolkit.launcher import (
     ChannelOverflowError,
@@ -30,6 +33,7 @@ from boba.toolkit.launcher import (
     LauncherError,
     PayloadFailureError,
 )
+from boba.toolkit.manifest import ManifestBuilder
 from boba.toolkit.ports import PortDeclarationError
 from boba.toolkit.protocol import (
     CallInputSpec,
@@ -38,8 +42,8 @@ from boba.toolkit.protocol import (
     ReplyOk,
     ToolCommand,
 )
-from boba.toolrun.hosted import HostedTool
-from boba.toolrun.injected import InjectedConfig, StaticConfig
+from boba.toolrun.hosted import HostedTool, PluginSection
+from boba.toolrun.injected import InjectedConfig, StaticSection
 from boba.toolrun.process import (
     ProcessCallError,
     ProcessLauncherConfig,
@@ -48,10 +52,20 @@ from boba.toolrun.process import (
 
 CFG = FakeConfig(token=SecretStr("t0ken"), limit=5)
 
-MODULE_ARGV = ("python3", "-m", "boba.stand_core.fake_toolmod", "fake_echo")
+PLUGINS = ("boba.stand_core.fake_toolmod:PLUGIN", "boba.tool.shell.plugin:MANIFEST")
+"""Фейковые инструменты и bash: тела вызовов идут программой плагина."""
+
+PROGRAM = (
+    *PluginEntry().declared_argv(sys.executable, PLUGINS),
+    PluginCommand.CALL.value,
+)
+
+BUILDER = ManifestBuilder()
 
 
-def _launcher(workdir: Path, **overrides: object) -> ProcessToolCaller:
+def _launcher(
+    workdir: Path, program: Sequence[str] = PROGRAM, **overrides: object
+) -> ProcessToolCaller:
     values: dict[str, object] = {
         "provider": "process",
         "workdir": str(workdir),
@@ -67,14 +81,17 @@ def _launcher(workdir: Path, **overrides: object) -> ProcessToolCaller:
         ProcessLauncherConfig.model_validate(values),
         CallContexts(),
         CallAmbient(),
+        program,
     )
 
 
 def _echo(workdir: Path) -> HostedTool:
-    """fake_echo под обёрткой запуска субпроцессом и конфигом стенда."""
-    config = InjectedConfig(lambda name, annotation: CFG, StaticConfig())
+    """fake_echo под обёрткой запуска субпроцессом и секцией стенда."""
+    config = InjectedConfig(StaticSection())
+    section = PluginSection(values=CFG.revealed())
 
-    return ToolSetup.launched([fake_echo], _launcher(workdir), (config,))["fake_echo"]
+    launched = ToolSetup.launched([fake_echo], _launcher(workdir), (config,), section)
+    return launched["fake_echo"]
 
 
 class TestRunTool:
@@ -95,7 +112,7 @@ class TestRunTool:
 
     def test_entry_error_arrives_as_error_reply(self, tmp_path: Path) -> None:
         launcher = _launcher(tmp_path)
-        command = ToolCommand(argv=(*MODULE_ARGV, "--text", "hi"), config=b"{}")
+        command = ToolCommand(argv=("fake_echo",), args=b'{"text": "hi"}')
 
         outcome = CollectedCall.of(launcher, command)
 
@@ -103,18 +120,17 @@ class TestRunTool:
         assert outcome.run.exit_code == int(ToolMain.Exit.ENTRY_ERROR)
 
     def test_missing_envelope_is_refused(self, tmp_path: Path) -> None:
-        launcher = _launcher(tmp_path)
-        argv = ("python3", "-m", "boba.no_such_toolmod", "fake_echo")
-        command = ToolCommand(argv=argv, config=b"")
+        launcher = _launcher(tmp_path, ("python3", "-m", "boba.no_such_toolmod"))
+        command = ToolCommand(argv=("fake_echo",), args=b"")
 
         with pytest.raises(LauncherError, match="ended without a result"):
             CollectedCall.of(launcher, command)
 
-    def test_non_module_command_is_refused(self, tmp_path: Path) -> None:
-        launcher = _launcher(tmp_path)
-        command = ToolCommand(argv=("/bin/true", "x", "y", "z"), config=b"")
+    def test_missing_program_is_refused(self, tmp_path: Path) -> None:
+        launcher = _launcher(tmp_path, (str(tmp_path / "no-such-program"),))
+        command = ToolCommand(argv=("fake_echo",), args=b"")
 
-        with pytest.raises(ProcessCallError, match="not a tool module command"):
+        with pytest.raises(ProcessCallError, match="spawn of"):
             launcher.open(command)
 
 
@@ -162,13 +178,11 @@ class TestCallText:
 class TestStreamingCall:
     """Потоковый вызов: кадр в ответ на кадр, конверт после конца входа."""
 
-    STREAM_ARGV = ("python3", "-m", "boba.stand_core.fake_toolmod", "fake_stream")
-
     def _command(self, prefix: str) -> ToolCommand:
-        config = json.dumps({"cfg": CFG.revealed()}).encode("utf-8")
+        args = json.dumps({"cfg": CFG.revealed(), "prefix": prefix}).encode("utf-8")
         return ToolCommand(
-            argv=(*self.STREAM_ARGV, "--prefix", prefix),
-            config=config,
+            argv=("fake_stream",),
+            args=args,
             inputs=(CallInputSpec(port="feed", raw=False),),
             outputs=(CallOutputSpec(port="out", raw=False),),
         )
@@ -247,8 +261,7 @@ class TestManyInputs:
 
     def _merge(self, inputs: int) -> ToolCommand:
         return ToolArgv.render(
-            ToolAddress.of(self.MERGE),
-            ToolArgv.schema_of(self.MERGE),
+            BUILDER.tool(self.MERGE),
             {"cfg": CFG},
             input_counts={"feeds": inputs},
             output_counts={},
@@ -325,8 +338,8 @@ class TestManyInputs:
     def test_single_port_refuses_two_inputs(self, tmp_path: Path) -> None:
         launcher = _launcher(tmp_path)
         command = ToolCommand(
-            argv=("python3", "-m", "boba.stand_core.fake_toolmod", "fake_stream"),
-            config=json.dumps({"cfg": CFG.revealed()}).encode("utf-8"),
+            argv=("fake_stream",),
+            args=json.dumps({"cfg": CFG.revealed(), "prefix": "p"}).encode("utf-8"),
             inputs=(
                 CallInputSpec(port="feed", raw=False),
                 CallInputSpec(port="feed", raw=False),
@@ -343,8 +356,7 @@ class TestManyInputs:
     def test_render_refuses_many_inputs_for_a_single_port(self) -> None:
         with pytest.raises(PortDeclarationError, match="takes at most one channel"):
             ToolArgv.render(
-                ToolAddress.of(self.STREAM),
-                ToolArgv.schema_of(self.STREAM),
+                BUILDER.tool(self.STREAM),
                 {"prefix": "p", "cfg": CFG},
                 input_counts={"feed": 2},
                 output_counts={},

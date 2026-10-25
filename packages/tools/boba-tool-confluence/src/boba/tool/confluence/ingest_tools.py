@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sys
 from collections.abc import AsyncIterator, Callable
 from typing import Annotated, Any, BinaryIO, ClassVar, Final
 
@@ -459,6 +458,3 @@ TOOLS: Final = ToolMain.toolset(
     confluence_index_space,
     confluence_attachment,
 )
-
-if __name__ == "__main__":
-    sys.exit(ToolMain.run(TOOLS))

@@ -21,6 +21,7 @@ from pydantic import (
 
 from boba.core.validation import ValidationText
 from boba.identity.context import PathSegment
+from boba.toolkit.manifest import ContextValue, InjectedRole
 
 __all__ = [
     "DirKey",
@@ -73,12 +74,14 @@ class WorkspaceMount:
         return cls._PATH
 
 
-class WorkspaceRoot(BaseModel):
+class WorkspaceRoot(ContextValue):
     """Корень workspace того запуска, которым идёт вызов: телу инструмента
     его подаёт хост injected-параметром, и тело настраивает по нему
     WorkspaceMount своего процесса."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
+
+    ROLE: ClassVar[InjectedRole] = InjectedRole.WORKSPACE_ROOT
 
     path: str
 

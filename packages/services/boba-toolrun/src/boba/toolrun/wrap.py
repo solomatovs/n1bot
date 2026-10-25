@@ -1,14 +1,13 @@
-"""Обёртка запуска: тело инструмента исполняется отдельным процессом.
+"""Обёртка запуска: тело инструмента плагина исполняется программой плагина.
 
-Из объявления фасада (PayloadTool) собирается инструмент хоста, чьё тело —
-перенос вызова: по адресу модуля и схеме объявления вызов уезжает командой
-модуля инструментов через порт ToolLauncher накопительно (CollectedCall) —
-модели нужен итог, а не кадры.
+Из объявления инструмента в манифесте (ToolDecl) собирается инструмент хоста,
+чьё тело — перенос вызова: аргументы уезжают командой call программы плагина
+через порт ToolLauncher накопительно (CollectedCall) — модели нужен итог, а
+не кадры.
 
 Ошибки:
-PayloadFailureError — ошибка тела или контракта запуска из конверта, срыв
-    группы каналов либо аргумент длиннее лимита argv
-    (WrapErrorKind.ARGUMENT_TOO_LARGE); ошибка уже упакована в результат.
+PayloadFailureError — ошибка тела или контракта запуска из конверта либо
+    срыв группы каналов; ошибка уже упакована в результат.
 LauncherError — исполнитель не отдал конверт; поднимает реализация порта.
 """
 
@@ -16,20 +15,13 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterator, Mapping
-from enum import StrEnum
 from functools import partial
 
-from pydantic import BaseModel
+from pydantic import create_model
 
-from boba.toolkit.calls import CallViews
+from boba.toolkit.calls import CallViews, ToolCallBase
 from boba.toolkit.chain import CallAmbient, NodeSlot
-from boba.toolkit.entry import (
-    ArgumentTooLargeError,
-    ReplyError,
-    ToolAddress,
-    ToolArgv,
-)
-from boba.toolkit.facade import PayloadTool
+from boba.toolkit.entry import ToolArgv
 from boba.toolkit.launcher import (
     CollectedCall,
     PayloadFailureError,
@@ -37,83 +29,69 @@ from boba.toolkit.launcher import (
     ToolLauncher,
     ToolOutcome,
 )
-from boba.toolkit.ports import StreamSpec
-from boba.toolkit.protocol import CallGateMode, ToolCommand
-from boba.toolkit.result import ErrorResult, ToolResultBase
-from boba.toolrun.hosted import HostedCall, HostedTool
+from boba.toolkit.manifest import ToolDecl
+from boba.toolkit.protocol import CallGateMode, ReplyError, ToolCommand
+from boba.toolkit.result import ToolResultBase
+from boba.toolrun.hosted import HostedCall, HostedTool, PluginSection, ToolInputs
 
-__all__ = ["ToolProcessWrap", "WrapErrorKind"]
-
-
-class WrapErrorKind(StrEnum):
-    """Отказы обёртки до запуска процесса."""
-
-    ARGUMENT_TOO_LARGE = "argument_too_large"
+__all__ = ["ToolProcessWrap"]
 
 
 class ToolProcessWrap:
-    """Собирает инструмент хоста, чьё тело исполняет вызов отдельным
-    процессом через ToolLauncher.
+    """Собирает инструмент хоста, чьё тело исполняет вызов программой плагина
+    через ToolLauncher.
 
     Создаётся цепочкой обвязок (ToolChain) с обстановкой вызова процесса.
-    hosted() берёт у объявления фасада адрес модуля тела и полную схему и
-    отдаёт HostedTool с телом-переносом: аргументы кодируются в ToolCommand
-    (ToolArgv.render), вызов идёт накопительно (CollectedCall), конверт
-    разворачивается в результат или PayloadFailureError. Перенос
-    блокирующий и уходит в рабочий поток.
+    hosted() берёт объявление инструмента из манифеста и секцию плагина и
+    отдаёт HostedTool с телом-переносом: схема хоста пуста (её наполнят
+    обвязки), аргументы модели идут входами инструмента; на вызове
+    аргументы кодируются в ToolCommand (ToolArgv.render), вызов идёт
+    накопительно (CollectedCall), конверт разворачивается в результат или
+    PayloadFailureError. Перенос блокирующий и уходит в рабочий поток.
 
     Внутри конвейера (оркестратор поставил ручку в CallAmbient) вызов
     открывается потоково: каналы узла отдаются слоту дескрипторами, и данные
-    текут между узлами мимо хоста; конверт разворачивается так же. spec_of()
-    отдаёт потоковую декларацию объявления — позже injected-поля снимаются
-    из видимой схемы, и портов в ней уже не найти.
+    текут между узлами мимо хоста; конверт разворачивается так же.
     """
 
     def __init__(self, ambient: CallAmbient) -> None:
         self._ambient = ambient
         self._views = CallViews()
 
-    def hosted(self, payload: PayloadTool, launcher: ToolLauncher) -> HostedTool:
+    def hosted(
+        self, decl: ToolDecl, launcher: ToolLauncher, section: PluginSection
+    ) -> HostedTool:
         """Инструмент хоста с телом-переносом вызова исполнителю launcher."""
-        address = ToolAddress.of(payload)
-        schema = ToolArgv.schema_of(payload)
+        schema = create_model(f"{decl.name}_call", __base__=ToolCallBase)
 
         return HostedTool(
-            name=payload.name,
-            description=payload.description,
+            name=decl.name,
+            description=decl.description,
             args_schema=schema,
-            views=self._views.of(payload.args_schema),
-            body=partial(self._transfer, address, schema, launcher),
-            hints=payload.hints,
+            views=self._views.seen(decl.input_schema),
+            body=partial(self._transfer, decl, launcher),
+            hints=decl.hints,
+            inputs=ToolInputs(
+                passed=decl.input_schema,
+                injected=decl.injected,
+                connections=decl.connections,
+                section=section,
+            ),
         )
-
-    def spec_of(self, payload: PayloadTool) -> StreamSpec:
-        """Потоковая декларация объявления: его порты каналов."""
-        return StreamSpec.of_schema(ToolArgv.schema_of(payload))
 
     async def _transfer(
-        self,
-        address: ToolAddress,
-        schema: type[BaseModel],
-        launcher: ToolLauncher,
-        call: HostedCall,
+        self, decl: ToolDecl, launcher: ToolLauncher, call: HostedCall
     ) -> ToolResultBase:
-        return await asyncio.to_thread(
-            self._process_call, address, schema, launcher, call.kwargs
-        )
+        return await asyncio.to_thread(self._process_call, decl, launcher, call.kwargs)
 
     def _process_call(
-        self,
-        address: ToolAddress,
-        schema: type[BaseModel],
-        launcher: ToolLauncher,
-        kwargs: Mapping[str, object],
+        self, decl: ToolDecl, launcher: ToolLauncher, kwargs: Mapping[str, object]
     ) -> ToolResultBase:
         slot = self._ambient.slot()
         if slot is not None:
-            outcome = self._group_call(address, schema, launcher, slot, kwargs)
+            outcome = self._group_call(decl, launcher, slot, kwargs)
         else:
-            outcome = self._single_call(address, schema, launcher, kwargs)
+            outcome = self._single_call(decl, launcher, kwargs)
 
         reply = outcome.reply
         if isinstance(reply, ReplyError):
@@ -122,21 +100,16 @@ class ToolProcessWrap:
         return reply.artifact
 
     def _single_call(
-        self,
-        address: ToolAddress,
-        schema: type[BaseModel],
-        launcher: ToolLauncher,
-        kwargs: Mapping[str, object],
+        self, decl: ToolDecl, launcher: ToolLauncher, kwargs: Mapping[str, object]
     ) -> ToolOutcome:
         """Вызов вне группы: накопительно."""
-        command = self._render(address, schema, kwargs, {}, {})
+        command = ToolArgv.render(decl, kwargs, {}, {})
 
         return CollectedCall.of(launcher, command)
 
     def _group_call(
         self,
-        address: ToolAddress,
-        schema: type[BaseModel],
+        decl: ToolDecl,
         launcher: ToolLauncher,
         slot: NodeSlot,
         kwargs: Mapping[str, object],
@@ -145,8 +118,8 @@ class ToolProcessWrap:
         отвечает текстом её срыва; единственный вызов группы — своей
         ошибкой."""
         try:
-            command = self._render(
-                address, schema, kwargs, slot.input_counts(), slot.output_counts()
+            command = ToolArgv.render(
+                decl, kwargs, slot.input_counts(), slot.output_counts()
             )
             held = slot.sized(command).model_copy(update={"gate": CallGateMode.HELD})
             return self._piped_call(launcher, held, slot)
@@ -159,23 +132,6 @@ class ToolProcessWrap:
                 raise
 
             raise PayloadFailureError(verdict.failure_of(slot.key)) from exc
-
-    @staticmethod
-    def _render(
-        address: ToolAddress,
-        schema: type[BaseModel],
-        kwargs: Mapping[str, object],
-        input_counts: Mapping[str, int],
-        output_counts: Mapping[str, int],
-    ) -> ToolCommand:
-        try:
-            return ToolArgv.render(address, schema, kwargs, input_counts, output_counts)
-        except ArgumentTooLargeError as exc:
-            failure = ErrorResult(
-                message=f"tool {address.name!r}: {exc}",
-                error_kind=WrapErrorKind.ARGUMENT_TOO_LARGE,
-            )
-            raise PayloadFailureError(failure) from exc
 
     @staticmethod
     def _piped_call(

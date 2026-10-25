@@ -1,23 +1,38 @@
-"""Способ запуска tool-секций: [tool_launcher] выбирает песочницу или процесс хоста.
+"""Способ запуска плагинов: [tool_launcher] выбирает песочницу или процесс хоста.
 
 Проверки старта и сборка исполнителей упакованы в реализации SectionLaunchers:
-песочница проверяет cgroup-лимиты профилей и bwrap, процесс хоста — workdir.
+песочница проверяет комплекты плагинов, cgroup-лимиты профилей и bwrap,
+процесс хоста — workdir. Обе реализации зовут подкоманды программы плагина:
+manifest и setup на старте, zygote или call на вызовах.
 
 Ошибки:
-RuntimeError — секция запуска не согласована с конфигом: нет [tool_launcher],
-    [sandbox] или [tool.<name>.sandbox], bwrap недоступен, workdir отсутствует.
-ZygoteStartError — зигота секции не поднялась за отведённые попытки (settle).
+RuntimeError — запуск не согласован с конфигом: нет [tool_launcher],
+    [sandbox] или [tool.<id>.sandbox], bwrap недоступен, workdir отсутствует,
+    у конфига плагина нет образа или у образа нет конфига; программа плагина
+    не отдала манифест или не подготовила хранилище.
+ZygoteStartError — зигота плагина не поднялась за отведённые попытки (settle).
 """
 
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
 from abc import abstractmethod
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any, ClassVar, Literal, Protocol
 
 from omegaconf import DictConfig, OmegaConf
-from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    RootModel,
+    model_validator,
+)
 
 from boba.canvas.keys import WorkspaceMount
 from boba.config import bind
@@ -28,18 +43,29 @@ from boba.sandbox import (
     SandboxProfile,
     has_bwrap,
 )
-from boba.sandbox.guest import WarmupCall
-from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
+from boba.sandbox.program import PluginCommand, PluginEntry
+from boba.sandbox.runner import SandboxLogRelay
+from boba.sandbox.zygote import (
+    ZygotePolicy,
+    ZygoteRegistry,
+    ZygoteSection,
+    ZygoteToolCaller,
+)
 from boba.toolkit.chain import CallAmbient
-from boba.toolkit.entry import ToolArgv
-from boba.toolkit.facade import WarmupHooks
 from boba.toolkit.launcher import ToolLauncher
-from boba.toolkit.manifest import LaunchSpec
+from boba.toolkit.manifest import (
+    DataImage,
+    ManifestError,
+    ManifestReader,
+    PluginManifest,
+)
 from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
 from boba.workspace.launcher import LauncherInterpreter
 
 __all__ = [
     "CallSurface",
+    "PluginLaunch",
+    "PluginOutput",
     "PluginSandbox",
     "ProcessLaunchers",
     "SandboxDefaults",
@@ -49,6 +75,79 @@ __all__ = [
     "ToolLaunchers",
     "ZygoteLaunchers",
 ]
+
+
+@dataclass(frozen=True)
+class PluginLaunch:
+    """Что способу запуска нужно от плагина: его манифест и секция [tool.<id>]
+    значениями JSON. Собирает его загрузчик плагинов после чтения манифеста."""
+
+    manifest: PluginManifest
+    section: Mapping[str, Any]
+
+    @property
+    def id(self) -> str:
+        return self.manifest.id
+
+
+class PluginOutput:
+    """Вывод подкоманд manifest и setup программы плагина: код возврата,
+    stdout и stderr становятся манифестом либо отказом старта с текстом
+    программы. Общий у песочницы и процесса хоста."""
+
+    def __init__(self) -> None:
+        self._reader = ManifestReader()
+
+    def manifest(
+        self, plugin_id: str, done: subprocess.CompletedProcess[bytes], where: str
+    ) -> PluginManifest:
+        self.finished(plugin_id, PluginCommand.MANIFEST, done, where)
+
+        try:
+            manifest = self._reader.read(done.stdout)
+        except ManifestError as exc:
+            msg = f"plugin {plugin_id}: `manifest` in {where} printed {exc}"
+            raise RuntimeError(msg) from exc
+
+        if manifest.id != plugin_id:
+            msg = (
+                f"plugin {plugin_id}: `manifest` in {where} describes plugin "
+                f"{manifest.id!r}: the image and the config name different plugins"
+            )
+            raise RuntimeError(msg)
+
+        return manifest
+
+    def finished(
+        self,
+        plugin_id: str,
+        command: PluginCommand,
+        done: subprocess.CompletedProcess[bytes],
+        where: str,
+    ) -> None:
+        """Подкоманда command кончилась кодом 0; иначе — отказ с её stderr."""
+        if done.returncode == 0:
+            return
+
+        stderr = "\n".join(self._own_lines(done.stderr)).strip()
+        msg = (
+            f"plugin {plugin_id}: `{command}` in {where} exited with code "
+            f"{done.returncode}: {stderr[-2000:]}"
+        )
+        raise RuntimeError(msg)
+
+    @staticmethod
+    def _own_lines(stderr: bytes) -> Iterator[str]:
+        """Строки программы плагина: ход монтирования песочницы — не её текст."""
+        for line in stderr.decode("utf-8", errors="replace").splitlines():
+            if SandboxLogRelay.relayed(line):
+                continue
+
+            yield line
+
+    def section_bytes(self, section: Mapping[str, Any]) -> bytes:
+        """Секция на stdin подкоманды."""
+        return json.dumps(dict(section), ensure_ascii=False).encode("utf-8")
 
 
 class SandboxLauncherConfig(BaseModel):
@@ -91,23 +190,16 @@ class EnvPaths(BaseModel):
 class PluginSandbox(BaseModel):
     """Секция [sandbox] файла conf/plugins/<id>.toml: изоляция плагина.
 
-    profile — полный профиль, отключает сборку. Семантические ключи: network
-    включает сеть (по умолчанию её нет), workspace — образ рабочего каталога,
-    binds — явные строки host:guest хостовых файлов (resolv.conf, hosts,
-    krb5.conf), images — ext4-образы данных образ:точка (веса моделей), их
-    fuse2fs монтирует read-only с нейтральным источником; пути развёртывания —
-    интерполяциями ${env.*}. Таблицы
-    host/isolation/limits/run/zygote накладываются на собранный дефолт
-    полями профиля.
+    profile — полный профиль, отключает сборку. workspace — образ рабочего
+    каталога пользователя. Сеть и образы данных плагин объявляет манифестом,
+    а не конфигом. Таблицы host/isolation/limits/run/zygote накладываются на
+    собранный дефолт полями профиля.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     profile: SandboxProfile | None = None
-    network: bool = False
     workspace: bool = False
-    binds: tuple[str, ...] = ()
-    images: tuple[str, ...] = ()
     host: dict[str, Any] = Field(default_factory=dict)
     isolation: dict[str, Any] = Field(default_factory=dict)
     limits: dict[str, Any] = Field(default_factory=dict)
@@ -120,10 +212,7 @@ class PluginSandbox(BaseModel):
             return self
 
         deltas = {
-            "network": self.network,
             "workspace": self.workspace,
-            "binds": self.binds,
-            "images": self.images,
             "host": self.host,
             "isolation": self.isolation,
             "limits": self.limits,
@@ -145,17 +234,33 @@ class PluginSandbox(BaseModel):
         return self
 
 
+class PluginLayout(StrEnum):
+    """Комплект плагина в каталоге песочницы и программа в корне его образа."""
+
+    DIR = "plugins"
+    IMAGE_SUFFIX = ".ext4"
+    PROGRAM = "/plugin/run"
+
+
 class SandboxDefaults:
     """Дефолтный профиль песочницы: числа здесь, пути — конвенциями от [env].
 
     Секции [sandbox] в корневом конфиге нет: всё выводимое строится кодом,
-    файл плагина описывает только отличия. Память группы вызова кодом не
-    выводится: её объявляет [sandbox.limits] каждого плагина, а профиль без
-    неё не собирается.
+    файл плагина описывает только отличия, манифест — сеть и образы данных.
+    Память группы вызова кодом не выводится: её объявляет [sandbox.limits]
+    каждого плагина, а профиль без неё не собирается.
     """
 
     TMP_SIZE: ClassVar[str] = "512M"
     WORKSPACE_TARGET: ClassVar[str] = "/workspace"
+
+    NETWORK_BINDS: ClassVar[tuple[str, ...]] = (
+        "/etc/resolv.conf:/etc/resolv.conf",
+        "/etc/hosts:/etc/hosts",
+    )
+    """Файлы хоста, без которых у плагина с сетью нет имён."""
+    KRB5_CONF: ClassVar[str] = "krb5.conf:/etc/krb5.conf"
+    """krb5.conf каталога [env].krb: плагину с сетью нужен для билетов."""
 
     HOST: ClassVar[dict[str, Any]] = {
         "stderr_tail_bytes": 4096,
@@ -196,9 +301,33 @@ class SandboxDefaults:
     }
 
     @classmethod
-    def profile(cls, env: EnvPaths, package: str) -> dict[str, Any]:
+    def image(cls, env: EnvPaths, plugin_id: str) -> Path:
+        """Образ плагина: <sandbox>/plugins/<id>.ext4."""
+        return (
+            Path(env.sandbox)
+            / PluginLayout.DIR
+            / f"{plugin_id}{PluginLayout.IMAGE_SUFFIX}"
+        )
+
+    @classmethod
+    def network_binds(cls, env: EnvPaths) -> list[str]:
+        return [*cls.NETWORK_BINDS, f"{env.krb}/{cls.KRB5_CONF}"]
+
+    @classmethod
+    def data_images(cls, env: EnvPaths, data: Sequence[DataImage]) -> list[str]:
+        """Образы данных манифеста: <models>/<имя>.ext4 в точку плагина."""
+        images: list[str] = []
+        for image in data:
+            images.append(
+                f"{env.models}/{image.name}{PluginLayout.IMAGE_SUFFIX}:{image.target}"
+            )
+
+        return images
+
+    @classmethod
+    def profile(cls, env: EnvPaths, plugin_id: str) -> dict[str, Any]:
         return {
-            "rootfs": f"{env.sandbox}/plugins/{package}/rootfs.ext4",
+            "rootfs": str(cls.image(env, plugin_id)),
             "host": {
                 "cgroup_base": env.cgroup_base,
                 "binaries": {
@@ -272,24 +401,40 @@ class CallSurface:
 
 
 class SectionLaunchers(Protocol):
-    """Способ запуска tool-секций: проверки старта и исполнители секций."""
+    """Способ запуска плагинов: проверки старта, подкоманды программы
+    плагина и исполнители его вызовов."""
 
     @abstractmethod
     def probe(self) -> None:
         """Проверяет предпосылки способа запуска; нарушение — отказ старта."""
 
     @abstractmethod
+    def check_kits(self, plugin_ids: Sequence[str]) -> None:
+        """Комплекты плагинов plugin_ids (их конфиги прочитаны) полны: у
+        каждого конфига есть программа, у каждой программы — конфиг."""
+
+    @abstractmethod
+    def manifest_of(self, plugin_id: str, section: Mapping[str, Any]) -> PluginManifest:
+        """Манифест плагина от его программы: подкоманда manifest с секцией
+        section на stdin."""
+
+    @abstractmethod
+    def setup(self, launch: PluginLaunch, section: Mapping[str, Any]) -> None:
+        """Хранилище плагина: подкоманда setup с секцией section, у которой
+        keytab-профили уже заменены билетами."""
+
+    @abstractmethod
     def launcher_of(
-        self, spec: LaunchSpec, contexts: CallContexts, ambient: CallAmbient
+        self, launch: PluginLaunch, contexts: CallContexts, ambient: CallAmbient
     ) -> ToolLauncher:
-        """Исполнитель секции спеки; её конфиг и изоляция проверяются здесь.
+        """Исполнитель вызовов плагина; его изоляция проверяется здесь.
         contexts — держатель контекста вызова: по нему исполнитель узнаёт
         пользователя и область на момент вызова."""
 
     @abstractmethod
     def settle(self) -> None:
         """Дожидается подъёма исполнителей, начатого launcher_of: сборка
-        инструментов зовёт его после всех секций, неудача — отказ старта."""
+        инструментов зовёт его после всех плагинов, неудача — отказ старта."""
 
     @abstractmethod
     def stop(self) -> None:
@@ -300,20 +445,28 @@ class SectionLaunchers(Protocol):
 class NoLaunchers(SectionLaunchers):
     """Реализация SectionLaunchers процесса, который плагинов инструментов не
     исполняет: в его конфиге нет секции [tool_launcher]. Так собран чат —
-    его инструменты исполняет сервис boba-mcp. Плагин, включённый в конфиге
-    такого процесса, получает отказ на сборке реестра."""
+    его инструменты исполняет сервис boba-mcp. Плагин в конфиге такого
+    процесса получает отказ на сборке реестра."""
 
     def probe(self) -> None:
         return
 
+    def check_kits(self, plugin_ids: Sequence[str]) -> None:
+        if not plugin_ids:
+            return
+
+        raise RuntimeError(self._refusal(plugin_ids[0]))
+
+    def manifest_of(self, plugin_id: str, section: Mapping[str, Any]) -> PluginManifest:
+        raise RuntimeError(self._refusal(plugin_id))
+
+    def setup(self, launch: PluginLaunch, section: Mapping[str, Any]) -> None:
+        raise RuntimeError(self._refusal(launch.id))
+
     def launcher_of(
-        self, spec: LaunchSpec, contexts: CallContexts, ambient: CallAmbient
+        self, launch: PluginLaunch, contexts: CallContexts, ambient: CallAmbient
     ) -> ToolLauncher:
-        msg = (
-            f"tool section {spec.section!r} cannot be launched: the config has no "
-            "[tool_launcher] section, expected provider = sandbox | process"
-        )
-        raise RuntimeError(msg)
+        raise RuntimeError(self._refusal(launch.id))
 
     def settle(self) -> None:
         return
@@ -321,19 +474,29 @@ class NoLaunchers(SectionLaunchers):
     def stop(self) -> None:
         return
 
+    @staticmethod
+    def _refusal(plugin_id: str) -> str:
+        return (
+            f"tool plugin {plugin_id!r} cannot be launched: the config has no "
+            "[tool_launcher] section, expected provider = sandbox | process"
+        )
+
 
 class ZygoteLaunchers(SectionLaunchers):
-    """Запуск в песочнице: зигота на секцию, профиль собирается из [env],
-    дефолтов и секции [sandbox] файла плагина.
+    """Запуск в песочнице: зигота на плагин, профиль собирается из [env],
+    дефолтов, манифеста и секции [sandbox] файла плагина.
 
-    Реализация SectionLaunchers; объект один на процесс, зиготы секций живут
-    в его реестре (ZygoteRegistry) между сборками инструментов. Цепочке
-    лаунчера реестр отдаёт интерпретатор процесса из секции [interpreter]."""
+    Реализация SectionLaunchers; объект один на процесс, зиготы плагинов
+    живут в его реестре (ZygoteRegistry) между сборками инструментов. Цепочке
+    лаунчера реестр отдаёт интерпретатор процесса из секции [interpreter].
+    Программа плагина — /plugin/run его образа: manifest идёт в песочнице без
+    сети и образов данных, setup и зигота — в профиле плагина."""
 
     def __init__(self, raw: DictConfig) -> None:
         self._raw = raw
         interpreter = bind(raw, LauncherInterpreter.SECTION, LauncherInterpreter)
         self._zygotes = ZygoteRegistry(interpreter)
+        self._output = PluginOutput()
 
     def settle(self) -> None:
         self._zygotes.settle()
@@ -350,117 +513,137 @@ class ZygoteLaunchers(SectionLaunchers):
     def _env(self) -> EnvPaths:
         return bind(self._raw, "env", EnvPaths)
 
+    def check_kits(self, plugin_ids: Sequence[str]) -> None:
+        """Конфиг без образа и образ без конфига — отказ с обоими путями."""
+        env = self._env()
+        for plugin_id in plugin_ids:
+            image = SandboxDefaults.image(env, plugin_id)
+            if image.is_file():
+                continue
+
+            msg = (
+                f"plugin {plugin_id!r}: conf/plugins/{plugin_id}.toml is given, "
+                f"but its image {image} is missing"
+            )
+            raise RuntimeError(msg)
+
+        images = Path(env.sandbox) / PluginLayout.DIR
+        for image in sorted(images.glob(f"*{PluginLayout.IMAGE_SUFFIX}")):
+            plugin_id = image.name.removesuffix(PluginLayout.IMAGE_SUFFIX)
+            if plugin_id in plugin_ids:
+                continue
+
+            msg = (
+                f"plugin image {image} has no config conf/plugins/{plugin_id}.toml: "
+                "add the config or remove the image"
+            )
+            raise RuntimeError(msg)
+
+    def manifest_of(self, plugin_id: str, section: Mapping[str, Any]) -> PluginManifest:
+        sandbox = self._plugin_sandbox(plugin_id)
+        profile = self._checked(self._bare(plugin_id, sandbox), plugin_id)
+        done = self._zygotes.run(
+            profile,
+            ZygotePolicy.model_validate(sandbox.zygote),
+            (PluginLayout.PROGRAM, PluginCommand.MANIFEST),
+            self._output.section_bytes(section),
+        )
+
+        return self._output.manifest(plugin_id, done, profile.rootfs)
+
+    def setup(self, launch: PluginLaunch, section: Mapping[str, Any]) -> None:
+        sandbox = self._plugin_sandbox(launch.id)
+        profile = self.profile_of(launch)
+        done = self._zygotes.run(
+            profile,
+            ZygotePolicy.model_validate(sandbox.zygote),
+            (PluginLayout.PROGRAM, PluginCommand.SETUP),
+            self._output.section_bytes(section),
+        )
+
+        self._output.finished(launch.id, PluginCommand.SETUP, done, profile.rootfs)
+
     def launcher_of(
-        self, spec: LaunchSpec, contexts: CallContexts, ambient: CallAmbient
+        self, launch: PluginLaunch, contexts: CallContexts, ambient: CallAmbient
     ) -> ToolLauncher:
-        profile = self.profile_of(spec)
-        sandbox = self._plugin_sandbox(spec.section)
+        profile = self.profile_of(launch)
+        sandbox = self._plugin_sandbox(launch.id)
 
         supervisor = self._zygotes.prepare(
-            spec.section,
-            profile,
-            tuple(spec.modules),
-            ZygotePolicy.model_validate(sandbox.zygote),
-            warmup_calls=self.warmup_configs(spec.section, spec.modules, self._raw),
+            ZygoteSection(
+                name=launch.id,
+                profile=profile,
+                program=(PluginLayout.PROGRAM, PluginCommand.ZYGOTE),
+                policy=ZygotePolicy.model_validate(sandbox.zygote),
+                warmup=launch.section,
+                manifest=launch.manifest.digest(),
+            )
         )
 
         surface = CallSurface(contexts)
 
         return ZygoteToolCaller(
-            spec.section, supervisor, profile, ambient, surface.sandbox_path_vars
+            launch.id, supervisor, profile, ambient, surface.sandbox_path_vars
         )
 
-    @staticmethod
-    def warmup_configs(
-        section: str, modules: Sequence[str], raw_config: DictConfig
-    ) -> tuple[WarmupCall, ...]:
-        """Прогревы модулей секции: конфиг каждому хуку из секции его инструмента.
+    def _plugin_sandbox(self, plugin_id: str) -> PluginSandbox:
+        return bind(self._raw, f"tool.{plugin_id}.sandbox", PluginSandbox)
 
-        Хуки объявляет автор инструмента через @warmup, хост их не угадывает —
-        берёт из реестра фасада. Модель конфига — аннотация параметра хука,
-        значения приезжают из [tool.<section>].
-        """
-        calls: list[WarmupCall] = []
-
-        for name in modules:
-            for hook in WarmupHooks.of(name):
-                model = bind(raw_config, f"tool.{section}", hook.config_model)
-                calls.append(
-                    WarmupCall(
-                        module=name,
-                        hook=hook.name,
-                        config=ToolArgv.reveal(hook.config_model, model),
-                    )
-                )
-
-        return tuple(calls)
-
-    def _plugin_sandbox(self, section: str) -> PluginSandbox:
-        return bind(self._raw, f"tool.{section}.sandbox", PluginSandbox)
-
-    def profile_of(self, spec: LaunchSpec) -> SandboxProfile:
-        """Профиль секции по [sandbox] файла плагина: полный профиль как есть,
-        иначе дефолты от [env] плюс образ пакета и дельта изоляции.
+    def profile_of(self, launch: PluginLaunch) -> SandboxProfile:
+        """Профиль плагина по [sandbox] его файла: полный профиль как есть,
+        иначе дефолты от [env] плюс образ плагина, сеть и образы данных
+        манифеста и дельта изоляции.
 
         Профиль есть, а bwrap недоступен — отказ старта: молчаливая деградация
         инструмента до процесса приложения запрещена.
         """
-        sandbox = self._plugin_sandbox(spec.section)
+        sandbox = self._plugin_sandbox(launch.id)
         if sandbox.profile is not None:
-            return self._checked(sandbox.profile, spec.section)
+            return self._checked(sandbox.profile, launch.id)
 
-        return self._checked(self._composed(spec, sandbox), spec.section)
+        env = self._env()
+        data = self._composed(launch.id, sandbox)
+        if launch.manifest.network:
+            data["isolation"]["network"] = True
+            data["mounts"]["ro"] = SandboxDefaults.network_binds(env)
 
-    def _checked(self, profile: SandboxProfile, section: str) -> SandboxProfile:
+        data["mounts"]["images"] = SandboxDefaults.data_images(
+            env, launch.manifest.data
+        )
+
+        if sandbox.workspace:
+            data["mounts"]["workspace"] = SandboxDefaults.workspace(env)
+            data["run"]["cwd"] = SandboxDefaults.WORKSPACE_TARGET
+
+        return self._checked(SandboxProfile.model_validate(data), launch.id)
+
+    def _bare(self, plugin_id: str, sandbox: PluginSandbox) -> SandboxProfile:
+        """Профиль подкоманды manifest: образ плагина без сети, образов
+        данных и workspace — манифест о них ещё не сказал."""
+        if sandbox.profile is not None:
+            return sandbox.profile
+
+        return SandboxProfile.model_validate(self._composed(plugin_id, sandbox))
+
+    def _checked(self, profile: SandboxProfile, plugin_id: str) -> SandboxProfile:
         if profile.mounts.workspace is not None:
             WorkspaceMount.configure(profile.mounts.workspace.mount.target)
 
         if not has_bwrap(profile):
             msg = (
-                f"sandbox profile of {section!r} is configured, but bubblewrap "
+                f"sandbox profile of {plugin_id!r} is configured, but bubblewrap "
                 "(bwrap) is not in the trusted binary directories"
             )
             raise RuntimeError(msg)
 
-        # групповые лимиты секции проверяются при сборке: отказ виден на старте
-        CgroupManager.probe_profiles({section: profile})
+        # групповые лимиты плагина проверяются при сборке: отказ виден на старте
+        CgroupManager.probe_profiles({plugin_id: profile})
         return profile
 
-    def _composed(self, spec: LaunchSpec, needs: PluginSandbox) -> SandboxProfile:
-        """Дефолтный профиль от [env] + образ plugins/<package>/rootfs.ext4 +
-        семантика и таблицы из [sandbox] файла conf/plugins/<section>.toml.
-        """
-        if not spec.package:
-            msg = (
-                f"[tool.{spec.section}.sandbox] profile is missing: a built-in "
-                "plugin declares the full sandbox profile in its config"
-            )
-            raise RuntimeError(msg)
-
-        env = self._env()
-        data = SandboxDefaults.profile(env, spec.package)
-
-        ro = list(data["mounts"]["ro"])
-
-        if needs.network:
-            data["isolation"]["network"] = True
-
-        for entry in needs.binds:
-            if ":" not in entry:
-                msg = (
-                    f"plugin {spec.section!r}: bind {entry!r} must be an "
-                    "explicit host:guest pair"
-                )
-                raise RuntimeError(msg)
-
-            ro.append(entry)
-
-        data["mounts"]["ro"] = ro
-        data["mounts"]["images"] = self._images(spec.section, needs.images)
-
-        if needs.workspace:
-            data["mounts"]["workspace"] = SandboxDefaults.workspace(env)
-            data["run"]["cwd"] = SandboxDefaults.WORKSPACE_TARGET
+    def _composed(self, plugin_id: str, needs: PluginSandbox) -> dict[str, Any]:
+        """Дефолтный профиль от [env] + образ plugins/<id>.ext4 + таблицы из
+        [sandbox] файла conf/plugins/<id>.toml."""
+        data = SandboxDefaults.profile(self._env(), plugin_id)
 
         overrides = {
             "host": needs.host,
@@ -472,31 +655,20 @@ class ZygoteLaunchers(SectionLaunchers):
             if override:
                 data[key] = SandboxDefaults.merged(data[key], override)
 
-        return SandboxProfile.model_validate(data)
-
-
-    @staticmethod
-    def _images(section: str, entries: tuple[str, ...]) -> list[str]:
-        """Образы данных секции: каждая запись — явная пара образ:точка."""
-        images: list[str] = []
-        for entry in entries:
-            if ":" not in entry:
-                msg = (
-                    f"plugin {section!r}: data image {entry!r} must be an "
-                    "explicit image:guest pair"
-                )
-                raise RuntimeError(msg)
-
-            images.append(entry)
-
-        return images
+        return data
 
 
 class ProcessLaunchers(SectionLaunchers):
-    """Запуск субпроцессом хоста: без песочницы, файлы инструментов в workdir."""
+    """Запуск субпроцессом хоста: без песочницы, файлы инструментов в workdir.
+
+    Программа плагина — `python -m boba.sandbox.program <id>` интерпретатором
+    приложения: плагин стоит в окружении исходников, режим — только отладка.
+    """
 
     def __init__(self, cfg: ProcessLauncherConfig) -> None:
         self._cfg = cfg
+        self._output = PluginOutput()
+        self._entry = PluginEntry()
 
     def probe(self) -> None:
         workdir = Path(self._cfg.workdir)
@@ -510,16 +682,60 @@ class ProcessLaunchers(SectionLaunchers):
         # файловые ссылки канваса читают файлы инструментов из workdir
         WorkspaceMount.configure(self._cfg.workdir)
 
+    def check_kits(self, plugin_ids: Sequence[str]) -> None:
+        return
+
+    def manifest_of(self, plugin_id: str, section: Mapping[str, Any]) -> PluginManifest:
+        done = self._run(plugin_id, PluginCommand.MANIFEST, section)
+
+        return self._output.manifest(plugin_id, done, self._where())
+
+    def setup(self, launch: PluginLaunch, section: Mapping[str, Any]) -> None:
+        done = self._run(launch.id, PluginCommand.SETUP, section)
+
+        self._output.finished(launch.id, PluginCommand.SETUP, done, self._where())
+
     def launcher_of(
-        self, spec: LaunchSpec, contexts: CallContexts, ambient: CallAmbient
+        self, launch: PluginLaunch, contexts: CallContexts, ambient: CallAmbient
     ) -> ToolLauncher:
-        return ProcessToolCaller(spec.section, self._cfg, contexts, ambient)
+        program = (*self._program(launch.id), PluginCommand.CALL.value)
+
+        return ProcessToolCaller(launch.id, self._cfg, contexts, ambient, program)
 
     def settle(self) -> None:
         return
 
     def stop(self) -> None:
         return
+
+    def _program(self, plugin_id: str) -> tuple[str, ...]:
+        return self._entry.argv(sys.executable, plugin_id)
+
+    def _where(self) -> str:
+        return f"the host process environment {sys.prefix}"
+
+    def _run(
+        self, plugin_id: str, command: PluginCommand, section: Mapping[str, Any]
+    ) -> subprocess.CompletedProcess[bytes]:
+        argv = (*self._program(plugin_id), command.value)
+        try:
+            return subprocess.run(  # noqa: S603 — argv: интерпретатор и модуль программы
+                argv,
+                input=self._output.section_bytes(section),
+                capture_output=True,
+                timeout=self._cfg.timeout_sec,
+                cwd=self._cfg.workdir,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            msg = (
+                f"plugin {plugin_id}: `{command}` did not finish in "
+                f"{self._cfg.timeout_sec}s"
+            )
+            raise RuntimeError(msg) from exc
+        except OSError as exc:
+            msg = f"plugin {plugin_id}: `{command}` did not start: {exc}"
+            raise RuntimeError(msg) from exc
 
 
 class ToolLaunchers:

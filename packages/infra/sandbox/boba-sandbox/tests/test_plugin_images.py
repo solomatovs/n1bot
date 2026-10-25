@@ -1,6 +1,7 @@
 """Образы корней плагинов: точки монтирования данных обязаны быть в образе.
 
-Рантайм монтирует веса эмбеддера и модели OCR образами данных, а корень
+Рантайм монтирует веса эмбеддера и модели OCR образами данных, которые
+объявил манифест плагина, а корень
 плагина read-only: нет пустого каталога в образе — bwrap не создаст его и
 секция не поднимется. Сборщик такие каталоги создаёт, тест проверяет результат.
 """
@@ -9,21 +10,47 @@ from __future__ import annotations
 
 import subprocess
 from collections.abc import Sequence
+from importlib.metadata import entry_points
 from pathlib import Path
 from typing import ClassVar
 
 import pytest
 
-from boba.stand.sandbox import SandboxLayout
+from boba.sandbox.program import PluginEntry
 from boba.stand.zygote import RUNTIME, PrivateImageMount, SandboxStand
+from boba.toolkit.manifest import ToolPlugin
 
 FUSE2FS = SandboxStand.FUSE2FS
 
-PACKAGES = sorted(SandboxLayout.DATA_IMAGES)
+
+class DataPlugins:
+    """Плагины, объявившие образы данных: точки монтирования по манифесту."""
+
+    def __init__(self) -> None:
+        self._entry = PluginEntry()
+
+    def ids(self) -> list[str]:
+        ids: list[str] = []
+        for entry in entry_points(group=ToolPlugin.GROUP):
+            if self.targets(entry.name):
+                ids.append(entry.name)
+
+        return sorted(ids)
+
+    def targets(self, plugin_id: str) -> list[str]:
+        targets: list[str] = []
+        for image in self._entry.program(plugin_id).plugin.data:
+            targets.append(image.target)
+
+        return targets
+
+
+PLUGINS = DataPlugins()
+IDS = PLUGINS.ids()
 
 needs_images = pytest.mark.failif(
     not FUSE2FS.exists()
-    or not all(RUNTIME.plugin_rootfs(package).exists() for package in PACKAGES),
+    or not all(RUNTIME.plugin_rootfs(plugin_id).exists() for plugin_id in IDS),
     reason=(
         "нет артефактов песочницы (собрать: make -C build sandbox plugin-rootfs-all)"
     ),
@@ -59,18 +86,14 @@ class ImageDirs:
 
 @needs_images
 class TestPluginDataMountpoints:
-    @pytest.mark.parametrize("package", PACKAGES)
+    @pytest.mark.parametrize("plugin_id", IDS)
     def test_declared_data_paths_exist_in_the_image(
-        self, package: str, tmp_path_factory: pytest.TempPathFactory
+        self, plugin_id: str, tmp_path_factory: pytest.TempPathFactory
     ) -> None:
         image = ImageDirs(
-            RUNTIME.plugin_rootfs(package), tmp_path_factory.mktemp("rootfs")
+            RUNTIME.plugin_rootfs(plugin_id), tmp_path_factory.mktemp("rootfs")
         )
 
-        guests: list[str] = []
-        for _, guest in SandboxLayout.DATA_IMAGES[package]:
-            guests.append(guest)
+        missing = image.missing(PLUGINS.targets(plugin_id))
 
-        missing = image.missing(guests)
-
-        assert missing == [], f"{package}: в образе нет точек монтирования: {missing}"
+        assert missing == [], f"{plugin_id}: в образе нет точек монтирования: {missing}"

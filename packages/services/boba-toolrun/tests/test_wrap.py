@@ -21,23 +21,31 @@ from boba.toolkit.launcher import (
     ToolLauncher,
     ToolOutcome,
 )
+from boba.toolkit.manifest import ManifestBuilder
 from boba.toolkit.protocol import REPLY, ReplyError, ToolCommand
 from boba.toolkit.result import ErrorResult, MarkdownResult, ToolResultBase
-from boba.toolrun.hosted import HostedTool
-from boba.toolrun.wrap import ToolProcessWrap, WrapErrorKind
+from boba.toolrun.hosted import HostedTool, PluginSection
+from boba.toolrun.injected import InjectedConfig, StaticSection
+from boba.toolrun.wrap import ToolProcessWrap
 
 CFG = FakeConfig(token=SecretStr("t0ken"), limit=5)
 
 
 def called(tool: HostedTool, text: str) -> ToolResultBase:
     """Один вызов инструмента под обёрткой запуска с аргументом text."""
-    return asyncio.run(tool.run("call-1", {"text": text, "repeat": 1, "cfg": CFG}))
+    return asyncio.run(tool.run("call-1", {"text": text, "repeat": 1}))
 
 
 def wrapped(launcher: ToolLauncher) -> HostedTool:
     """Инструмент хоста из объявления fake_echo с переносом вызова
-    исполнителю launcher."""
-    return ToolProcessWrap(CallAmbient()).hosted(fake_echo, launcher)
+    исполнителю launcher и секцией плагина на месте конфига."""
+    decl = ManifestBuilder().tool(fake_echo)
+    section = PluginSection(values=CFG.revealed())
+
+    tool = ToolProcessWrap(CallAmbient()).hosted(decl, launcher, section)
+    InjectedConfig(StaticSection()).bind_all([tool])
+
+    return tool
 
 
 class RecordedCall(ToolCall):
@@ -107,16 +115,12 @@ class TestSandboxMode:
             raise AssertionError('artifact.text == "done"')
 
         command = launcher.commands[0]
-        if "-m" not in command.argv:
-            raise AssertionError('"-m" in command.argv')
-        if "boba.stand_core.fake_toolmod" not in command.argv:
-            raise AssertionError('"boba.stand_core.fake_toolmod" in command.argv')
-        if "--text" not in command.argv:
-            raise AssertionError('"--text" in command.argv')
-        if "t0ken" in " ".join(command.argv):
-            raise AssertionError('"t0ken" not in " ".join(command.argv)')
-        if b"t0ken" not in command.config:
-            raise AssertionError('b"t0ken" in command.config')
+        if command.argv != ("fake_echo",):
+            raise AssertionError(f"argv names only the tool: {command.argv!r}")
+        if b'"text": "hello"' not in command.args:
+            raise AssertionError(f"model argument in args: {command.args!r}")
+        if b"t0ken" not in command.args:
+            raise AssertionError('b"t0ken" in command.args')
 
     def test_error_reply_raises_payload_failure(self) -> None:
         failure = ErrorResult(message="down", error_kind="fake_unavailable")
@@ -131,15 +135,14 @@ class TestSandboxMode:
         if "down" not in str(caught.value):
             raise AssertionError('"down" in str(caught.value)')
 
-    def test_oversized_argument_is_expected_failure(self) -> None:
-        tool = wrapped(RecordingLauncher(self.OK_REPLY))
+    def test_large_argument_rides_the_channel(self) -> None:
+        """Аргументы едут каналом аргументов: потолка argv у них нет."""
+        launcher = RecordingLauncher(self.OK_REPLY)
 
-        with pytest.raises(PayloadFailureError) as caught:
-            called(tool, "x" * 140_000)
+        called(wrapped(launcher), "x" * 140_000)
 
-        error_kind = caught.value.failure().error_kind
-        if error_kind != WrapErrorKind.ARGUMENT_TOO_LARGE:
-            raise AssertionError(f"error_kind: {error_kind!r}")
+        if len(launcher.commands[0].args) < 140_000:
+            raise AssertionError("the large argument reached the command whole")
 
     def test_error_reply_never_reaches_return(self) -> None:
         """Отказ — исключение, а не «успешный» результат с ok=False."""
