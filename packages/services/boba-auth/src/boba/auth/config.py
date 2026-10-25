@@ -16,6 +16,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 from boba.identity.admission import RoleExcludeConfig, RoleMappingConfig, RoleRules
+from boba.identity.directory import DirectoryAuth
 from boba.identity.session import LoginTemplate
 from boba.identity.signin import ProxyHeaderNames
 from boba.kerberos import AcceptConfig, Delegation
@@ -146,8 +147,9 @@ class LdapRolesConfig(BaseModel):
     base_dn: str = Field(
         description="База поиска пользователя, напр. DC=corp,DC=example,DC=com.",
     )
-    bind_dn: str
-    bind_password: SecretStr
+    auth: DirectoryAuth = Field(
+        description="Служебный bind поиска: simple (учётка и пароль) или anonymous.",
+    )
     mapping: DirectoryRolesConfig = Field(default=DirectoryRolesConfig())
 
 

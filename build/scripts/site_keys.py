@@ -9,6 +9,7 @@ ${site.<ключ>}; сами значения лежат в site.toml случа
 первый site.toml. Источник перечня — сам конфиг, поэтому устареть он не может.
 """
 
+import importlib
 import re
 import sys
 import tomllib
@@ -46,6 +47,20 @@ CODE_KEYS = {
     "cgroup_base": "читает лаунчер инструментов: каталог cgroup песочницы",
 }
 
+# способ входа подключения: ключ <x>_auth_method выбирает таблицу [site.<x>_auth.<имя>];
+# варианты её поля method читаются из модели, которая таблицу проверяет
+AUTH_METHOD_SUFFIX = "_method"
+AUTH_MODELS = {
+    "pg_auth": ("boba.db.postgres.connection", "PostgresConfig", "auth"),
+    "pg_history_auth": ("boba.db.postgres.connection", "PostgresConfig", "auth"),
+    "llm_auth": ("boba.transport.http.connection", "HttpConnection", "auth"),
+    "confluence_auth": ("boba.transport.http.connection", "HttpConnection", "auth"),
+    "ldap_auth": ("boba.auth.config", "LdapRolesConfig", "auth"),
+    "mail_auth": ("boba.tool.mail.tools", "SmtpConfig", "auth"),
+}
+# входы, которые приложение собирает само: учётка пользователя и билет вызова
+APP_ONLY_METHODS = {"kerberos_delegated", "kerberos_ticket"}
+
 
 def leaves(node: object, prefix: str) -> list[tuple[str, str]]:
     if isinstance(node, dict):
@@ -77,6 +92,47 @@ def collect(conf: Path) -> dict[str, dict[str, str]]:
     return used
 
 
+def auth_methods(table: str) -> list[tuple[str, list[str]]]:
+    """Способы таблицы входа: значение method и обязательные поля варианта."""
+    if table not in AUTH_MODELS:
+        raise SystemExit(
+            f"site_keys: no model for the login tables [site.{table}.*]; "
+            "add the model that validates them to AUTH_MODELS"
+        )
+
+    module, name, field = AUTH_MODELS[table]
+    model = getattr(importlib.import_module(module), name)
+    schema = model.model_json_schema()
+    definitions = schema["$defs"]
+    found: list[tuple[str, list[str]]] = []
+    for ref in schema["properties"][field]["discriminator"]["mapping"].values():
+        variant = definitions[ref.rsplit("/", 1)[-1]]
+        method = variant["properties"]["method"]["const"]
+        if method in APP_ONLY_METHODS:
+            continue
+        fields = [key for key in variant.get("required", []) if key != "method"]
+        found.append((method, fields))
+    return found
+
+
+def print_auth(used: dict[str, str]) -> None:
+    tables = sorted(
+        key[: -len(AUTH_METHOD_SUFFIX)]
+        for key in used
+        if key.endswith(f"_auth{AUTH_METHOD_SUFFIX}")
+    )
+    if not tables:
+        return
+    print(
+        "\n# способы входа: <ключ>_method называет таблицу [site.<ключ>.<имя>],"
+        " способ задаёт её поле method"
+    )
+    for table in tables:
+        print(f"\n[site.{table}.<имя>]  — {used[table]}")
+        for method, fields in auth_methods(table):
+            print(f'    method = "{method}"  — {", ".join(fields) or "без полей"}')
+
+
 def main(argv: list[str]) -> int:
     if len(argv) != 2:
         print(__doc__, file=sys.stderr)
@@ -105,6 +161,7 @@ def main(argv: list[str]) -> int:
         "\n# ключ вида a.b — таблица [site.a] с полем b; ключ, оканчивающийся"
         " другой ссылкой, выбирается её значением"
     )
+    print_auth(used["site"])
     return 0
 
 

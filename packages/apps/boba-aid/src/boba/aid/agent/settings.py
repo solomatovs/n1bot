@@ -52,7 +52,7 @@ from boba.core.secrets import SecretReveal
 from boba.db.postgres.connection import LibpqConnection
 from boba.mcp_client.client import McpServersConfig
 from boba.transport.http import HttpTransportConfig
-from boba.transport.http.connection import BearerAuth, HttpConnection
+from boba.transport.http.connection import HttpConnection, NegotiateAuth, WebAuth
 
 __all__ = [
     "AgentProviderKind",
@@ -122,13 +122,13 @@ class FileModel(BaseModel):
 
 
 class ProviderFile(FileModel):
-    """Ключ `provider` профиля модели: вид, адрес, ключ и поведение запросов
-    — срок, проверка TLS, повторы и таблица транспорта процесса ключами
-    HttpTransportConfig."""
+    """Ключ `provider` профиля модели: вид, адрес, вход соединения провайдера
+    и поведение запросов — срок, проверка TLS, повторы и таблица транспорта
+    процесса ключами HttpTransportConfig."""
 
     kind: AgentProviderKind
     base_url: str = Field(min_length=1)
-    api_key: SecretStr | None = None
+    auth: WebAuth
     timeout_sec: float = Field(gt=0)
     ssl_verify: bool
     retry_attempts: int = Field(ge=1)
@@ -226,7 +226,7 @@ class RemoteProviderView(BaseModel):
 
 
 class ProfileModelSpecs:
-    """Профиль модели агента из профиля чата: адрес, ключ, срок, TLS и
+    """Профиль модели агента из профиля чата: адрес, вход, срок, TLS и
     повторы — из соединения провайдера, транспорт — из его секции
     ([agent_http]), окно, потолок ответа и возврат рассуждений — из пределов
     профиля ([model_limits.<имя>]).
@@ -235,7 +235,8 @@ class ProfileModelSpecs:
 
     def model(self, name: str, profile: ChatProfileConfig) -> ModelFile:
         """Ошибки:
-        AgentSettingsError — провайдер профиля не удалённый или без адреса.
+        AgentSettingsError — провайдер профиля не удалённый, без адреса или
+            со входом negotiate, который в процесс агента не передать.
         """
         remote: list[str] = []
         for kind in AgentProviderKind:
@@ -256,15 +257,20 @@ class ProfileModelSpecs:
             msg = f"chat profile {name!r}: the provider connection gives no address"
             raise AgentSettingsError(msg)
 
-        api_key = None
-        if isinstance(view.connection.auth, BearerAuth):
-            api_key = view.connection.auth.token
-
         connection = view.connection
+        if isinstance(connection.auth, NegotiateAuth):
+            msg = (
+                f"chat profile {name!r}: provider login 'negotiate' cannot be handed "
+                "to the agent process, its kerberos credentials stay in the chat; "
+                "expected method 'none', 'basic', 'bearer' or 'digest', or run the "
+                "agent as a service with its own keytab"
+            )
+            raise AgentSettingsError(msg)
+
         provider = ProviderFile(
             kind=view.kind,
             base_url=base_url,
-            api_key=api_key,
+            auth=connection.auth,
             timeout_sec=connection.timeout_sec,
             ssl_verify=connection.ssl_verify,
             retry_attempts=connection.retry_attempts,
