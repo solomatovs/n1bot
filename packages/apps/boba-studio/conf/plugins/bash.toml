@@ -1,7 +1,0 @@
-enable           = true
-max_output_bytes = 65536
-timeout_sec      = 3600
-tools            = ["bash"]
-
-[sandbox]
-    workspace = true

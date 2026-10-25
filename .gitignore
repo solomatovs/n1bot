@@ -29,7 +29,6 @@ site.toml
 
 packages/**/build/
 packages/**/dist/
-!packages/apps/boba-studio/web/workflow/src/**
 
 .ruff_cache
 .pytest_cache
@@ -51,15 +50,6 @@ packages/**/dist/
 # статика фронта: кладёт make fetch, в образ идёт из build/src/webassets
 packages/apps/boba-aid/assets/public/vendor/
 
-# страница workflow: зависимости, кэши и сборка (собирает Dockerfile / make web)
-packages/apps/boba-studio/web/workflow/node_modules/
-packages/apps/boba-studio/web/workflow/.vite/
-packages/apps/boba-studio/web/workflow/openapi.json
-packages/apps/boba-studio/web/workflow/src/api/schema.d.ts
-packages/apps/boba-studio/web/workflow/.eslintcache
-packages/apps/boba-studio/web/workflow/coverage/
-packages/apps/boba-studio/web/workflow/*.tsbuildinfo
-packages/apps/boba-studio/assets/workflow/
 packages/apps/boba-aid/web/page/node_modules/
 packages/apps/boba-aid/web/page/.vite/
 packages/apps/boba-aid/web/page/.eslintcache

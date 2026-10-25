@@ -98,7 +98,6 @@ exclude = [
     "**/.*",
     "packages/*/*/build",
     "packages/*/*/*/build",
-    "packages/apps/boba-studio",
     "packages/services/boba-catalog-service",
     "packages/core/boba-catalog",
 ]
@@ -194,7 +193,6 @@ extend-exclude = [
     "debug",
     "build/*/src",
     "packages/*/*/build",
-    "packages/apps/boba-studio",
     "packages/services/boba-catalog-service",
     "packages/core/boba-catalog",
 ]
