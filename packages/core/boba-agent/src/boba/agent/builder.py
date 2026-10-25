@@ -8,8 +8,8 @@
 соседних сообщений пользователя, два режима подачи системных вложений,
 починка пар вызов — результат, чистка и защита от подделки служебного
 блока (TagShield у текстов пользователя и результатов).
-Форма запроса — подача вложений и возврат рассуждений — из снимка: запрос
-повторяется по истории байт в байт, из профиля берётся только сэмплинг.
+Профиль модели — подача вложений, возврат рассуждений, сэмплинг — из
+снимка: запрос повторяется по истории байт в байт, конфига сборщик не знает.
 Инструменты — из снимка, по имени, затем загруженные отложенные из истории
 в порядке загрузки с пометкой deferred (docs/prompt_assembly/specs/
 07_system_tools.md, раздел 2.3): провайдер без родных отложенных
@@ -25,12 +25,12 @@ from dataclasses import dataclass, field
 from typing import ClassVar
 
 from boba.agent.attachments import Announced
-from boba.agent.profile import ModelProfile, ReasoningReturn
 from boba.agent.records import (
     AssistantBlock,
     ChainRecord,
     Placement,
     PromptSnapshot,
+    ReasoningReturn,
     RequestFeed,
     SnapshotTool,
     TextBlock,
@@ -207,8 +207,7 @@ class RequestBuilder:
     SECTION_JOIN: ClassVar[str] = "\n\n"
     TEXT_JOIN: ClassVar[str] = "\n"
 
-    def __init__(self, profile: ModelProfile) -> None:
-        self._profile = profile
+    def __init__(self) -> None:
         self._texts = RequestTexts()
 
     def build(
@@ -234,7 +233,7 @@ class RequestBuilder:
         return ChatRequest(
             messages=messages,
             tools=list(self._tools(conversation, snapshot)),
-            sampling=dict(self._profile.chat.sampling),
+            sampling=dict(snapshot.sampling),
             stream=True,
         )
 

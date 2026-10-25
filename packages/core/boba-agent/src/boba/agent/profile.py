@@ -14,11 +14,11 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from enum import StrEnum
 from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from boba.agent.records import ReasoningReturn
 from boba.llm.providers import ChatModelConfig
 
 __all__ = [
@@ -26,21 +26,12 @@ __all__ = [
     "ModelProfile",
     "ProfileCheck",
     "ProfileError",
-    "ReasoningReturn",
     "TurnLimits",
 ]
 
 
 class ProfileError(Exception):
     """Профиль модели не годится для запуска."""
-
-
-class ReasoningReturn(StrEnum):
-    """Возвращать ли модели её рассуждения прошлых ответов."""
-
-    NEVER = "never"
-    TURN = "turn"
-    ALWAYS = "always"
 
 
 class ModelProfile(BaseModel):

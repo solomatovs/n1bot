@@ -197,7 +197,6 @@ class TurnLoop:
         limits: TurnLimits,
         compaction: CompactionSettings,
         model: ChatModel,
-        builder: RequestBuilder,
         attachments: ContextAttachments,
         tools: ToolRunner,
         templates: AgentTemplate,
@@ -240,16 +239,14 @@ class TurnLoop:
         self._commands = LocalCommandText()
         self._last_failure = ""
         self._overflow_signs = ContextOverflowSigns()
-        self._bind_model(profile, model, builder)
+        self._builder = RequestBuilder()
+        self._bind_model(profile, model)
 
-    def _bind_model(
-        self, profile: ModelProfile, model: ChatModel, builder: RequestBuilder
-    ) -> None:
-        """Части, которые зависят от профиля модели: сборщик запроса, бюджет
-        скиллов, обращение к модели, оценка заполненности, пересказ и пачка
-        сжатия. Собираются на старте и заново при смене модели."""
+    def _bind_model(self, profile: ModelProfile, model: ChatModel) -> None:
+        """Части, которые зависят от профиля модели: бюджет скиллов,
+        обращение к модели, оценка заполненности, пересказ и пачка сжатия.
+        Собираются на старте и заново при смене модели."""
         self._profile = profile
-        self._builder = builder
         self._budget = SkillBudget(profile.context_window, profile.chars_per_token)
         self._asking = ModelAsk(model, self._sink)
         estimator = TokenEstimator(profile)
@@ -262,7 +259,7 @@ class TurnLoop:
         )
         self._summarizer = Summarizer(
             self._asking,
-            builder,
+            self._builder,
             self._templates,
             estimator,
             self._ids,
@@ -284,13 +281,12 @@ class TurnLoop:
             self._catalog,
         )
 
-    def set_model(
-        self, profile: ModelProfile, model: ChatModel, builder: RequestBuilder
-    ) -> None:
+    def set_model(self, profile: ModelProfile, model: ChatModel) -> None:
         """Смена профиля модели между ходами: следующий запрос идёт новой
-        модели с её окном и сэмплингом; вложение `model` объявит смену в
-        начале следующего хода. Вызывающий проверяет, что ход не идёт."""
-        self._bind_model(profile, model, builder)
+        модели с её окном; вложение `model` и новый снимок с её сэмплингом
+        и формой запроса объявят смену в начале следующего хода. Вызывающий
+        проверяет, что ход не идёт."""
+        self._bind_model(profile, model)
 
     @property
     def profile(self) -> ModelProfile:
@@ -954,6 +950,7 @@ class TurnLoop:
             model=self._profile.model_id,
             system_turns=self._profile.system_turns,
             reasoning_return=self._profile.reasoning_return,
+            sampling=self._profile.chat.sampling,
         )
 
     async def _announce_context(self) -> PromptSnapshot:
