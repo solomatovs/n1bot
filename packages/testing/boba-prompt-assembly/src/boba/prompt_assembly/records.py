@@ -74,12 +74,7 @@ class RecordType(StrEnum):
     QUEUE = "queue-operation"
 
     def in_transcript(self) -> bool:
-        return self in (
-            RecordType.USER,
-            RecordType.ASSISTANT,
-            RecordType.ATTACHMENT,
-            RecordType.SYSTEM,
-        )
+        return self in (RecordType.USER, RecordType.ASSISTANT, RecordType.ATTACHMENT, RecordType.SYSTEM)
 
 
 class Key(StrEnum):
@@ -417,7 +412,6 @@ class JsonView:
             if isinstance(item, dict):
                 yield item
 
-
 class JsText:
     """Строковые операции с семантикой JavaScript: trim, пробельность, Date.parse."""
 
@@ -477,9 +471,7 @@ class JournalAddresses:
 
     def of_path(self, path: Path) -> JournalAddress:
         if path.suffix != Layout.SUFFIX:
-            raise JournalError(
-                f"{path}: a session journal is expected to end with {Layout.SUFFIX}, got {path.suffix!r}"
-            )
+            raise JournalError(f"{path}: a session journal is expected to end with {Layout.SUFFIX}, got {path.suffix!r}")
 
         resolved = path.resolve()
         holder = resolved.parent
@@ -520,9 +512,7 @@ class Journal:
         try:
             data = self._path.read_bytes()
         except OSError as exc:
-            raise JournalError(
-                f"reading session journal {self._path} failed: {exc}"
-            ) from exc
+            raise JournalError(f"reading session journal {self._path} failed: {exc}") from exc
 
         rows = data.decode(Encoding.UTF8, Encoding.SURROGATES).split("\n")
         self._lines = len(rows)
@@ -533,9 +523,7 @@ class Journal:
     def entries(self, upto: int | None = None) -> Iterator[tuple[int, Raw]]:
         """Строки-объекты журнала по порядку; upto — последняя строка состояния (включительно)."""
         if upto is not None and upto > self._lines:
-            raise JournalError(
-                f"{self._path}: state line {upto} is past the end of the journal ({self._lines} lines)"
-            )
+            raise JournalError(f"{self._path}: state line {upto} is past the end of the journal ({self._lines} lines)")
 
         for number, raw in self._entries:
             if upto is not None and number > upto:

@@ -12,9 +12,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 
 from boba.runtime.launchers import PluginLaunch, ZygoteLaunchers
+from boba.runtime.plugins import PluginSections
 from boba.sandbox import SandboxProfile
 from boba.sandbox.program import PluginEntry
 from boba.stand.zygote import ROOTFS_IMAGE, RUNTIME, SandboxCgroup
@@ -210,13 +211,7 @@ def plugin_launch(raw: DictConfig, plugin_id: str) -> PluginLaunch:
     (стенд строит его в своём процессе, как программа плагина) и секция
     [tool.<id>] конфига raw."""
     manifest = PluginEntry().program(plugin_id).manifest()
-    node = OmegaConf.select(raw, f"tool.{plugin_id}")
-    container = OmegaConf.to_container(node, resolve=True)
-
-    section: dict[str, Any] = {}
-    if isinstance(container, dict):
-        for key, value in container.items():
-            section[str(key)] = value
+    section = PluginSections(raw).values(plugin_id)
 
     return PluginLaunch(manifest=manifest, section=section)
 

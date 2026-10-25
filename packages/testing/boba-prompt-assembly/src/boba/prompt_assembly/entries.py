@@ -17,6 +17,7 @@ from typing import Callable, Iterator, Mapping, Sequence
 from boba.prompt_assembly.records import BlockType, JsText, Json, Key
 
 
+
 Block = dict[str, Json]
 
 
@@ -56,10 +57,10 @@ class Marker(StrEnum):
     RESULT_MISSING = "[Tool result missing due to internal error]"
     ADVISOR_RESPONSE = "[Advisor response]"
     REFERENCES_REMOVED = "[Tool references removed - tool search not enabled]"
-    ATTRIBUTION_ON = (
-        "Attribution for git commits and pull requests you create from here on"
+    ATTRIBUTION_ON = "Attribution for git commits and pull requests you create from here on"
+    ATTRIBUTION_OFF = (
+        "From here on, do not add attribution lines to git commit messages or pull request descriptions"
     )
-    ATTRIBUTION_OFF = "From here on, do not add attribution lines to git commit messages or pull request descriptions"
     NO_RESPONSE_REQUESTED = "No response requested."
     ADVISOR_TOOL = "advisor"
     TOOL_SEARCH = "ToolSearch"
@@ -108,9 +109,7 @@ class AssistantEntry:
     per_turn_effort: str | None = None
     api_block_index: int | None = None
     api_block_indices: tuple[int, ...] = ()
-    wire_tool_inputs: Mapping[str, Json] = field(
-        default_factory=lambda: dict[str, Json]()
-    )
+    wire_tool_inputs: Mapping[str, Json] = field(default_factory=lambda: dict[str, Json]())
 
 
 @dataclass(frozen=True)
@@ -225,9 +224,7 @@ class BlockKit:
 
         return False
 
-    def every(
-        self, blocks: Sequence[Block], predicate: Callable[[Block], bool]
-    ) -> bool:
+    def every(self, blocks: Sequence[Block], predicate: Callable[[Block], bool]) -> bool:
         """Все блоки удовлетворяют предикату (пустой список — да)."""
         for block in blocks:
             if not predicate(block):
@@ -284,10 +281,7 @@ class BlockKit:
             return False
 
         for item in content:
-            if (
-                isinstance(item, dict)
-                and item.get(Key.TYPE) == BlockType.TOOL_REFERENCE
-            ):
+            if isinstance(item, dict) and item.get(Key.TYPE) == BlockType.TOOL_REFERENCE:
                 return True
 
         return False

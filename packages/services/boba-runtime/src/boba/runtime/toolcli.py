@@ -23,11 +23,12 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar
 
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 
 from boba.config import bind
 from boba.krb import KerberosWorkspaceConfig
 from boba.runtime.config import AppLayers, ConfigFiles
+from boba.runtime.plugins import PluginSections
 from boba.sandbox.program import PluginCommand, PluginEntry, PluginEntryError
 from boba.toolkit.entry import EntryFlag, ToolMain
 from boba.toolkit.manifest import InjectedRole, ManifestBuilder, ToolDecl, ToolPlugin
@@ -53,6 +54,7 @@ class HostConfig:
 
     def __init__(self, files: ConfigFiles) -> None:
         self._raw: DictConfig = AppLayers.compose(files)
+        self._sections = PluginSections(self._raw)
 
     def enter_kerberos(self) -> None:
         """Рабочий каталог kerberos из [krb]; без секции keytab-профили телу закрыты."""
@@ -63,18 +65,11 @@ class HostConfig:
 
     def section(self, plugin_id: str) -> dict[str, Any]:
         """Секция [tool.<id>] значениями JSON; нет секции — отказ."""
-        node = OmegaConf.select(self._raw, f"tool.{plugin_id}")
-        if node is None:
-            msg = f"toolcli: the config has no [tool.{plugin_id}] section"
-            raise ToolCliError(msg)
-
-        container = OmegaConf.to_container(node, resolve=True)
-        values: dict[str, Any] = {}
-        if isinstance(container, dict):
-            for key, value in container.items():
-                values[str(key)] = value
-
-        return values
+        try:
+            return self._sections.values(plugin_id)
+        except RuntimeError as exc:
+            msg = f"toolcli: {exc}"
+            raise ToolCliError(msg) from exc
 
 
 class ToolCli:

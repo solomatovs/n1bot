@@ -52,6 +52,7 @@ __all__ = [
     "PluginKit",
     "PluginKits",
     "PluginMeta",
+    "PluginSections",
     "ToolLoader",
 ]
 
@@ -70,6 +71,56 @@ class PluginMeta(BaseModel):
     connections: dict[str, StringList] = {}
     """Списки заданных соединений сервера у инструментов плагина: имя
     инструмента → имена из [connections]."""
+
+
+class PluginSections:
+    """Секции [tool.<id>] конфига процесса: какие плагины названы и значения
+    секции плагина JSON-ом, как их получают подкоманды программы и тело.
+
+    Создают его комплекты плагинов (PluginKits), отладочный запуск тела
+    (toolcli) и стенды тестов — у всех одна сырая секция, без моделей
+    плагина.
+    """
+
+    SECTION: ClassVar[str] = "tool"
+
+    def __init__(self, raw: DictConfig) -> None:
+        self._raw = raw
+
+    def ids(self) -> Iterator[str]:
+        """Плагины, названные секциями [tool.<id>]."""
+        node = OmegaConf.select(self._raw, self.SECTION)
+        if node is None:
+            return
+
+        for key in node:
+            yield str(key)
+
+    def meta(self, plugin_id: str) -> PluginMeta:
+        """Ключи фреймворка секции плагина."""
+        return bind(self._raw, self._path(plugin_id), PluginMeta)
+
+    def values(self, plugin_id: str) -> dict[str, Any]:
+        """Секция плагина значениями JSON с развёрнутыми интерполяциями.
+
+        Ошибки:
+        RuntimeError — секции [tool.<id>] в конфиге нет.
+        """
+        node = OmegaConf.select(self._raw, self._path(plugin_id))
+        if node is None:
+            msg = f"the config has no [{self._path(plugin_id)}] section"
+            raise RuntimeError(msg)
+
+        container = OmegaConf.to_container(node, resolve=True)
+        values: dict[str, Any] = {}
+        if isinstance(container, dict):
+            for key, value in container.items():
+                values[str(key)] = value
+
+        return values
+
+    def _path(self, plugin_id: str) -> str:
+        return f"{self.SECTION}.{plugin_id}"
 
 
 @dataclass(frozen=True)
@@ -92,26 +143,24 @@ class PluginKits:
     вместо keytab-профилей.
     """
 
-    SECTION: ClassVar[str] = "tool"
-
     def __init__(
         self, raw: DictConfig, launchers: SectionLaunchers, arming: SectionArming
     ) -> None:
-        self._raw = raw
+        self._sections = PluginSections(raw)
         self._launchers = launchers
         self._arming = arming
 
     async def load(self) -> dict[str, PluginKit]:
-        ids = list(self._ids())
+        ids = list(self._sections.ids())
         self._launchers.check_kits(ids)
 
         enabled: list[tuple[str, PluginMeta, dict[str, Any]]] = []
         for plugin_id in ids:
-            meta = bind(self._raw, f"{self.SECTION}.{plugin_id}", PluginMeta)
+            meta = self._sections.meta(plugin_id)
             if not meta.enable:
                 continue
 
-            enabled.append((plugin_id, meta, self._values(plugin_id)))
+            enabled.append((plugin_id, meta, self._sections.values(plugin_id)))
 
         manifests = await asyncio.gather(*self._manifests(enabled))
 
@@ -125,24 +174,6 @@ class PluginKits:
             kits[plugin_id] = PluginKit(launch=launch, meta=meta, section=section)
 
         return kits
-
-    def _ids(self) -> Iterator[str]:
-        node = OmegaConf.select(self._raw, self.SECTION)
-        if node is None:
-            return
-
-        for key in node:
-            yield str(key)
-
-    def _values(self, plugin_id: str) -> dict[str, Any]:
-        node = OmegaConf.select(self._raw, f"{self.SECTION}.{plugin_id}")
-        container = OmegaConf.to_container(node, resolve=True)
-        values: dict[str, Any] = {}
-        if isinstance(container, dict):
-            for key, value in container.items():
-                values[str(key)] = value
-
-        return values
 
     def _manifests(
         self, enabled: Sequence[tuple[str, PluginMeta, dict[str, Any]]]
