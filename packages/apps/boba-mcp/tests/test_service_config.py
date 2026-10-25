@@ -102,7 +102,7 @@ class TestConnectionConfigRefusesStart:
         self, raw_config: DictConfig, key: str, value: object
     ) -> None:
         raw = copy.deepcopy(raw_config)
-        raw.mcp.endpoints.general.connections[0][key] = value
+        raw.mcp.endpoints.all.connections[0][key] = value
 
         with pytest.raises(ValidationError, match=key):
             bind(raw, path="app", model=McpAppConfig)

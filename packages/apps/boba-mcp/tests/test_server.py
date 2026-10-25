@@ -59,6 +59,7 @@ from boba.connections.sealed import (
 from boba.mcp_adapter import JournalUris
 from boba.mcp_server.auth import ServiceMark
 from boba.mcp_server.files import JournalRoutes
+from boba.mcp_server.prompts import PromptFileError, PromptFiles
 from boba.mcp_server.server import (
     FileUploadTool,
     RunLimits,
@@ -173,6 +174,94 @@ def _journal(result: mt.CallToolResult) -> JournalRead:
             return read
 
     raise AssertionError(f"the result links the stdout of its journal: {result}")
+
+
+class TestPrompts:
+    async def test_prompt_files_of_the_endpoint_are_listed_and_given(
+        self, url: str, dev_token: str
+    ) -> None:
+        """Файл conf/prompts/<endpoint>/<имя>.toml — промпт endpoint'а по
+        стандарту MCP: prompts/list с описанием и аргументами, prompts/get —
+        сообщения по ролям с подстановкой; необязательный аргумент без
+        значения — пустая строка, удвоенная скобка — текстом, без
+        обязательного — отказ."""
+        async with _client(url, dev_token) as client:
+            capabilities = client.session.server_capabilities
+            listed = await client.list_prompts()
+            given = await client.get_prompt(ServiceStand.PROMPT, {"sql": "select 1"})
+            full = await client.get_prompt(
+                ServiceStand.PROMPT, {"sql": "select 2", "dialect": "oracle"}
+            )
+            with pytest.raises(MCPError, match="requires the argument 'sql'"):
+                await client.get_prompt(ServiceStand.PROMPT, {"dialect": "oracle"})
+
+        assert capabilities is not None
+        assert capabilities.prompts is not None
+        assert capabilities.prompts.list_changed is False
+        (prompt,) = listed
+        assert prompt.name == ServiceStand.PROMPT
+        assert prompt.description == "Review an SQL statement"
+        arguments: list[tuple[str, str | None, bool | None]] = []
+        for argument in prompt.arguments or ():
+            arguments.append((argument.name, argument.description, argument.required))
+
+        assert arguments == [
+            ("sql", "The statement", True),
+            ("dialect", "The SQL dialect", False),
+        ]
+        assert self._texts(given) == [
+            ("user", "Review select 1 in {dialect}: ."),
+            ("assistant", "Reviewing."),
+        ]
+        assert self._texts(full)[0] == ("user", "Review select 2 in {dialect}: oracle.")
+
+    MESSAGE: ClassVar[str] = '[[messages]]\nrole = "{role}"\ntext = "{text}"\n'
+
+    @pytest.mark.parametrize(
+        ("folder", "text", "refusal"),
+        [
+            ("all", MESSAGE.format(role="user", text="{x}"), "names {x}"),
+            ("all", MESSAGE.format(role="system", text="t"), "role"),
+            ("all", "= \n", "expected TOML"),
+            ("nowhere", MESSAGE.format(role="user", text="t"), "nowhere"),
+        ],
+        ids=["unknown argument", "role", "not toml", "unknown endpoint"],
+    )
+    def test_prompt_file_off_the_format_is_refused_by_its_path(
+        self, tmp_path: Path, folder: str, text: str, refusal: str
+    ) -> None:
+        """Каталог или файл промпта не по формату — отказ на старте с путём и
+        причиной."""
+        place = tmp_path / folder
+        place.mkdir()
+        described = f'description = "d"\n{text}'
+        (place / "broken.toml").write_text(described, encoding="utf-8")
+
+        with pytest.raises(PromptFileError, match=refusal) as refused:
+            PromptFiles().read(tmp_path, ["all", "chat"])
+
+        assert str(tmp_path) in str(refused.value)
+
+    def test_shipped_prompts_are_read(self) -> None:
+        """Промпты поставки читаются под endpoint'ами общего конфига."""
+        conf = Path(__file__).parents[1] / "conf"
+        prompts = PromptFiles().read(conf / "prompts", ["chat", "all", "search"])
+
+        names: list[str] = []
+        for prompt in prompts["all"]:
+            names.append(prompt.name)
+
+        assert names == ["sql_review"]
+
+    @staticmethod
+    def _texts(result: mt.GetPromptResult) -> list[tuple[str, str]]:
+        texts: list[tuple[str, str]] = []
+        for message in result.messages:
+            content = message.content
+            assert isinstance(content, mt.TextContent), content
+            texts.append((message.role, content.text))
+
+        return texts
 
 
 class TestToolList:
@@ -1036,30 +1125,40 @@ class TestDiscovery:
     async def test_capabilities_are_the_real_ones(
         self, stand: ServiceStand, url: str, dev_token: str
     ) -> None:
+        """Промпты есть только у endpoint'а с каталогом промптов, и их список
+        не меняется; логов и подсказок нет."""
         async with _client(url, dev_token) as client:
             capabilities = client.server_capabilities
             prompts = await client.list_prompts()
 
-        if capabilities is None:
+        narrow_token = await stand.dev_token(NARROW)
+        async with _client(stand.url(NARROW), narrow_token) as client:
+            narrow = client.server_capabilities
+
+        if capabilities is None or narrow is None:
             raise AssertionError("the protocol is negotiated on connect")
         if capabilities.tools != mt.ToolsCapability(list_changed=False):
             raise AssertionError(f"the tool list never changes: {capabilities}")
         expected = mt.ResourcesCapability(subscribe=True, list_changed=True)
         if capabilities.resources != expected:
             raise AssertionError(f"journals are resources: {capabilities}")
-        if capabilities.prompts is not None or capabilities.logging is not None:
-            raise AssertionError(f"no prompts and no logs: {capabilities}")
+        if capabilities.prompts != mt.PromptsCapability(list_changed=False):
+            raise AssertionError(f"prompt files never change: {capabilities}")
+        if capabilities.logging is not None:
+            raise AssertionError(f"no logs: {capabilities}")
         if capabilities.completions is not None:
             raise AssertionError(f"no completions: {capabilities}")
-        if prompts:
-            raise AssertionError(f"the server has no prompts: {prompts}")
+        if [prompt.name for prompt in prompts] != [ServiceStand.PROMPT]:
+            raise AssertionError(f"the prompts are the files: {prompts}")
+        if narrow.prompts is not None:
+            raise AssertionError(f"an endpoint without files has no prompts: {narrow}")
 
     async def test_client_of_an_earlier_edition_gets_what_its_wire_carries(
         self, stand: ServiceStand, url: str, dev_token: str
     ) -> None:
-        """Рукопожатие 2025-11-25 без сессии: инструменты без смены списка,
-        ресурсы журналов без подписки и смены списка, без расширений,
-        промптов и логов; инструменты всех endpoint'ов проходят схему этой
+        """Рукопожатие 2025-11-25 без сессии: инструменты и промпты без смены
+        списка, ресурсы журналов без подписки и смены списка, без расширений
+        и логов; инструменты всех endpoint'ов проходят схему этой
         редакции, вызов и список журналов работают."""
         legacy = Client(StreamableHttpTransport(url, auth=dev_token), mode="legacy")
         async with legacy as client:
@@ -1082,6 +1181,7 @@ class TestDiscovery:
         assert version == "2025-11-25"
         assert capabilities == mt.ServerCapabilities(
             tools=mt.ToolsCapability(list_changed=False),
+            prompts=mt.PromptsCapability(list_changed=False),
             resources=mt.ResourcesCapability(subscribe=False, list_changed=False),
         )
         assert _text(called) == "hi|t0ken", called

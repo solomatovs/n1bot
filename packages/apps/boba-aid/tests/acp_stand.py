@@ -215,6 +215,29 @@ class AgentHistoryStand:
             {"kind": "postgres", "schema": self.schema(), "postgres": self.postgres()}
         )
 
+    async def records(self, session_id: str, kind: str) -> list[dict[str, Any]]:
+        """Записи вида kind (колонка type) сессии session_id по порядку."""
+        pool = AsyncPostgresPool(self.postgres())
+        await pool.open()
+        try:
+            async with pool.connection() as conn:
+                cursor = await conn.execute(
+                    sql.SQL(
+                        "select record from {}.session_records where session_id = %s "
+                        "and type = %s order by seq"
+                    ).format(sql.Identifier(self.schema())),
+                    (session_id, kind),
+                )
+                rows = await cursor.fetchall()
+        finally:
+            await pool.close()
+
+        found: list[dict[str, Any]] = []
+        for row in rows:
+            found.append(dict(row[0]))
+
+        return found
+
     async def rows(self, session_id: str) -> int:
         """Записи сессии session_id в истории агента."""
         pool = AsyncPostgresPool(self.postgres())

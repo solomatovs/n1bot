@@ -64,7 +64,7 @@ DB_NAME = "acp_tools"
 TOKEN_DELAY_SEC = 0.0
 CONNECTION = "probe"
 SERVICE_PLUGINS = ("pg",)
-MCP_SERVER = "boba_general"
+MCP_SERVER = "aid_all"
 ADMIN = "admin"
 SHORT_TOKEN_SEC = 4
 """Срок токена сервиса на стенде входа local: агент успевает его пережить."""
@@ -286,7 +286,7 @@ class TestAgentTurn:
         calls = [
             {"name": "mcp__chat__connection_list", "arguments": {}},
             {
-                "name": "mcp__boba_general__pg_query",
+                "name": "mcp__aid_all__pg_query",
                 "arguments": {
                     "connection": CONNECTION,
                     "sql": "select 1 as one",
@@ -317,7 +317,7 @@ class TestAgentTurn:
         app_log = _lines_since(app, since)
         assert any(
             f"sealing: connection {CONNECTION} of kind postgres sealed in connection "
-            "of mcp__boba_general__pg_query" in line
+            "of mcp__aid_all__pg_query" in line
             for line in app_log
         ), "\n".join(app_log[-40:])
 
@@ -355,7 +355,7 @@ class TestNestedCallsFeed:
                 "args": {"intent": "drain rows", "feeds": ["rows"]},
             },
         ]
-        calls = [{"name": "mcp__boba_general__workflow", "arguments": {"nodes": nodes}}]
+        calls = [{"name": "mcp__aid_all__workflow", "arguments": {"nodes": nodes}}]
         await tab.send(f"{ScenarioName.CALL.value} {json.dumps(calls)}")
         await tab.wait_task_end()
 
@@ -483,7 +483,7 @@ class SealedQueryTurn:
 
     async def run(self) -> dict[str, Any]:
         call = {
-            "name": "mcp__boba_general__pg_query",
+            "name": "mcp__aid_all__pg_query",
             "arguments": {
                 "connection": CONNECTION,
                 "sql": "select 1 as one",
@@ -521,7 +521,7 @@ class TestSeparateSessionSecrets:
 
         since = app.log_lines()
         call = {
-            "name": "mcp__boba_general__pg_query",
+            "name": "mcp__aid_all__pg_query",
             "arguments": {
                 "connection": CONNECTION,
                 "sql": f"select pg_sleep({self.SLEEP_SEC}), 1 as one",

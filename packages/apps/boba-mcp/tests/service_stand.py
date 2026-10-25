@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import ClassVar
@@ -43,6 +43,7 @@ from boba.identity.admission import RoleMappingConfig
 from boba.identity.context import CallContexts
 from boba.identity.run import Runs
 from boba.mcp_server.auth import ServiceMark
+from boba.mcp_server.prompts import FilePrompt, PromptFiles
 from boba.mcp_server.server import (
     ConnectionOfferRule,
     EndpointCatalog,
@@ -109,6 +110,29 @@ class ServiceStand:
     стенда alice, bob и dave. Вход формой — пользователь local. port — порт,
     на котором стенд слушает. Заданное соединение сервера DWH видно только
     роли ANALYST и стоит в списке fake_connection_host."""
+
+    PROMPT: ClassVar[str] = "sql_review"
+    PROMPT_FILE: ClassVar[str] = (
+        'description = "Review an SQL statement"\n'
+        "\n"
+        "[arguments.sql]\n"
+        'description = "The statement"\n'
+        "required = true\n"
+        "\n"
+        "[arguments.dialect]\n"
+        'description = "The SQL dialect"\n'
+        "required = false\n"
+        "\n"
+        "[[messages]]\n"
+        'role = "user"\n'
+        'text = "Review {sql} in {{dialect}}: {dialect}."\n'
+        "\n"
+        "[[messages]]\n"
+        'role = "assistant"\n'
+        'text = "Reviewing."\n'
+    )
+    """Промпт endpoint'а PROFILE: обязательный и необязательный аргументы,
+    скобка текстом и две роли."""
 
     OFFERS: ClassVar[str] = "offers"
     """Endpoint с правилами предложения соединений по таблице 6.8: аналитику с
@@ -296,6 +320,7 @@ class ServiceStand:
         self._sign_in = ServiceSignIn(
             public_url, CLIENT_ID, CLIENT_SECRET, PROXY_SECRET
         )
+        prompts = self._prompts(workdir, granted)
         self.endpoints = McpEndpoints(
             self.registry,
             runs,
@@ -317,7 +342,20 @@ class ServiceStand:
                 binaries=TrustedBinaries(dirs=("/usr/bin", "/bin")),
                 interpreter=AppLayers.interpreter(),
             ),
+            prompts,
         )
+
+    def _prompts(
+        self, workdir: Path, granted: Mapping[str, McpEndpoint]
+    ) -> Mapping[str, Sequence[FilePrompt]]:
+        """Промпты стенда тем же читателем, что у сервиса: файл PROMPT в
+        каталоге endpoint'а PROFILE."""
+        root = workdir / "prompts"
+        folder = root / PROFILE
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / f"{self.PROMPT}.toml").write_text(self.PROMPT_FILE, encoding="utf-8")
+
+        return PromptFiles().read(root, granted)
 
     def url(self, profile: str) -> str:
         return f"{self.public_url}/{profile}"

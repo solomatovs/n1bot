@@ -258,8 +258,8 @@ class TestAgentThroughRelay:
     ) -> None:
         """prompts/list и prompts/get: вопрос-команда с полным именем
         промпта раскрывается сообщениями промпта в служебный контекст
-        вопроса. Сами промпты агент командами не объявляет — их объявляет
-        сервер, — в списке агента только его собственные команды."""
+        вопроса. Промпты сервера агент объявляет командами из истории
+        сессии вместе со своими."""
         process, updates, session_id = await self._session(agents, "prompts")
 
         await agents.turn(
@@ -269,7 +269,9 @@ class TestAgentThroughRelay:
         )
 
         read = ModelRequests(model).read()
-        assert self._commands(updates) == ["compact"], self._commands(updates)
+        announced = self._commands(updates)[-1].split()
+        assert "compact" in announced, announced
+        assert "mcp__standard__greet" in announced, announced
         assert "Greet Bob in the poem" in read, read
         assert "[assistant] Hello, Bob!" in read, read
 

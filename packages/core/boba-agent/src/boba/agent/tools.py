@@ -65,6 +65,7 @@ from boba.agent.profile import ModelProfile, TurnLimits
 from boba.agent.records import (
     Announced,
     CallStatus,
+    CommandEntry,
     NoticeLevel,
     PermissionBehavior,
     PermissionRule,
@@ -305,6 +306,11 @@ class McpServerSet(Protocol):
     @abstractmethod
     def connected(self) -> Sequence[ConnectedServer]:
         """Подключённые серверы с их инструкциями."""
+
+    @abstractmethod
+    def commands(self) -> Sequence[CommandEntry]:
+        """Команды подключённых серверов: промпты и интерфейсы MCP Apps;
+        ход сверяет их с историей перед каждым запросом."""
 
 
 class AskOption(BaseModel):
@@ -691,6 +697,13 @@ class AgentTools(DeferredCatalog):
             return ()
 
         return self._servers.connected()
+
+    def commands(self) -> Sequence[CommandEntry]:
+        """Команды подключённых серверов MCP; без них — пусто."""
+        if self._servers is None:
+            return ()
+
+        return self._servers.commands()
 
     def inline(self) -> Sequence[SnapshotTool]:
         """Карточки с полным определением для снимка промпта: сервера, затем

@@ -1206,10 +1206,13 @@ install:
 	else
 	    install -m 0644 "$(OUT)/conf/boba.env" "$(INSTALL_DIR)/conf/boba.env"
 	fi
-	rm -rf "$(INSTALL_DIR)/conf/plugins"
+	rm -rf "$(INSTALL_DIR)/conf/plugins" "$(INSTALL_DIR)/conf/prompts"
 	cp -a "$(OUT)/conf/config.toml" "$(INSTALL_DIR)/conf/config.toml"
 	if [ -d "$(OUT)/conf/plugins" ]; then
 	    cp -a "$(OUT)/conf/plugins" "$(INSTALL_DIR)/conf/plugins"
+	fi
+	if [ -d "$(OUT)/conf/prompts" ]; then
+	    cp -a "$(OUT)/conf/prompts" "$(INSTALL_DIR)/conf/prompts"
 	fi
 	$(call site-hint,$(INSTALL_DIR)/conf)
 	mkdir -p "$(USER_UNITS)"

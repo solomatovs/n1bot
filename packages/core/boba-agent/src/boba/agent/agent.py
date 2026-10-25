@@ -88,6 +88,7 @@ from boba.agent.turn import ContextUsage, TurnLoop
 from boba.agent.writer import (
     ClientCommand,
     ClientCommands,
+    CommandBook,
     HistoryWriter,
     RecordKeeper,
     RequestRecorder,
@@ -220,6 +221,7 @@ class Agent:
         self._tools: AgentTools | None = None
         self._questions: ControlQuestions | None = None
         self._client_commands: ClientCommands | None = None
+        self._command_book: CommandBook | None = None
         self._current: RunCancellation | None = None
         self._stopping = False
         self._idle = asyncio.Event()
@@ -327,6 +329,8 @@ class Agent:
         )
         client_commands = ClientCommands(keeper, wiring.clock, parts.version)
         self._client_commands = client_commands
+        command_book = CommandBook(keeper, wiring.clock)
+        self._command_book = command_book
         attachments = ContextAttachments(
             wiring.templates, wiring.ids, wiring.clock, parts.version, session_id.value
         )
@@ -352,6 +356,7 @@ class Agent:
             parts.agent_name,
             recorder,
             client_commands,
+            command_book,
         )
 
         await parts.sink.emit(
@@ -624,6 +629,24 @@ class Agent:
             raise HistoryError(msg)
 
         await client_commands.add(command)
+
+    @property
+    def commands(self) -> CommandBook:
+        """Команды сессии по истории и их сверка с живыми командами
+        источника.
+
+        Ошибки:
+        HistoryError — сессия ещё не открыта.
+        """
+        book = self._command_book
+        if book is None:
+            msg = (
+                "The agent session is not open yet, so it has no commands. Call "
+                "open() before reading or syncing the session commands."
+            )
+            raise HistoryError(msg)
+
+        return book
 
     async def serve(self) -> None:
         """Обслуживает очередь до `close()`: ход за ходом, между ними — ожидание."""

@@ -33,7 +33,7 @@ from boba.stand.ui.stand import ServiceStand, StandPlugins, StandPorts, StandPro
 pytestmark = pytest.mark.integration
 
 BOOT_SEC = 300.0
-ENDPOINT = "general"
+ENDPOINT = "all"
 SLEEP_SEC = 7391
 """Уникальная длительность sleep: по ней тест находит процесс тела вызова."""
 EXIT_SEC = 25.0

@@ -6,23 +6,33 @@
 пробелами вместе. Так разбирают вызов и харнесс, и агент, которому вызов
 приходит обычным вопросом.
 
+Здесь же пометка промпта сервера MCP расширением команд com.boba/commands
+(PromptCommand): её ставит сервер, разбирает агент, объявляя команды сессии.
+
 Ошибки:
 CommandArgumentsError — кавычки не закрыты или обязательного аргумента нет.
+ValidationError — пометка промпта не по модели PromptCommand.
 """
 
 from __future__ import annotations
 
 import shlex
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Any, ClassVar
+
+from pydantic import BaseModel, ConfigDict, Field
 
 __all__ = [
+    "CommandAction",
     "CommandArgument",
     "CommandArgumentsError",
     "CommandCall",
     "CommandLines",
     "CommandMark",
+    "PromptCommand",
+    "PromptMarks",
 ]
 
 
@@ -39,10 +49,12 @@ class CommandMark(StrEnum):
 
 @dataclass(frozen=True)
 class CommandArgument:
-    """Объявленный аргумент команды: имя и обязательность."""
+    """Объявленный аргумент команды: имя, обязательность и значения, которые
+    подсказал владелец команды."""
 
     name: str
     required: bool
+    values: Sequence[str] = ()
 
 
 @dataclass(frozen=True)
@@ -81,6 +93,20 @@ class CommandLines:
             return None
 
         return CommandCall(name=name, rest=rest.strip())
+
+    def hint(self, declared: Sequence[CommandArgument]) -> str:
+        """Подсказка ввода аргументов: имена по порядку, у аргумента с
+        подсказанными значениями — они через «|» в скобках."""
+        parts: list[str] = []
+        for argument in declared:
+            if not argument.values:
+                parts.append(argument.name)
+                continue
+
+            listed = "|".join(argument.values)
+            parts.append(f"{argument.name} ({listed})")
+
+        return CommandMark.SPACE.join(parts)
 
     def arguments(
         self, call: CommandCall, declared: Sequence[CommandArgument]
@@ -130,3 +156,50 @@ class CommandLines:
             raise CommandArgumentsError(msg)
 
         return arguments
+
+
+class CommandAction(StrEnum):
+    """Что делает команда, помеченная расширением команд."""
+
+    APP = "app"
+    """Открывает приложение MCP Apps инструмента, модель не участвует."""
+
+
+class PromptCommand(BaseModel):
+    """Пометка промпта расширением команд com.boba/commands: команда action
+    ведёт к инструменту tool того же сервера, у которого есть приложение MCP
+    Apps (_meta.ui.resourceUri) и "app" в visibility. Аргументы промпта —
+    аргументы этого вызова. Сервер кладёт пометку в _meta промпта (meta),
+    агент разбирает её из prompts/list (PromptMarks)."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    ID: ClassVar[str] = "com.boba/commands"
+    """Ключ расширения: в возможностях сторон и в _meta промпта."""
+
+    action: CommandAction
+    tool: str = Field(min_length=1)
+
+    def meta(self) -> dict[str, Any]:
+        """_meta промпта с этой пометкой."""
+        return {self.ID: self.model_dump(mode="json")}
+
+
+class PromptMarks:
+    """Разбор пометки расширения команд из _meta промпта сервера MCP. Держит
+    полем вход агента, который объявляет команды серверов сессии."""
+
+    def of(self, meta: Mapping[str, Any] | None) -> PromptCommand | None:
+        """Пометка из _meta промпта; None — промпт обычный.
+
+        Ошибки:
+        ValidationError — пометка не по модели PromptCommand.
+        """
+        if meta is None:
+            return None
+
+        marked = meta.get(PromptCommand.ID)
+        if marked is None:
+            return None
+
+        return PromptCommand.model_validate(marked)

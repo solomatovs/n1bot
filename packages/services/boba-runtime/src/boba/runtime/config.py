@@ -100,6 +100,10 @@ class ConfigFiles:
         """Файлы плагинов лежат рядом с общим конфигом."""
         return self.config.parent / "plugins"
 
+    def prompts_dir(self) -> Path:
+        """Файлы промптов сервиса лежат рядом с общим конфигом."""
+        return self.config.parent / "prompts"
+
 
 class ConfigArguments:
     """Аргументы запуска приложения: --config <общий конфиг> и --site <специфика>.

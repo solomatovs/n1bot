@@ -12,6 +12,8 @@ RecordKeeper — единственная дверь, через которую 
 инструментов добавляют записи: запись уходит в сессию, писатель просыпается,
 записи разговора и граница сжатия показываются наружу событием.
 ClientCommands пишет команды, которые клиент исполнил сам, на границах хода.
+CommandBook держит команды сессии по истории и пишет их разницу с живыми
+командами источника (серверы MCP, агент, клиент) записью commands_delta.
 RequestRecorder чеканит идентификатор каждого запроса к модели и, если запись
 запросов включена, кладёт служебную запись `api-request` с телом запроса и
 его дайджестом (план, раздел 5.18). До неё RequestReplay, если сверка
@@ -33,7 +35,7 @@ import asyncio
 import hashlib
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, ClassVar, TypeVar
 
@@ -50,6 +52,10 @@ from boba.agent.ids import Clock, IdMint
 from boba.agent.loader import HistoryLoader
 from boba.agent.records import (
     ApiRequestRecord,
+    CommandEntry,
+    CommandHistory,
+    CommandsDeltaRecord,
+    CommandSource,
     HarnessCommandRecord,
     Record,
     RecordError,
@@ -62,6 +68,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "ClientCommand",
     "ClientCommands",
+    "CommandBook",
     "HistoryWriter",
     "RecordKeeper",
     "RequestRecorder",
@@ -304,6 +311,44 @@ class ClientCommands:
                 outcome=dict(command.outcome),
             )
         )
+
+
+class CommandBook:
+    """Команды сессии по истории: что объявлено — свёртка её записей
+    commands_delta (CommandHistory), и только она. Источник команд (серверы
+    MCP при подключении, переподключении и обрыве, агент при открытии
+    сессии, клиент своим объявлением) отдаёт сюда свои живые команды, и
+    разница с историей ложится записью; без разницы ничего не пишется.
+    Запись служебная: на границы хода не смотрит и модели не уходит, её
+    событие RecordEvent вход процесса переводит в объявление команд
+    клиенту. Создаёт агент на сессию; сверяют цикл хода перед каждым
+    запросом и вход процесса."""
+
+    def __init__(self, keeper: RecordKeeper, clock: Clock) -> None:
+        self._keeper = keeper
+        self._clock = clock
+
+    def history(self) -> CommandHistory:
+        return CommandHistory(self._keeper.session.service())
+
+    async def synced(self, live: Sequence[CommandEntry], source: CommandSource) -> bool:
+        """Живые команды live источника source сверены с историей; True —
+        разница записана."""
+        change = self.history().delta(live, source)
+        if change is None:
+            return False
+
+        session = self._keeper.session
+        await self._keeper.add(
+            CommandsDeltaRecord(
+                timestamp=self._clock.now(),
+                session_id=session.id.value,
+                removed=change.removed,
+                added=change.added,
+            )
+        )
+
+        return True
 
 
 class RequestReplayError(Exception):

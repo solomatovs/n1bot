@@ -10,14 +10,18 @@ import mcp_types as mt
 import pytest
 
 from boba.agent.records import (
+    AgentCommandEntry,
     ApiErrorRecord,
     ApiRequestRecord,
+    AppCommandEntry,
     AssistantMessage,
     AttachmentRecord,
     AttachmentRole,
     CallStatus,
+    CommandArgumentEntry,
     CommandOutputRecord,
     CommandRecord,
+    CommandsDeltaRecord,
     CompactBoundaryRecord,
     CompactionPhase,
     CompactionRecord,
@@ -25,6 +29,7 @@ from boba.agent.records import (
     CompactSummaryRecord,
     CompactTrigger,
     DateAttachment,
+    HarnessCommandEntry,
     HarnessCommandRecord,
     InformationalRecord,
     InterruptRecord,
@@ -38,6 +43,7 @@ from boba.agent.records import (
     PermissionRuleOperation,
     PermissionRuleRecord,
     PreservedMessages,
+    PromptCommandEntry,
     PromptRecord,
     PromptSnapshot,
     QueueOperation,
@@ -289,6 +295,33 @@ SAMPLES: dict[str, Record] = {
         request_id="req_a",
         params={"messages": []},
         digest="sha256:0",
+    ),
+    "commands": CommandsDeltaRecord(
+        timestamp=STAMP,
+        session_id=SESSION,
+        seq=1,
+        removed=["mcp__old__review"],
+        added=[
+            PromptCommandEntry(
+                name="mcp__aid_all__review",
+                description="Review an SQL statement",
+                owner="aid_all",
+                prompt="review",
+                arguments=[
+                    CommandArgumentEntry(name="sql", required=True, values=["x"])
+                ],
+            ),
+            AppCommandEntry(
+                name="mcp__aid_all__console",
+                description="Open the console",
+                owner="aid_all",
+                prompt="console",
+                tool=mt.Tool(name="console", input_schema={"type": "object"}),
+                resource_uri="ui://stand/console.html",
+            ),
+            AgentCommandEntry(name="compact", description="Compact"),
+            HarnessCommandEntry(name="connections", description="Connections"),
+        ],
     ),
 }
 
