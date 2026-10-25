@@ -373,6 +373,8 @@ class TestServiceMode:
     async def test_profile_the_service_does_not_offer_is_refused(
         self, mode: ServiceModeStand, threads: ThreadsTable
     ) -> None:
+        """Профиль, которого служба не предлагает, отказан уже открытием
+        вкладки: она открывает сессию сразу."""
         identity = await mode.identity(FOREIGN_PROFILE)
         agent = ThreadAgent(
             identity,
@@ -382,9 +384,8 @@ class TestServiceMode:
             mode.menus,
         )
         try:
-            await agent.start()
             with pytest.raises(AgentProcessError, match="is not among them"):
-                await agent.ask(Question(key="first", text=ScenarioName.ANSWER.value))
+                await agent.start()
         finally:
             await agent.close()
 

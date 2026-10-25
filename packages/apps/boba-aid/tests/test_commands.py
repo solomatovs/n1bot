@@ -228,8 +228,8 @@ class CommandsTab:
         credentials = KerberosCredentialSource(None, NoRefresh())
         relays = RelayStand(lambda: store, lambda: credentials, CallContexts())
         self.servers = McpServers(servers)
-        history = AgentHistoryStand(stand)
-        agent_stand = AgentStand(root / "agents", history.history())
+        self.history = AgentHistoryStand(stand)
+        agent_stand = AgentStand(root / "agents", self.history.history())
         launcher = AgentLauncher(
             agent_stand.config(),
             servers,
@@ -252,7 +252,7 @@ class CommandsTab:
             ),
         )
         self._launcher = launcher
-        self._meta = AgentSessionMeta(threads)
+        self.meta = AgentSessionMeta(threads)
         self._menus = relays.menus(self.servers)
         self.menus = self._menus
         self.updates = RecordingUpdates()
@@ -261,7 +261,7 @@ class CommandsTab:
     def opened(self, updates: RecordingUpdates) -> ThreadAgent:
         """Агент того же треда в вкладке, которая рисует в updates."""
         return ThreadAgent(
-            self.identity, self._launcher, self._meta, updates, self._menus
+            self.identity, self._launcher, self.meta, updates, self._menus
         )
 
     async def turn(self, text: str) -> None:
@@ -376,19 +376,15 @@ class TestMenu:
     async def test_menu_gathers_the_chat_the_agent_and_the_servers(
         self, tab: CommandsTab
     ) -> None:
-        """Сразу — команда чата; по ответу серверов — их промпты под полными
-        именами с подсказками аргументов (значения — completion/complete);
-        с открытием сессии — команды агента по ACP."""
+        """Новая вкладка без вопросов: команда чата, команды агента по ACP с
+        сессией, открытой вкладкой, и промпты серверов под полными именами с
+        подсказками аргументов (значения — completion/complete)."""
         greet = f"mcp__{EXTENDED}__greet"
         console = f"mcp__{PLAIN}__{CONSOLE}"
 
-        first = RecordingUpdates.names(tab.updates.menus[0])
-        await tab.updates.menu(has("connections", greet, console), 0)
-        await tab.turn(ScenarioName.ANSWER.value)
-        names = await tab.updates.menu(has("compact", greet), 0)
+        names = await tab.updates.menu(has("connections", "compact", greet, console), 0)
         menu = last_menu(tab.updates)
 
-        assert first == ["connections"], first
         assert names[0] == "connections", names
         assert menu["connections"].icon is CommandIcon.HARNESS
         assert menu["compact"].icon is CommandIcon.AGENT
@@ -396,6 +392,41 @@ class TestMenu:
         assert menu[greet].icon is CommandIcon.MCP
         assert menu[greet].hint == "name style (plain|poem|pirate)", menu[greet]
         assert menu[console].hint == "status", menu[console]
+
+    async def test_tab_without_a_question_leaves_no_session(
+        self, tab: CommandsTab
+    ) -> None:
+        """Сессия, которую вкладка открыла ради команд агента, тред не узнаёт,
+        пока нет вопроса, а закрытие вкладки удаляет её у агента."""
+        await tab.updates.menu(has("compact"), 0)
+        opened = tab.agent.session_id
+        assert opened is not None
+
+        recorded = await tab.meta.session_of(tab.identity.thread_id)
+        held = await tab.history.rows(opened)
+        await tab.agent.close()
+        left = await tab.history.rows(opened)
+
+        assert recorded is None, recorded
+        assert held > 0
+        assert left == 0
+
+    async def test_first_question_keeps_the_session_of_the_tab(
+        self, tab: CommandsTab
+    ) -> None:
+        """Первый вопрос идёт в сессию, открытую вкладкой, и пишет её в
+        threads.meta; закрытие вкладки её не трогает."""
+        await tab.updates.menu(has("compact"), 0)
+        opened = tab.agent.session_id
+        assert opened is not None
+
+        await tab.turn(ScenarioName.ANSWER.value)
+        recorded = await tab.meta.session_of(tab.identity.thread_id)
+        await tab.agent.close()
+        left = await tab.history.rows(opened)
+
+        assert recorded == opened, recorded
+        assert left > 0
 
     async def test_menu_follows_the_prompt_changes_of_a_server(
         self, tab: CommandsTab
