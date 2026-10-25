@@ -41,6 +41,7 @@ from boba.agent.records import (
     PermissionRule,
     Record,
     RecordCodec,
+    SummaryRequestRecord,
     TurnEndRecord,
     TurnOutcome,
     UserRecord,
@@ -139,6 +140,9 @@ def kinds(records: Sequence[Record] | Sequence[ChainRecord]) -> list[str]:
 
         if isinstance(record, TurnEndRecord):
             name = "system:turn_end"
+
+        if isinstance(record, SummaryRequestRecord):
+            name = "system:summary_request"
 
         names.append(name)
 
@@ -392,8 +396,9 @@ class TestThreshold:
         announced = kinds(records[before:])
         first = kinds(records[:before])
         assert first.count("attachment:mcp_instructions_delta") == 1, first
-        assert announced[3:9] == [
+        assert announced[3:10] == [
             "system:compaction",
+            "system:summary_request",
             "system:compact_boundary",
             "attachment:date",
             "user:summary",
@@ -410,6 +415,7 @@ class TestThreshold:
             "queue-operation",
             "user",
             "system:compaction",
+            "system:summary_request",
             "system:compact_boundary",
             "attachment:date",
             "user:summary",
@@ -423,7 +429,7 @@ class TestThreshold:
         summary = summaries(records)[0]
         prompt_two = records[before + 2]
         started = records[before + 3]
-        date = records[before + 5]
+        date = records[before + 6]
         assert isinstance(prompt_two, UserRecord)
         assert isinstance(started, CompactionRecord)
         assert started.parent_uuid == prompt_two.uuid
@@ -1100,6 +1106,7 @@ class TestCancellation:
             "queue-operation",
             "user",
             "system:compaction",
+            "system:summary_request",
             "system:compaction",
             "system:turn_end",
         ]

@@ -21,7 +21,7 @@ from boba.krb import KerberosEnv, KerberosWorkspace, KeytabCredentials
 from boba.stand.site import Stand
 
 STAND = Stand.required()
-KEYTAB = Path(STAND.krb_pg_keytab)
+KEYTAB = Path(STAND.pg_krb_keytab)
 KRB5_CONF = Path(STAND.krb_config)
 PRINCIPAL = STAND.service_principal
 OTHER_PRINCIPAL = f"other@{STAND.krb_realm}"

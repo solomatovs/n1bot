@@ -24,7 +24,7 @@ pytestmark = [
 
 
 def _reader_login() -> str:
-    _, _, name = STAND.ldap_bind_user.rpartition(Stand.NETBIOS_SEPARATOR)
+    _, _, name = STAND.reader_bind.user.rpartition(Stand.NETBIOS_SEPARATOR)
 
     return name
 

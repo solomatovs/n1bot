@@ -36,6 +36,7 @@ from boba.chat.profiles import ReasoningReturn
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.connection.auth import PasswordAuth
 from boba.mcp_client.client import McpServersConfig
+from boba.transport.http.connection import BearerAuth
 
 PROFILE = "general"
 POSTGRES = PostgresConfig.model_validate(
@@ -85,7 +86,7 @@ def _model() -> ModelFile:
     provider = ProviderFile(
         kind=AgentProviderKind.OPENAI,
         base_url="https://llm.example.test/v1",
-        api_key=SecretStr("sk-contract-secret"),
+        auth=BearerAuth(method="bearer", token=SecretStr("sk-contract-secret")),
         timeout_sec=90.0,
         ssl_verify=False,
         retry_attempts=3,
@@ -151,7 +152,8 @@ class TestSettingsContract:
         }
         assert "password=pw-secret" in document["history"]["dsn"]
         assert document["permissions"] == {"allowBypass": True}
-        assert document["models"][PROFILE]["provider"]["apiKey"] == "sk-contract-secret"
+        auth = document["models"][PROFILE]["provider"]["auth"]
+        assert auth == {"method": "bearer", "token": "sk-contract-secret"}
         assert document["models"][PROFILE]["reasoningReturn"] == "turn"
         assert document["mcp"] == {"callTimeoutSec": 120.0}
 

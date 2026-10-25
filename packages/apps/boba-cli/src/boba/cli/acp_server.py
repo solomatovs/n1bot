@@ -170,7 +170,7 @@ from boba.agent.session import SessionState
 from boba.agent.settings import (
     McpClientJson,
 )
-from boba.agent.tags import LocalCommandText
+from boba.agent.tags import AgentTag, LocalCommandText
 from boba.agent.template import AgentTemplate, AgentTemplateFile, ModelTroubleTexts
 from boba.agent.tools import (
     AskOption,
@@ -1070,10 +1070,15 @@ class AcpMapping:
     def tool_result(
         self, block: ToolResultBlock, record: ToolResultRecord
     ) -> schema.SessionToolCallUpdate:
-        """Итог вызова: текст модели содержимым, исход вызова записи —
+        """Итог вызова: текст модели содержимым (у ошибки — без обёртки
+        tool_use_error, которую видит только модель), исход вызова записи —
         статусом, ответ tools/call как он записан в `toolUseResult` —
         `rawOutput`."""
-        text = schema.TextContentBlock(text=block.text())
+        shown = block.text()
+        if block.is_error:
+            shown = AgentTag.TOOL_USE_ERROR.unwrap(shown)
+
+        text = schema.TextContentBlock(text=shown)
 
         return schema.SessionToolCallUpdate(
             tool_call_id=block.tool_use_id,

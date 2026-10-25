@@ -75,7 +75,7 @@ def _keytab() -> KeytabAuth:
     return KeytabAuth(
         method="kerberos_keytab",
         principal=STAND.service_principal,
-        keytab=STAND.krb_pg_keytab,
+        keytab=STAND.pg_krb_keytab,
         service=STAND.pg_krbsrvname,
     )
 
@@ -101,7 +101,7 @@ async def test_keytab_auth_logs_in_as_the_service_principal() -> None:
     """method = kerberos_keytab: роль выводится из принципала, пароля нет."""
     connection = _profile(_keytab())
 
-    if await _current_user(connection) != STAND.krb_pg_user:
+    if await _current_user(connection) != STAND.pg_krb_user:
         raise AssertionError("keytab auth must log in as the service principal")
 
 
@@ -138,7 +138,7 @@ async def test_ticket_auth_logs_in_as_the_ticket_owner() -> None:
         source, STAND.pg_spn
     )
 
-    if await _current_user(_profile(ticket)) != STAND.krb_pg_user:
+    if await _current_user(_profile(ticket)) != STAND.pg_krb_user:
         raise AssertionError("ticket auth must log in as the ticket owner")
 
 

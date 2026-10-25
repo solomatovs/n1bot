@@ -46,8 +46,8 @@ def _account(name: str) -> dict[str, Any]:
     server = Server(STAND.ldap_url, get_info=ALL)
     with Connection(
         server,
-        user=STAND.ldap_bind_user,
-        password=STAND.ldap_bind_password.get_secret_value(),
+        user=STAND.reader_bind.user,
+        password=STAND.reader_bind.password.get_secret_value(),
         auto_bind="DEFAULT",
         raise_exceptions=True,
     ) as connection:

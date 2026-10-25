@@ -282,7 +282,7 @@ def secret_document() -> dict[str, object]:
                 "provider": {
                     "kind": "openai",
                     "baseUrl": "https://llm.local/v1",
-                    "apiKey": API_KEY,
+                    "auth": {"method": "bearer", "token": API_KEY},
                 },
                 "model": "qwen3",
                 "contextWindow": 32000,
@@ -331,7 +331,7 @@ class TestSecretsInFile:
         assert "0644" in text
         assert "chmod 600" in text
         assert "history.dsn" in text
-        assert "models.user-main.provider.apiKey" in text
+        assert "models.user-main.provider.auth" in text
 
     def test_user_file_with_secrets_is_checked_too(self, tmp_path: Path) -> None:
         path = tmp_path / "home" / ".boba" / "settings.json"
@@ -370,7 +370,7 @@ class TestSecretsInFile:
         path = tmp_path / "settings.json"
         write_private(path, document)
 
-        with pytest.raises(SettingsError, match="'apiKey' and 'apiKeyEnv'"):
+        with pytest.raises(SettingsError, match="'auth' and 'apiKeyEnv'"):
             settings(tmp_path, Arguments(settings=(str(path),))).effective()
 
     def test_postgres_history_needs_dsn_or_dsn_env(self, tmp_path: Path) -> None:
@@ -426,7 +426,10 @@ class TestMemoryHistory:
         store = MemoryHistoryStore()
         profile = agents.profile(Protocol.OPENAI)
         try:
-            served = Served(agents.agent(profile, Collected(), store=store))
+            # память не хранит журнала: пересобрать запрос не из чего
+            served = Served(
+                agents.agent(profile, Collected(), store=store, verify_requests=False)
+            )
             session = await served.open(SESSION, resume=False)
             served.agent.queue.enqueue(
                 QueueEntry(kind=QueueKind.PROMPT, text=ScenarioName.ANSWER.value)

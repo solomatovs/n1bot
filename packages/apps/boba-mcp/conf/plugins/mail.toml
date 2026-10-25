@@ -3,8 +3,7 @@ tools     = ["mail"]
 server    = "${site.mail.server}"
 port      = "${site.mail.port}"
 use_tls   = "${site.mail.use_tls}"
-user      = "${site.mail.user}"
-password  = "${site.mail.password}"
+auth      = "${site.mail_auth.${site.mail_auth_method}}"
 sender    = "${site.mail.sender}"
 recipient = "${site.mail.recipient}"
 

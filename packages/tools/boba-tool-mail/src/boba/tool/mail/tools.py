@@ -5,9 +5,9 @@ from __future__ import annotations
 import smtplib
 import sys
 from email.mime.multipart import MIMEMultipart
-from typing import Annotated, ClassVar, Final
+from typing import Annotated, ClassVar, Final, Literal
 
-from pydantic import ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from boba.core.secrets import SecretRevealing
 from boba.toolkit.entry import ToolMain
@@ -15,6 +15,27 @@ from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import (
     MarkdownResult,
 )
+
+
+class SmtpNoAuth(BaseModel):
+    """Сервер принимает письма без входа."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    method: Literal["none"]
+
+
+class SmtpPasswordAuth(BaseModel):
+    """Вход SMTP AUTH логином и паролем."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    method: Literal["password"]
+    user: str = Field(min_length=1)
+    password: SecretStr = Field(min_length=1)
+
+
+SmtpAuth = Annotated[SmtpNoAuth | SmtpPasswordAuth, Field(discriminator="method")]
 
 
 class SmtpConfig(SecretRevealing):
@@ -27,8 +48,7 @@ class SmtpConfig(SecretRevealing):
     server: str = Field(min_length=1)
     port: int = Field(default=587, ge=1)
     use_tls: bool = Field(default=False)
-    user: str = Field(min_length=1)
-    password: SecretStr = Field(min_length=1)
+    auth: SmtpAuth
     sender: str = Field(min_length=1)
     recipient: str = Field(min_length=1)
 
@@ -55,15 +75,8 @@ def mail(
         if cfg.use_tls:
             server.starttls()
 
-        if not cfg.user:
-            raise RuntimeError("choose user name")
-
-        if not cfg.password:
-            raise RuntimeError("choose user password")
-
-        password = cfg.password.get_secret_value()
-
-        server.login(cfg.user, password)
+        if isinstance(cfg.auth, SmtpPasswordAuth):
+            server.login(cfg.auth.user, cfg.auth.password.get_secret_value())
 
         server.send_message(msg)
 

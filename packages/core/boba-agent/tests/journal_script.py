@@ -30,6 +30,7 @@ from boba.agent.records import (
     PermissionModeRecord,
     PreservedMessages,
     PromptRecord,
+    PromptSnapshot,
     QueueOperation,
     QueueOperationRecord,
     Record,
@@ -119,6 +120,19 @@ class JournalScript:
             attachment=data,
             rendered=[RenderedMessage(content=text)],
             rendered_role=AttachmentRole.SYSTEM,
+        )
+
+        return await self._put(record)
+
+    async def snapshot(self, snapshot: PromptSnapshot) -> AttachmentRecord:
+        """Снимок промпта без текста: модели он не уходит."""
+        record = AttachmentRecord(
+            uuid=self._ids.uuid(),
+            parent_uuid=self._session.last_chain_uuid(),
+            timestamp=self._clock.now(),
+            session_id=self._session.id.value,
+            version=VERSION,
+            attachment=snapshot,
         )
 
         return await self._put(record)

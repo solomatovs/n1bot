@@ -16,9 +16,9 @@ services:
     pids_limit: 2048
     restart: unless-stopped
     stop_grace_period: 30s
-    image: boba-mcp:0.0.30.dev4
-    hostname: boba-mcp
-    container_name: boba-mcp
+    image: boba-mcp:0.0.30.dev5
+    hostname: mcp
+    container_name: mcp
     networks:
       default:
         ipv4_address: ${BOBA_ADDRESS}

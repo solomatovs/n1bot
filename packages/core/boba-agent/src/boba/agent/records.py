@@ -30,14 +30,15 @@
 
 Ошибки:
 RecordError — строка не является записью известного вида или не проходит
-    проверку модели.
+    проверку модели; запрос пересказа называет отрезок, которого нет в
+    разговоре.
 """
 
 from __future__ import annotations
 
 import json
 from abc import abstractmethod
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Literal, Protocol, Self, TypeAlias
@@ -53,9 +54,11 @@ from pydantic import (
 )
 from pydantic.alias_generators import to_camel
 
+from boba.agent.tags import AgentTag, TagShield
 from boba.llm.chat import LlmTrouble
 
 __all__ = [
+    "Announced",
     "ApiErrorRecord",
     "ApiRequestRecord",
     "AssistantBlock",
@@ -116,6 +119,7 @@ __all__ = [
     "QueueOperationRecord",
     "QueueRemoveReason",
     "QueuedCommandAttachment",
+    "ReasoningReturn",
     "Record",
     "RecordCodec",
     "RecordError",
@@ -126,10 +130,12 @@ __all__ = [
     "ReplyRecord",
     "ReplyStopReason",
     "RequestFeed",
+    "RequestTexts",
     "ServiceRecord",
     "SkillListingAttachment",
     "SnapshotSkill",
     "SnapshotTool",
+    "SummaryRequestRecord",
     "Synthetic",
     "SystemRecord",
     "SystemSubtype",
@@ -186,6 +192,7 @@ class SystemSubtype(StrEnum):
     COMPACTION = "compaction"
     INFORMATIONAL = "informational"
     HARNESS_COMMAND = "harness_command"
+    SUMMARY_REQUEST = "summary_request"
     TURN_END = "turn_end"
 
 
@@ -208,6 +215,7 @@ class RecordKind(StrEnum):
     COMPACTION = "compaction"
     COMPACT_BOUNDARY = "compact_boundary"
     HARNESS_COMMAND = "harness_command"
+    SUMMARY_REQUEST = "summary_request"
     TURN_END = "turn_end"
     QUEUE_OPERATION = "queue_operation"
     PERMISSION_MODE = "permission_mode"
@@ -549,6 +557,41 @@ class RenderedMessage(WireModel):
     content: str
 
 
+class ReasoningReturn(StrEnum):
+    """Возвращать ли модели её рассуждения прошлых ответов."""
+
+    NEVER = "never"
+    TURN = "turn"
+    ALWAYS = "always"
+
+
+class RequestTexts:
+    """Тексты записи, какими их видит модель: слова пользователя и
+    результат инструмента с обезвреженными служебными тегами. Шаблоны
+    агента сюда не входят: строки о загруженных инструментах и обёртку
+    tool_use_error запись несёт готовым текстом с момента записи, и
+    результат-ошибка уже обезврежен обёрткой. Им пользуются сборщик
+    запроса и оценка окна, чтобы окно считалось по тому же тексту, что
+    уходит модели."""
+
+    def __init__(self) -> None:
+        self._shield = TagShield([AgentTag.SYSTEM_REMINDER, AgentTag.TOOL_USE_ERROR])
+
+    def user(self, text: str) -> str:
+        return self._shield.shield(text)
+
+    def system(self, reminder: str) -> str:
+        """Текст системного вложения без обёртки system-reminder: так он
+        уходит отдельным системным сообщением."""
+        return AgentTag.SYSTEM_REMINDER.unwrap_block(reminder)
+
+    def result(self, result: ToolResultBlock) -> str:
+        if result.is_error:
+            return result.text()
+
+        return self._shield.shield(result.text())
+
+
 class PayloadModel(BaseModel):
     """Основа данных вложения: имена полей на проводе — camelCase."""
 
@@ -581,6 +624,13 @@ class SnapshotTool(PayloadModel):
         """Текст описания для оценки места в окне."""
         return f"{self.name}: {self.description}"
 
+    def same(self, other: SnapshotTool) -> bool:
+        """То же определение на проводе: сравнение по JSON, где кортеж и
+        список схемы — одно и то же."""
+        return self.model_dump(mode="json", by_alias=True) == other.model_dump(
+            mode="json", by_alias=True
+        )
+
 
 class SnapshotSkill(PayloadModel):
     name: str
@@ -588,7 +638,11 @@ class SnapshotSkill(PayloadModel):
 
 
 class PromptSnapshot(PayloadModel):
-    """Снимок: системный промпт секциями, инструменты, скиллы, модель, режим."""
+    """Снимок: системный промпт секциями, инструменты, скиллы и профиль
+    модели — её имя, подача вложений (system_turns), возврат рассуждений
+    (reasoning_return) и сэмплинг. Сборщик берёт всё это отсюда, а не из
+    профиля конфига: запрос повторяется по истории, смена профиля пишется
+    новым снимком."""
 
     type: Literal[AttachmentKind.PROMPT_SNAPSHOT] = AttachmentKind.PROMPT_SNAPSHOT
     system_prompt: Sequence[str]
@@ -596,6 +650,14 @@ class PromptSnapshot(PayloadModel):
     skills: Sequence[SnapshotSkill] = ()
     model: str
     system_turns: bool
+    reasoning_return: ReasoningReturn = ReasoningReturn.NEVER
+    sampling: dict[str, Any] = Field(default_factory=dict)
+
+    def same(self, other: PromptSnapshot) -> bool:
+        """Тот же снимок на проводе: сравнение по JSON."""
+        return self.model_dump(mode="json", by_alias=True) == other.model_dump(
+            mode="json", by_alias=True
+        )
 
     def announce(self, fold: HistoryFold) -> None:
         fold.prompt_snapshot(self)
@@ -1067,6 +1129,11 @@ class ChainRecord(WireModel):
     @abstractmethod
     def feed(self, sink: FeedSink) -> None:
         """Что запись показывает человеку в беседе."""
+
+    def summary_request(self) -> SummaryRequestRecord | None:
+        """Запись запроса пересказа; у остальных видов — None: запрос по
+        разговору, который кончается ею, — запрос пересказа."""
+        return None
 
 
 class UserRecord(ChainRecord):
@@ -1570,6 +1637,71 @@ class HarnessCommandRecord(SystemRecord):
         sink.harness_command(self)
 
 
+class SummaryRequestRecord(SystemRecord):
+    """Запрос пересказа при сжатии: какой отрезок разговора пересказывается
+    (первая и последняя его запись по uuid), пометки перед отрезком и
+    инструкция после него — готовым текстом. Модели и человеку запись не
+    видна; по разговору, который кончается ею, сборщик собирает запрос
+    пересказа из истории так же, как основной. Пишет пересказ (Summarizer)
+    перед каждой ступенью лестницы."""
+
+    type: Literal[RecordType.SYSTEM] = RecordType.SYSTEM
+    kind: Literal[RecordKind.SUMMARY_REQUEST] = RecordKind.SUMMARY_REQUEST
+    subtype: Literal[SystemSubtype.SUMMARY_REQUEST] = SystemSubtype.SUMMARY_REQUEST
+    compaction_id: str = Field(min_length=1)
+    first_uuid: str = Field(min_length=1)
+    last_uuid: str = Field(min_length=1)
+    preface: Sequence[str]
+    instruction: str = Field(min_length=1)
+
+    def summary_request(self) -> SummaryRequestRecord | None:
+        return self
+
+    def sent(self, conversation: Sequence[ChainRecord]) -> Sequence[ChainRecord]:
+        """Записи запроса пересказа: пометки, отрезок разговора, инструкция.
+
+        Ошибки:
+        RecordError — отрезка с такими uuid в разговоре нет.
+        """
+        positions: dict[str, int] = {}
+        for index, record in enumerate(conversation):
+            positions[record.uuid] = index
+
+        first = self._position(positions, self.first_uuid)
+        last = self._position(positions, self.last_uuid)
+        sent: list[ChainRecord] = []
+        for text in self.preface:
+            sent.append(self._meta(text))
+
+        sent.extend(conversation[first : last + 1])
+        sent.append(self._meta(self.instruction))
+
+        return sent
+
+    def _position(self, positions: Mapping[str, int], uuid: str) -> int:
+        position = positions.get(uuid)
+        if position is None:
+            msg = (
+                f"The summary request {self.uuid} names record {uuid} as an end "
+                f"of the part {self.first_uuid}..{self.last_uuid} to summarize, "
+                "but the conversation it ends has no such record; the journal "
+                "is damaged."
+            )
+            raise RecordError(msg)
+
+        return position
+
+    def _meta(self, text: str) -> MetaRecord:
+        return MetaRecord(
+            uuid=self.uuid,
+            parent_uuid=None,
+            timestamp=self.timestamp,
+            session_id=self.session_id,
+            version=self.version,
+            message=UserMessage(content=text),
+        )
+
+
 class TurnEndRecord(SystemRecord):
     """Конец хода: последняя запись каждого хода, её пишет цикл хода при
     любом исходе, а оборванному ходу — загрузчик при починке. По ней и
@@ -1664,6 +1796,7 @@ Record: TypeAlias = Annotated[
     | CompactionRecord
     | CompactBoundaryRecord
     | HarnessCommandRecord
+    | SummaryRequestRecord
     | TurnEndRecord
     | QueueOperationRecord
     | PermissionModeRecord
@@ -1749,3 +1882,193 @@ class RecordCodec:
             return items
 
         return value
+
+
+class Announced(HistoryFold):
+    """Что модели уже объявлено: свёртка разговора — последние снимок
+    промпта, модель, дата и окружение, набор отложенных инструментов,
+    определения загруженных, инструкции серверов MCP, перечисленные скиллы.
+    Каждая запись разговора сама сообщает свёртке, что она объявила
+    (ChainRecord.announce); свёртка только копит. Создают по разговору
+    сессии цикл хода, сборщик запроса, сжатие и агент."""
+
+    def __init__(self, conversation: Sequence[ChainRecord]) -> None:
+        self._snapshot: PromptSnapshot | None = None
+        self._model: ModelAttachment | None = None
+        self._date: DateAttachment | None = None
+        self._environment: EnvironmentAttachment | None = None
+        self._deltas: list[DeferredToolsDeltaAttachment] = []
+        self._definitions: dict[str, SnapshotTool] = {}
+        self._discovered: dict[str, None] = {}
+        self._instructions: dict[str, str] = {}
+        self._skills: set[str] = set()
+        for record in conversation:
+            record.announce(self)
+
+    def prompt_snapshot(self, snapshot: PromptSnapshot) -> None:
+        self._snapshot = snapshot
+
+    def model(self, model: ModelAttachment) -> None:
+        self._model = model
+
+    def date(self, date: DateAttachment) -> None:
+        self._date = date
+
+    def environment(self, environment: EnvironmentAttachment) -> None:
+        self._environment = environment
+
+    def tool_delta(self, delta: DeferredToolsDeltaAttachment) -> None:
+        self._deltas.append(delta)
+
+    def tool_definitions(self, definitions: DeferredToolsRecordAttachment) -> None:
+        """Позднее определение заменяет раннее."""
+        for tool in definitions.entries:
+            self._definitions[tool.name] = tool
+
+    def instructions(self, delta: McpInstructionsAttachment) -> None:
+        texts = zip(delta.added_names, delta.added_server_instructions, strict=True)
+        for name, text in texts:
+            self._instructions[name] = text
+
+        for name in delta.removed_names:
+            self._instructions.pop(name, None)
+
+    def skill_listing(self, listing: SkillListingAttachment) -> None:
+        self._skills.update(listing.names)
+
+    def discovered_tools(self, names: Sequence[str]) -> None:
+        for name in names:
+            self._discovered[name] = None
+
+    def tool_result(self, result: ToolResultBlock) -> None:
+        """Ссылки tool_reference результата — загруженные отложенные."""
+        for name in result.references():
+            self._discovered[name] = None
+
+    def snapshot(self) -> PromptSnapshot | None:
+        return self._snapshot
+
+    def model_id(self) -> str | None:
+        if self._model is None:
+            return None
+
+        return self._model.identity.model_id
+
+    def date_text(self) -> str | None:
+        if self._date is None:
+            return None
+
+        return self._date.date
+
+    def environment_snapshot(self) -> EnvironmentSnapshot | None:
+        if self._environment is None:
+            return None
+
+        return self._environment.snapshot
+
+    def inline_names(self) -> frozenset[str] | None:
+        """Инструменты, которые уходят полным определением: последний
+        снимок; None — снимка в разговоре нет."""
+        if self._snapshot is None:
+            return None
+
+        names: set[str] = set()
+        for tool in self._snapshot.tools:
+            names.add(tool.name)
+
+        return frozenset(names)
+
+    def deferred_pool(self) -> frozenset[str]:
+        """Отложенные инструменты, объявленные модели: свёртка вложений
+        deferred_tools_delta разговора."""
+        pool: set[str] = set()
+        for delta in self._deltas:
+            pool.update(delta.added_names)
+            pool.difference_update(delta.removed_names)
+
+        return frozenset(pool)
+
+    def tool_names(self) -> frozenset[str]:
+        """Все инструменты, известные модели: с полным определением и
+        отложенные."""
+        inline = self.inline_names()
+        if inline is None:
+            return self.deferred_pool()
+
+        return inline | self.deferred_pool()
+
+    def withdrawn_tools(self) -> frozenset[str]:
+        """Имена, которые разговор объявлял и потом снял разницей, а заново
+        с тех пор не объявлял."""
+        withdrawn: set[str] = set()
+        for delta in self._deltas:
+            withdrawn.difference_update(delta.added_names)
+            withdrawn.difference_update(delta.surfaced_names)
+            withdrawn.update(delta.removed_names)
+
+        return frozenset(withdrawn)
+
+    def discovered(self) -> Sequence[str]:
+        """Загруженные отложенные инструменты в порядке загрузки: список
+        границы сжатия, затем ссылки tool_reference в результатах."""
+        return list(self._discovered)
+
+    def deferred_loaded(self) -> Sequence[SnapshotTool]:
+        """Отложенные инструменты, которые уходят в запрос: загруженные,
+        объявленные и записанные, в порядке загрузки."""
+        pool = self.deferred_pool()
+        loaded: list[SnapshotTool] = []
+        for name in self._discovered:
+            if name not in pool:
+                continue
+
+            tool = self._definitions.get(name)
+            if tool is None:
+                continue
+
+            loaded.append(tool)
+
+        return loaded
+
+    def loaded_names(self) -> frozenset[str]:
+        """Имена отложенных инструментов, которые уходят в запрос."""
+        names: set[str] = set()
+        for tool in self.deferred_loaded():
+            names.add(tool.name)
+
+        return frozenset(names)
+
+    def deferred_selected(self) -> Sequence[str]:
+        """Загруженные и объявленные отложенные в порядке загрузки, записаны
+        их определения или нет."""
+        pool = self.deferred_pool()
+        selected: list[str] = []
+        for name in self._discovered:
+            if name not in pool:
+                continue
+
+            selected.append(name)
+
+        return selected
+
+    def unrecorded(self, tools: Iterable[SnapshotTool]) -> Iterator[SnapshotTool]:
+        """Определения, которых разговор не записал: нового имени или
+        записанного иначе."""
+        for tool in tools:
+            recorded = self._definitions.get(tool.name)
+            if recorded is None:
+                yield tool
+                continue
+
+            if recorded.same(tool):
+                continue
+
+            yield tool
+
+    def announced_instructions(self) -> Mapping[str, str]:
+        """Объявленные инструкции серверов MCP по имени сервера."""
+        return self._instructions
+
+    def skill_names(self) -> frozenset[str]:
+        """Имена скиллов, уже перечисленных модели в этом разговоре."""
+        return frozenset(self._skills)

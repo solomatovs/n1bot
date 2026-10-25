@@ -35,7 +35,7 @@ from typing import Any, ClassVar, Protocol, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from boba.agent.attachments import Announced, ConnectedServer, SnapshotTool
+from boba.agent.attachments import ConnectedServer, SnapshotTool
 from boba.agent.control import (
     AllowAnswer,
     CanUseToolRequest,
@@ -63,6 +63,7 @@ from boba.agent.permissions import (
 )
 from boba.agent.profile import ModelProfile, TurnLimits
 from boba.agent.records import (
+    Announced,
     CallStatus,
     NoticeLevel,
     PermissionBehavior,
@@ -165,14 +166,15 @@ class CallResult:
     """Результат вызова для записи `user`: текст модели, ответ tools/call
     (его JSON — `toolUseResult`) и причина отказа, если это отказ. Вызов,
     оборванный концом хода, ответа не получил: reply None, для модели это
-    ошибка. references — инструменты, которые результат загрузил (ToolSearch):
-    они ложатся в результат ссылками tool_reference."""
+    ошибка. loaded — определения инструментов, которые результат загрузил
+    (ToolSearch): в результат они ложатся ссылками tool_reference, в
+    историю — записью определений вместе с ним."""
 
     call: PlannedCall
     text: str
     reply: ToolReply | None
     denial: ToolDenialKind | None = None
-    references: Sequence[str] = ()
+    loaded: Sequence[SnapshotTool] = ()
 
     @property
     def is_error(self) -> bool:
@@ -1167,7 +1169,15 @@ class ToolSearchTool(OwnTool):
             text = self._templates.read(AgentTemplateFile.NO_MATCHING_TOOLS)
             return self._texts.answered(call, text, structured)
 
-        return self._texts.loaded(call, matches, structured)
+        by_name: dict[str, SnapshotTool] = {}
+        for tool in pool:
+            by_name[tool.name] = tool
+
+        found: list[SnapshotTool] = []
+        for name in matches:
+            found.append(by_name[name])
+
+        return self._texts.loaded(call, found, structured)
 
 
 class ResultBound:
@@ -1278,18 +1288,22 @@ class ToolTexts:
         return self.failed(call, text)
 
     def loaded(
-        self, call: PlannedCall, names: Sequence[str], structured: Mapping[str, Any]
+        self,
+        call: PlannedCall,
+        tools: Sequence[SnapshotTool],
+        structured: Mapping[str, Any],
     ) -> CallResult:
-        """Итог поиска инструментов: ссылки на загруженные; клиенту — их
-        строки текстом."""
+        """Итог поиска инструментов: ссылки на загруженные и их определения,
+        модели и клиенту — их строки текстом."""
         template = self._templates.read(AgentTemplateFile.TOOL_LOADED)
         lines: list[str] = []
-        for name in names:
-            lines.append(template.format(name=name))
+        for tool in tools:
+            lines.append(template.format(name=tool.name))
 
-        reply = self._replies.made("\n".join(lines), structured, False)
+        text = "\n".join(lines)
+        reply = self._replies.made(text, structured, False)
 
-        return CallResult(call=call, text="", reply=reply, references=names)
+        return CallResult(call=call, text=text, reply=reply, loaded=tools)
 
     def answered(
         self, call: PlannedCall, text: str, structured: Mapping[str, Any] | None

@@ -449,7 +449,7 @@ class TestSkills:
         assert (
             unknown.message.tool_results()[0]
             .text()
-            .startswith("No such skill available: nothing")
+            .startswith("<tool_use_error>No such skill available: nothing")
         )
 
     def test_budget_keeps_full_lines_while_they_fit(self) -> None:

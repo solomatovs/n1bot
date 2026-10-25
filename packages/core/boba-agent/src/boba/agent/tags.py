@@ -67,6 +67,13 @@ class AgentTag(StrEnum):
 
         return f"{self.open}\n{inner}\n{self.close}"
 
+    def unwrap(self, text: str) -> str:
+        """Текст без строчной обёртки `wrap`; текст без неё — как есть."""
+        if text.startswith(self.open) and text.endswith(self.close):
+            return text[len(self.open) : -len(self.close)]
+
+        return text
+
     def unwrap_block(self, text: str) -> str:
         """Текст без блочной обёртки; текст без неё возвращается как есть."""
         head = f"{self.open}\n"

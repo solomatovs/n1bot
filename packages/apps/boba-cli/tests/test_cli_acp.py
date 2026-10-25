@@ -1109,7 +1109,7 @@ class AcpProcess:
             "provider": {
                 "kind": "openai",
                 "baseUrl": self._model.base_url(),
-                "apiKey": API_KEY,
+                "auth": {"method": "bearer", "token": API_KEY},
             },
             "model": model,
             "sampling": dict(sampling),

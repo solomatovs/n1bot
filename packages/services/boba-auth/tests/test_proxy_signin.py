@@ -196,7 +196,7 @@ async def test_directory_roles_by_sam_account_name(raw_config: Any) -> None:
     """Роли из каталога: поиск по sAMAccountName под служебным bind'ом."""
     ldap = bind(raw_config, path="auth.kerberos.roles.ldap", model=LdapRolesConfig)
     config = _config(roles=_providers(local=None, ldap=ldap), require_roles=False)
-    _, _, reader = STAND.ldap_bind_user.rpartition(Stand.NETBIOS_SEPARATOR)
+    _, _, reader = STAND.reader_bind.user.rpartition(Stand.NETBIOS_SEPARATOR)
 
     signed = await _sign_in(config).sign_in(_request(login=reader))
 

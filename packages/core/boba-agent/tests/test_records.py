@@ -50,6 +50,7 @@ from boba.agent.records import (
     RenderedMessage,
     ReplyRecord,
     ReplyStopReason,
+    SummaryRequestRecord,
     Synthetic,
     TaskNotificationRecord,
     TextBlock,
@@ -243,6 +244,14 @@ SAMPLES: dict[str, Record] = {
         name="connections",
         text="/connections",
         outcome={"kind": "text", "text": "**Your connections**"},
+    ),
+    "summary-request": SummaryRequestRecord(
+        **chained(),
+        compaction_id="c-1",
+        first_uuid="u-1",
+        last_uuid="u-2",
+        preface=["[earlier conversation truncated for compaction retry]"],
+        instruction="Summarize the conversation.",
     ),
     "turn-end": TurnEndRecord(
         **chained(),
