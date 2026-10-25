@@ -11,12 +11,14 @@
 <body>
 <script>
   // Страница-прокси песочницы MCP Apps (раздел Sandbox proxy спецификации):
-  // лежит на источнике сервера приложения, получает от чата HTML приложения и
-  // грузит его во внутренний iframe без allow-same-origin с CSP по _meta.ui.csp
-  // ресурса без доменов, которые накрывают источник чата; сообщения чата и
-  // приложения пересылает как есть, кроме своих ui/notifications/sandbox-*.
-  // Шрифты приложению открыты с источника самой страницы: рядом с ней лежит
-  // шрифт чата (fonts/), его @font-face чат передаёт в styles.css.fonts.
+  // чат отдаёт её на порту песочницы сервера приложения, она получает от чата
+  // HTML приложения и грузит его во внутренний iframe без allow-same-origin с
+  // CSP по _meta.ui.csp ресурса без доменов, которые накрывают источник чата;
+  // сеть приложению открыта только к объявленным connectDomains, без своего
+  // источника, формы не отправляются никуда. Сообщения чата и приложения
+  // пересылает как есть, кроме своих ui/notifications/sandbox-*. Шрифты
+  // приложению открыты с источника самой страницы: рядом с ней лежит шрифт
+  // чата (fonts/), его @font-face чат передаёт в styles.css.fonts.
   const PREFIX = "ui/notifications/sandbox-";
   const READY = "ui/notifications/sandbox-proxy-ready";
   const RESOURCE = "ui/notifications/sandbox-resource-ready";
@@ -83,11 +85,16 @@
         "connect-src 'none'",
         "frame-src 'none'",
         "object-src 'none'",
+        "form-action 'none'",
         "base-uri 'self'",
       ].join("; ");
     }
 
     const resources = sources(csp.resourceDomains);
+    let connects = sources(csp.connectDomains);
+    if (!connects) {
+      connects = "'none'";
+    }
     let frames = sources(csp.frameDomains);
     if (!frames) {
       frames = "'none'";
@@ -100,12 +107,13 @@
       "default-src 'none'",
       `script-src 'self' 'unsafe-inline' ${resources}`,
       `style-src 'self' 'unsafe-inline' ${resources}`,
-      `connect-src 'self' ${sources(csp.connectDomains)}`,
+      `connect-src ${connects}`,
       `img-src 'self' data: ${resources}`,
       `font-src 'self' ${location.origin} ${resources}`,
       `media-src 'self' data: ${resources}`,
       `frame-src ${frames}`,
       "object-src 'none'",
+      "form-action 'none'",
       `base-uri ${bases}`,
     ].join("; ");
   }
