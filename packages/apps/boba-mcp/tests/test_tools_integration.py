@@ -526,11 +526,12 @@ class TestBashTool:
             bash_tool,
             command=(
                 'missing=""; for tool in pdftotext pandoc catdoc antiword unrtf '
-                "xmllint sqlite3 xz bzip2 unzip 7z file curl jq; do "
+                "xmllint sqlite3 xz bzip2 unzip 7z file curl jq convert identify "
+                "ffmpeg ffprobe; do "
                 'command -v "$tool" > /dev/null || missing="$missing $tool"; done; '
                 'test -z "$missing" || { echo "missing:$missing"; exit 1; }; '
                 'python3 -c "import pandas, openpyxl, xlrd, docx, pptx, odf, '
-                'pypdf, pyarrow, lxml, charset_normalizer, yaml, PIL"'
+                'pypdf, pyarrow, lxml, charset_normalizer, yaml, PIL, pillow_heif"'
             ),
         )
 
@@ -551,6 +552,54 @@ class TestBashTool:
             raise AssertionError(f"pdftotext page 2: {result.stdout!r}")
         if "Alpha page one" in result.stdout:
             raise AssertionError(f"pdftotext read page 1 too: {result.stdout!r}")
+
+    async def test_heic_photo_converts_to_jpeg(
+        self, bash_tool, workspace_image
+    ) -> None:
+        """Фото HEIC с iPhone открывает pillow-heif, JPEG из него читает ImageMagick."""
+        result = await Call.ok(
+            bash_tool,
+            command=(
+                "python3 - <<'PY'\n"
+                "from PIL import Image\n"
+                "from pillow_heif import register_heif_opener\n"
+                "register_heif_opener()\n"
+                "Image.new('RGB', (64, 48), (200, 30, 30)).save('photo.heic')\n"
+                "with Image.open('photo.heic') as photo:\n"
+                "    print(photo.format)\n"
+                "    photo.convert('RGB').save('photo.jpg', 'JPEG')\n"
+                "PY\n"
+                "identify -format '%m %w %h\\n' photo.jpg"
+            ),
+        )
+
+        if result.stdout != "HEIF\nJPEG 64 48\n":
+            raise AssertionError(
+                "HEIC photo in the bash sandbox: expected pillow-heif to read it as "
+                f"HEIF and identify to see a 64x48 JPEG, got {result.stdout!r}"
+            )
+
+    async def test_video_frame_extracts_with_ffmpeg(
+        self, bash_tool, workspace_image
+    ) -> None:
+        """ffmpeg пишет ролик и вынимает из него кадр, ImageMagick читает кадр."""
+        result = await Call.ok(
+            bash_tool,
+            command=(
+                "ffmpeg -v error -y -f lavfi "
+                "-i testsrc=duration=1:size=160x120:rate=10 clip.mp4 && "
+                "ffmpeg -v error -y -i clip.mp4 -frames:v 1 frame.jpg && "
+                "ffprobe -v error -show_entries stream=codec_type -of csv=p=0 "
+                "clip.mp4 && "
+                "identify -format '%m %w %h\\n' frame.jpg"
+            ),
+        )
+
+        if result.stdout != "video\nJPEG 160 120\n":
+            raise AssertionError(
+                "video in the bash sandbox: expected ffprobe to see one video stream "
+                f"and a 160x120 JPEG frame, got {result.stdout!r}"
+            )
 
 
 class TestDocTools:
