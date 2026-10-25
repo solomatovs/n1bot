@@ -328,7 +328,7 @@ class Replay:
 
     def __init__(self, profile: ModelProfile) -> None:
         self._templates = AgentTemplate()
-        self._builder = RequestBuilder(profile, self._templates)
+        self._builder = RequestBuilder(profile)
         self._instruction = self._templates.read(
             AgentTemplateFile.SUMMARIZE_INSTRUCTION
         )

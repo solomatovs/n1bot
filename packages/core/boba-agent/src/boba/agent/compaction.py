@@ -146,9 +146,9 @@ class TokenEstimator:
     `chars_per_token` профиля, по тому, что запись вносит в запрос к модели
     (ChainRecord.to_request) — тем же текстом, что уходит модели."""
 
-    def __init__(self, profile: ModelProfile, templates: AgentTemplate) -> None:
+    def __init__(self, profile: ModelProfile) -> None:
         self._profile = profile
-        self._texts = RequestTexts(templates)
+        self._texts = RequestTexts()
 
     def text(self, text: str) -> int:
         return self._profile.estimate(text)

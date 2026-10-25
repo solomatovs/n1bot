@@ -54,6 +54,7 @@ from boba.agent.records import (
     UserMessage,
 )
 from boba.agent.session import Session
+from boba.agent.tags import AgentTag
 from boba.agent.template import AgentTemplate, AgentTemplateFile
 
 logger = logging.getLogger(__name__)
@@ -295,7 +296,9 @@ class HistoryLoader:
     ) -> ToolResultRecord:
         text = self._templates.read(AgentTemplateFile.INTERRUPTED_TOOL_RESULT)
         block = ToolResultBlock(
-            tool_use_id=dangling.call.id, content=text, is_error=True
+            tool_use_id=dangling.call.id,
+            content=AgentTag.TOOL_USE_ERROR.wrap(text),
+            is_error=True,
         )
 
         return ToolResultRecord(

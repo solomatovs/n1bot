@@ -39,7 +39,6 @@ from boba.agent.records import (
     ToolUseBlock,
 )
 from boba.agent.tags import AgentTag, TagShield
-from boba.agent.template import AgentTemplate, AgentTemplateFile
 from boba.llm.chat import ChatRequest, ChatRole, ChatTurn, ToolCall, ToolSpec
 
 __all__ = ["RequestBuilder", "RequestTexts"]
@@ -84,37 +83,25 @@ Turn = UserTurn | AssistantTurn | SystemTurn
 
 
 class RequestTexts:
-    """Тексты записи, какими их видит модель: слова пользователя с
-    обезвреженными служебными тегами и результат инструмента — строки о
-    загруженных отложенных инструментах, обезвреженный текст, у ошибки —
-    обёртка tool_use_error. Им пользуются сборщик запроса и оценка окна,
-    чтобы окно считалось по тому же тексту, что уходит модели."""
+    """Тексты записи, какими их видит модель: слова пользователя и
+    результат инструмента с обезвреженными служебными тегами. Шаблоны
+    агента сюда не входят: строки о загруженных инструментах и обёртку
+    tool_use_error запись несёт готовым текстом с момента записи, и
+    результат-ошибка уже обезврежен обёрткой. Им пользуются сборщик
+    запроса и оценка окна, чтобы окно считалось по тому же тексту, что
+    уходит модели."""
 
-    TEXT_JOIN: ClassVar[str] = "\n"
-
-    def __init__(self, templates: AgentTemplate) -> None:
-        self._templates = templates
+    def __init__(self) -> None:
         self._shield = TagShield([AgentTag.SYSTEM_REMINDER, AgentTag.TOOL_USE_ERROR])
 
     def user(self, text: str) -> str:
         return self._shield.shield(text)
 
     def result(self, result: ToolResultBlock) -> str:
-        lines: list[str] = []
-        for name in result.references():
-            lines.append(
-                self._templates.read(AgentTemplateFile.TOOL_LOADED).format(name=name)
-            )
-
-        text = self._shield.shield(result.text())
-        if text:
-            lines.append(text)
-
-        joined = self.TEXT_JOIN.join(lines)
         if result.is_error:
-            return AgentTag.TOOL_USE_ERROR.wrap(joined)
+            return result.text()
 
-        return joined
+        return self._shield.shield(result.text())
 
 
 class Feed(RequestFeed):
@@ -220,10 +207,9 @@ class RequestBuilder:
     SECTION_JOIN: ClassVar[str] = "\n\n"
     TEXT_JOIN: ClassVar[str] = "\n"
 
-    def __init__(self, profile: ModelProfile, templates: AgentTemplate) -> None:
+    def __init__(self, profile: ModelProfile) -> None:
         self._profile = profile
-        self._templates = templates
-        self._texts = RequestTexts(templates)
+        self._texts = RequestTexts()
 
     def build(
         self, conversation: Sequence[ChainRecord], snapshot: PromptSnapshot
@@ -233,7 +219,7 @@ class RequestBuilder:
             record.to_request(feed)
 
         feed.flush_system()
-        turns = self._repaired(self._cleaned(feed.turns))
+        turns = self._cleaned(self._repaired(feed.turns))
         self._mark_reasoning(turns, snapshot.reasoning_return)
 
         messages: list[ChatTurn] = [
@@ -289,9 +275,9 @@ class RequestBuilder:
         return reversed_out
 
     def _cleaned(self, turns: Sequence[Turn]) -> list[Turn]:
-        """Пустые ответы и осиротевшие рассуждения — по таблице разбора 06, §6."""
+        """Ответы без текста и вызовов — пустые и с одними рассуждениями —
+        не уходят: заглушек сборщик не пишет."""
         kept: list[Turn] = []
-        last_assistant = self._last_assistant(turns)
         for turn in turns:
             if not isinstance(turn, AssistantTurn):
                 kept.append(turn)
@@ -300,31 +286,22 @@ class RequestBuilder:
             has_text = bool(self.SECTION_JOIN.join(turn.texts).strip())
             if has_text or turn.calls:
                 kept.append(turn)
-                continue
-
-            if turn is last_assistant and turn.thinking:
-                text = self._templates.read(AgentTemplateFile.NO_MESSAGE_CONTENT)
-                turn.texts = [text]
-                kept.append(turn)
 
         return kept
 
-    def _last_assistant(self, turns: Sequence[Turn]) -> AssistantTurn | None:
-        for turn in reversed(turns):
-            if isinstance(turn, AssistantTurn):
-                return turn
-
-        return None
-
     def _repaired(self, turns: Sequence[Turn]) -> list[Turn]:
-        """Пары вызов — результат: вызову без результата — заглушка, результат
-        без вызова и повторный идентификатор выбрасываются."""
+        """Пары вызов — результат: вызов без результата снимается с ответа,
+        результат без вызова и повторный идентификатор выбрасываются.
+        Результат каждому вызову пишут ход и загрузчик, так что снимать
+        приходится только в испорченной истории."""
         repaired: list[Turn] = []
         pending: dict[str, ToolUseBlock] = {}
+        caller: AssistantTurn | None = None
         for turn in turns:
             if isinstance(turn, AssistantTurn):
-                self._close_pending(repaired, pending)
+                self._drop_pending(caller, pending)
                 pending = self._unique_calls(turn)
+                caller = turn
                 repaired.append(turn)
                 continue
 
@@ -336,7 +313,7 @@ class RequestBuilder:
 
             repaired.append(turn)
 
-        self._close_pending(repaired, pending)
+        self._drop_pending(caller, pending)
 
         return repaired
 
@@ -365,31 +342,25 @@ class RequestBuilder:
 
         return known
 
-    def _close_pending(
-        self, repaired: list[Turn], pending: dict[str, ToolUseBlock]
+    def _drop_pending(
+        self, caller: AssistantTurn | None, pending: dict[str, ToolUseBlock]
     ) -> None:
-        """Вызовы без результата закрываются заглушкой первой среди результатов."""
+        """Вызовы ответа caller, оставшиеся без результата, снимаются с него."""
+        if caller is None:
+            return
+
         if not pending:
             return
 
-        stubs: list[ToolResultBlock] = []
-        text = self._templates.read(AgentTemplateFile.TOOL_RESULT_MISSING)
-        for call_id in pending:
-            stub = ToolResultBlock(tool_use_id=call_id, content=text, is_error=True)
-            stubs.append(stub)
+        answered: list[ToolUseBlock] = []
+        for call in caller.calls:
+            if call.id in pending:
+                continue
 
+            answered.append(call)
+
+        caller.calls = answered
         pending.clear()
-        if repaired and isinstance(repaired[-1], UserTurn):
-            repaired[-1].results = [*stubs, *repaired[-1].results]
-            return
-
-        position = len(repaired)
-        for index in range(len(repaired) - 1, -1, -1):
-            if isinstance(repaired[index], AssistantTurn):
-                position = index + 1
-                break
-
-        repaired.insert(position, UserTurn(results=stubs))
 
     def _mark_reasoning(self, turns: Sequence[Turn], policy: ReasoningReturn) -> None:
         """Какие ответы уходят с рассуждениями — по `reasoning_return` снимка."""

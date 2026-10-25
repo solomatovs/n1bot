@@ -548,7 +548,7 @@ class Agent:
         self._bound.set_profile(profile)
 
     def _request_builder(self, profile: ModelProfile) -> RequestBuilder:
-        return RequestBuilder(profile, self._wiring.templates)
+        return RequestBuilder(profile)
 
     def _check_profile(
         self, profile: ModelProfile, system_prompt: Sequence[str], tools: AgentTools
