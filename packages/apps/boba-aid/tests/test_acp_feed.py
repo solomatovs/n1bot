@@ -901,7 +901,7 @@ class TestToolApps:
         }
     )
     SANDBOX: ClassVar[McpServerApps] = McpServerApps.model_validate(
-        {"sandbox_url": "http://localhost:8123/mcp-apps/sandbox.html"}
+        {"chat_url": "http://127.0.0.1:8122/aid/", "port": 8123}
     )
     URI: ClassVar[str] = "ui://standard/orders.html"
     RESOURCE: ClassVar[AppResource] = AppResource(
@@ -976,7 +976,7 @@ class TestToolApps:
             "resource": self.RESOURCE.model_dump(
                 mode="json", by_alias=True, exclude_none=True
             ),
-            "sandbox_url": "http://localhost:8123/mcp-apps/sandbox.html",
+            "sandbox_url": "http://127.0.0.1:8123/",
             "call_id": CALL,
             "input": {"rows": self.ROWS},
         }
@@ -2079,7 +2079,7 @@ class TestTabCommands:
         assert props["tool"] == TestToolApps.TOOL
         assert props["input"] == {"status": "new"}
         assert props["call_id"] == COMMAND
-        assert props["sandbox_url"] == str(TestToolApps.SANDBOX.sandbox_url)
+        assert props["sandbox_url"] == TestToolApps.SANDBOX.sandbox_url()
         assert props["result"] == self.APP.result.model_dump(
             mode="json", by_alias=True, exclude_none=True
         )

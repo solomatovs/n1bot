@@ -1096,7 +1096,9 @@ class StandConfig(StandService):
     def _without_mcp_servers(self, doc: MutableMapping[str, Any]) -> None:
         """Внешние MCP-серверы рабочего конфига стенду не нужны: набор
         инструментов сессии не должен зависеть от сети. Остаются только
-        серверы, заданные самим стендом: их называет каждый профиль стенда."""
+        серверы, заданные самим стендом: их называет каждый профиль стенда.
+        Песочницы серверов с секцией apps встраивает чат стенда: адрес его
+        страницы — chat_url каждой такой секции."""
         service = self.service()
         servers: dict[str, dict[str, Any]] = {}
         own: dict[str, str] = {}
@@ -1105,7 +1107,9 @@ class StandConfig(StandService):
                 own[name] = service.server_name(endpoint)
                 servers[own[name]] = service.server(endpoint)
 
-        servers.update(self.mcp_servers)
+        for name, section in self.mcp_servers.items():
+            servers[name] = self._embedded(section)
+
         doc["mcp"] = {"servers": servers}
         for name, profile in doc["profiles"].items():
             named: list[str] = []
@@ -1114,6 +1118,14 @@ class StandConfig(StandService):
 
             named.extend(sorted(self.mcp_servers))
             profile["mcp"] = named
+
+    def _embedded(self, section: Mapping[str, Any]) -> dict[str, Any]:
+        """Секция [mcp.servers.<имя>] с адресом чата стенда в секции apps."""
+        embedded = dict(section)
+        if apps := section.get("apps"):
+            embedded["apps"] = {**apps, "chat_url": self.base_url}
+
+        return embedded
 
     def _use_local_auth(self, doc: MutableMapping[str, Any]) -> None:
         """Учётки и роли стенда: рабочий [auth.local] не трогаем и не наследуем."""

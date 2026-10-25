@@ -266,7 +266,7 @@ class ToolMedia:
             tool=card,
             resource_uri=config.resource_uri,
             resource=resource,
-            sandbox_url=str(apps.sandbox_url),
+            sandbox_url=apps.sandbox_url(),
         )
 
     def nested(self, source: ToolSource) -> NestedCallsFeature | None:
