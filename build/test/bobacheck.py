@@ -9,7 +9,7 @@
 проверяет самопроверка; подключение, запись и возобновление сессии в postgres —
 тест бинарника test_cli_binary.py (маркер binary) на базе стенда.
 
-Скрипт идёт на stdin интерпретатора образа с окружением conf/boba.env, без сети:
+Скрипт идёт на stdin интерпретатора образа (third/ и app/ программы), без сети:
   python3 - --app aid|mcp|agent --base /app/boba --names <app/packages.txt> \
     [--sandbox --ocr <модель>... --model-images <модель>...]
 Последняя строка вывода — RESULT: ALL OK либо RESULT: FAIL со списком проваленных

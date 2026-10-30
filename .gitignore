@@ -35,7 +35,7 @@ packages/**/dist/
 .chainlit/
 .files/
 
-# ассеты — готовый app_root: debug-сессия читает их напрямую ([env].app_root конфига отладки)
+# ассеты — готовая статика чата: make web копирует их в runtime/share
 !/packages/apps/boba-aid/assets/.chainlit/
 
 # сборка: артефакты make fetch и локальные настройки закрытого контура

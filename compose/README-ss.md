@@ -15,7 +15,7 @@
 секций `[postgres]` и `[postgres_history]` в `config.toml` каждого дерева
 (руководство, раздел 8, «Среда разработчика»). На стенде каждое приложение идёт
 одним контейнером: `aid`, `boba-mcp`, `boba`; в `compose/<приложение>/conf`
-лежат `config.toml`, `boba.env`, `krb/` и у boba-mcp `prompts/`. Вход во все
+лежат `config.toml`, `krb/` и у boba-mcp `prompts/`. Вход во все
 внешние системы стенда описан таблицами `auth` в конфигах: в PostgreSQL —
 kerberos по keytab (`[postgres.auth]` и `[postgres_history.auth]`, `method =
 "kerberos_keytab"`), к модели и в Confluence — токен (`method = "bearer"`), каталог LDAP — служебный simple bind (`[ldap.auth]`,
