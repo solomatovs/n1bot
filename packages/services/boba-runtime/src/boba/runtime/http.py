@@ -26,6 +26,7 @@ import uvicorn
 from starlette.requests import HTTPConnection, Request
 from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
+from uvicorn.lifespan.on import LifespanOn
 
 from boba.cancellation import ProcessStop
 from boba.identity.errors import BaseError, FailureReport, to_domain
@@ -426,6 +427,11 @@ class SignalledServer(uvicorn.Server):
     прежнему обработчику; им стоит обработчик остановки процесса, поэтому
     процесс не погибает с кодом 143, а доходит до кода после сервера.
 
+    Повторный сигнал uvicorn понимает как «не ждать соединения» (force_exit)
+    и вместе с ожиданием пропускает остановку приложения (lifespan
+    shutdown); сервер проводит её сам, иначе задачу lifespan отменил бы уже
+    asyncio.run на выходе, и ресурсы приложения закрывались бы отменой.
+
     Сорванный старт приложения uvicorn только пишет в лог и возвращается из
     serve() штатно; сервер превращает его в ServerStartError, чтобы процесс
     вышел с ненулевым кодом. Перед выходом закрываются процессные ресурсы
@@ -463,6 +469,17 @@ class SignalledServer(uvicorn.Server):
                 "expected a started server, exiting with a failure"
             )
             raise ServerStartError(msg)
+
+    async def shutdown(self, sockets: list[socket.socket] | None = None) -> None:
+        await super().shutdown(sockets)
+
+        if not isinstance(self.lifespan, LifespanOn):
+            return
+
+        if self.lifespan.shutdown_event.is_set():
+            return
+
+        await self.lifespan.shutdown()
 
     def handle_exit(self, sig: int, frame: FrameType | None) -> None:
         self._stop.deliver(sig)
