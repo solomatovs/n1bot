@@ -31,7 +31,7 @@ fi
 
 for pair in "stand database:$source_db" "template:$template" "clickhouse cluster:$ch_cluster"; do
     if [ -z "${pair#*:}" ]; then
-        echo "dev-db: the ${pair%%:*} is empty; pass it to the script (scripts/dev-db.sh <developer> <stand database> <template> <clickhouse cluster>)" >&2
+        echo "dev-db: the ${pair%%:*} is empty; pass it to the script (compose/dev-db.sh <developer> <stand database> <template> <clickhouse cluster>)" >&2
         exit 2
     fi
 done
@@ -61,7 +61,7 @@ case "${CH_AUTH:-}" in
 esac
 
 here=$(cd "$(dirname "$0")" && pwd)
-merge="$here/migrations/2026-10-24-history-merge"
+merge="$here/../docs/migrations/2026-10-24-history-merge"
 aid="aid_$developer"
 playground="playground_$developer"
 schema=aid
@@ -149,7 +149,7 @@ while IFS= read -r name; do
 done
 
 echo ">>> environment of $developer is ready: chat and service database $aid, working databases $playground"
-echo "    debug/<app>/conf/config.toml of the developer: postgres.dbname = \"$aid\""
+echo "    debug overlay .vscode/boba/<app>.toml of the developer: postgres.dbname = \"$aid\""
 echo "    password connections reach $playground once pg_hba.conf of the server lets the role in, before the gss rules:"
 pg -d "$aid" -At -v schema="$schema" <<'SQL' |
 select distinct data -> 'auth' ->> 'user' from :"schema".connections

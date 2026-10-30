@@ -333,7 +333,7 @@ a connection`, а nginx не достучится до него.
 ## 4. Перенос базы данных
 
 Перенос делают три скрипта каталога (четвёртый — по желанию)
-`scripts/migrations/2026-10-16-chat-agent-cutover`:
+`docs/migrations/2026-10-16-chat-agent-cutover`:
 
 | Шаг | Скрипт | Где работает | Что делает |
 |---|---|---|---|
@@ -350,7 +350,7 @@ a connection`, а nginx не достучится до него.
 передаётся. Kerberos работает из кэша билетов, как у `psql`.
 
 ```sh
-cd scripts/migrations/2026-10-16-chat-agent-cutover
+cd docs/migrations/2026-10-16-chat-agent-cutover
 export PGHOST=postgres.example.com PGPORT=5432 PGUSER=boba-svc
 ```
 
@@ -605,7 +605,7 @@ psql -d aid -c "select has_table_privilege('boba-svc', 'boba.session_records', '
 где `<id>` — идентификатор пользователя в таблице `users`. Сервис boba-mcp
 держит их в `compose/mcp/data/workspace/<id сервиса>.ext4`, а `<id сервиса>`
 выводит из логина пользователя. Перенос делает скрипт
-`scripts/migrations/2026-10-05-workspace-to-mcp.sh` по карте «идентификатор
+`docs/migrations/2026-10-05-workspace-to-mcp.sh` по карте «идентификатор
 в базе — логин».
 
 Сначала сделайте копию каталога образов — она и есть путь отката для этого
@@ -625,7 +625,7 @@ unshare --user --map-root-user --map-auto \
 ```sh
 psql -d boba -At -c 'select id, identifier from chainlit.users' > /backup/users.map
 unshare --user --map-root-user --map-auto \
-    sh scripts/migrations/2026-10-05-workspace-to-mcp.sh \
+    sh docs/migrations/2026-10-05-workspace-to-mcp.sh \
         /backup/users.map compose/chainlit/data compose/mcp/data
 ```
 
@@ -669,7 +669,7 @@ ls -l compose/mcp/data/workspace
 без вида `kind`) текущая версия не читает. Такую базу не конвертируют, а
 пересоздают переносом из dev: удалить новую базу и повторить раздел 4 с копии
 базы dev. Признак: в новой базе есть `history_records`, или сверка
-`scripts/migrations/2026-10-24-history-merge/verify.sql` останавливается
+`docs/migrations/2026-10-24-history-merge/verify.sql` останавливается
 со списком записей без вида.
 
 ```sh
