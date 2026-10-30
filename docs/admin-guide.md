@@ -365,8 +365,8 @@ boba-mcp — бинарник Nuitka без python: кроме `serve` и `healt
 натыкался на файлы другого: кэш билетов Kerberos с чужим владельцем
 (`Credentials cache permissions incorrect`), журнал вызова с режимом `0600`,
 который второй не может прочесть. Поэтому отладка берёт конфигурацию дерева
-compose, но данные пишет в свой каталог вне репозитория
-(`~/.local/state/boba/<приложение>`, раздел 8): в `compose/<приложение>/data`
+compose, но данные пишет в свой каталог `.dev/data/<приложение>` в корне
+репозитория (вне индекса git, раздел 8): в `compose/<приложение>/data`
 пишет только контейнер, в каталог отладки — только процесс на хосте.
 
 Каталоги `data/krb/cache` контейнеров закрыты от администратора (режим
@@ -1008,7 +1008,7 @@ compose, поэтому keytab она читает из `compose/<приложе
 
 | Ключ | compose | отладка | установка без Docker |
 |---|---|---|---|
-| `[instance] data_dir` | `/app/boba/data` | `~/.local/state/boba/<приложение>` | `<каталог установки>/data` |
+| `[instance] data_dir` | `/app/boba/data` | `<репозиторий>/.dev/data/<приложение>` | `<каталог установки>/data` |
 | `[instance] ca_file` | `/etc/ssl/certs/ca-certificates.crt` | системный набор CA машины | системный набор CA машины |
 | `[env] port`, `url_prefix` | рабочие | свои, чтобы не мешать контейнерам | рабочие |
 | `[env] cgroup_base` | `/cgroup/boba-sandbox-<приложение>` | каталог `sandbox` юнита `boba-sandbox@debug` | каталог `sandbox` юнита `boba-sandbox@<экземпляр>` |
@@ -1894,12 +1894,16 @@ make -C build build APP=runtime   # runtime/ и фронт чата в ассе�
     aid.toml  mcp.toml  boba.toml          наложения приложений
     ix-fts.toml  cfl-indexer.toml  …       наложения индексаторов и скраперов
   injected/<имя>.json         аргументы вызова цели tool
-~/.local/state/boba/<приложение>/          каталог данных отладки; пишет только процесс на хосте
-~/.config/boba/stand.toml                  наложение стенда тестов, режим 0600
+.dev/
+  data/<приложение>/          каталог данных отладки; пишет только процесс на хосте
+  stand.toml                  наложение стенда тестов, режим 0600
 ```
 
 Файлы `.vscode` в git не входят (кроме `settings.json`): в них стоят пути и
 номер пользователя этой машины, и каждый разработчик держит их у себя.
+Каталог `.dev` в git тоже не входит (`/.dev/` в `.gitignore`): всё, что отладка
+пишет и что нужно только этой копии репозитория, лежит внутри проекта и
+переезжает вместе с ним; у worktree свой `.dev`.
 
 Наложение пишут готовыми значениями. Ссылаются на окружение только режимы,
 которые цель запуска спрашивает из меню: `${oc.env:BOBA_AGENT_MODE}` у чата и
@@ -1909,7 +1913,7 @@ make -C build build APP=runtime   # runtime/ и фронт чата в ассе�
 tool = "${toml_dir:/home/ss/boba/packages/apps/boba-mcp/conf/plugins}"
 
 [instance]
-    data_dir = "/home/ss/.local/state/boba/mcp"
+    data_dir = "/home/ss/boba/.dev/data/mcp"
 
 [env]
     port          = 8651
@@ -1938,7 +1942,7 @@ tool = "${toml_dir:/home/ss/boba/packages/apps/boba-mcp/conf/plugins}"
 что у контейнера, и приходят из конфига compose. keytab отладка читает из
 `compose/<приложение>/conf/krb`: файл принадлежит пользователю контейнера, а
 группа — администратору, режим `0440` (раздел 6, «Владельцы»). Каталог данных
-`~/.local/state/boba/<приложение>` создают заранее с режимом `0700`; у boba-mcp
+`.dev/data/<приложение>` создают заранее с режимом `0700`; у boba-mcp
 в нём нужны подкаталоги `workspace`, `tool-logs`, `dump` и `krb`. Каталог
 программы отладки — `runtime/` репозитория: цели запуска и `dev.sh` ставят
 `BOBA_RUNTIME=<репозиторий>/runtime`.
@@ -1960,7 +1964,7 @@ tool = "${toml_dir:/home/ss/boba/packages/apps/boba-mcp/conf/plugins}"
 Порты и префиксы — из наложения отладки; префикс каждого приложения содержит
 имя разработчика (подраздел «Среда разработчика»). В `launch.json` у каждой
 цели только то, чего в конфигурации быть не может: рабочий каталог — каталог
-данных `~/.local/state/boba/<приложение>`, подкоманда `serve` с двумя
+данных `.dev/data/<приложение>`, подкоманда `serve` с двумя
 аргументами `--config` (конфиг compose и наложение), режим из меню
 переменной окружения и `BOBA_RUNTIME` на `runtime/` — каталог программы из
 исходников.
@@ -1976,7 +1980,7 @@ tool = "${toml_dir:/home/ss/boba/packages/apps/boba-mcp/conf/plugins}"
 То же в терминале:
 
 ```
-cd ~/.local/state/boba/mcp
+cd <репозиторий>/.dev/data/mcp
 BOBA_RUNTIME=<репозиторий>/runtime BOBA_TOOL_LAUNCHER=process \
     <репозиторий>/.venv/bin/python -m boba.mcp_server serve \
     --config <репозиторий>/compose/mcp/conf/config.toml \
@@ -1990,7 +1994,7 @@ VS Code запускает отладку от того пользователя
 Цели индексаторов (`ix-fts`, `pg-meta-scraper`, `ch-meta-scraper`,
 `cfl-indexer`, `ix-search-lab`) устроены так же: первый `--config` —
 `compose/<индексатор>/conf.toml`, второй — `.vscode/boba/<индексатор>.toml`,
-рабочий каталог — `~/.local/state/boba/<индексатор>`. Наложение индексатора
+рабочий каталог — `.dev/data/<индексатор>`. Наложение индексатора
 задаёт базу разработчика (`[ix.<секция>.postgres] dbname`, подраздел «Среда
 разработчика»), свой каталог кэшей билетов `[krb] ccache_dir` и, где они есть,
 каталоги моделей и дампов. Схему `ix` создаёт `ix-core` командой `upgrade`
@@ -2100,12 +2104,12 @@ nginx, подраздел «Среда разработчика»), секрет
 `process` — обычным дочерним процессом от того же пользователя, без bwrap и
 cgroup. В отладке это режим по умолчанию: в тело инструмента можно зайти
 отладчиком, файлы пользователя лежат обычным каталогом
-`~/.local/state/boba/mcp/workspace/<id>`.
+`.dev/data/mcp/workspace/<id>`.
 
 `sandbox` — как в контейнере: bwrap, образ workspace, cgroup на вызов. В
 отладке режим выбирают из меню цели `MCP: tools service`: цель ставит
 переменную `BOBA_TOOL_LAUNCHER`, на которую ссылается наложение. Образы
-пользователей при этом лежат в `~/.local/state/boba/mcp/workspace/<id>.ext4`, а
+пользователей при этом лежат в `.dev/data/mcp/workspace/<id>.ext4`, а
 cgroup создаётся в поддереве `boba-sandbox@debug.service` — боевых контейнеров
 это не касается.
 
@@ -2133,7 +2137,7 @@ exec systemd-run --user --scope --quiet --collect --slice=boba-debug.slice -- .v
 Тесты берут файлы конфигурации из двух переменных: `BOBA_CONFIG_PATH` —
 файлы чата, `BOBA_MCP_CONFIG_PATH` — файлы сервиса boba-mcp. В каждой список
 через `:`: конфиг compose, наложение отладки и последним — наложение стенда
-`~/.config/boba/stand.toml`, как повторный `--config`. Процессам, которые
+`.dev/stand.toml`, как повторный `--config`. Процессам, которые
 стенд поднимает сам, уходят файлы без наложения стенда. Режимы, на которые
 ссылаются наложения отладки, задают `BOBA_AGENT_MODE` и `BOBA_TOOL_LAUNCHER`;
 каталог программы — `BOBA_RUNTIME`, как у отладки; срез песочницы —
@@ -2143,8 +2147,8 @@ exec systemd-run --user --scope --quiet --collect --slice=boba-debug.slice -- .v
 R=<репозиторий>
 BOBA_RUNTIME=$R/runtime BOBA_AGENT_MODE=process BOBA_TOOL_LAUNCHER=process \
 BOBA_CGROUP_BASE=<каталог sandbox юнита boba-sandbox@debug> \
-BOBA_CONFIG_PATH=$R/compose/aid/conf/config.toml:$R/.vscode/boba/aid.toml:$HOME/.config/boba/stand.toml \
-BOBA_MCP_CONFIG_PATH=$R/compose/mcp/conf/config.toml:$R/.vscode/boba/mcp.toml:$HOME/.config/boba/stand.toml \
+BOBA_CONFIG_PATH=$R/compose/aid/conf/config.toml:$R/.vscode/boba/aid.toml:$R/.dev/stand.toml \
+BOBA_MCP_CONFIG_PATH=$R/compose/mcp/conf/config.toml:$R/.vscode/boba/mcp.toml:$R/.dev/stand.toml \
     $R/.venv/bin/pytest $R/packages/apps/boba-mcp/tests
 ```
 

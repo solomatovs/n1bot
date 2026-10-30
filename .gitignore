@@ -20,6 +20,7 @@ CLAUDE.md
 
 /release/
 /debug/
+/.dev/
 /runtime/
 /compose/*/*
 
