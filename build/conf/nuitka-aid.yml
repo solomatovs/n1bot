@@ -1,0 +1,10 @@
+- module-name: 'chainlit'
+  data-files:
+    - dirs:
+        - 'translations'
+
+- module-name: 'chainlit.server'
+  anti-bloat:
+    - description: 'the chat mounts the chainlit application and never runs it with --watch: no file watcher'
+      replacements_plain:
+        'from watchfiles import awatch': ''

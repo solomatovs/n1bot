@@ -222,8 +222,8 @@ class ProgramRoot(ABC):
 
 @dataclass(frozen=True)
 class InstalledProgram(ProgramRoot):
-    """Реализация ProgramRoot установленной программы: собранной Nuitka или
-    программы на python в образе и дереве релиза. Все части — в её каталоге."""
+    """Реализация ProgramRoot собранной Nuitka программы в образе и дереве
+    релиза. Все части — в её каталоге."""
 
     def path(self, part: ProgramDir) -> Path:
         return self.root / part.value
@@ -252,10 +252,9 @@ class ProgramRoots:
     Собранная программа (Nuitka, `__compiled__`) лежит в
     <корень>/bin/<имя>.dist/<имя>.bin, и корень — третий предок бинарника;
     лаунчер песочницы и проба cgroup — её подкоманды (ProgramTool).
-    Программа на python находит корень одной переменной BOBA_RUNTIME. Если
-    рядом с ним лежит дерево исходников (каталог packages), это runtime/
-    репозитория и программа из исходников (SourceProgram), иначе — каталог
-    установленной программы на python (образ, релиз). Создают его компоненты,
+    Программа на python бывает только из исходников: каталог runtime/
+    репозитория называет переменная BOBA_RUNTIME, и рядом с ним обязано
+    лежать дерево исходников (каталог packages). Создают его компоненты,
     которым каталог программы нужен: способ запуска плагинов, хранилище
     образов, вход чата.
     """
@@ -294,9 +293,9 @@ class ProgramRoots:
         runtime = os.environ.get(self.RUNTIME_ENV)
         if not runtime:
             msg = (
-                f"program directory: the program runs on python, so "
-                f"{self.RUNTIME_ENV} must name its directory (runtime/ of the "
-                "repository for sources); it is not set"
+                f"program directory: the program runs on python from the "
+                f"sources, so {self.RUNTIME_ENV} must name runtime/ of the "
+                "repository; it is not set"
             )
             raise ConfigError(msg)
 
@@ -309,12 +308,18 @@ class ProgramRoots:
             raise ConfigError(msg)
 
         sources = root.parent
-        if (sources / SourceTree.PACKAGES.value).is_dir():
-            return SourceProgram(
-                root=root, interpreter=self._interpreter(), sources=sources
+        if not (sources / SourceTree.PACKAGES.value).is_dir():
+            msg = (
+                f"program directory: {self.RUNTIME_ENV}={runtime} must be "
+                f"runtime/ of the repository with {SourceTree.PACKAGES.value}/ "
+                f"next to it, {sources} has none; an installed program is "
+                "compiled and finds its directory by itself"
             )
+            raise ConfigError(msg)
 
-        return InstalledProgram(root=root, interpreter=self._interpreter())
+        return SourceProgram(
+            root=root, interpreter=self._interpreter(), sources=sources
+        )
 
     def _interpreter(self) -> LauncherInterpreter:
         """Интерпретатор исходников со своим окружением и корнями.
