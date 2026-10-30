@@ -264,7 +264,7 @@ WantedBy=multi-user.target
 
 | Каталог | Что лежит | Кто пишет | В git |
 |---|---|---|---|
-| `packages/` | код приложений, их общие конфиги (`apps/boba-<приложение>/conf`) и статика | разработчик | да |
+| `packages/` | код приложений, файлы плагинов boba-mcp (`apps/boba-mcp/conf/plugins`) и статика | разработчик | да |
 | `build/` | `Makefile`, `Dockerfile`, сценарии и образцы (`conf/`); `build/src` — скачанные артефакты сборки | разработчик; `build/src` — `make fetch` | да, кроме `build/src` |
 | `runtime/` | то, что подкладывается приложению для работы: модели, бинарники и библиотеки песочницы, её образы | сборка (`make fetch`, `sandbox`, `models-image`, `plugin-rootfs-all`) | нет |
 | `compose/<приложение>/` | случай запуска в Docker: `docker-compose.yml`, `.env`, `conf/` (специфика машины), `data/` | администратор — `conf` и `.env`; контейнер — `data` | только `docker-compose.yml` |
@@ -335,7 +335,7 @@ runtime/
 | `release APP=<приложение>` | дерево установки без Docker из готового образа | `release/<версия>/<экземпляр>` | до минуты; mcp 11 ГБ |
 | `boba-bin` | агент каталогом `bin/boba.dist` (его берут тесты `test_cli_binary.py`); `BIN_ONNX=1` — каталог `boba-onnx.dist` с рантаймом onnxruntime-genai, тогда `fetch` качает и модели onnx-genai (3,9 ГБ) | `release/<версия>/bin` | без `BIN_ONNX` — из кэша сборки agent; с ним — вторая компиляция |
 
-Цели `build`, `test`, `dev`, `debug`, `release`, `install` и `site-keys` без
+Цели `build`, `test`, `dev`, `debug`, `release` и `install` без
 `APP` идут по всем трём приложениям. `make all` делает то же, что `fetch
 sandbox models-image plugin-rootfs-all web`, затем `test` и `dev` по всем трём,
 но независимые части ведёт одновременно. Сначала идёт общий этап: `fetch`,
@@ -466,223 +466,282 @@ watch -n 5 "docker ps --format '{{.Names}} {{.Status}}' | grep -E '^(aid|boba|bo
 
 ## 5. Конфигурация
 
-### Два файла вместо одного
+### Один файл на экземпляр
 
-У каждого приложения конфигурация состоит из двух файлов, и приложению их
-называют двумя обязательными аргументами:
-
-```
-python -m boba.mcp_server --config <общий конфиг> --site <специфика случая>
-```
-
-**Общий конфиг** — `packages/apps/boba-<приложение>/conf/config.toml` и
-`plugins/<инструмент>.toml` рядом с ним. Он описывает устройство приложения:
-какие есть профили чата, какие инструменты включены, какие пулы соединений,
-какие способы входа. В нём нет ни одного адреса, пароля или пути этой машины —
-только ссылки вида `${site.pg_host}` и `${env.data}`. Он лежит в git, попадает в
-образ и в дерево релиза и одинаков везде.
-
-**site.toml** — всё, что зависит от машины и случая запуска: порты, пути,
-адреса серверов, имена моделей, логины, секреты. Он свой у каждого случая:
-`compose/<приложение>/conf/site.toml`, `debug/<приложение>/conf/site.toml`,
-`<каталог установки>/conf/site.toml`. В git он не попадает никогда — имя файла
-внесено в `.gitignore` целиком.
-
-Почему так. Пока конфигурация была одним файлом вне git, у каждого случая
-запуска была своя копия на четыреста строк, и правка устройства приложения
-(новый профиль, новый параметр пула) требовала пройти по всем копиям — их
-забывали. Теперь устройство описано в одном месте и версионируется вместе с
-кодом, а вне git остаётся только то, что там и должно быть: секреты и
-особенности машины. Подключение явное: какой файл читается, видно из командной
-строки, и приложение не ищет конфигурацию «где-нибудь рядом».
-
-Загрузчик следит за разделением. В site.toml допустимы только две секции,
-`[env]` и `[site]`; любая другая — ошибка старта, иначе устройство приложения
-снова описывалось бы в двух местах. В общем конфиге эти две секции,
-наоборот, запрещены.
-
-| В общем конфиге (git) | В site.toml (вне git) |
-|---|---|
-| профили чата, их системные промпты и параметры выборки | имена моделей (`[site.models]`) и их пределы (`[site.model_limits.<профиль>]`: `context_window`, `max_output_tokens`) |
-| секции входа: какие способы, какие заголовки, пути | секреты, адреса каталога, таблицы ролей и локальные учётки |
-| пулы и схемы PostgreSQL | хост, адрес, база, способ входа и пароль |
-| список MCP-серверов чата, таймауты | схема, хост, порт и префикс сервиса |
-| включённые инструменты, лимиты песочницы плагинов | адреса Confluence и почты, их учётки |
-| ссылки `${env.*}` на каталоги | сами каталоги: `data`, `models`, `third`, `sandbox`, `app_root`, `krb` |
-
-Окно модели и потолок ответа меняются в site.toml чата и службы агента, ключами `[site.model_limits.<профиль>] context_window` и `max_output_tokens` (значения без умолчания); узнать их для модели можно из ответа `/v1/models` маршрутизатора LLM — поля `context_window` и `max_output_tokens` модели.
-
-### Как собирается конфигурация
-
-Слои накладываются по порядку, поздний перекрывает ранний:
-
-1. вычисленные значения. `env.base` — каталог над `conf/`, в котором лежит
-   site.toml: рядом со спецификой случая лежат и его данные, поэтому пути в
-   site.toml пишут от `${env.base}`. Секция `[interpreter]` — интерпретатор
-   самого процесса: путь к `python`, его `prefix`, каталоги `sys.path` и
-   значения `PATH`, `LD_LIBRARY_PATH`, `PYTHONHOME`, `PYTHONPATH`. С ним
-   песочница запускает тот же python во внешнем слое (раздел 9); в файлах её
-   не пишут, хранилище берёт её ссылкой `${interpreter}`;
-2. общий `config.toml`;
-3. файлы `plugins/<имя>.toml` рядом с общим конфигом — каждый становится
-   секцией `tool.<имя>`;
-4. site.toml. Если в нём есть ключ верхнего уровня `include = "<путь>"`,
-   сначала ложится названный файл (путь — от каталога site.toml), а site.toml
-   перекрывает его ключи. В подключённом файле тоже только `[env]` и
-   `[site]`, и сам он ничего не подключает. Так отладка держит общий `[site]`
-   чата, сервиса и индексаторов в одном файле среды разработчика (раздел 8,
-   «Среда разработчика»);
-5. переменные окружения `BOBA_<КЛЮЧ>` — они переопределяют отдельные ключи
-   секции `[env]`: `BOBA_BASE`, `BOBA_DATA`, `BOBA_PORT`, `BOBA_HOST`,
-   `BOBA_URL_PREFIX`, `BOBA_INSTANCE_ID`, `BOBA_APP_ROOT`, `BOBA_CGROUP_BASE`,
-   `BOBA_TOOL_LAUNCHER`, `BOBA_MESSAGING`, `BOBA_PUBLIC_URL`, `BOBA_MCP_SCHEME`,
-   `BOBA_MCP_HOST`, `BOBA_MCP_PORT`, `BOBA_MCP_PREFIX`, `BOBA_AGENT_MODE`,
-   `BOBA_AGENT_COMMAND`, `BOBA_AGENT_SCHEME`, `BOBA_AGENT_HOST`,
-   `BOBA_AGENT_PORT`, `BOBA_AGENT_PREFIX`.
-   Кроме них загрузчик читает только четыре переменные интерпретатора для
-   `[interpreter]`.
-
-Ссылки `${секция.ключ}` разрешаются по собранному целому, поэтому значение из
-site.toml может ссылаться на `${env.base}`, а общий конфиг — на любое значение
-site.toml.
-
-### Первый site.toml
-
-Образца site.toml в репозитории нет намеренно: образец пришлось бы помнить
-править при каждом изменении общего конфига. Вместо него перечень ключей
-строится из самого общего конфига:
+У каждой программы — чата aid, сервиса boba-mcp и службы агента boba —
+конфигурация экземпляра состоит из одного файла `config.toml`. Его называет
+обязательный аргумент запуска:
 
 ```
-$ make -C build site-keys APP=mcp
-[env]
-    data  — krb.ccache_dir; переопределяется переменной BOBA_DATA
-    listen_host  — mcp.host
-    port  — mcp.port; переопределяется переменной BOBA_PORT
-    third  — storage.binaries.dirs
-    ...
-[site]
-    auth_secret  — keys.session
-    confluence.host  — confluence.host
-    mcp_client.secret  — keys.mcp_client
-    mcp_proxy_secret  — keys.mcp_proxy
-    pg_auth  — postgres.auth
-    pg_auth_method  — postgres.auth
-    pg_database  — postgres.dbname
-    pg_host  — postgres.host
-    ...
+python -m boba.mcp_server --config <каталог экземпляра>/conf/config.toml
 ```
 
-Каждая строка — ключ и поле общего конфига, которое на него ссылается. Ключ с
-точкой (`confluence.host`) — поле `host` таблицы `[site.confluence]`. Секреты
-общий конфиг сначала собирает в свою секцию `[keys]`, а рабочие секции берут их
-оттуда ссылками `${keys.*}`, поэтому у `auth_secret` и `mcp_proxy_secret`
-стоят поля `keys.*`.
+Файл описывает всё, что нужно этому экземпляру: устройство приложения
+(профили чата, способы входа, пулы соединений, MCP-серверы, лимиты) и
+специфику машины (порты, пути, адреса серверов, имена моделей, логины,
+секреты). Он свой у каждого случая запуска —
+`compose/<приложение>/conf/config.toml`, `debug/<приложение>/conf/config.toml`,
+`<каталог установки>/conf/config.toml` — и в git не входит: в нём секреты.
+Пишет его администратор (в отладке — разработчик); образца и шаблона в
+репозитории нет, значения, одинаковые для нескольких программ (адрес базы,
+realm, секреты, которые должны совпадать), повторяются в каждом файле.
 
-Пропущенный ключ обнаруживается при старте: приложение завершается и называет и
-ключ, и поле, которому он понадобился.
+В git остаются только файлы плагинов сервиса
+`packages/apps/boba-mcp/conf/plugins/<инструмент>.toml`: они попадают в образ и
+в дерево релиза, а конфиг экземпляра подключает их каталогом (ниже,
+«Подключённые файлы»). У утилит ix (индексаторы и скраперы) такой же один файл —
+`conf.toml` в их каталоге.
+
+Повторный `--config` кладёт поверх первого файла второй — наложение, в котором
+записаны только изменённые ключи. Так отладка переключает режим запуска, а
+стенды тестов меняют базу, порты и способы входа, не трогая основной файл. В
+развёртывании файл всегда один.
+
+### Новая машина: что положить и что поменять
+
+На каждую программу в каталог `conf` её дерева (`compose/<приложение>/conf`
+либо `<каталог установки>/conf`) кладут:
+
+| Файл | Откуда | Что в нём меняют |
+|---|---|---|
+| `config.toml` | копия конфига той же программы с другой машины | адреса и порты, `[env]`, имена баз, способы входа, секреты `[keys]` |
+| `krb/krb5.conf`, `krb/<учётка>.keytab` | администратор домена | — (нужны, только если какой-то вход выбран kerberos) |
+| `prompts/<endpoint>/<имя>.toml` | копия с другой машины, только boba-mcp | тексты промптов |
+| `boba.env` | порождает `make dev` либо `make release` | ничего |
+
+Ключи `config.toml`, которые почти всегда свои у машины:
+
+- `[env]` — пути, порт, префикс, публичный адрес (раздел «Секция `[env]`»);
+- `[postgres]` и `[postgres_history]` — сервер и база (`host`, `hostaddr`,
+  `port`, `dbname`);
+- `[keys]` — секреты; новые генерируют, общие для чата и сервиса копируют
+  одинаковыми в оба файла (раздел 15);
+- таблицы `auth` подключений — способ входа (ниже);
+- `[krb] config` — путь к `krb5.conf` машины;
+- у чата — `[ldap]`, пользователи `[auth.local.users]`, адреса серверов MCP
+  через ключи `[env] mcp_*`; у службы агента и чата — модель `[llm.main]`.
+
+Пример: машина без Kerberos. Сервис на старой машине входил в PostgreSQL по
+keytab, на новой — паролем. Меняется только таблица `[postgres.auth]` (у чата
+так же `[postgres_history.auth]`); `krb/` на новую машину можно не класть, если
+kerberos больше нигде не выбран.
+
+Было:
+
+```toml
+[postgres.auth]
+    method    = "kerberos_keytab"
+    principal = "boba-svc@EXAMPLE.COM"
+    keytab    = "${env.krb}/boba-svc.keytab"
+    service   = "postgres"
+```
+
+Стало:
+
+```toml
+[postgres.auth]
+    method   = "password"
+    user     = "boba"
+    password = "..."
+```
+
+Обратный переход — та же замена в другую сторону плюс keytab и `krb5.conf` в
+`conf/krb`. Ошибка в таблице видна при старте: программа называет секцию и
+поле, которое не сошлось (раздел 12).
+
+### Как читается конфигурация
+
+Загрузку делает `ConfigLoader` пакета boba-config средствами omegaconf:
+
+1. файлы читаются как TOML и сливаются штатным слиянием omegaconf: наложение
+   перекрывает ключи главного файла, таблицы сливаются по ключам, списки
+   заменяются целиком;
+2. ключи вида `"${toml:<файл>}"` и `"${toml_dir:<каталог>}"` подключают файлы
+   (раздел ниже);
+3. всё дерево разрешается сразу при старте: ссылка на несуществующий ключ,
+   неразрешимая переменная окружения или нечитаемый файл останавливают процесс
+   с именем ключа и причиной, а не всплывают при первом обращении;
+4. готовое дерево только для чтения. Каждая часть программы берёт свою секцию и
+   проверяет её моделью; секции, которой ждёт модель, в файле нет — это ошибка
+   старта с именем секции, значения по умолчанию вместо пропущенной секции не
+   подставляются.
+
+Ссылка `"${секция.ключ}"` берёт значение другого ключа того же дерева, целиком
+или частью строки: `ccache_dir = "${env.data}/krb/cache"`, `postgres =
+"${postgres}"`. Окружение конфиг читает только сам и только ссылкой
+`"${oc.env:ИМЯ}"`, без значения по умолчанию: переменной нет — старт
+останавливается с её именем. Других переменных окружения программа для
+конфигурации не читает.
 
 ```
-boba-mcp failed: InterpolationKeyError: Interpolation key 'site.mcp_proxy_secret' not found
-    full_key: keys.mcp_proxy
+boba-mcp failed: ConfigError: config /app/boba/conf/config.toml: resolving the config failed: Environment variable 'BOBA_PORT' not found
+    full_key: env.port
 ```
 
-Пример site.toml сервиса boba-mcp в контейнере (значения выдуманы):
+Знак `${` в тексте значения (системный промпт, промпт MCP, пример команды)
+omegaconf принял бы за ссылку, поэтому в тексте его пишут экранированным:
+`\${HOME}` даёт в значении `${HOME}`.
+
+### Секция `[env]`
+
+`[env]` — обычная секция конфига, в которой собраны пути развёртывания и
+адреса этого экземпляра: `base`, `data`, `models`, `third`, `sandbox`,
+`app_root`, `krb`, `cgroup_base`, `port`, `url_prefix`, `listen_host`,
+`public_url`, режимы `tool_launcher`, `messaging_provider`, `agent_mode` и
+адреса соседей (`mcp_*`, `agent_*`). Остальные секции берут их ссылками
+`${env.*}`, а песочница сервиса читает пути `base`, `data`, `sandbox`, `third`,
+`models`, `krb`, `cgroup_base` прямо из неё. Все пути — абсолютные, как их видит
+процесс: в контейнере — от `/app/boba`, в отладке — от
+`<репозиторий>/debug/<приложение>`.
+
+В compose порт и префикс, по которым HEALTHCHECK образа проверяет готовность,
+задаёт `conf/boba.env` (`BOBA_PORT`, `BOBA_URL_PREFIX`), и конфиг берёт их
+оттуда же, чтобы значение было одно; имя узла чата — имя контейнера:
 
 ```toml
 [env]
-    port          = 8650
-    url_prefix    = "/mcp"
+    port       = "${oc.env:BOBA_PORT}"
+    url_prefix = "${oc.env:BOBA_URL_PREFIX}"
+    host       = "${oc.env:HOSTNAME}"
+```
+
+### Подключённые файлы
+
+Файл или каталог файлов подключается ключом-резолвером:
+
+| Значение ключа | Что получается |
+|---|---|
+| `"${toml:<файл>}"` | таблица из одного TOML-файла |
+| `"${toml_dir:<каталог>}"` | таблица, где ключ — имя файла `<имя>.toml` каталога без суффикса, значение — его содержимое |
+
+Относительный путь считается от каталога главного файла (первого
+`--config`). Подключённые файлы становятся частью дерева: ссылки внутри них
+разрешаются от корня конфига, и наложение может поменять в них отдельный ключ.
+Читаются они один раз при старте.
+
+Плагины сервиса подключаются каталогом в секцию `tool`:
+
+```toml
+tool = "${toml_dir:plugins}"
+```
+
+В образе каталог `plugins` лежит рядом с конфигом (`/app/boba/conf/plugins`), в
+отладке конфиг называет каталог пакета:
+`tool = "${toml_dir:../../../packages/apps/boba-mcp/conf/plugins}"`. Файлы
+плагинов ссылаются на секции конфига экземпляра — `${postgres}`, `${http}`,
+`${confluence}`, `${kb_tables}`, `${embedding.main}`, `${ocr}`, `${app.schema}`,
+`${mail}`; эти секции — договор между плагинами и конфигом, и в конфиге
+сервиса они обязаны быть, даже если плагин выключен.
+
+Пример конфига сервиса boba-mcp в контейнере (значения выдуманы, часть секций
+опущена):
+
+```toml
+tool = "${toml_dir:plugins}"
+
+[env]
+    port          = "${oc.env:BOBA_PORT}"
+    url_prefix    = "${oc.env:BOBA_URL_PREFIX}"
     public_url    = "https://boba.example.com/mcp"
     listen_host   = "0.0.0.0"
     cgroup_base   = "/cgroup/boba-sandbox-mcp"
     tool_launcher = "sandbox"
+    base          = "/app/boba"
+    data          = "/app/boba/data"
+    sandbox       = "/app/boba/sandbox"
+    third         = "/app/boba/third"
+    models        = "/app/boba/models"
+    krb           = "/app/boba/conf/krb"
 
-    data    = "${env.base}/data"
-    sandbox = "${env.base}/sandbox"
-    third   = "${env.base}/third"
-    models  = "${env.base}/models"
-    krb     = "${env.base}/conf/krb"
+[krb]
+    config     = "${env.krb}/krb5.conf"
+    ccache_dir = "${env.data}/krb/cache"
 
-[site]
-    krb_realm  = "EXAMPLE.COM"
-    krb_config = "${env.krb}/krb5.conf"
+[app]
+    schema      = "mcp"
+    krb         = "${krb}"
+    session     = "${session}"
+    mcp         = "${mcp}"
+    storage     = "${storage}"
+    connections = "${connections}"
+    auth        = "${oc.dict.values:auth}"
 
-    pg_host        = "postgres.example.com"
-    pg_addr        = "10.0.0.14"
-    pg_port        = 5432
-    pg_database    = "aid"
-    pg_sslmode     = "disable"
-    pg_auth_method = "kerberos"
+[keys]
+    session    = "..."
+    mcp_proxy  = "..."
+    mcp_client = "..."
 
-    confluence_auth_method = "negotiate"
-    mail_auth_method       = "password"
+[mcp]
+    host       = "${env.listen_host}"
+    port       = "${env.port}"
+    public_url = "${env.public_url}"
+    url_prefix = "${env.url_prefix}"
 
-    auth_secret      = "..."
-    mcp_proxy_secret = "..."
+    [mcp.endpoints.all]
+        roles       = ["*"]
+        tools       = ["*"]
+        connections = [{roles = ["*"], client = "sealing", offer = ["sealed"]}]
+        prompts     = "${toml_dir:prompts/all}"
 
-    [site.pg_auth.kerberos]
+    [mcp.endpoints.chat]
+        roles       = ["*"]
+        tools       = ["canvas_open", "send_file", "diagram_save"]
+        connections = [{roles = ["*"], client = "sealing", offer = ["sealed"]}]
+        prompts     = {}
+
+    [mcp.clients.boba-chat]
+        secret = "${keys.mcp_client}"
+
+[postgres]
+    host             = "postgres.example.com"
+    hostaddr         = "10.0.0.14"
+    port             = 5432
+    dbname           = "aid"
+    sslmode          = "disable"
+    application_name = "boba-mcp"
+
+    [postgres.auth]
         method    = "kerberos_keytab"
-        principal = "boba-svc@${site.krb_realm}"
+        principal = "boba-svc@EXAMPLE.COM"
         keytab    = "${env.krb}/boba-svc.keytab"
         service   = "postgres"
 
-    [site.mcp_client]
-        secret = "..."
+[mail]
+    server    = "mail.example.com"
+    port      = 587
+    use_tls   = true
+    sender    = "boba@example.com"
+    recipient = "boba-reports@example.com"
 
-    [site.confluence]
-        host = "wiki.example.com"
-        port = 443
-        path = "/confluence"
-
-    [site.confluence_auth.negotiate]
-        method = "negotiate"
-        [site.confluence_auth.negotiate.kerberos]
-            method    = "kerberos_keytab"
-            principal = "boba-svc@${site.krb_realm}"
-            keytab    = "${env.krb}/boba-svc.keytab"
-
-    [site.mail]
-        server    = "mail.example.com"
-        port      = 587
-        use_tls   = true
-        sender    = "boba@example.com"
-        recipient = "boba-reports@example.com"
-
-    [site.mail_auth.password]
+    [mail.auth]
         method   = "password"
         user     = "boba-mail"
         password = "..."
 
-    [site.models]
-        embedding = "intfloat/multilingual-e5-large"
+[auth.proxy]
+    type   = "proxy"
+    secret = "${keys.mcp_proxy}"
 ```
 
-Ключей входа пользователей (`ldap_*`, `krb_domain`, `krb_http_keytab`,
-`local_auth`, `proxy.*`) у сервиса нет: в поставке он принимает пользователей
-только входом proxy от доверенного клиента — чата, и роли пользователя
-приходят в подписанном утверждении. Эти ключи нужны site.toml чата. `krb_realm` здесь не требуется общему конфигу, на
-него ссылается сама таблица `[site.pg_auth.kerberos]`.
-
-В контейнере `env.base` равен `/app/boba`: site.toml смонтирован в
-`/app/boba/conf/site.toml`. Поэтому пути здесь те, что видит процесс внутри
-контейнера, а не пути машины.
+Секреты собраны в секцию `[keys]`, и рабочие секции берут их оттуда ссылками
+`${keys.*}`: так видно, какой секрет где используется, и совпадающие секреты
+разных программ сверяются по одной секции.
 
 `url_prefix` — путь, под которым сервис отвечает сам: прокси передаёт ему путь
 запроса как есть, без переписывания. Путь `public_url` обязан совпадать с
 `url_prefix`, иначе сервис не стартует: от `public_url` строятся адреса входа
-OAuth и издатель токенов. Тот же префикс стоит в `BOBA_URL_PREFIX` файла
-`conf/boba.env`, по нему проверяет готовность HEALTHCHECK образа. Endpoint'ы MCP
-отвечают на `{url_prefix}/{имя}` — в примере `/mcp/chat`, `/mcp/all`,
-`/mcp/search`.
+OAuth и издатель токенов. Endpoint'ы MCP отвечают на `{url_prefix}/{имя}` — в
+примере `/mcp/chat`, `/mcp/all`.
 
 #### Промпты endpoint'ов
 
-Промпты сервиса лежат файлами рядом с общим конфигом:
+Промпты сервиса лежат файлами рядом с конфигом экземпляра:
 `conf/prompts/<endpoint>/<имя>.toml`, по файлу на промпт; имя промпта — имя
-файла без `.toml`, каталог — имя endpoint'а из `[mcp.endpoints.*]`. Клиенты
-получают их стандартными запросами MCP `prompts/list` и `prompts/get`; в чате
-промпт — команда `/mcp__<сервер>__<имя>`. В поставке один промпт —
-`conf/prompts/all/sql_review.toml` (разбор SQL-выражения на endpoint'е `all`).
+файла без `.toml`. Endpoint подключает свой каталог ключом `prompts` своей
+секции — `prompts = "${toml_dir:prompts/<endpoint>}"`; у endpoint'а без
+промптов ключ пишется пустой таблицей `prompts = {}`. Клиенты получают промпты
+стандартными запросами MCP `prompts/list` и `prompts/get`; в чате промпт —
+команда `/mcp__<сервер>__<имя>`.
 
 ```toml
 description = "Review an SQL statement: correctness, performance and safety"
@@ -709,62 +768,75 @@ Dialect: {dialect}
 аргументы в вызове команды идут в порядке таблиц. `[[messages]]` — сообщения
 по порядку, `role` — `user` или `assistant`, в `text` аргумент подставляется
 по `{<имя>}`, не названный необязательный — пустой строкой, фигурная скобка
-текстом пишется удвоенной (`{{`, `}}`). Файл не по формату, каталог с именем,
-которого нет среди endpoint'ов, или `{...}` с неизвестным аргументом
-останавливают старт сервиса с путём файла и причиной. Список промптов
-читается на старте: новый файл или правка видны после перезапуска сервиса.
+текстом пишется удвоенной (`{{`, `}}`), знак `${` — экранированным `\${`. Файл
+не по формату или `{...}` с неизвестным аргументом останавливают старт сервиса
+с именем ключа и причиной. Список промптов читается на старте: новый файл или
+правка видны после перезапуска сервиса.
 
 #### Способ входа во внешние системы
 
-Способ входа каждого внешнего подключения выбирается одним ключом
-`<подключение>_auth_method`: его значение — имя таблицы
-`[site.<подключение>_auth.<имя>]`, которую общий конфиг подставляет целиком.
-В site.toml достаточно таблицы выбранного способа; таблицы других способов
-можно держать рядом, тогда переход на другой способ — правка одного ключа.
-Имя таблицы выбирает администратор, способ задаёт поле `method` внутри неё.
-`make site-keys APP=<приложение>` после перечня ключей печатает для каждой
-такой таблицы все значения `method` и обязательные поля каждого способа —
-перечень строится из моделей, которые эти таблицы проверяют.
-
-| Подключение | Ключ выбора | Таблицы | Где |
-|---|---|---|---|
-| PostgreSQL, схемы `aid` и `mcp` | `pg_auth_method` | `[site.pg_auth.<имя>]` | чат, boba-mcp |
-| PostgreSQL, история агента (роль истории) | `pg_history_auth_method` | `[site.pg_history_auth.<имя>]` | чат (режим `process`), служба агента |
-| языковая модель | `llm_auth_method` | `[site.llm_auth.<имя>]` | чат (режим `process`), служба агента |
-| Confluence | `confluence_auth_method` | `[site.confluence_auth.<имя>]` | boba-mcp |
-| каталог LDAP (служебный поиск ролей) | `ldap_auth_method` | `[site.ldap_auth.<имя>]` | чат, служба агента |
-| почта SMTP | `mail_auth_method` | `[site.mail_auth.<имя>]` | boba-mcp |
-
-Значения `method` у PostgreSQL (обе роли):
+Способ входа каждого внешнего подключения описан одной таблицей `auth` прямо в
+его секции: поле `method` называет способ, остальные поля — его параметры.
+Переход на другой способ — замена этой таблицы в файле экземпляра; больше
+ничего менять не нужно. Например, вход сервиса в PostgreSQL по keytab и по
+паролю:
 
 ```toml
-[site.pg_auth.trust]                 # trust или peer в pg_hba, без секрета
-    method = "trust"
-    user   = "boba"
-
-[site.pg_auth.password]              # пароль роли (scram-sha-256)
-    method   = "password"
-    user     = "boba"
-    password = "..."
-
-[site.pg_auth.certificate]           # клиентский сертификат, cert в pg_hba
-    method  = "certificate"
-    user    = "boba"
-    sslcert = "${env.krb}/boba.crt"
-    sslkey  = "${env.krb}/boba.key"
-
-[site.pg_auth.kerberos]              # keytab принципала
+[postgres.auth]
     method    = "kerberos_keytab"
     principal = "boba-svc@EXAMPLE.COM"
     keytab    = "${env.krb}/boba-svc.keytab"
     service   = "postgres"
+```
 
-[site.pg_auth.kerberos_password]     # принципал с паролем, без keytab
+```toml
+[postgres.auth]
+    method   = "password"
+    user     = "boba"
+    password = "..."
+```
+
+| Подключение | Таблица | Где |
+|---|---|---|
+| PostgreSQL, схемы `aid` и `mcp` | `[postgres.auth]` | чат, boba-mcp |
+| PostgreSQL, история агента (роль истории) | `[postgres_history.auth]` | чат (режим `process`), служба агента |
+| языковая модель | `[llm.main.connection.auth]` у чата, `[llm.main.auth]` у службы агента | чат (режим `process`), служба агента |
+| Confluence | `[confluence.auth]` | boba-mcp |
+| каталог LDAP (служебный поиск ролей) | `[ldap.auth]` | чат, служба агента |
+| почта SMTP | `[mail.auth]` | boba-mcp |
+
+Kerberos подключается только там, где выбран kerberos-способ: keytab и
+`krb5.conf` нужны процессу и телу инструмента в песочнице лишь тогда, когда
+таблица `auth` их называет.
+
+Значения `method` у PostgreSQL (обе роли):
+
+```toml
+[postgres.auth]
+    method = "trust"
+    user   = "boba"
+```
+
+```toml
+[postgres.auth]
+    method  = "certificate"
+    user    = "boba"
+    sslcert = "${env.krb}/boba.crt"
+    sslkey  = "${env.krb}/boba.key"
+```
+
+```toml
+[postgres.auth]
     method    = "kerberos_password"
     principal = "boba-svc@EXAMPLE.COM"
     password  = "..."
     service   = "postgres"
 ```
+
+`trust` — доверие или peer в `pg_hba` без секрета, `password` — пароль роли
+(scram-sha-256), `certificate` — клиентский сертификат (cert в `pg_hba`),
+`kerberos_keytab` — keytab принципала, `kerberos_password` — принципал с
+паролем без keytab.
 
 Значения `method` у HTTP-подключений (модель и Confluence): `none` — без входа,
 `basic` и `digest` — `user` и `password`, `bearer` — `token`, `negotiate` —
@@ -772,37 +844,27 @@ SPNEGO с вложенной таблицей `kerberos` (те же `kerberos_ke
 `kerberos_password`, что у PostgreSQL):
 
 ```toml
-[site.llm_auth.none]
-    method = "none"
-
-[site.llm_auth.basic]
-    method   = "basic"
-    user     = "boba"
-    password = "..."
-
-[site.llm_auth.bearer]
-    method = "bearer"
-    token  = "..."
-
-[site.llm_auth.digest]
-    method   = "digest"
-    user     = "boba"
-    password = "..."
-
-[site.llm_auth.negotiate]
+[confluence.auth]
     method = "negotiate"
-    [site.llm_auth.negotiate.kerberos]
+
+    [confluence.auth.kerberos]
         method    = "kerberos_keytab"
         principal = "boba-svc@EXAMPLE.COM"
         keytab    = "${env.krb}/boba-svc.keytab"
 ```
 
+```toml
+[llm.main.connection.auth]
+    method = "bearer"
+    token  = "..."
+```
+
 Вход к модели агент получает таблицей `auth` провайдера в своём файле
-настроек. Служба агента собирает её сама из `[site.llm_auth.<llm_auth_method>]`
-и умеет любой из пяти способов. В режиме `process` таблицу пишет чат в файл
-настроек процесса агента, и `negotiate` так не передать: kerberos-креды
-остаются у чата, и чат отказывает в запуске агента с причиной в тексте;
-для входа kerberos к модели агент запускают службой со своим keytab.
+настроек. Служба агента собирает её сама из своей таблицы и умеет любой из
+пяти способов. В режиме `process` таблицу пишет чат в файл настроек процесса
+агента, и `negotiate` так не передать: kerberos-креды остаются у чата, и чат
+отказывает в запуске агента с причиной в тексте; для входа kerberos к модели
+агент запускают службой со своим keytab.
 
 Каталог LDAP: служебный bind поиска ролей (входы kerberos и proxy, роли
 входа ldap) — `simple` учёткой и паролем либо `anonymous` для каталога,
@@ -810,59 +872,57 @@ SPNEGO с вложенной таблицей `kerberos` (те же `kerberos_ke
 собственный simple bind по шаблону `bind_dn_template`.
 
 ```toml
-[site.ldap_auth.simple]
+[ldap.auth]
     method   = "simple"
     user     = 'EXAMPLE\boba-reader'
     password = "..."
-
-[site.ldap_auth.anonymous]
-    method = "anonymous"
 ```
 
-Почта: `password` — вход SMTP AUTH логином и паролем, `none` — сервер
-принимает письма без входа.
-
-```toml
-[site.mail_auth.password]
-    method   = "password"
-    user     = "boba-mail"
-    password = "..."
-
-[site.mail_auth.none]
-    method = "none"
-```
+Почта: `password` — вход SMTP AUTH логином и паролем (`user`, `password`),
+`none` — сервер принимает письма без входа. Плагин `mail` берёт сервер, порт,
+адреса и вход из секции `[mail]` конфига сервиса.
 
 Базы и сайты пользователей (PostgreSQL, ClickHouse, Oracle, HTTP-сайты
 плагина `web`) — соединения пользователей: способ входа задаёт поле `method`
-таблицы `auth` самого соединения, общего ключа выбора у них нет. Источники
-индексаторов ix описаны так же — у каждого своя таблица `auth`
-(README пакетов `ch-meta-scraper`, `ora-meta-scraper`).
+таблицы `auth` самого соединения. Источники индексаторов ix описаны так же —
+у каждого своя таблица `auth` (README пакетов `ch-meta-scraper`,
+`ora-meta-scraper`).
 
-Системные промпты профилей — часть развёртывания: у каждого профиля чата и
-службы агента обязательный ключ `[site.profiles.<профиль>] system_prompt`
-(общий конфиг ссылается на него из `system_prompt` профиля чата и
-`systemPrompt` профиля службы).
+#### Способы входа приложения
+
+Способы входа пользователей в приложение — секции `[auth.<имя>]`, по секции на
+способ (`kerberos`, `ldap`, `local`, `proxy`). Приложение принимает все способы,
+описанные секциями: список собирает ссылка `auth = "${oc.dict.values:auth}"` в
+секции `[app]`. Убрать способ — убрать его секцию.
+
+Системные промпты профилей — часть конфига экземпляра: у каждого профиля чата
+ключ `[profiles.<профиль>] system_prompt`, у профиля службы агента —
+`[agent.profiles.<профиль>.model] systemPrompt`. Окно модели и потолок ответа
+задают ключи `[model_limits.<профиль>] context_window` и `max_output_tokens`
+чата и `contextWindow`, `maxOutputTokens` профиля службы (значения без
+умолчания); узнать их для модели можно из ответа `/v1/models` маршрутизатора
+LLM — поля `context_window` и `max_output_tokens` модели.
 
 ### Секреты и keytab
 
-Секреты лежат в `[site]`. Общий конфиг каждого приложения собирает их в
-секцию `[keys]`, и рабочие секции берут их оттуда ссылками `${keys.*}`. Кому
-какой секрет нужен и что должно совпадать:
+Секреты лежат в секции `[keys]` конфига экземпляра. Кому какой секрет нужен и
+что должно совпадать:
 
-- общие: `mcp_proxy_secret` и секрет клиента (`[site.mcp_client].secret`)
-  обязаны быть одинаковыми у чата и boba-mcp. Первым чат подписывает утверждение о
-  пользователе, вторым представляется сервису как клиент `boba-chat`. При
-  расхождении сервис отказывает в обмене утверждения на токен, и ни один
-  инструмент boba-mcp в чате не работает (тексты отказов — в разделе 15);
-- свой у каждого приложения: `auth_secret`. У чата он подписывает cookie
-  входа, у boba-mcp — токены доступа, которые сервис выдаёт сам. Чат
-  предъявляет сервису только утверждение под `mcp_proxy_secret`, секрет клиента и
-  полученный в обмен токен сервиса, поэтому `auth_secret` чата и сервиса друг
-  с другом никак не связаны. Лучше задавать разные: утечка одного не даёт
-  подделать вход в другое приложение. Одинаковым он должен быть только у
-  нескольких узлов одного приложения;
-- только у чата: `database_encryption_key`. Им зашифрованы в базе секреты
-  соединений пользователей и настройки агента.
+- общие: `mcp_proxy` и `mcp_client` в `[keys]` обязаны быть одинаковыми у чата
+  и boba-mcp. Первым чат подписывает утверждение о пользователе, вторым
+  представляется сервису как клиент `boba-chat`. При расхождении сервис
+  отказывает в обмене утверждения на токен, и ни один инструмент boba-mcp в
+  чате не работает (тексты отказов — в разделе 15). Так же совпадают
+  `agent_proxy` и `agent_client` у чата и службы агента;
+- свой у каждого приложения: `session` (секрет подписи входа). У чата он
+  подписывает cookie входа, у boba-mcp — токены доступа, которые сервис выдаёт
+  сам. Чат предъявляет сервису только утверждение под `mcp_proxy`, секрет
+  клиента и полученный в обмен токен сервиса, поэтому секреты входа чата и
+  сервиса друг с другом никак не связаны. Лучше задавать разные: утечка одного
+  не даёт подделать вход в другое приложение. Одинаковым он должен быть только
+  у нескольких узлов одного приложения;
+- только у чата: `encryption`. Им зашифрованы в базе секреты соединений
+  пользователей и настройки агента.
 
 Как их сгенерировать и что каждый из них защищает, подробно описано в
 разделе 15.
@@ -872,47 +932,45 @@ Keytab — тоже секрет: владелец — пользователь,
 режим `0400`. В дереве compose файл читают двое — администратор и процесс
 контейнера, поэтому режим там `0640`: владелец — администратор, группа —
 группа контейнера; её расставляет `make dev` (раздел 6). Отладка на хосте свой keytab не заводит:
-ключ `krb` в её site.toml указывает на `compose/<приложение>/conf/krb`. Копия
+ключ `krb` её `[env]` указывает на `compose/<приложение>/conf/krb`. Копия
 ключа сервиса ничего бы не дала, а при смене пароля учётки пришлось бы менять
 обе.
 
-### Чем различаются site.toml трёх случаев
+### Чем различаются конфиги трёх случаев
 
 | Ключ `[env]` | compose | отладка | установка без Docker |
 |---|---|---|---|
-| `base` (вычисляется) | `/app/boba` | `<репозиторий>/debug/<приложение>` | `<каталог установки>` |
-| `port`, `url_prefix` | рабочие | свои, чтобы не мешать контейнерам | рабочие |
-| `models`, `third`, `sandbox` | `${env.base}/...` — содержимое образа | `${env.base}/../../runtime/...` | `${env.base}/...` — из дерева релиза |
-| `app_root` | `${env.base}/app_root` | каталог `assets` пакета приложения | `${env.base}/app_root` |
-| `krb` | `${env.base}/conf/krb` | `${env.base}/../../compose/<приложение>/conf/krb` | `${env.base}/conf/krb` |
-| `cgroup_base` | `/cgroup/boba-sandbox-<приложение>` | каталог `sandbox` юнита `boba-sandbox@debug` | задаёт юнит приложения |
+| `base` | `/app/boba` | `<репозиторий>/debug/<приложение>` | `<каталог установки>` |
+| `port`, `url_prefix` | `${oc.env:BOBA_PORT}`, `${oc.env:BOBA_URL_PREFIX}` | свои, чтобы не мешать контейнерам | рабочие |
+| `models`, `third`, `sandbox` | `/app/boba/...` — содержимое образа | `<репозиторий>/runtime/...` | `<каталог установки>/...` — из дерева релиза |
+| `app_root` | `/app/boba/app_root` | каталог `assets` пакета приложения | `<каталог установки>/app_root` |
+| `krb` | `/app/boba/conf/krb` | `<репозиторий>/compose/<приложение>/conf/krb` | `<каталог установки>/conf/krb` |
+| `cgroup_base` | `/cgroup/boba-sandbox-<приложение>` | каталог `sandbox` юнита `boba-sandbox@debug` | `${oc.env:BOBA_CGROUP_BASE}` — его задаёт юнит приложения |
 | `tool_launcher` | `sandbox` | `process` | `sandbox` |
 | `messaging_provider` | `postgres` | `local` | `postgres` |
 
-Секция `[site]` у всех случаев одного приложения, как правило, совпадает.
+Остальные секции у всех случаев одного приложения, как правило, совпадают.
 
 ### Схемы хранения
 
-Оба приложения работают в одной базе PostgreSQL. Её имя даёт ключ
-`site.pg_database`, а общий конфиг подставляет его в `[postgres].dbname`.
+Оба приложения работают в одной базе PostgreSQL. Её имя — ключ
+`[postgres].dbname` конфига каждого приложения.
 Свои таблицы каждое приложение держит в своей схеме:
 
 | Схема | Чья | Что в ней | Где задаётся |
 |---|---|---|---|
-| `aid` | чат | пользователи, треды, оценки ответов, соединения пользователей, роли и гранты, настройки агента, шина сообщений `live_*` | `[app].schema` общего конфига чата |
-| `boba` | агент | история бесед (`session`, `session_records`) | `[agent.history].schema` общего конфига чата |
-| `mcp` | boba-mcp и его плагины | база знаний `kb_*`, описания `node` и `edge` | `[app].schema` общего конфига сервиса; файлы плагинов берут его ссылкой `${app.schema}` |
+| `aid` | чат | пользователи, треды, оценки ответов, соединения пользователей, роли и гранты, настройки агента, шина сообщений `live_*` | `[app].schema` конфига чата |
+| `boba` | агент | история бесед (`session`, `session_records`) | `[agent.history].schema` конфига чата |
+| `mcp` | boba-mcp и его плагины | база знаний `kb_*`, описания `node` и `edge` | `[app].schema` конфига сервиса; файлы плагинов берут его ссылкой `${app.schema}` |
 | `ix` | индексаторы | индексы базы знаний; плагин `kb` сервиса их читает | конфиги индексаторов |
 
 Чат держит один пул соединений по `[app].postgres` — ссылке на свою секцию
 `[postgres]`, и этим пулом пользуются все его таблицы. Агент ходит в базу сам
 и своей ролью: подключение истории — отдельная секция `[postgres_history]`
-общего конфига чата, и `[agent.history]` берёт её целиком ссылкой
-`postgres = "${postgres_history}"`. Сервер и база у неё те же ключи `pg_host`,
-`pg_port`, `pg_database`, а вход — свой: `auth = "${site.pg_history_auth.${site.pg_history_auth_method}}"`,
-то есть таблица `[site.pg_history_auth.password]` (роль истории с паролем) или
-`[site.pg_history_auth.kerberos]` (свой принципал и keytab, имя роли — короткое
-имя принципала). Чат передаёт агенту подключение истории строкой libpq в
+конфига чата, и `[agent.history]` берёт её целиком ссылкой
+`postgres = "${postgres_history}"`. Сервер и база у неё те же, что у
+`[postgres]`, а вход — свой: таблица `[postgres_history.auth]` (роль истории с
+паролем либо свой принципал и keytab, имя роли — короткое имя принципала). Чат передаёт агенту подключение истории строкой libpq в
 файле настроек, поэтому её вход должен выражаться строкой — паролем,
 доверием `pg_hba` либо kerberos по keytab или паролю; иначе чат не стартует:
 `[agent.history].postgres: postgres connection to ...: auth '...' cannot be
@@ -922,13 +980,13 @@ handed to another process as a libpq connection string; expected method
 агенту путь к кэшу и `krb5.conf`. У boba-mcp секцию `[postgres]` подключают
 плагины, которым нужна база (`connection = "${postgres}"` в их файлах).
 
-| Роль (если разведены) | Кто входит | Чем владеет | Ключи site.toml |
+| Роль (если разведены) | Кто входит | Чем владеет | Ключи конфига |
 |---|---|---|---|
-| роль чата (`boba-svc`) | чат, boba-mcp | схемы `aid`, `mcp` | `pg_auth_method`, `[site.pg_auth.*]` |
-| роль истории (`boba_history`) | агент | схема `boba` с `session` и `session_records` | `pg_history_auth_method`, `[site.pg_history_auth.*]` |
+| роль чата (`boba-svc`) | чат, boba-mcp | схемы `aid`, `mcp` | `[postgres.auth]` |
+| роль истории (`boba_history`) | агент | схема `boba` с `session` и `session_records` | `[postgres_history.auth]` |
 
-На стенде разработки и в развёртывании по умолчанию роль одна: ключи
-`[site.pg_history_auth.*]` повторяют `[site.pg_auth.*]` (учётка `boba-svc`).
+На стенде разработки и в развёртывании по умолчанию роль одна: таблица
+`[postgres_history.auth]` повторяет `[postgres.auth]` (учётка `boba-svc`).
 Развести роли — по желанию администратора: тогда роль чата прав на схему
 `boba` не имеет и не должна быть суперпользователем или членом роли истории.
 Роли заводит администратор кластера; схему `boba` роли истории отдаёт
@@ -949,39 +1007,35 @@ Chainlit держит вложения сессий в каталоге `.files`
 и создаёт его при импорте; настройки для этого в нём нет. Корень статики при
 этом — часть образа, а в отладке — каталог исходников пакета, и писать туда
 приложение не должно. Поэтому каталог вложений задаётся обязательным ключом
-`[aid].files_dir` общего конфига (`"${env.data}/files"`): точка входа
+`[aid].files_dir` конфига чата (`"${env.data}/files"`): точка входа
 подменяет путь внутри chainlit до того, как он успеет создать `.files`.
 Вложения оказываются там же, где остальные данные приложения, — в `data`.
 
 ### Чат, агент и серверы инструментов
 
 Беседу с моделью ведёт агент boba; чат говорит с ним по протоколу ACP
-версии 2. Каким путём, выбирает ключ `[env] agent_mode` (переменная
-`BOBA_AGENT_MODE`): общий конфиг берёт `[agent] process =
-"${agent_launch.${env.agent_mode}}"`.
+версии 2. Каким путём, выбирает ключ `[env] agent_mode`: конфиг чата берёт
+`[agent] process = "${agent_launch.${env.agent_mode}}"`.
 
 - `agent_mode = "service"` — выкатка (compose, systemd): чат ходит в службу
   агента `boba serve` (раздел «Служба агента» ниже) по адресу из
   `[env] agent_scheme`, `agent_host`, `agent_port`, `agent_prefix`, входом
-  proxy с ключами `site.agent_proxy_secret` и `site.agent_client.secret`.
+  proxy с секретами `[keys] agent_proxy` и `agent_client`.
   Своего агента в образе чата нет.
 - `agent_mode = "process"` — отладка и стенды: на каждую открытую вкладку
   треда чат запускает свой процесс агента командой `[env] agent_command`
   с аргументами `["--stdio", "--setting-sources", ""]` и `--settings
   <файл>`. В отладке `agent_command` —
-  `"${env.base}/../../.venv/bin/python -m boba.cli.app"`.
+  `"<репозиторий>/.venv/bin/python -m boba.cli.app"`.
 
-Ключи другого режима не нужны: конфиг разрешает только выбранную секцию
-`[agent_launch.*]`. Агент службы — каталог `bin/boba.dist` образа boba,
+Обе таблицы `[agent_launch.process]` и `[agent_launch.service]` лежат в
+конфиге чата, и их ссылки должны разрешаться: конфиг разрешается при старте
+целиком. Агент службы — каталог `bin/boba.dist` образа boba,
 собранный Nuitka из boba-cli в режиме standalone (стадия `boba-bin`):
 исполняемый `bin/boba.dist/boba.bin` рядом со своими библиотеками (имя
 `boba` занято каталогом данных пакетов `boba/` в том же каталоге), без
 распаковки на запуске и без записи на диск, поэтому годится и для корня
 только на чтение. Бинарнику не нужны ни `PYTHONPATH`, ни `LD_LIBRARY_PATH`.
-Установка, обновлённая поверх прежней, сохраняет свой `conf/boba.env` —
-строку `BOBA_AGENT_COMMAND` из него нужно убрать: агента в образе чата
-больше нет.
-
 Режимы агента в командной строке: `boba --stdio` — ACP по stdin и stdout для
 запускающей программы (так его запускает чат), `boba serve` — служба по
 сети (ниже), служебные `boba self-check` и `boba settings-schema`. `boba` без
@@ -1026,7 +1080,7 @@ Chainlit держит вложения сессий в каталоге `.files`
 `bypassPermissions` запросом `session/set_config_option`; агент без такой
 настройки работает в своём режиме, а его вопросы разрешений чат отвечает
 согласием. Дамп HTTP-обмена с моделью (`[agent_http].dump`) пишет
-заголовки как есть, вместе с токеном; в общем конфиге он выключен. История с
+заголовки как есть, вместе с токеном; держите его выключенным. История с
 `kind = "postgres"` хранится в схеме `boba` по
 подключению `[postgres_history]` своей ролью (раздел «Схемы хранения» выше); с
 `kind = "memory"` она живёт только в памяти процесса, и после перезапуска
@@ -1072,7 +1126,7 @@ agent process 'boba' (pid ...): agent '...' does not declare capabilities.sessio
 агента нет по пути — `agent process '...' did not start from ...: [Errno 2]
 No such file or directory; check [env].agent_command`.
 
-Серверы MCP описываются в общем конфиге чата секциями `[mcp.servers.<имя>]`:
+Серверы MCP описываются в конфиге чата секциями `[mcp.servers.<имя>]`:
 адрес (`endpoint`: сервис `service` и путь под ним `path`), вход (`auth`; для
 boba-mcp это `[mcp_auth.boba]` — вход proxy клиентом `boba-chat`), сроки
 подключения и вызова (`limits`: `connect_timeout_sec`, `call_timeout_sec`).
@@ -1138,13 +1192,12 @@ boba-mcp принимает клиентов обеих редакций на о
 
 Агент запускается не только дочерним процессом чата (`boba --stdio` по stdio,
 процесс на тред), но и службой: тот же агент `bin/boba.dist/boba.bin` командой
-`boba serve --config <config.toml> --site <site.toml>` сам слушает сеть (образ
-`boba`, дерево `compose/boba`, общий конфиг —
-`packages/apps/boba-cli/conf/config.toml`). Служба принимает клиентов ACP
+`boba serve --config <config.toml>` сам слушает сеть (образ `boba`, дерево
+`compose/boba`, конфиг экземпляра — `compose/boba/conf/config.toml`). Служба принимает клиентов ACP
 версии 2 по streamable HTTP и WebSocket на одном адресе `[agent].path`
 (`/acp`) под префиксом `[agent].url_prefix`; сессии всех подключений идут в одном процессе, у каждой
 сессии — свой поток. Чат ходит в службу входом proxy, люди и другие клиенты —
-входом local или ldap (список `[app].auth` общего конфига службы).
+входом local или ldap (секции `[auth.<имя>]` конфига службы).
 
 Договор службы:
 
@@ -1177,16 +1230,15 @@ boba-mcp принимает клиентов обеих редакций на о
 - **Профили.** Профиль агента `[agent.profiles.<имя>]` — роли, которым он
   выдан, и профиль модели агента `model` (ключи `models.<имя>` файла настроек
   агента, схема `boba settings-schema`): провайдер — общий объект `[llm.main]`
-  ссылкой `provider = "${llm.main}"`, окно и потолок ответа — из
-  `[site.model_limits.<профиль>]`, модель и параметры выборки — свои; `systemPrompt`
-  профиля — промпт сессий этого профиля, его текст лежит в site.toml службы
-  ключом `[site.profiles.<профиль>] system_prompt`.
+  ссылкой `provider = "${llm.main}"`, модель, окно и потолок ответа
+  (`contextWindow`, `maxOutputTokens`) и параметры выборки — свои; `systemPrompt`
+  профиля — промпт сессий этого профиля.
   Вошедшему доступны профили, выданные его ролям, первый из них по порядку
   конфига — по умолчанию. Клиент выбирает профиль стандартной настройкой
   сессии ACP категории `model` (`configOptions`, `session/set_config_option`).
   Ключи провайдера клиенту не показываются и от клиента не приходят.
 - **История и сессии пользователя.** История — Postgres своим подключением
-  `[postgres_history]` (своя роль `site.pg_history_auth.<pg_history_auth_method>`)
+  `[postgres_history]` (своя роль, вход — `[postgres_history.auth]`)
   ссылкой `[agent.history] postgres = "${postgres_history}"`, схема `boba`.
   Пул соединений истории общий для всех сессий процесса —
   `[postgres_history.pool]` (`min_size`, `max_size`, `timeout`); сверх пула
@@ -1199,24 +1251,21 @@ boba-mcp принимает клиентов обеих редакций на о
   по одной прямо из базы, в памяти сессии остаётся только то, что нужно
   модели (разговор от последней границы сжатия).
 
-Ключи site.toml службы перечисляет `make site-keys APP=boba`: `auth_secret`,
-`agent_proxy_secret` (ключ утверждений proxy чата), `krb_config`, ldap, local,
-адрес Postgres `pg_host`, `pg_addr`, `pg_port`, `pg_database`, `pg_sslmode`,
-вход роли истории `pg_history_auth_method` и `pg_history_auth.<способ>`,
-`agent_client.secret` — секрет доверенного клиента `boba-chat`
-(`[agent.clients]`), `llm_base_url`, вход к модели `llm_auth_method` и
-`llm_auth.<способ>`, служебный bind каталога `ldap_auth_method` и
-`ldap_auth.<способ>`, `llm_ssl_verify`, `models.general`, `models.search`, пределы
-`model_limits.<профиль>.context_window` и `.max_output_tokens` и промпты
-`profiles.general.system_prompt`, `profiles.search.system_prompt`. Секция
-`[env]`: `port = 8660`, `listen_host`, `url_prefix`, `public_url`, `data`.
+Конфиг службы содержит секции `[keys]` (`session`, `agent_proxy` — ключ
+утверждений proxy чата, `agent_client` — секрет доверенного клиента
+`boba-chat` из `[agent.clients]`), `[krb]`, `[ldap]` со служебным bind
+`[ldap.auth]`, `[postgres_history]` со своим входом, провайдера модели
+`[llm.main]` (`baseUrl`, вход `[llm.main.auth]`, `sslVerify`), профили
+`[agent.profiles.<профиль>]` с моделью, пределами и промптом, способы входа
+`[auth.<имя>]` и `[env]`: `port = 8660`, `listen_host`, `url_prefix`,
+`public_url`, `data`.
 `public_url` — издатель токенов службы, и он обязан совпасть с адресом, по
 которому в неё ходит чат. OAuth вне localhost принимает только https, поэтому
 чат ходит в службу через nginx: `url_prefix = "/boba"`,
 `public_url = "https://boba.example.com/boba"` (раздел 13, «Адрес сервиса и
 его `public_url`»).
 
-Чат в режиме службы. В site.toml чата:
+Чат в режиме службы. В конфиге чата:
 
 ```toml
 [env]
@@ -1226,13 +1275,13 @@ boba-mcp принимает клиентов обеих редакций на о
     agent_port   = 443
     agent_prefix = "/boba"
 
-[site]
-    agent_proxy_secret = "..."   # тот же, что site.agent_proxy_secret службы
-    [site.agent_client]
-        secret = "..."           # тот же, что site.agent_client.secret службы
+[keys]
+    agent_proxy  = "..."
+    agent_client = "..."
 ```
 
-Общий конфиг собирает из них `[service.boba]` и вход `[agent_auth.boba]`
+Значения `[keys] agent_proxy` и `agent_client` те же, что в конфиге службы.
+Конфиг чата собирает из них `[service.boba]` и вход `[agent_auth.boba]`
 (клиент `boba-chat`, издатель — сама служба), путь ACP — `/acp` под
 `[service.boba]`: `https://boba.example.com/boba/acp`. Адрес — тот, по
 которому чат видит службу через nginx, и он же издатель токена, поэтому
@@ -1256,7 +1305,7 @@ chat profile 'general' is not among them ...`. Модель, промпт и и�
 ```sh
 make -C build build-boba test-boba        # образ boba:<версия> и его проверка без сети
 make -C build dev-boba                    # дерево compose/boba: conf/boba.env, data, .env
-# conf/site.toml пишет администратор по make site-keys APP=boba
+# conf/config.toml экземпляра пишет администратор
 cd compose/boba && docker compose up -d boba
 ```
 
@@ -1276,7 +1325,7 @@ nginx. В карте связей контейнеров это строки `ng
 соединения, живёт в studio, а studio в эту выкатку не входит; соединения,
 перенесённые из dev, хранятся в чате и работают. Кроме
 этого boba-mcp умеет соединения под собственной сервисной учёткой — заданные
-соединения сервера. Они описываются в общем конфиге сервиса секциями
+соединения сервера. Они описываются в конфиге сервиса секциями
 `[connections.<имя>]`:
 
 ```toml
@@ -1284,12 +1333,14 @@ nginx. В карте связей контейнеров это строки `ng
     kind        = "redis"
     description = "общий кэш сессий, только чтение"
     roles       = ["*"]
-    connection  = "${site.connections.cache}"
+
+    [connections.cache.connection]
+        host = "cache.example.com"
+        port = 6379
 ```
 
 `kind` — вид соединения, `description` — текст, по которому модель выбирает
-соединение, `roles` — кому оно видно, `connection` — профиль ссылкой на
-таблицу `[site.connections.cache]` site.toml сервиса: там адрес, учётка и
+соединение, `roles` — кому оно видно, `connection` — профиль: адрес, учётка и
 пароль либо keytab по форме профиля этого вида. Делегирования билета
 пользователя у таких соединений нет. Имя соединения — идентификатор без точек,
 чтобы его нельзя было спутать с запечатанным значением. Инструмент получает
@@ -1373,33 +1424,15 @@ browser: ...` и сообщением mermaid, и модель исправля�
 инструмента лежит адрес `ui://…`, по нему сервер отдаёт HTML со скриптом.
 Чат показывает такое приложение карточкой в ленте под ходом, в котором был
 вызов, но только для сервера, у которого есть секция
-`[mcp.servers.<имя>.apps]`. Это секция устройства приложения, поэтому она
-пишется в общем конфиге чата, рядом с
-`[mcp.servers.<имя>]`: site.toml принимает только `[env]` и `[site]` (раздел 5,
-«Два файла вместо одного»). Адрес чата и порт зависят от машины, поэтому в
-общем конфиге стоят ссылки, а значения лежат в `[site]`.
-
-В общем конфиге чата (`packages/apps/boba-aid/conf/config.toml`):
+`[mcp.servers.<имя>.apps]` в конфиге чата, рядом с `[mcp.servers.<имя>]`:
 
 ```toml
 [mcp.servers.genui.apps]
-    chat_url = "${site.chat_url}"
-    port     = "${site.genui.sandbox_port}"
-```
-
-В site.toml чата:
-
-```toml
-[site]
     chat_url = "https://boba.example.com/aid/"
-
-[site.genui]
-    sandbox_port = 8502
+    port     = 8502
 ```
 
-Общий конфиг лежит в образе, поэтому правка секции доходит до контейнера с
-пересборкой образа чата (раздел 4); значения в site.toml меняются
-пересозданием контейнера.
+Правка секции доходит до контейнера с его пересозданием.
 
 Скрипт приложения работает внутри страницы-прокси песочницы, поэтому она
 обязана лежать на другом источнике (схема, хост и порт), чем чат: иначе
@@ -1498,7 +1531,8 @@ compose/mcp/
   docker-compose.yml     в git
   .env                   значения этой машины для compose-файла
   conf/
-    site.toml            пишет администратор (раздел 5)
+    config.toml          конфиг экземпляра, пишет администратор (раздел 5)
+    prompts/             промпты endpoint'ов (только mcp), пишет администратор
     boba.env             окружение контейнера, порождает make dev
     krb/                 keytab и krb5.conf
   data/                  пишет только контейнер
@@ -1508,12 +1542,15 @@ compose/mcp/
 Цель `dev` делает то, что можно сделать без человека: создаёт каталоги,
 порождает `conf/boba.env`, для приложений с песочницей ставит и запускает юнит
 `boba-sandbox@<приложение>.service`, создаёт `.env`, если его нет, и проверяет
-его. Чего она не делает: не пишет site.toml и не кладёт keytab — про
-отсутствующий site.toml она сообщает строкой
-`нет .../conf/site.toml — напиши его по перечню ключей: make site-keys APP=mcp`.
+его. Чего она не делает: не пишет `config.toml` и не кладёт keytab — про
+отсутствующий конфиг она сообщает строкой
+`нет .../conf/config.toml — напиши его (docs/admin-guide.md, раздел «Конфигурация»)`.
 
-Общего конфига в дереве нет: он в образе, по пути `/app/boba/conf/config.toml`.
-Томами в контейнер приходит только специфика машины.
+Compose-файл монтирует `conf/config.toml` в `/app/boba/conf/config.toml`,
+у boba-mcp ещё `conf/prompts` в `/app/boba/conf/prompts`, и `conf/krb` в
+`/app/boba/conf/krb`. Файлы плагинов boba-mcp лежат в образе, в
+`/app/boba/conf/plugins`, и конфиг подключает их ключом
+`tool = "${toml_dir:plugins}"`.
 
 Локали `conf/boba.env` не задаёт: процесс берёт локаль образа (`ru_RU.UTF-8`),
 а кодировку UTF-8 python получает от `PYTHONUTF8=1`. Ставить
@@ -1529,7 +1566,7 @@ compose/mcp/
 
 ```
 drwxr-s---  boba     <subgid>  conf/           администратор правит, контейнер читает через группу
--rw-r-----  boba     <subgid>  conf/site.toml
+-rw-r-----  boba     <subgid>  conf/config.toml
 drwxrwsr-x  <subuid> boba      data/           контейнер пишет, администратор читает через группу
 ```
 
@@ -1612,9 +1649,9 @@ server '...' got no MCP outcome: mcp server 'aid_all': ...`, и
 
 Проверка здоровья встроена в образ: раз в 30 секунд контейнер сам запрашивает
 свой адрес (`<префикс>/` у aid, `<префикс>/health` у boba-mcp и службы агента), порт и префикс берёт из
-`conf/boba.env`. Значения `BOBA_PORT` и
-`BOBA_URL_PREFIX` в этом файле — те же переопределения `[env]`, что и в разделе
-5, поэтому порт контейнера задаётся там, а не в site.toml.
+`conf/boba.env`. Конфиг берёт те же значения ссылками `"${oc.env:BOBA_PORT}"`
+и `"${oc.env:BOBA_URL_PREFIX}"` в `[env]` (раздел 5), поэтому порт контейнера
+задаётся в `conf/boba.env`, а не в `config.toml`.
 
 Признаки удачного старта boba-mcp в логе:
 
@@ -1664,8 +1701,8 @@ permitted`. Выдавать контейнеру `SETFCAP` ради удобс�
 
 ### Обновление версии и откат
 
-Новая версия — это новый образ. Общий конфиг приезжает в нём же, site.toml и
-данные остаются на месте.
+Новая версия — это новый образ. Файлы плагинов boba-mcp приезжают в нём же,
+`config.toml` экземпляра, промпты и данные остаются на месте.
 
 ```
 make -C build test APP=mcp                   # образ с новым тегом версии и его проверка
@@ -1673,8 +1710,9 @@ cd compose/mcp
 docker compose up -d --force-recreate mcp
 ```
 
-Если общий конфиг новой версии ссылается на ключ, которого ещё нет в site.toml,
-контейнер не стартует и назовёт ключ (раздел 5); перечень — `make site-keys`.
+Если новой версии нужна секция или ключ, которых ещё нет в `config.toml`
+экземпляра, контейнер не стартует и назовёт секцию или ключ (раздел 5); их
+дописывают в конфиг по описанию версии.
 
 Перед обновлением полезно оставить метку на работающем образе:
 `docker tag boba-mcp:<версия> boba-mcp:<версия>-prev`. Откат — вернуть тег и
@@ -1685,7 +1723,7 @@ docker tag boba-mcp:<версия>-prev boba-mcp:<версия>
 docker compose up -d --force-recreate mcp
 ```
 
-Правка site.toml вступает в силу после пересоздания контейнера. Файл смонтирован
+Правка `config.toml` вступает в силу после пересоздания контейнера. Файл смонтирован
 в контейнер поодиночке, и редактор, который сохраняет через замену файла,
 оставляет в контейнере старое содержимое, — `restart` в таком случае
 недостаточно, нужен `up -d --force-recreate`.
@@ -1704,8 +1742,9 @@ docker compose up -d --force-recreate mcp
 нужно: если что-то пошло не так, новую базу удаляют и повторяют.
 
 После базы файлы пользователей переносятся к сервису boba-mcp скриптом
-`build/scripts/migrations/2026-10-05-workspace-to-mcp.sh`, а в site.toml чата
-и сервиса ключ `pg_database` направляется на новую базу. Порядок шагов, что
+`build/scripts/migrations/2026-10-05-workspace-to-mcp.sh`, а в `config.toml`
+чата и сервиса ключ `[postgres] dbname` (у чата и `[postgres_history] dbname`)
+направляется на новую базу. Порядок шагов, что
 происходит с каждой таблицей, переменные скриптов и проверки после переноса
 описаны в `build/scripts/migrations/2026-10-16-chat-agent-cutover/README.md`.
 Переменная `chat_url` скрипта `migrate.sql` должна буква в букву совпасть с
@@ -1720,19 +1759,18 @@ docker compose up -d --force-recreate mcp
 Деревья у них разные: у dev — `compose/chainlit` и `debug/chainlit` (и
 деревья studio), у новой версии — `compose/aid`, `compose/mcp`, `debug/aid` и
 `debug/mcp`; у каждого дерева свой `data`. Базы тоже разные: обе версии
-читают имя базы из ключа `site.pg_database`, у dev это `boba` (у отладки
+берут имя базы из своего конфига, у dev это `boba` (у отладки
 `boba_debug`), у новой версии — `aid` (у отладки — база разработчика
-`aid_<разработчик>`, раздел 8). Поэтому site.toml у версий свои, общий файл на
+`aid_<разработчик>`, раздел 8). Поэтому конфиги у версий свои, общий файл на
 две версии не годится. Схему `ix` обновляют только в базе новой версии:
 индексаторы и скраперы стенда пишут в `aid`, отладочные — в базу разработчика,
 а копия `ix` в базе dev остаётся без обновлений.
 
 Конфиги описываются штатным путём: у каждого дерева свой каталог `conf`.
-Дереву чата новой версии кладут копию site.toml соответствующего дерева dev
-(`compose/chainlit` для `compose/aid`, `debug/chainlit` для `debug/aid`) с
-`pg_database` новой базы и ключами новой версии (`make site-keys APP=aid`), а
-также keytab и `krb5.conf`; у `compose/mcp` и
-`debug/mcp` свой site.toml по перечню `make site-keys APP=mcp`. Ссылок между
+Дереву чата новой версии пишут свой `config.toml` (адреса и секреты можно взять
+из соответствующего дерева dev: `compose/chainlit` для `compose/aid`,
+`debug/chainlit` для `debug/aid`) с `[postgres].dbname` новой базы, а также
+кладут keytab и `krb5.conf`; у `compose/mcp` и `debug/mcp` свой `config.toml`. Ссылок между
 деревьями не делают (раздел 3): удаление дерева dev после перехода не должно
 ломать новую версию.
 
@@ -1741,7 +1779,7 @@ docker compose up -d --force-recreate mcp
 механизмом: отдельный сервис compose-файла со своими `conf<N>/` и
 `data<N>/`, своим `BOBA_ADDRESS_<N>` и своим префиксом в прокси; на стенде
 каждое приложение идёт одним контейнером. Отладка обеих версий
-берёт порт и префикс из одинакового site.toml (у отладки чата — 8601),
+берёт порт и префикс из одинакового `[env]` (у отладки чата — 8601),
 поэтому под отладчиком идёт одна версия за раз. Чат и сервис инструментов
 включают парой одной версии.
 
@@ -1757,7 +1795,7 @@ make -C build install APP=mcp
 ```
 
 `release` кладёт в `release/<версия>/mcp` интерпретатор Python с библиотеками
-(`third`), код приложения (`app`), общий конфиг и плагины (`conf`), статику,
+(`third`), код приложения (`app`), файлы плагинов (`conf/plugins`), статику,
 модели, образы песочницы и два файла юнитов. Дерево рассчитано на каталог
 `/app/boba-<экземпляр>`: этот путь прописан в шебангах `app/bin/*`, в
 `conf/boba.env` и в юните. Другой каталог задают при сборке релиза:
@@ -1767,11 +1805,11 @@ make -C build install APP=mcp
 `~/.config/systemd/user`. Каталог должен существовать и принадлежать
 пользователю — цель скажет, что попросить у root, если это не так. При
 повторной установке код, интерпретатор, статика, модели, образы песочницы и
-общий конфиг заменяются целиком, а `conf/site.toml`, `conf/boba.env`,
-`conf/krb` и `data` остаются.
+файлы плагинов заменяются целиком, а `conf/config.toml`, `conf/prompts`,
+`conf/boba.env`, `conf/krb` и `data` остаются.
 
-После первой установки администратор пишет `conf/site.toml` (раздел 5), кладёт
-keytab и `krb5.conf` в `conf/krb` и запускает:
+После первой установки администратор пишет `conf/config.toml` (раздел 5),
+кладёт keytab и `krb5.conf` в `conf/krb` и запускает:
 
 ```
 systemctl --user start boba-mcp.service
@@ -1796,7 +1834,7 @@ Slice=boba-mcp.slice
 WorkingDirectory=/app/boba-mcp
 EnvironmentFile=/app/boba-mcp/conf/boba.env
 Environment=BOBA_CGROUP_BASE=/sys/fs/cgroup/user.slice/user-%U.slice/user@%U.service/boba.slice/boba-mcp.slice/boba-sandbox@mcp.service/sandbox
-ExecStart=/app/boba-mcp/third/bin/python3 -m boba.mcp_server --config /app/boba-mcp/conf/config.toml --site /app/boba-mcp/conf/site.toml
+ExecStart=/app/boba-mcp/third/bin/python3 -m boba.mcp_server --config /app/boba-mcp/conf/config.toml
 Restart=always
 RestartSec=5
 TimeoutStopSec=30
@@ -1822,7 +1860,7 @@ TasksMax=2048
 
 `Restart=always` перезапускает приложение после любого завершения, кроме
 `systemctl stop`. Сорванный старт — нет связи с базой, не хватает ключа в
-site.toml, не прошла проверка cgroup — завершает процесс с ненулевым кодом,
+`config.toml`, не прошла проверка cgroup — завершает процесс с ненулевым кодом,
 systemd перезапускает его раз в пять секунд, причина видна в журнале. При
 остановке приложение успевает погасить зиготы песочницы; через
 `TimeoutStopSec` оставшиеся процессы завершает systemd.
@@ -1844,8 +1882,10 @@ argument`. Поэтому внешний слой песочницы видит 
 туда руками при работающем сервисе нельзя. В Docker события машины до
 контейнера не доходят вовсе: у него своё пространство монтирования.
 
-Порт и префикс приложения задаёт `conf/boba.env` (`BOBA_PORT`,
-`BOBA_URL_PREFIX`); туда же дописывают другие переопределения `[env]`.
+`conf/boba.env` задаёт окружение процесса, в том числе `BOBA_PORT`,
+`BOBA_URL_PREFIX` для проверки готовности и `BOBA_CGROUP_BASE` в юните; конфиг
+берёт из окружения только то, что сам называет ссылкой `"${oc.env:ИМЯ}"`
+(раздел 5).
 
 Второй экземпляр того же приложения на одной машине получает своё имя:
 `make release APP=mcp INSTANCE=mcp2` и `make install APP=mcp INSTANCE=mcp2`
@@ -1894,43 +1934,57 @@ make -C build debug          # все приложения; APP=<приложе�
 
 ```
 debug/
-  conf/
-    site.toml        файл среды разработчика: общий [site]; пишет администратор
+  aid/
+    conf/
+      config.toml                  конфиг экземпляра отладки; пишет разработчик
+      agent_mode-process.toml      наложения режима агента для launch.json
+      agent_mode-service.toml
+      stand.toml                   наложение стенда тестов; нужно только тестам
+    data/                          пишет только процесс на хосте
   mcp/
     conf/
-      site.toml      include файла среды и свой [env]
-      stand.toml     адреса тестового стенда; нужен только тестам
-    data/            пишет только процесс на хосте
+      config.toml
+      tool_launcher-process.toml   наложения исполнения тел для launch.json
+      tool_launcher-sandbox.toml
+      stand.toml
+      prompts/<endpoint>/<имя>.toml
+    data/
+  boba/
+    conf/config.toml
+    data/
 .vscode/
   launch.json  tasks.json  python-debug-slice.sh
 ```
 
-Общий конфиг отладка читает прямо из пакета —
-`packages/apps/boba-<приложение>/conf/config.toml`. Своё у неё — site.toml
-приложения и файл среды разработчика `debug/conf/site.toml` (подраздел «Среда
-разработчика»). Секцию `[site]` файла среды удобно получить из site.toml
-деревьев compose, а `[env]` приложения — из site.toml его дерева compose, меняя
-значения, перечисленные в таблице раздела 5. Для boba-mcp, например:
+У каждого приложения отладки свой полный `config.toml`, как у дерева compose:
+удобно взять конфиг его дерева compose и поменять значения, перечисленные в
+таблице раздела 5. Файлы плагинов boba-mcp отладка читает прямо из пакета,
+ключом `tool = "${toml_dir:../../../packages/apps/boba-mcp/conf/plugins}"`.
+`[env]` boba-mcp, например:
 
 ```toml
-include = "../../conf/site.toml"
-
 [env]
     port          = 8651
-    url_prefix    = "/${site.developer}/mcp"
-    public_url    = "https://boba.example.com${env.url_prefix}"
+    url_prefix    = "/ss/mcp"
+    public_url    = "https://boba.example.com/ss/mcp"
     listen_host   = "0.0.0.0"
     cgroup_base   = "/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/boba.slice/boba-debug.slice/boba-sandbox@debug.service/sandbox"
     tool_launcher = "process"
-
-    data    = "${env.base}/data"
-    sandbox = "${env.base}/../../runtime/sandbox"
-    third   = "${env.base}/../../runtime/third"
-    models  = "${env.base}/../../runtime/models"
-    krb     = "${env.base}/../../compose/mcp/conf/krb"
+    base          = "/home/ss/boba/debug/mcp"
+    data          = "${env.base}/data"
+    sandbox       = "/home/ss/boba/runtime/sandbox"
+    third         = "/home/ss/boba/runtime/third"
+    models        = "/home/ss/boba/runtime/models"
+    krb           = "/home/ss/boba/compose/mcp/conf/krb"
 ```
 
 Путь `cgroup_base` для своего пользователя печатает сама цель `make debug`.
+Наложения режима — файлы из одного ключа, например `tool_launcher-sandbox.toml`:
+
+```toml
+[env]
+    tool_launcher = "sandbox"
+```
 
 Файлы `.vscode` в git не входят (кроме `settings.json`): в `launch.json` стоит
 путь cgroup с номером пользователя. Цель создаёт их из образцов
@@ -1940,19 +1994,20 @@ include = "../../conf/site.toml"
 
 | Цель VS Code | Что запускает | Адрес по умолчанию |
 |---|---|---|
-| `Aid: chat` | чат; при старте спрашивает режим агента (`BOBA_AGENT_MODE`) | `https://boba.example.com/<разработчик>/aid/`, процесс — порт 8601 |
-| `MCP: tools service` | сервис инструментов; спрашивает исполнение тел (`BOBA_TOOL_LAUNCHER`) | `https://boba.example.com/<разработчик>/mcp/health`, процесс — порт 8651 |
+| `Aid: chat` | чат; при старте спрашивает режим агента и кладёт наложение `agent_mode-<режим>.toml` | `https://boba.example.com/<разработчик>/aid/`, процесс — порт 8601 |
+| `MCP: tools service` | сервис инструментов; спрашивает исполнение тел и кладёт наложение `tool_launcher-<режим>.toml` | `https://boba.example.com/<разработчик>/mcp/health`, процесс — порт 8651 |
 | `Boba: agent service` | служба агента `boba serve` | `https://boba.example.com/<разработчик>/boba/health`, процесс — порт 8661 |
 | `tool` | одно тело инструмента без сервиса (`boba.runtime.toolcli`) по конфигу boba-mcp | — |
 | `Aid: aid + mcp + boba` | три приложения разом | — |
 | `pytest: ...` | тесты | — |
 
-Порты и префиксы — из site.toml отладки; префикс каждого приложения выводится из
-`developer` файла среды (подраздел «Среда разработчика»). В `launch.json` у каждой цели только
-то, чего в конфигурации быть не может: рабочий каталог `debug/<приложение>`,
-два аргумента с файлами конфигурации, `PATH` с `LD_LIBRARY_PATH` на
-`runtime/third` — там лежат `bwrap`, `fuse2fs` и библиотеки, с которыми собраны
-колёса, — и переменная `BOBA_*` режима, который цель спрашивает при запуске.
+Порты и префиксы — из `[env]` конфига отладки; префикс каждого приложения
+содержит имя разработчика (подраздел «Среда разработчика»). В `launch.json` у
+каждой цели только то, чего в конфигурации быть не может: рабочий каталог
+`debug/<приложение>`, аргументы `--config` с конфигом экземпляра и, у чата и
+сервиса, вторым `--config` — наложением выбранного режима, и `PATH` с
+`LD_LIBRARY_PATH` на `runtime/third` — там лежат `bwrap`, `fuse2fs` и
+библиотеки, с которыми собраны колёса.
 
 Цель `tool` спрашивает строку вызова — модуль инструментов, имя и флаги
 (`boba.tool.pg.tools pg_query --sql "select 1" --offset 0 --limit 10`) — и имя
@@ -1967,7 +2022,7 @@ include = "../../conf/site.toml"
 cd debug/mcp
 PATH=$PWD/../../runtime/third/bin:$PATH LD_LIBRARY_PATH=$PWD/../../runtime/third/lib \
     ../../.venv/bin/python -m boba.mcp_server \
-    --config ../../packages/apps/boba-mcp/conf/config.toml --site $PWD/conf/site.toml
+    --config $PWD/conf/config.toml --config $PWD/conf/tool_launcher-process.toml
 ```
 
 VS Code запускает отладку от того пользователя, под которым открыто
@@ -1991,53 +2046,29 @@ VS Code запускает отладку от того пользователя
 | `playground_<разработчик>` | рабочая база соединений разработчика в postgres и ClickHouse | соединения пользователей в его `aid_<разработчик>` |
 | `aid_<разработчик>_<тест>_…` | тестовые базы разработчика | тесты |
 
-Кто разработчик, задаёт один ключ — `developer` файла среды
-`debug/conf/site.toml`; имя базы из него выводится:
+Базу разработчика называет ключ `dbname` подключения в конфиге каждой
+программы отладки — `[postgres]` и `[postgres_history]` чата, `[postgres]`
+сервиса, `[postgres_history]` службы агента, секция `postgres` каждого
+индексатора `debug/ix-*/conf.toml`:
 
 ```toml
-[site]
-    developer    = "ss"
-    pg_database = "aid_${site.developer}"
+[postgres]
+    host     = "postgres.example.com"
+    hostaddr = "10.0.0.14"
+    port     = 5432
+    dbname   = "aid_ss"
+    sslmode  = "disable"
 
-    pg_host        = "postgres.example.com"
-    pg_addr        = "10.0.0.14"
-    pg_port        = 5432
-    pg_sslmode     = "disable"
-    pg_auth_method = "kerberos"
-    ...
+    [postgres.auth]
+        method    = "kerberos_keytab"
+        principal = "boba-svc@EXAMPLE.COM"
+        keytab    = "${env.krb}/boba-svc.keytab"
+        service   = "postgres"
 ```
 
-Остальной `[site]` чата и сервиса — ldap, krb, ключи, профили — лежит там же.
-
-site.toml приложений и конфиги индексаторов подключают его и сами имени базы
-не называют. site.toml чата `debug/aid/conf/site.toml`:
-
-```toml
-include = "../../conf/site.toml"
-
-[env]
-    port       = 8601
-    url_prefix = "/${site.developer}/aid"
-    ...
-```
-
-Конфиг индексатора `debug/ix-fts/conf.toml`:
-
-```toml
-include = "../conf/site.toml"
-
-[env]
-    krb = "${env.base}/../../compose/aid/conf/krb"
-
-[ix.fts]
-    ...
-    [ix.fts.postgres]
-        dbname = "${site.pg_database}"
-        auth   = "${site.pg_auth.${site.pg_auth_method}}"
-```
-
-Стенд compose остаётся как был: у его деревьев свой site.toml с
-`pg_database = "aid"`.
+Общего файла у конфигов нет: адрес базы, realm и секреты, одинаковые для
+нескольких программ, повторены в каждом конфиге. Стенд compose остаётся как
+был: у его деревьев свои конфиги с `dbname = "aid"`.
 
 Базы разработчика заводит одна команда; её запускает администратор с ролью,
 у которой есть `CREATEDB`, и учёткой ClickHouse с правом
@@ -2056,7 +2087,7 @@ CH_URL=https://ch01.example.com/ CH_AUTH=negotiate \
 пользователей, роли, соединения и гранты и переводит каждое соединение
 postgres и clickhouse на `playground_<разработчик>` скриптом
 `connections.sql`. Секреты соединений копируются шифротекстом, поэтому
-`database_encryption_key` файла среды должен совпадать с ключом стенда.
+`[keys] encryption` конфига чата отладки должен совпадать с ключом стенда.
 Повторный запуск ничего не дублирует. Соединениям с входом по паролю нужна
 строка `pg_hba.conf` сервера для новой базы — цель печатает её в конце:
 
@@ -2069,20 +2100,18 @@ host     playground_alexeyk500   boba-svc  10.118.0.0/16    scram-sha-256
 новой базе сами при первом старте, схему `ix` — индексатор `ix-core` командой
 `upgrade`.
 
-Отладке worktree, которой нужна своя база (другие миграции), в её копии
-`debug/conf/site.toml` пишут своё значение, например
-`pg_database = "aid_ss_pdbname"`.
+Отладке worktree, которой нужна своя база (другие миграции), в её копиях
+конфигов пишут своё значение `dbname`, например `"aid_ss_pdbname"`.
 
-Из `developer` выводятся и адреса отладки: отладочные приложения отвечают под
-префиксом разработчика так же, как приложения стенда под `/aid`, `/boba` и
-`/mcp`. У `ss` это `/ss/aid` (чат), `/ss/boba` (служба агента) и `/ss/mcp`
-(boba-mcp) за тем же nginx, что и стенд:
+Отладочные приложения отвечают под префиксом разработчика так же, как
+приложения стенда под `/aid`, `/boba` и `/mcp`. У `ss` это `/ss/aid` (чат),
+`/ss/boba` (служба агента) и `/ss/mcp` (boba-mcp) за тем же nginx, что и стенд:
 
-| Приложение | `[env]` site.toml отладки |
+| Приложение | `[env]` конфига отладки |
 |---|---|
-| чат `debug/aid` | `url_prefix = "/${site.developer}/aid"`; к сервису — `mcp_scheme = "https"`, `mcp_host = "boba.example.com"`, `mcp_port = 443`, `mcp_prefix = "/${site.developer}/mcp"`; к службе агента — `agent_scheme`, `agent_host`, `agent_port` так же и `agent_prefix = "/${site.developer}/boba"` |
-| boba-mcp `debug/mcp` | `url_prefix = "/${site.developer}/mcp"`, `public_url = "https://boba.example.com${env.url_prefix}"` |
-| служба агента `debug/boba` | `url_prefix = "/${site.developer}/boba"`, `public_url = "https://boba.example.com${env.url_prefix}"` |
+| чат `debug/aid` | `url_prefix = "/ss/aid"`; к сервису — `mcp_scheme = "https"`, `mcp_host = "boba.example.com"`, `mcp_port = 443`, `mcp_prefix = "/ss/mcp"`; к службе агента — `agent_scheme`, `agent_host`, `agent_port` так же и `agent_prefix = "/ss/boba"` |
+| boba-mcp `debug/mcp` | `url_prefix = "/ss/mcp"`, `public_url = "https://boba.example.com${env.url_prefix}"` |
+| служба агента `debug/boba` | `url_prefix = "/ss/boba"`, `public_url = "https://boba.example.com${env.url_prefix}"` |
 
 Чат ходит в сервис и службу через nginx, как на стенде: сервис объявляет себя
 издателем токенов под адресом из `public_url`, клиент обязан называть его так
@@ -2096,7 +2125,7 @@ nginx одного разработчика лежат в одном файле 
 
 Цель `Aid: chat` запускает чат с `subProcess: true`: debugpy подключается к
 дочернему процессу, если его программа — интерпретатор python. Поэтому
-`agent_command` в site.toml отладки — `.venv/bin/python -m boba.cli.app`, а не
+`agent_command` в `[env]` конфига отладки — `.venv/bin/python -m boba.cli.app`, а не
 консольный скрипт `boba`: точки останова в boba-cli и boba-agent срабатывают в
 процессе агента вкладки. Чат ждёт рукопожатия `start_timeout_sec` (30 с) и
 ответа на метод сессии `request_timeout_sec`; остановка на точке дольше этих
@@ -2104,17 +2133,17 @@ nginx одного разработчика лежат в одном файле 
 
 В режиме `service` чат не порождает агента, а ходит в службу цели
 `Boba: agent service` — как на выкатке ходит в контейнер boba. Адрес службы
-стоит в `[env]` site.toml отладочного чата (`agent_prefix =
-"/${site.developer}/boba"` через nginx, подраздел «Среда разработчика»), секреты
-`agent_proxy_secret` и `agent_client.secret` совпадают с site.toml
-`debug/boba`. Сама служба читает `debug/boba/conf/site.toml`: копию site.toml
-дерева compose boba с `port = 8661`, `url_prefix = "/${site.developer}/boba"`,
+стоит в `[env]` конфига отладочного чата (`agent_prefix = "/ss/boba"` через
+nginx, подраздел «Среда разработчика»), секреты `[keys] agent_proxy` и
+`agent_client` совпадают с конфигом `debug/boba`. Сама служба читает
+`debug/boba/conf/config.toml`: копию конфига дерева compose boba с
+`port = 8661`, `url_prefix = "/ss/boba"`,
 `public_url = "https://boba.example.com${env.url_prefix}"`, `krb` на
 `compose/boba/conf/krb` и базой отладки.
 
 ### Режимы process и sandbox
 
-Ключ `tool_launcher` выбирает, как исполняется инструмент.
+Ключ `[env] tool_launcher` выбирает, как исполняется инструмент.
 
 `process` — обычным дочерним процессом от того же пользователя, без bwrap и
 cgroup. В отладке это режим по умолчанию: в тело инструмента можно зайти
@@ -2122,7 +2151,7 @@ cgroup. В отладке это режим по умолчанию: в тело
 `debug/<приложение>/data/workspace/<id>`.
 
 `sandbox` — как в контейнере: bwrap, образ workspace, cgroup на вызов. Включается
-значением в site.toml либо переменной `BOBA_TOOL_LAUNCHER=sandbox`. Образы
+значением в конфиге либо наложением `tool_launcher-sandbox.toml` вторым `--config`. Образы
 пользователей при этом лежат в `debug/<приложение>/data/workspace/<id>.ext4`, а
 cgroup создаётся в поддереве `boba-sandbox@debug.service` — боевых контейнеров
 это не касается.
@@ -2148,25 +2177,30 @@ exec systemd-run --user --scope --quiet --collect --slice=boba-debug.slice -- .v
 
 ### Тесты
 
-Тесты запускаются из `debug/aid` и берут файлы конфигурации из двух
-переменных — пути общего конфига и site.toml (файл среды он подключает сам):
+Тесты запускаются из `debug/aid` и берут файлы конфигурации из переменной
+`BOBA_CONFIG_PATH`: список файлов через `:`, первый — конфиг экземпляра,
+следующие — наложения, как повторный `--config`:
 
 ```
 cd debug/aid
-BOBA_CONFIG_PATH=$PWD/../../packages/apps/boba-aid/conf/config.toml \
-BOBA_SITE_PATH=$PWD/conf/site.toml \
+BOBA_CONFIG_PATH=$PWD/conf/config.toml:$PWD/conf/stand.toml \
     ../../.venv/bin/pytest ../../packages/apps/boba-mcp/tests
 ```
 
-Адреса и учётки живых сервисов, которые нужны только тестам (базы стенда,
-Confluence, шрифт для образцов), лежат в `stand.toml` рядом с site.toml.
-Тесты, которые сами поднимают приложение, берут свободные порты и свои
-каталоги данных, поэтому идут рядом с запущенной отладкой. По умолчанию
+`stand.toml` — наложение стенда тестов. В его секции `[stand]` лежат значения,
+которые нужны только самим тестам: адреса и учётки живых сервисов (базы стенда,
+ClickHouse, Confluence, KDC, второй пользователь каталога), метка разработчика
+`developer`; рядом — сервисные секции посева (`[clickhouse]`, `[confluence]`,
+`[ix_stand]` и подобные). Приложение эти секции не читает. Тесты, которые сами
+поднимают приложение, пишут для него своё наложение только с изменёнными
+ключами (база, порты, каталог данных, способы входа, выключенные плагины) и
+запускают его с `--config <конфиг отладки> --config <наложение>`. Порты и
+каталоги данных у них свои, поэтому они идут рядом с запущенной отладкой. По умолчанию
 отбираются тесты без меток; `-m integration`, `-m ui`, `-m load` запускают
 соответствующие наборы.
 
 Объекты тестов на общих серверах несут метку разработчика `developer`
-файла среды, набора, процесса xdist и, для баз приложения, дерева: базы
+секции `[stand]`, набора, процесса xdist и, для баз приложения, дерева: базы
 postgres — `aid_<разработчик>_<тест>_<набор>_<gwN>_<дерево>`
 (`aid_ss_acp_chat_aid_gw0_pint4`), базы ClickHouse, схемы и пользователи
 Oracle — `<разработчик>_<имя>_…`. Тесты двух разработчиков и двух worktree
@@ -2282,10 +2316,11 @@ cgroup, у которого включены контроллеры для по�
 
 - контейнер — строкой `cgroup_parent: boba-<приложение>.slice` в compose-файле;
   каталог `sandbox` приходит в него томом (`BOBA_SANDBOX_CGROUP` в `.env`), а
-  `cgroup_base` в site.toml называет точку монтирования;
+  ключ `[env] cgroup_base` конфига называет точку монтирования;
 - юнит приложения — строкой `Slice=`; путь он получает переменной
   `BOBA_CGROUP_BASE`;
-- отладка — обёрткой `python-debug-slice.sh` и ключом `cgroup_base` site.toml.
+- отладка — обёрткой `python-debug-slice.sh` и ключом `[env] cgroup_base`
+  конфига отладки.
 
 Для контейнера есть ещё одна тонкость. Процесс в нём идёт от пользователя
 1000, который на машине отображён в номер из subuid, а каталог `sandbox`
@@ -2328,7 +2363,7 @@ cgroup, у которого включены контроллеры для по�
 **Журналы.** Контейнеры пишут в stdout: `docker logs -f <контейнер>`. Юниты —
 в журнал пользователя: `journalctl --user -u boba-<экземпляр>.service`.
 Запросы к языковой модели приложение складывает в `data/dump`, если это
-включено в `[agent_http].dump` общего конфига чата (`[http].dump` у
+включено в `[agent_http].dump` конфига чата (`[http].dump` у
 boba-mcp); каталог растёт, его чистят по
 возрасту.
 
@@ -2336,7 +2371,7 @@ boba-mcp); каталог растёт, его чистят по
 
 | Что изменилось | Что сделать |
 |---|---|
-| site.toml, `.env`, compose-файл | пересоздать контейнер (`up -d --force-recreate`) либо `systemctl --user restart` юнита приложения |
+| `config.toml`, промпты, `.env`, compose-файл | пересоздать контейнер (`up -d --force-recreate`) либо `systemctl --user restart` юнита приложения |
 | образ приложения | пересоздать контейнер |
 | образы плагинов в `runtime/sandbox` | пересобрать образ boba-mcp и пересоздать его контейнер |
 | шаблон юнита песочницы | остановить приложение, `systemctl --user restart boba-sandbox@<экземпляр>`, запустить приложение |
@@ -2349,14 +2384,14 @@ boba-mcp); каталог растёт, его чистят по
 
 - база PostgreSQL со схемами `aid`, `boba`, `mcp` и `ix` (раздел 5, «Схемы
   хранения»): пользователи, треды и история бесед, соединения пользователей и
-  настройки агента (их секреты зашифрованы ключом `database_encryption_key`),
+  настройки агента (их секреты зашифрованы ключом `[keys] encryption`),
   база знаний;
 - `data/workspace/*.ext4` сервиса boba-mcp — файлы пользователей.
   Копировать образ лучше при остановленном приложении либо когда у
   пользователя нет идущих вызовов: образ смонтирован только на время вызова;
-- `conf/site.toml` и `conf/krb` — без них приложение не поднять, а
-  `database_encryption_key` и `auth_secret` нельзя восстановить иначе, чем из
-  копии.
+- `conf/config.toml`, `conf/prompts` (у boba-mcp) и `conf/krb` — без них
+  приложение не поднять, а секреты `[keys] encryption` и `session` нельзя
+  восстановить иначе, чем из копии.
 
 `data/tool-logs`, `data/krb`, `data/dump`, `data/files` восстанавливать не
 нужно: это журналы и кэши. То же с `data/agents` чата: там приватные каталоги
@@ -2399,7 +2434,7 @@ unshare --user --map-root-user --map-auto \
 каталог, сравнить контрольные суммы (`sha256sum`) образов с исходными и
 смонтировать распакованный образ на чтение, как описано в разделе 9. Базу
 копируют средствами PostgreSQL (`pg_dump` либо копия уровня кластера); копия
-базы и копия `database_encryption_key` должны быть от одной установки, иначе
+базы и копия `[keys] encryption` должны быть от одной установки, иначе
 секреты соединений не расшифруются.
 
 **Чистка.** `make -C build prune` делает три вещи: удаляет все теги образов
@@ -2446,7 +2481,7 @@ keep/boba-mcp:<версия>-prev`. Образы workspace пользовате�
 | контейнер от 1000:1000, `cap_drop: ALL`, `no-new-privileges`, seccomp | пробитая песочница даёт процесс без прав и без владения кодом приложения |
 | rootless-демон Docker либо пользовательские юниты | пробитый контейнер или приложение — это непривилегированный пользователь машины, не root |
 | `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp` у юнита | приложение пишет только в свой каталог данных |
-| секреты и адреса только в site.toml вне git | утечка репозитория не раскрывает ни паролей, ни устройства сети |
+| секреты и адреса только в `config.toml` экземпляра вне git | утечка репозитория не раскрывает ни паролей, ни устройства сети |
 | соединение приходит в сервис запечатанным под конкретного пользователя и срок | сервис инструментов не хранит чужих паролей, перехваченное значение бесполезно другому |
 | секрет клиента и подписанное утверждение между чатом и сервисом | к сервису инструментов нельзя обратиться от имени пользователя, не зная обоих секретов |
 | агенту — возможности, а не секреты: у процесса агента нет адресов серверов MCP, учёток и токенов входа, вызовы исполняет чат | агент, которого модель уговорила на лишнее, не может сам дойти до сервиса или унести вход пользователя |
@@ -2462,22 +2497,31 @@ keep/boba-mcp:<версия>-prev`. Образы workspace пользовате�
 
 ## 12. Если что-то пошло не так
 
-**`InterpolationKeyError: Interpolation key 'site.x' not found`, ниже строки
-`full_key: ...` и `object_type=dict`.** В site.toml нет ключа, на который
-ссылается общий конфиг; `full_key` называет место в общем конфиге, где стоит
-ссылка. Сервис boba-mcp печатает ошибку одной строкой с префиксом `boba-mcp
-failed:`, чат — последней строкой трассировки Python. Перечень
-ключей — `make -C build site-keys APP=<приложение>`.
+**`ConfigError: config ...: resolving the config failed: Interpolation key
+'x.y' not found`, ниже строка `full_key: ...`.** В `config.toml` есть ссылка
+`"${x.y}"` на ключ, которого в файле нет; `full_key` называет ключ, где стоит
+ссылка. Чаще всего это секция, на которую ссылаются файлы плагинов
+(`postgres`, `http`, `confluence`, `kb_tables`, `embedding`, `ocr`, `mail`,
+раздел 5): она нужна в конфиге boba-mcp, даже если плагин выключен. Сервис
+boba-mcp печатает ошибку одной строкой с префиксом `boba-mcp failed:`, чат —
+последней строкой трассировки Python. Тот же текст с `Environment variable
+'ИМЯ' not found` — в окружении процесса нет переменной из ссылки
+`"${oc.env:ИМЯ}"`.
 
-**`ConfigLayoutError: site file ...: expected only sections ['env', 'site'],
-got also [...]; the structure of the application is described in the common
-config alone`.** В site.toml попала секция устройства приложения. Её место — в
-общем конфиге пакета; в site.toml остаются только значения, на которые он
-ссылается.
+**`ConfigError: config: section [x] is missing, <Модель> expects it; add the
+section to the config file`.** Программе нужна секция, которой в конфиге нет;
+значений по умолчанию вместо секции не бывает. Секцию дописывают по описанию
+версии или разделу 5.
 
-**`ConfigLayoutError: config files: site expects an existing toml file, got
-...`.** Неверный путь в `--site` либо site.toml ещё не написан. То же сообщение
-со словом `config` вместо `site` — неверный путь в `--config`.
+**`ConfigError: config: section [x] does not fit <Модель>: ...`.** Секция
+есть, но её поля не сходятся с моделью; ниже pydantic перечисляет поля и
+причины, например `Field required` — нет обязательного ключа.
+
+**`ConfigError: config ...: reading a toml file failed: FileNotFoundError:
+...`.** Неверный путь в `--config` либо в `"${toml:…}"`/`"${toml_dir:…}"`;
+путь каталога, которого нет, даёт `expected a directory of .toml files, it does
+not exist`. Без `--config` программа не стартует: `the following arguments are
+required: --config`.
 
 **`The "BOBA_USER" variable is not set. Defaulting to a blank string.`** от
 `docker compose`. Нет `.env` либо в нём не хватает строки; `make -C build dev
@@ -2493,7 +2537,7 @@ APP=<приложение>` создаст файл или назовёт нед
 (mode ...)`.** Каталог с `bwrap` и `fuse2fs` открыт на запись группе. Исправить:
 `chmod -R go-w runtime/third`. Если каталог открыт всем, в тексте стоит
 `world-writable`. Вариант той же ошибки — `trusted binaries: fuse2fs not found
-in ...`: ключ `third` в site.toml указывает не туда либо `make sandbox` не
+in ...`: ключ `[env] third` конфига указывает не туда либо `make sandbox` не
 выполнялся.
 
 **`UntrustedBinaryError: launcher view: chain executable ... resolves to ...
@@ -2571,8 +2615,8 @@ ValueError: Could not load model ...`**. В каталоге `cache_dir` про�
 
 **Чат отвечает, но инструментов сервиса нет; в логе `mcp server
 'aid_all': ...`, у агента — отказ `mcp/message 'tools/list' to server
-'...' got no MCP outcome`.** Сервис не запущен либо адрес в ключах `mcp_*`
-site.toml чата не совпадает с `public_url` сервиса. Сообщение `Authorization
+'...' got no MCP outcome`.** Сервис не запущен либо адрес в ключах `[env] mcp_*`
+конфига чата не совпадает с `public_url` сервиса. Сообщение `Authorization
 server metadata issuer mismatch` говорит о втором: имя, схема, порт и путь
 издателя должны совпадать буква в букву. Если после имени сервера стоит `the
 server negotiated protocol version ... through initialize, but the client
@@ -2589,7 +2633,7 @@ initialize`.** Вкладка не открывает беседу: `[agent.proc
 **`agent process '...' did not start from ...: [Errno 2] No such file or
 directory; check [env].agent_command`.** Программы агента нет по пути из
 `agent_command` в режиме `agent_mode = "process"`. На выкатке агента в образе
-чата нет: в site.toml чата должен стоять `agent_mode = "service"` с адресом
+чата нет: в `[env]` конфига чата должен стоять `agent_mode = "service"` с адресом
 службы агента (раздел 5, «Служба агента»).
 
 **`<метод>: expected the agent to answer within ...s
@@ -2599,7 +2643,7 @@ directory; check [env].agent_command`.** Программы агента нет 
 **`[agent.history].postgres: postgres connection to ...: auth '...' cannot be
 handed to another process as a libpq connection string`** при старте чата.
 История агента идёт в базу по подключению `[postgres_history]` строкой libpq,
-а способ входа `site.pg_history_auth_method` так не передать (раздел 5, «Схемы
+а способ входа таблицы `[postgres_history.auth]` так не передать (раздел 5, «Схемы
 хранения»): нужен пароль, доверие или kerberos по keytab или паролю, либо
 история `kind = "memory"`.
 
@@ -2681,18 +2725,19 @@ ACP и MCP на схеме — логические связи, по сети о
 | Программа | Порт и путь по умолчанию | Где задаётся | Протокол | Кто подключается | Публичный |
 |---|---|---|---|---|---|
 | aid (чат) | 8501, префикс `/aid` | `[env] port`, `url_prefix`, адрес прослушивания `listen_host`; в compose и установке порт и префикс задают `BOBA_PORT` и `BOBA_URL_PREFIX` в `conf/boba.env` | HTTP: страницы и API chainlit, вход (kerberos по заголовку `Negotiate`, ldap, local, proxy на `{префикс}/auth/proxy`), файлы панели `{префикс}/canvas/…`; WebSocket socket.io на `{префикс}/ws/socket.io` | браузеры через nginx; бэкенд партнёра входом proxy (раздел 15, «Вход по доверенному заголовку»); проба здоровья | да, через nginx |
-| boba-mcp | 8650, префикс `/mcp`; endpoint'ы `/mcp/chat`, `/mcp/all`, `/mcp/search` | `[env] port`, `url_prefix`, `listen_host`, `public_url`; `BOBA_PORT` и `BOBA_URL_PREFIX` в `conf/boba.env`; имена endpoint'ов — `[mcp.endpoints.*]` общего конфига сервиса | MCP streamable-http (POST, поток SSE на GET, DELETE); OAuth: `{префикс}/token`, `{префикс}/authorize`, `{префикс}/register`, метаданные `/.well-known/oauth-authorization-server{префикс}` и `/.well-known/oauth-protected-resource{префикс}/<endpoint>` от корня хоста; файлы `{префикс}/<endpoint>/files/…` и журналы `{префикс}/<endpoint>/journals/…`; `{префикс}/health` | чат через nginx (вход proxy клиентом `boba-chat`); проба здоровья | да, через nginx |
-| boba (служба агента) | 8660, префикс `/boba`; ACP на `/boba/acp` | `[env] port`, `url_prefix`, `listen_host`, `public_url`; `BOBA_PORT` и `BOBA_URL_PREFIX` в `conf/boba.env`; путь — `[agent].path` общего конфига `boba-cli` | ACP версии 2: streamable HTTP и WebSocket на одном пути; OAuth 2.1: `{префикс}/authorize`, `{префикс}/token`, `{префикс}/register`, страница входа `{префикс}/login`, метаданные `/.well-known/…{префикс}…` от корня хоста; `{префикс}/health` | чат в режиме `service` и люди, другие клиенты ACP — через nginx; проба здоровья | да, через nginx |
+| boba-mcp | 8650, префикс `/mcp`; endpoint'ы `/mcp/chat`, `/mcp/all`, `/mcp/search` | `[env] port`, `url_prefix`, `listen_host`, `public_url`; `BOBA_PORT` и `BOBA_URL_PREFIX` в `conf/boba.env`; имена endpoint'ов — `[mcp.endpoints.*]` конфига сервиса | MCP streamable-http (POST, поток SSE на GET, DELETE); OAuth: `{префикс}/token`, `{префикс}/authorize`, `{префикс}/register`, метаданные `/.well-known/oauth-authorization-server{префикс}` и `/.well-known/oauth-protected-resource{префикс}/<endpoint>` от корня хоста; файлы `{префикс}/<endpoint>/files/…` и журналы `{префикс}/<endpoint>/journals/…`; `{префикс}/health` | чат через nginx (вход proxy клиентом `boba-chat`); проба здоровья | да, через nginx |
+| boba (служба агента) | 8660, префикс `/boba`; ACP на `/boba/acp` | `[env] port`, `url_prefix`, `listen_host`, `public_url`; `BOBA_PORT` и `BOBA_URL_PREFIX` в `conf/boba.env`; путь — `[agent].path` конфига службы | ACP версии 2: streamable HTTP и WebSocket на одном пути; OAuth 2.1: `{префикс}/authorize`, `{префикс}/token`, `{префикс}/register`, страница входа `{префикс}/login`, метаданные `/.well-known/…{префикс}…` от корня хоста; `{префикс}/health` | чат в режиме `service` и люди, другие клиенты ACP — через nginx; проба здоровья | да, через nginx |
 | nginx | 443, TLS | конфигурация nginx (раздел 14) | HTTPS, WebSocket | браузеры, клиенты ACP; чат, если ходит к сервисам по публичному имени | да |
-| aid, песочница MCP Apps | по порту на сервер с секцией `apps`, в примерах 8502; слушает сам чат на `[aid].host` | `[mcp.servers.<имя>.apps] port` общего конфига чата, значение — в `[site]`; адрес в браузере — хост `chat_url` с этим портом (раздел 5, «Приложения MCP-серверов») | HTTP или HTTPS по `[aid]`: только страница-прокси `/` и шрифт `/fonts/inter/files/…`, без входа, API и cookie | браузер: iframe в странице чата, напрямую или через nginx | да, тем же номером, что в конфиге |
-| отладка | чат 8601, служба агента 8661, boba-mcp 8651; префиксы `/<разработчик>/aid`, `/<разработчик>/boba`, `/<разработчик>/mcp` | site.toml дерева `debug/<приложение>` (раздел 8) | как у рабочих | nginx | через nginx |
+| aid, песочница MCP Apps | по порту на сервер с секцией `apps`, в примерах 8502; слушает сам чат на `[aid].host` | `[mcp.servers.<имя>.apps] port` конфига чата; адрес в браузере — хост `chat_url` с этим портом (раздел 5, «Приложения MCP-серверов») | HTTP или HTTPS по `[aid]`: только страница-прокси `/` и шрифт `/fonts/inter/files/…`, без входа, API и cookie | браузер: iframe в странице чата, напрямую или через nginx | да, тем же номером, что в конфиге |
+| отладка | чат 8601, служба агента 8661, boba-mcp 8651; префиксы `/<разработчик>/aid`, `/<разработчик>/boba`, `/<разработчик>/mcp` | `[env]` конфига дерева `debug/<приложение>` (раздел 8) | как у рабочих | nginx | через nginx |
 
 Умолчаний для порта в коде нет: ключ `[env] port` обязателен у всех трёх
 приложений, `url_prefix` — тоже у всех трёх, и без них приложение не стартует. Значения из
 таблицы ставит сборка — `make dev` и `make release` пишут их в
-`conf/boba.env`, а переменные `BOBA_PORT` и `BOBA_URL_PREFIX` оттуда
-перекрывают site.toml (раздел 5, «Как собирается конфигурация»). В отладке
-`conf/boba.env` нет, и порт с префиксом берутся из site.toml дерева отладки.
+`conf/boba.env`, а конфиг экземпляра берёт их оттуда ссылками
+`"${oc.env:BOBA_PORT}"` и `"${oc.env:BOBA_URL_PREFIX}"` в `[env]` (раздел 5,
+«Секция `[env]`»). В отладке `conf/boba.env` нет, и порт с префиксом записаны в
+`[env]` конфига дерева отладки числом и строкой.
 Тесты, которые сами поднимают приложения, берут свободные порты и рабочим
 портам не мешают.
 
@@ -2719,12 +2764,12 @@ ACP и MCP на схеме — логические связи, по сети о
 | Связь | Протокол | Где задаётся адрес | Что важно |
 |---|---|---|---|
 | браузер → nginx → aid | HTTPS и WebSocket; от nginx — HTTP/1.1 с `Upgrade` | `location /aid/` nginx, `[env] url_prefix` чата | префикс не срезается, буферизация выключена (раздел 14) |
-| браузер → aid, порт песочницы | HTTP или HTTPS, статика | `[mcp.servers.<имя>.apps]` `chat_url` и `port` общего конфига чата, значения — в `[site]` | тот же хост, что у чата, другой порт — другой источник; nginx необязателен (раздел 5, «Приложения MCP-серверов») |
+| браузер → aid, порт песочницы | HTTP или HTTPS, статика | `[mcp.servers.<имя>.apps]` `chat_url` и `port` конфига чата | тот же хост, что у чата, другой порт — другой источник; nginx необязателен (раздел 5, «Приложения MCP-серверов») |
 | приложение MCP Apps → его сервер MCP | через чат | — | браузер к серверу MCP не ходит. HTML приложения (`resources/read` адреса `ui://…`), вызовы его инструментов и чтения его ресурсов страница чата передаёт по WebSocket вкладки, а чат исполняет их своим соединением с сервером от имени пользователя |
 | aid → nginx → boba, `agent_mode = "service"` | ACP версии 2 по streamable HTTP, HTTPS | `[env] agent_scheme`, `agent_host`, `agent_port`, `agent_prefix` → `[service.boba]`, путь `/acp` | вход proxy: утверждение меняется на токен на том же адресе; адрес совпадает с `public_url` службы |
 | aid → процесс агента, `agent_mode = "process"` | ACP по stdin и stdout | `[env] agent_command` | сети между ними нет; процесс агента живёт в сети чата и сам ходит к модели и в Postgres истории |
 | aid → nginx → boba-mcp | MCP streamable-http, HTTPS | `[env] mcp_scheme`, `mcp_host`, `mcp_port`, `mcp_prefix` → `[service.boba_mcp]`, пути `[mcp.servers.<имя>.endpoint].path` | на том же адресе обмен токена, загрузка и выдача файлов, журналы вызовов; адрес совпадает с `public_url` сервиса |
-| aid → другие серверы MCP | streamable-http, SSE или stdio | `[mcp.servers.<имя>.endpoint]` общего конфига чата | сервер stdio — процесс, который чат запускает сам |
+| aid → другие серверы MCP | streamable-http, SSE или stdio | `[mcp.servers.<имя>.endpoint]` конфига чата | сервер stdio — процесс, который чат запускает сам |
 | агент → серверы MCP | прямой связи нет | — | агент получает серверы чата записями `type: "acp"` без адреса и шлёт им запросы внутри сообщения ACP `mcp/message`; исполняет их чат |
 | aid ↔ aid (второй узел) | прямой связи нет | — | шина сообщений и блокировки узлов идут через PostgreSQL (`messaging_provider = "postgres"`, секция `[cluster]`) |
 | nginx → aid, boba-mcp, boba | HTTP/1.1 | `proxy_pass` nginx без URI | путь уходит как есть: префикс приложение знает само, метаданные `/.well-known/…<префикс>` идут от корня хоста (раздел 14) |
@@ -2761,19 +2806,19 @@ nginx нужны оба блока `location` каждого сервиса (р�
 
 | Система | Порт обычно | Кто ходит | Из песочницы | Где адрес |
 |---|---|---|---|---|
-| PostgreSQL, схемы `aid` и `mcp`, индекс `ix` | 5432 | чат: пул `[postgres]`, шина сообщений; плагины boba-mcp `describer`, `kb`, `ingest` — подключением `[postgres]` сервиса | у плагинов — да | `site.pg_host`, `pg_addr`, `pg_port`, `pg_database`, `pg_sslmode`; вход — `pg_auth_method` и `[site.pg_auth.*]` |
-| PostgreSQL, история агента `boba` | тот же сервер | процесс агента в режиме `process` (из контейнера чата) либо служба агента | нет | те же `pg_host`, `pg_port`, `pg_database`; вход — `pg_history_auth_method` и `[site.pg_history_auth.*]` (раздел 5, «Схемы хранения») |
-| базы пользователей: PostgreSQL, ClickHouse (HTTP-интерфейс, обычно 8123, с TLS — 8443), Oracle (listener, обычно 1521) | свой у каждой базы | плагины `pg`, `ch`, `ora` boba-mcp | да | в соединении пользователя: оно хранится у чата в схеме `aid` и приходит в сервис запечатанным; соединения сервера — `[site.connections.<имя>]` site.toml сервиса (раздел 5, «Соединения сервера») |
-| LDAP, Active Directory | 389, ldaps — 636 | чат: вход ldap и роли входов kerberos и proxy; служба агента: вход ldap | нет | `site.ldap_url`, `ldap_base_dn`; служебный bind — `ldap_auth_method` и `[site.ldap_auth.*]` |
-| Kerberos KDC | 88, TCP и UDP | чат: билеты по keytab для входа в Postgres и роли истории, делегирование (S4U) билета пользователя к его базам; служба агента: роль истории; boba-mcp: вход в Postgres по keytab; плагины с биндом `krb5.conf` — билеты служб по выданному им билету | да, у плагинов с `krb5.conf` | `[realms]` файла `krb5.conf` (`site.krb_config`, каталог `conf/krb`) |
-| языковая модель, OpenAI-совместимый API | 443 | процесс агента в режиме `process` (из контейнера чата) либо служба агента; сам чат к модели не ходит | нет | чат: `site.llm_host`, `llm_path`, `llm_ssl_verify`, вход — `llm_auth_method` и `[site.llm_auth.*]`, прокси — `[agent_http].proxy` либо `HTTPS_PROXY` окружения при `trust_env = true`; служба: `site.llm_base_url`, `llm_ssl_verify`, вход — `llm_auth_method` и `[site.llm_auth.*]` |
-| Confluence | 443 | плагины `confluence` и `ingest` boba-mcp | да | `[site.confluence]`: `host`, `port`, `path`; прокси — `[http].proxy` общего конфига сервиса |
-| интернет | 80, 443 | плагин `web` (`web_fetch_page`, `web_grep_page`): адрес называет модель | да | прокси — `[http].proxy` общего конфига сервиса |
-| почтовый сервер, SMTP | 587 | плагин `mail` | да; в поставке плагин выключен | `[site.mail]`: `server`, `port`, `use_tls`; вход — `mail_auth_method` и `[site.mail_auth.*]` |
+| PostgreSQL, схемы `aid` и `mcp`, индекс `ix` | 5432 | чат: пул `[postgres]`, шина сообщений; плагины boba-mcp `describer`, `kb`, `ingest` — подключением `[postgres]` сервиса | у плагинов — да | `[postgres]`: `host`, `hostaddr`, `port`, `dbname`, `sslmode`; вход — таблица `[postgres.auth]` |
+| PostgreSQL, история агента `boba` | тот же сервер | процесс агента в режиме `process` (из контейнера чата) либо служба агента | нет | `[postgres_history]` конфига чата и службы: тот же сервер; вход — таблица `[postgres_history.auth]` (раздел 5, «Схемы хранения») |
+| базы пользователей: PostgreSQL, ClickHouse (HTTP-интерфейс, обычно 8123, с TLS — 8443), Oracle (listener, обычно 1521) | свой у каждой базы | плагины `pg`, `ch`, `ora` boba-mcp | да | в соединении пользователя: оно хранится у чата в схеме `aid` и приходит в сервис запечатанным; соединения сервера — `[connections.<имя>]` конфига сервиса (раздел 5, «Соединения сервера») |
+| LDAP, Active Directory | 389, ldaps — 636 | чат: вход ldap и роли входов kerberos и proxy; служба агента: вход ldap | нет | `[ldap]`: `server`, `base_dn`; служебный bind — таблица `[ldap.auth]` |
+| Kerberos KDC | 88, TCP и UDP | чат: билеты по keytab для входа в Postgres и роли истории, делегирование (S4U) билета пользователя к его базам; служба агента: роль истории; boba-mcp: вход в Postgres по keytab; плагины с биндом `krb5.conf` — билеты служб по выданному им билету | да, у плагинов с `krb5.conf` | `[realms]` файла `krb5.conf` (`[krb] config`, каталог `conf/krb`) |
+| языковая модель, OpenAI-совместимый API | 443 | процесс агента в режиме `process` (из контейнера чата) либо служба агента; сам чат к модели не ходит | нет | чат: `[llm.main.connection]` `host`, `path`, `ssl_verify`, вход — таблица `[llm.main.connection.auth]`, прокси — `[agent_http].proxy` либо `HTTPS_PROXY` окружения при `trust_env = true`; служба: `[llm.main]` `baseUrl`, `sslVerify`, вход — таблица `[llm.main.auth]` |
+| Confluence | 443 | плагины `confluence` и `ingest` boba-mcp | да | `[confluence]`: `host`, `port`, `path`, вход — таблица `[confluence.auth]`; прокси — `[http].proxy` конфига сервиса |
+| интернет | 80, 443 | плагин `web` (`web_fetch_page`, `web_grep_page`): адрес называет модель | да | прокси — `[http].proxy` конфига сервиса |
+| почтовый сервер, SMTP | 587 | плагин `mail` | да; в поставке плагин выключен | `[mail]`: `server`, `port`, `use_tls`; вход — таблица `[mail.auth]` |
 
-Билет службы `HTTP/<krb_domain>` для входа kerberos в чат браузер получает у
+Билет службы `HTTP/<домен чата>` для входа kerberos в чат браузер получает у
 KDC сам, со своей рабочей станции; чат принимает его своим keytab
-(`site.krb_http_keytab`) без обращения к KDC. Порт kpasswd (464) не нужен:
+(`[auth.kerberos.accept] keytab`) без обращения к KDC. Порт kpasswd (464) не нужен:
 boba паролей учёток не меняет. Внешних провайдеров OpenID Connect и OAuth
 система не использует: boba-mcp и служба агента сами выдают токены, а в чат
 входят kerberos, ldap, local или proxy (раздел 15). Эмбеддинги и OCR
@@ -2787,7 +2832,7 @@ boba паролей учёток не меняет. Внешних провай�
 ### Сеть песочницы
 
 Сеть плагину включает ключ `[sandbox] network = true` в его файле
-`plugins/<плагин>.toml` общего конфига boba-mcp; по умолчанию её нет. Без
+`plugins/<плагин>.toml` boba-mcp; по умолчанию её нет. Без
 сети bwrap запускает тело инструмента с `--unshare-net`: у него своё
 пространство сети, в котором есть только собственный loopback.
 
@@ -2814,14 +2859,14 @@ boba паролей учёток не меняет. Внешних провай�
 
 Окружение песочницы очищается, поэтому переменные прокси контейнера
 (`HTTPS_PROXY`) телу инструмента не видны: прокси для `web`, `confluence` и
-`ingest` задаёт ключ `[http].proxy` общего конфига сервиса. В режиме
+`ingest` задаёт ключ `[http].proxy` конфига сервиса. В режиме
 `tool_launcher = "process"` (отладка, раздел 8) песочницы нет, и сеть есть у
 всех плагинов.
 
 Плагин `mail` в поставке выключен; сеть и бинды `/etc/resolv.conf` и
 `/etc/hosts` в его профиле уже есть. Чтобы включить его, в `plugins/mail.toml`
-ставят `enable = true`. Файл плагина — часть общего конфига, поэтому правка
-доходит до контейнера с пересборкой образа boba-mcp (раздел 4).
+ставят `enable = true`. Файлы плагинов лежат в образе boba-mcp, поэтому правка
+доходит до контейнера с пересборкой образа (раздел 4).
 
 ### Сеть сборки
 
@@ -2838,7 +2883,7 @@ boba паролей учёток не меняет. Внешних провай�
 
 Приложения развёрнуты на своих префиксах: чат — `/aid/`, boba-mcp — `/mcp/`,
 служба агента — `/boba/`. Каждое приложение само отвечает под префиксом из
-ключа `url_prefix` site.toml, поэтому nginx передаёт путь запроса как есть,
+ключа `[env] url_prefix` своего конфига, поэтому nginx передаёт путь запроса как есть,
 без `rewrite`. Метаданные OAuth сервисов клиенты ищут от корня хоста, по
 путям `/.well-known/<документ>/<префикс>…`: для них у каждого сервиса второй
 блок `location`. Nginx перед приложениями должен уметь три вещи: пропускать
@@ -3044,7 +3089,7 @@ server {
 подключает вместе с остальными (`include …/locations/*.conf`), и смотрят на
 порты его процессов на хосте (`host.docker.internal`); межсетевой экран
 машины должен пускать nginx на эти порты. Префиксы приложения
-знают сами (`url_prefix` из `developer`, раздел 8), поэтому путь уходит как
+знают сами (`[env] url_prefix` их конфигов, раздел 8), поэтому путь уходит как
 есть, без `rewrite`. Браузер, открывший страницу `/<разработчик>/boba/…`,
 уводится на `/<разработчик>/aid/…`, как на стенде.
 
@@ -3057,9 +3102,11 @@ server {
    (префиксы путей, имена переменных `$dev_ss_*`) и порты 8601, 8661, 8651 на
    его; блоки файла — те же, что у стенда (подраздел «Конфигурация»), с
    префиксом разработчика и `proxy_pass` на `host.docker.internal:<порт>`;
-2. в его `debug/conf/site.toml` — `developer = "alexeyk500"`, в `[env]`
-   site.toml его деревьев `debug/aid`, `debug/boba`, `debug/mcp` — те же порты
-   (`port`), префиксы выводятся сами;
+2. в `[env]` конфигов его деревьев `debug/aid`, `debug/boba`, `debug/mcp` —
+   те же порты (`port`) и префиксы `url_prefix` (`/alexeyk500/aid` и т. д.),
+   у чата — адреса соседей `mcp_prefix`, `agent_prefix`, у сервиса и службы —
+   `public_url`; базу `dbname` в `[postgres]` и `[postgres_history]` — его
+   `aid_alexeyk500`;
 3. открыть nginx его порты в межсетевом экране машины, проверить и перечитать
    nginx (ниже); базы разработчика заводит
    `make -C build dev-db` (раздел 8).
@@ -3073,34 +3120,34 @@ nginx -s reload
 
 ## 15. Секреты, вход и роли
 
-Секреты лежат в секции `[site]` файла site.toml каждого приложения. Общий
-конфиг собирает их в свою секцию `[keys]`, а рабочие секции берут их оттуда
-ссылками `${keys.*}`. `mcp_proxy_secret` и `[site.mcp_client].secret` у чата и
-boba-mcp общие и обязаны совпадать; `proxy_secret` — вход proxy в сам чат. `auth_secret` у каждого приложения свой и
-с секретом другого не связан. `database_encryption_key` есть только у чата
-(раздел 5, «Секреты и keytab»).
+Секреты лежат в секции `[keys]` конфига экземпляра каждого приложения, а
+рабочие секции берут их оттуда ссылками `${keys.*}`. `[keys] mcp_proxy` и
+`mcp_client` у чата и boba-mcp общие и обязаны совпадать, так же `agent_proxy` и
+`agent_client` у чата и службы агента; `proxy` — вход proxy в сам чат.
+`session` (в рабочей секции — `[session] auth_secret`) у каждого приложения
+свой и с секретом другого не связан. `encryption` есть только у чата (раздел 5,
+«Секреты и keytab»).
 
 Что чат предъявляет сервису boba-mcp и чем это защищено:
 
 | Что | Чем подписано или зашифровано | Ключ чьего конфига |
 |---|---|---|
-| утверждение о пользователе при входе proxy | HS256, `mcp_proxy_secret` | общий, проверяет `[auth.proxy].secret` сервиса |
+| утверждение о пользователе при входе proxy | HS256, `[keys] mcp_proxy` | общий, проверяет `[auth.proxy].secret` сервиса |
 | представление клиентом `boba-chat` при обмене | секрет клиента в теле запроса | общий, проверяет `[mcp.clients.boba-chat].secret` сервиса |
 | токен доступа к endpoint'у (вызовы, `resources/read`, `subscriptions/listen`) | выпущен и проверяется сервисом | `auth_secret` сервиса; чат хранит его как есть |
 | запечатанное соединение пользователя | JWE на открытом ключе сервиса | ключевая пара сервиса, созданная при старте, не из конфига |
 | kerberos-билет пользователя к базе | едет внутри запечатанного соединения | чат выпускает его по билету входа из своей cookie (тот запечатан `auth_secret` чата) и запечатывает ключом сервиса |
 
 Ключ запечатывания соединений сервис создаёт при каждом старте и объявляет
-чату при подключении возможностью `com.boba/connection-seal`; в site.toml
+чату при подключении возможностью `com.boba/connection-seal`; в конфиге
 его нет, и задавать его не нужно.
 
 Рабочие секции, о которых идёт речь ниже (`[session]`, `[auth.*]`, `[roles]`),
-лежат в общем конфиге пакета и одинаковы на всех машинах; site.toml даёт им
-только значения.
+лежат в том же конфиге экземпляра и берут секреты ссылками на `[keys]`.
 
-### `auth_secret`
+### `[keys] session` (`auth_secret`)
 
-Куда подставляется: `[keys].session`, откуда его берёт `[session].auth_secret`.
+Где лежит: `[keys] session`, откуда его берёт `[session] auth_secret`.
 
 Что делает у чата:
 
@@ -3109,7 +3156,7 @@ boba-mcp общие и обязаны совпадать; `proxy_secret` — в�
   из секрета через HKDF-SHA256, шифр Fernet);
 - уходит в chainlit как `CHAINLIT_AUTH_SECRET` для его собственных сессий.
 
-У boba-mcp ключ того же имени из его site.toml подписывает токены доступа и
+У boba-mcp ключ того же имени из его конфига подписывает токены доступа и
 обновления, которые выдаёт сервис, шифрует записи клиентов, начатые входы и
 коды входа, которые сервис отдаёт наружу вместо того, чтобы хранить, и
 запечатывает kerberos-билет пользователя, вошедшего в сервис напрямую через
@@ -3117,7 +3164,7 @@ SSO. У нескольких узлов boba-mcp он должен быть од
 
 `auth_secret` чата и `auth_secret` сервиса — независимые ключи: каждое
 приложение и подписывает, и проверяет им только своё, а чат предъявляет
-сервису утверждение под `mcp_proxy_secret` и полученный в обмен токен сервиса.
+сервису утверждение под `[keys] mcp_proxy` и полученный в обмен токен сервиса.
 Совпадать они не должны; разные секреты безопаснее, потому что утечка
 одного не даёт выпустить вход в другое приложение. Стенд тестов поднимает
 чат и сервис с разными `auth_secret` и проверяет на нём вход, вызовы
@@ -3143,34 +3190,34 @@ python3 -c "import secrets; print(secrets.token_urlsafe(48))"
 недействительными его токены; чат входит на сервис заново сам, при следующем
 вызове.
 
-### `proxy_secret`, `mcp_proxy_secret`, `agent_proxy_secret` и секрет клиента
+### `[keys] proxy`, `mcp_proxy`, `agent_proxy` и секрет клиента
 
 Вход proxy — подписанное утверждение «этот запрос идёт от такого-то
 пользователя с такими-то ролями». У каждого входа свой ключ, чтобы утечка
 одного не открывала другие:
 
-| ключ site.toml | секция `[keys]` | кто подписывает → кто проверяет | где берётся ссылкой |
+| ключ `[keys]` | чей конфиг | кто подписывает → кто проверяет | где берётся ссылкой |
 |---|---|---|---|
-| `proxy_secret` | `[keys].proxy` чата | nginx или доверенный сайт → чат | `[auth.proxy].secret` чата |
-| `mcp_proxy_secret` | `[keys].mcp_proxy` чата и boba-mcp | чат → boba-mcp | `[mcp_auth.boba].secret` чата, `[auth.proxy].secret` boba-mcp |
-| `agent_proxy_secret` | `[keys].agent_proxy` чата и службы агента | чат → служба агента (режим службы) | `[agent.process.auth].secret` чата, ключ входа proxy службы |
+| `proxy` | чата | nginx или доверенный сайт → чат | `[auth.proxy].secret` чата |
+| `mcp_proxy` | чата и boba-mcp | чат → boba-mcp | `[mcp_auth.boba].secret` чата, `[auth.proxy].secret` boba-mcp |
+| `agent_proxy` | чата и службы агента | чат → служба агента (режим службы) | `[agent.process.auth].secret` чата, ключ входа proxy службы |
 
 Секрет клиента — в `[keys].mcp_client`, откуда его берут
 `[mcp_auth.boba].client_secret` чата и `[mcp.clients.boba-chat].secret`
 boba-mcp.
 
 Что делают. Секретом клиента чат представляется сервису boba-mcp как
-зарегистрированный клиент `boba-chat`. Ключом `mcp_proxy_secret` он
+зарегистрированный клиент `boba-chat`. Ключом `[keys] mcp_proxy` он
 подписывает утверждение о пользователе для boba-mcp; сервис проверяет подпись
-и исполняет инструмент от имени этого пользователя. Ключом `proxy_secret`
+и исполняет инструмент от имени этого пользователя. Ключом `[keys] proxy`
 подписывают вход в сам чат внешние сайты (вход proxy ниже).
 
-`mcp_proxy_secret` и секрет клиента общие: значение в site.toml чата и в
-site.toml сервиса обязано быть одним и тем же; так же `agent_proxy_secret` у
+`[keys] mcp_proxy` и секрет клиента общие: значение в конфиге чата и в
+конфиге сервиса обязано быть одним и тем же; так же `[keys] agent_proxy` у
 чата и службы агента. Расхождение видно при первом подключении чата к
 сервису — в логе чата и в ошибке вызова инструмента boba-mcp:
 
-- разный `mcp_proxy_secret` — `mcp server 'aid_all': ... Token exchange
+- разный `[keys] mcp_proxy` — `mcp server 'aid_all': ... Token exchange
   failed (401): {"error":"invalid_grant","error_description":"identity
   assertion of client 'boba-chat' for ...: expected an HS256 JWT under
   [auth.proxy].secret, got Signature verification failed"}`; тот же текст
@@ -3180,12 +3227,12 @@ site.toml сервиса обязано быть одним и тем же; та
   client_secret"}`.
 
 Сгенерировать: `openssl rand -hex 32` для каждого. Смена — одновременно в
-site.toml чата и сервиса, затем перезапуск обоих; сессий пользователей она не
+конфигах чата и сервиса, затем перезапуск обоих; сессий пользователей она не
 затрагивает.
 
-### `database_encryption_key`
+### `[keys] encryption`
 
-Куда подставляется: `[keys].encryption` чата, откуда его берёт ссылкой
+Где лежит: `[keys] encryption` чата, откуда его берёт ссылкой
 `[connections].cipher` (соединения пользователей). У boba-mcp этого ключа нет.
 
 Что делает: шифрует секреты сохранённых соединений пользователей (пароли,
@@ -3202,7 +3249,7 @@ items after validation, not 24` (или `at most 32 items`), при записи
 urlsafe-записи (с `-` и `_`, как печатает `Fernet.generate_key()`)
 декодируется не в те 32 байта и отвергается.
 
-Секция `[connections]` общего конфига boba-mcp к этому ключу отношения не
+Секция `[connections]` конфига boba-mcp к этому ключу отношения не
 имеет: в ней описаны заданные соединения сервера (раздел 5, «Соединения
 сервера»).
 
@@ -3326,7 +3373,7 @@ python3 -c "import base64,json,sys; p=sys.argv[1].split('.')[1]; print(json.dump
 
 ### Срок токена и продление сессии
 
-Сроки задаёт секция `[session]` общего конфига чата. У boba-mcp своя секция
+Сроки задаёт секция `[session]` конфига чата. У boba-mcp своя секция
 `[session]` со сроками его токенов доступа (в поставке `session_ttl_sec =
 3600`, `session_max_sec = 28800`); ниже речь о сроках чата.
 
@@ -3365,14 +3412,14 @@ JWT так не перевыпускается — страница проход
 звать `/auth/refresh` заранее, пример в разделе про curl.
 
 Проверить, что фронт и подключённые сервисы переживают истечение, проще на
-коротком сроке. Удобнее всего делать это в отладке на хосте: общий конфиг она читает
-прямо из пакета, и временная правка `[session]` в
-`packages/apps/boba-aid/conf/config.toml` действует с перезапуска
-процесса (в git её не отправляют):
+коротком сроке. Удобнее всего делать это в отладке на хосте: временную правку
+`[session]` кладут в файл-наложение и передают его вторым `--config` поверх
+`debug/aid/conf/config.toml`; действует с перезапуска процесса:
 
 ```toml
-session_ttl_sec = 420
-session_max_sec = 1800
+[session]
+    session_ttl_sec = 420
+    session_max_sec = 1800
 ```
 
 Порог сигнала 300 секунд зашит в код, поэтому при `session_ttl_sec = 420`
@@ -3564,32 +3611,43 @@ curl -s -b cookies.txt -X POST "$B/logout"
 Пример для всех четырёх типов:
 
 ```toml
+[ldap]
+    server  = "ldaps://dc01.example.com"
+    base_dn = "DC=example,DC=com"
+    [ldap.auth]
+        method   = "simple"
+        user     = 'EXAMPLE\boba-reader'
+        password = "..."
+    [ldap.mapping.member_of]
+        "CN=boba-users,CN=Users,DC=example,DC=com" = ["read"]
+    [ldap.mapping.dn]
+        'EXAMPLE\admin' = ["wrt"]
+
 [auth.local]
     type          = "local"
-    users         = "${site.local_auth.users}"
     require_roles = true
-    [auth.local.roles.local]
-        mapping = "${site.local_auth.roles}"
+    [auth.local.users]
+        admin = "..."
+    [auth.local.roles.local.mapping]
+        admin = ["wrt"]
 
 [auth.ldap]
     type             = "ldap"
-    server           = "${site.ldap_url}"
-    base_dn          = "${site.ldap_base_dn}"
-    bind_dn_template = '${site.ldap_netbios}\{username}'
-        [auth.ldap.roles.directory]
-        member_of = "${site.ldap_roles.memberof}"
-        dn        = "${site.ldap_roles.dn}"
+    server           = "${ldap.server}"
+    base_dn          = "${ldap.base_dn}"
+    bind_dn_template = 'EXAMPLE\{username}'
+    [auth.ldap.roles]
+        directory = "${ldap.mapping}"
 
 [auth.kerberos]
     type             = "kerberos"
-    principal_format = "{username}@${site.krb_realm}"
-    [auth.kerberos.roles.ldap]
-        server        = "${site.ldap_url}"
-        base_dn       = "${site.ldap_base_dn}"
-        auth          = "${site.ldap_auth.${site.ldap_auth_method}}"
-                [auth.kerberos.roles.ldap.mapping]
-            member_of = "${site.ldap_roles.memberof}"
+    principal_format = "{username}@EXAMPLE.COM"
+    [auth.kerberos.roles]
+        ldap = "${ldap}"
 ```
+
+Убрать способ входа — удалить его секцию `[auth.<имя>]`: список способов
+`[app] auth = "${oc.dict.values:auth}"` собирается из секций сам.
 
 ### Разрешённые origin (CORS)
 
@@ -3637,29 +3695,24 @@ boba без пароля и без раздачи `auth_secret`. Бэкенд п
 утверждения только доверенных клиентов из `[mcp.clients.*]` — в поставке это
 сам чат, клиент `boba-chat`; для партнёров он не предназначен.
 
-Секция общего конфига; вход включён, пока `"${auth.proxy}"` стоит в списке
-`[app].auth`:
+Секция конфига чата; вход включён, пока в конфиге есть секция `[auth.proxy]`:
 
 ```toml
 [auth.proxy]
     type            = "proxy"
     path            = "/auth/proxy"
-        secret          = "${keys.proxy}"
+    secret          = "${keys.proxy}"
     max_skew_sec    = 60
-    allowed_clients = "${site.proxy.allowed_clients}"
+    allowed_clients = ["10.20.30.40/32"]
     require_roles   = true
     [auth.proxy.headers]
         user      = "X-Remote-User"
         timestamp = "X-Boba-Timestamp"
         signature = "X-Boba-Signature"
-    [auth.proxy.roles.local]
-        mapping = "${site.proxy.local_roles}"
-    [auth.proxy.roles.ldap]
-        server        = "${site.ldap_url}"
-        base_dn       = "${site.ldap_base_dn}"
-        auth          = "${site.ldap_auth.${site.ldap_auth_method}}"
-                [auth.proxy.roles.ldap.mapping]
-            member_of = "${site.ldap_roles.memberof}"
+    [auth.proxy.roles]
+        ldap = "${ldap}"
+    [auth.proxy.roles.local.mapping]
+        "portal-bot" = ["read"]
     [auth.proxy.roles.header]
         name = "X-Remote-Roles"
     [auth.proxy.profiles.header]
@@ -3667,17 +3720,11 @@ boba без пароля и без раздачи `auth_secret`. Бэкенд п
         selected = "X-Remote-Profile"
 ```
 
-Значения машины — в site.toml:
+Секрет — в `[keys]` того же файла:
 
 ```toml
-[site]
-    proxy_secret = "..."
-
-    [site.proxy]
-        allowed_clients = ["10.20.30.40/32"]
-
-        [site.proxy.local_roles]
-            "portal-bot" = ["read"]
+[keys]
+    proxy = "..."
 ```
 
 - **`secret`.** Отдельный ключ HMAC, не `auth_secret`. Генерация:

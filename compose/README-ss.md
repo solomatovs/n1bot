@@ -11,15 +11,15 @@
 потомки: чат aid, служба агента boba и сервис инструментов boba-mcp. Её
 деревья — `compose/aid`, `compose/mcp`, `compose/boba`, `debug/aid`,
 `debug/mcp` и `debug/boba`, базы PostgreSQL — `aid` у compose и
-`aid_<разработчик>` у отладки (`aid_ss` у `ss`); базу выбирает ключ
-`site.pg_database` site.toml, у отладки он выводится из `developer` файла среды
-`debug/conf/site.toml` (руководство, раздел 8, «Среда разработчика»). На стенде каждое приложение идёт
+`aid_<разработчик>` у отладки (`aid_ss` у `ss`); базу выбирает ключ `dbname`
+секций `[postgres]` и `[postgres_history]` в `config.toml` каждого дерева
+(руководство, раздел 8, «Среда разработчика»). На стенде каждое приложение идёт
 одним контейнером: `aid`, `boba-mcp`, `boba`; в `compose/<приложение>/conf`
-лежат только `site.toml`, `boba.env` и `krb/`. Вход во все внешние системы
-стенда — kerberos (`pg_auth_method`, `pg_history_auth_method` — `kerberos`),
-к модели — токен (`llm_auth_method = "bearer"`), Confluence — без входа
-(`confluence_auth_method = "none"`), каталог LDAP — служебный simple bind
-(`ldap_auth_method = "simple"`), почта — логин SMTP (`mail_auth_method =
+лежат `config.toml`, `boba.env`, `krb/` и у boba-mcp `prompts/`. Вход во все
+внешние системы стенда описан таблицами `auth` в конфигах: в PostgreSQL —
+kerberos по keytab (`[postgres.auth]` и `[postgres_history.auth]`, `method =
+"kerberos_keytab"`), к модели и в Confluence — токен (`method = "bearer"`), каталог LDAP — служебный simple bind (`[ldap.auth]`,
+`method = "simple"`), почта — логин SMTP (`[mail.auth]`, `method =
 "password"`). В VS Code её запускают цели `launch.json` «Aid: chat» (чат, агент дочерним
 процессом или службой), «MCP: tools service» (boba-mcp, тела процессом или в
 песочнице), «Boba: agent service» (`boba serve`), «Aid: aid + mcp + boba» (все
@@ -48,7 +48,8 @@
 
 Контейнер чата называется `aid`: на это имя рассчитаны карта доступа к
 PostgreSQL и прокси (раздел «Сеть»). Отладка чата
-обеих версий слушает порт 8601, потому что порт задаёт тот же site.toml.
+обеих версий слушает порт 8601, потому что порт задаёт ключ `[env] port`
+конфига `debug/aid/conf/config.toml`.
 
 ## Пользователь и демон
 
@@ -114,7 +115,7 @@ boba-mcp и службу агента тоже через nginx, по https. Б�
 
 Dev-сервер страницы workflow есть только у версии dev (`make -C build/studio
 web-dev` в её дереве). По той же причине он подключается к сети `ss` под именем
-`boba-web-dev`; это записано в `build/conf/local.mk`, а в site.toml отладки
+`boba-web-dev`; это записано в `build/conf/local.mk`, а в конфиге отладки
 studio стоит `workflow_page = "http://boba-web-dev:5173"`. Сборка новой версии
 этих переменных не читает.
 
@@ -154,8 +155,8 @@ Function not implemented, falling back to fork`. Это не ошибка: secco
 
 Порты отладки: чат 8601, служба агента 8661, boba-mcp 8651. Снаружи отладка
 `ss` отвечает под префиксом разработчика: `https://loshara.com/ss/aid/`,
-`/ss/boba/`, `/ss/mcp/` (префиксы выводятся из `developer` файла среды
-`debug/conf/site.toml`); чат отладки ходит в сервис и службу агента через nginx,
+`/ss/boba/`, `/ss/mcp/` (ключ `[env] url_prefix` конфига каждого дерева
+`debug/<приложение>/conf/config.toml`); чат отладки ходит в сервис и службу агента через nginx,
 как на стенде. Блоки nginx отладки — файл
 `/mnt/store/ss/docker/compose/nginx/conf/conf.d/locations/dev-ss.conf`;
 разработчика добавляют своим файлом `dev-<разработчик>.conf` (руководство,
