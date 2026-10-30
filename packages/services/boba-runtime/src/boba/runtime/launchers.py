@@ -30,6 +30,7 @@ from pydantic import (
     ConfigDict,
     Field,
     RootModel,
+    model_validator,
 )
 
 from boba.canvas.keys import WorkspaceMount
@@ -68,6 +69,7 @@ from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
 
 __all__ = [
     "CallSurface",
+    "PluginImage",
     "PluginLaunch",
     "PluginOutput",
     "PluginSandbox",
@@ -192,6 +194,33 @@ class ToolLauncherSection(RootModel[ToolLauncherConfig]):
     """Секция [tool_launcher] целиком."""
 
 
+class PluginImage(BaseModel):
+    """Каталог данных плагина из `images` конфига: `путь:точка`. Путь —
+    от каталога программы (ProgramRoot.located) либо абсолютный, точка —
+    абсолютный путь внутри песочницы."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    path: str = Field(min_length=1)
+    target: str = Field(min_length=1, pattern=r"^/")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _parse(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+
+        path, separator, target = value.partition(":")
+        if not separator:
+            msg = (
+                f"[sandbox] images expects entries `path:target`, got {value!r} "
+                "without the target inside the sandbox"
+            )
+            raise ValueError(msg)
+
+        return {"path": path, "target": target}
+
+
 class PluginSandbox(BaseModel):
     """Секция [sandbox] файла conf/plugins/<id>.toml: что и как запускать.
 
@@ -207,7 +236,7 @@ class PluginSandbox(BaseModel):
 
     program: str = Field(min_length=1)
     rootfs: str = Field(min_length=1)
-    images: tuple[str, ...] = ()
+    images: tuple[PluginImage, ...] = ()
     workspace: bool = False
     host: dict[str, Any] = Field(default_factory=dict)
     isolation: dict[str, Any] = Field(default_factory=dict)
@@ -311,9 +340,8 @@ class SandboxDefaults:
         пути от каталога программы сервиса."""
         program = self._program.located(sandbox.program)
         images = [f"{program}:{PluginLayout.DIR.value}"]
-        for raw in sandbox.images:
-            spec = BindSpec.parse(raw)
-            images.append(f"{self._program.located(spec.host)}:{spec.target}")
+        for image in sandbox.images:
+            images.append(f"{self._program.located(image.path)}:{image.target}")
 
         return images
 

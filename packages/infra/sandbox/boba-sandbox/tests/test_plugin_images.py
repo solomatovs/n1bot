@@ -15,7 +15,6 @@ from typing import ClassVar
 
 import pytest
 
-from boba.sandbox import BindSpec
 from boba.stand.ui.stand import RuntimeLayout
 from boba.stand.zygote import REPO, RUNTIME, PrivateImageMount, SandboxStand
 
@@ -38,8 +37,8 @@ class DataPlugins:
 
     def targets(self, plugin_id: str) -> list[str]:
         targets: list[str] = []
-        for raw in RUNTIME.plugin_sandbox(plugin_id).images:
-            targets.append(BindSpec.parse(raw).target)
+        for image in RUNTIME.plugin_sandbox(plugin_id).images:
+            targets.append(image.target)
 
         return targets
 

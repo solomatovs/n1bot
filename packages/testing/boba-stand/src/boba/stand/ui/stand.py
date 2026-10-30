@@ -40,7 +40,6 @@ from boba.config import ConfigError, ConfigLoader
 from boba.core.mcp_names import McpToolNames
 from boba.runtime.config import ProgramDir, ProgramRoot, ProgramRoots
 from boba.runtime.launchers import PluginSandbox
-from boba.sandbox import BindSpec
 from boba.stand.ui.toml_text import TomlText
 
 __all__ = [
@@ -395,9 +394,8 @@ class StandRuntime:
     def plugin_images(self, plugin_id: str) -> tuple[str, ...]:
         """Каталоги данных плагина `каталог:точка` по его конфигу."""
         images: list[str] = []
-        for raw in self.plugin_sandbox(plugin_id).images:
-            spec = BindSpec.parse(raw)
-            images.append(f"{self._program.located(spec.host)}:{spec.target}")
+        for image in self.plugin_sandbox(plugin_id).images:
+            images.append(f"{self._program.located(image.path)}:{image.target}")
 
         return tuple(images)
 

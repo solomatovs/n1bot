@@ -228,6 +228,7 @@ class ToolLoader:
         own_tools: Sequence[HostedTool] = (),
     ) -> None:
         self._raw = raw_config
+        self._sections = PluginSections(raw_config)
         self._launchers = launchers
         """Способ запуска процесса: один на все сборки инструментов."""
         self._kits = kits
@@ -368,11 +369,31 @@ class ToolLoader:
         return set(listed)
 
     def _access_of(self, tools: Sequence[HostedTool]) -> ToolAccess:
-        """Права по грантам процесса; опечатка в имени инструмента — отказ."""
-        known = frozenset(tool.name for tool in tools)
+        """Права по грантам процесса; опечатка в имени инструмента — отказ.
+
+        Инструменты включённого плагина, который на старте не поднялся
+        (PluginKits), гранты называть могут: имена их известны из секции, а в
+        реестр они не попадают, и вызвать их нельзя.
+        """
+        known: set[str] = set(self._absent_tools())
+        for tool in tools:
+            known.add(tool.name)
+
         grants = self._grants
 
-        return ToolAccess(known, grants.roles, grants.profiles, grants.check)
+        return ToolAccess(frozenset(known), grants.roles, grants.profiles, grants.check)
+
+    def _absent_tools(self) -> Iterator[str]:
+        """Инструменты из секций включённых плагинов, которых нет среди поднятых."""
+        for plugin_id in self._sections.ids():
+            if plugin_id in self._kits:
+                continue
+
+            meta = self._sections.meta(plugin_id)
+            if not meta.enable:
+                continue
+
+            yield from meta.tools
 
 
 class ConfigGrants:
