@@ -795,8 +795,12 @@ def parse_args(
     parser.add_argument(
         "--config",
         required=True,
+        action="append",
         type=Path,
-        help=f"Файл конфига приложения (toml), секция [{section}].",
+        help=(
+            f"Файл конфига приложения (toml), секция [{section}]; повтор кладёт "
+            "наложение поверх."
+        ),
     )
     parser.add_argument(
         "--source",

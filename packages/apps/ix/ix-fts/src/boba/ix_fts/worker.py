@@ -200,8 +200,9 @@ class Command(StrEnum):
     RUN = "run"
 
 
-def parse_args(argv: Sequence[str] | None = None) -> tuple[Command, Path]:
-    """Команда и путь к конфигу; настройки берутся из секции [ix.fts]."""
+def parse_args(argv: Sequence[str] | None = None) -> tuple[Command, Sequence[Path]]:
+    """Команда и файлы конфига: главный и наложения поверх него; настройки
+    берутся из секции [ix.fts]."""
     parser = argparse.ArgumentParser(
         prog="boba-ix-fts",
         description=(
@@ -222,10 +223,12 @@ def parse_args(argv: Sequence[str] | None = None) -> tuple[Command, Path]:
     parser.add_argument(
         "--config",
         required=True,
+        action="append",
         type=Path,
         help=(
-            "Путь к файлу конфига приложения (toml). Все настройки, включая "
-            "профиль подключения к базе ix, берутся из секции [ix.fts]."
+            "Файл конфига приложения (toml); повтор кладёт наложение поверх. "
+            "Все настройки, включая профиль подключения к базе ix, берутся "
+            "из секции [ix.fts]."
         ),
     )
     args = parser.parse_args(argv)
@@ -239,8 +242,8 @@ async def work() -> None:
 
     package_dir = Path(__file__).resolve().parent
     try:
-        command, config_path = parse_args()
-        config = IxConfigFile(config_path)
+        command, config_paths = parse_args()
+        config = IxConfigFile(config_paths)
         config.enter_kerberos()
 
         if command is Command.UPGRADE:

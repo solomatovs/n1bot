@@ -27,7 +27,7 @@ logger = logging.getLogger("ix-core")
 
 
 def parse_args(argv: Sequence[str] | None = None) -> IxDatabase:
-    """Запуск с одним аргументом --config: секция [ix.core] в модель."""
+    """Запуск с аргументом --config (повтор — наложение): секция [ix.core] в модель."""
     section = "ix.core"
     command = "upgrade"
     parser = argparse.ArgumentParser(
@@ -42,10 +42,11 @@ def parse_args(argv: Sequence[str] | None = None) -> IxDatabase:
     parser.add_argument(
         "--config",
         required=True,
+        action="append",
         type=Path,
         help=(
-            "Путь к файлу конфига приложения (toml). База берётся из секции "
-            f"[{section}]."
+            "Файл конфига приложения (toml); повтор кладёт наложение поверх. "
+            f"База берётся из секции [{section}]."
         ),
     )
     args = parser.parse_args(argv)
