@@ -337,6 +337,11 @@ RUN for path in $(cat /tmp/plugin-data.txt); do mkdir -p "$path"; done \
 RUN mkdir -p /plugin /workspace /mnt/pgsock "${BOBA_DIR}/conf/krb" ${SANDBOX_DEV_KRB} \
     && touch /etc/krb5.conf
 
+# glibc образа ищет локали в /usr/lib/x86_64-linux-gnu/locale, а libc-bin кладёт C.UTF-8
+# в /usr/lib/locale; LANG=C.UTF-8 песочницы без неё роняет программу Nuitka на старте
+RUN cp -a /usr/lib/locale/C.UTF-8 /usr/lib/x86_64-linux-gnu/locale/C.UTF-8 \
+    && [ "$(env -i LANG=C.UTF-8 locale charmap)" = UTF-8 ]
+
 
 # общая база корней плагинов: glibc, библиотеки интерпретатора python и kerberos,
 # libstdc++ сборочного gcc и python. Одна на все плагины и версии; утилиты и

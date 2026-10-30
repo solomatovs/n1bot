@@ -2055,6 +2055,20 @@ BOBA_CONFIG_PATH=$PWD/conf/config.toml:$PWD/conf/stand.toml \
 программа SDK находит объявление `ToolPlugin` по entry point'у `<id>`
 группы `boba.tools` в окружении образа и строит из него всё остальное.
 
+Цель `make -C build plugin-bin PLUGIN=<id>` собирает тот же плагин без
+python: модуль `boba.sandbox.program` компилируется Nuitka в каталог
+`/plugin/run.dist`, а `/plugin/run` — скрипт `exec
+/plugin/run.dist/run.bin <id> "$@"`. Корень образа — голый glibc с CA
+контура, `apt`, `root`, `setup` и точками `data` из деклараций. Опись
+сборки (`boba.core.package_data`) кладёт в бинарник файлы данных пакетов
+boba, метаданные их дистрибутивов и модули entry points групп `boba.*`,
+иначе поиск провайдеров внутри бинарника пуст. Перед записью образа сборка
+проверяет программу в голом корне: каждая ELF находит свои библиотеки, а
+снаружи `/plugin` берёт только glibc и пакеты ключа `apt`; затем идёт
+подкоманда `self-check` — файлы и entry points описи на месте. Образ
+ложится в `release/<версия>/plugins/<id>/<id>.ext4`; тесты песочницы
+по-прежнему идут на образах с python из `runtime/sandbox/plugins`.
+
 | Подкоманда | Вход | Выход | Кто и где зовёт |
 |---|---|---|---|
 | `manifest` | stdin — JSON секции `[tool.<id>]` после интерполяций | stdout — манифест JSON; stderr — причины отказа | сервер на старте, в песочнице плагина без сети, образов данных и workspace |

@@ -62,4 +62,5 @@ if [ -s "$report/accidental" ]; then
     exit 1
 fi
 
-/plugin/run self-check
+# окружение песочницы (SandboxDefaults): образ docker несёт свои LC_*, песочница — нет
+env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/tmp LANG=C.UTF-8 /plugin/run self-check
