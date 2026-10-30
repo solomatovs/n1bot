@@ -66,7 +66,7 @@ pytestmark = [
     pytest.mark.anyio,
     pytest.mark.failif(
         shutil.which("bwrap") is None or not ROOTFS_IMAGE.exists(),
-        reason="нет bwrap или артефактов песочницы (собрать: make fetch sandbox)",
+        reason="нет bwrap или артефактов песочницы: make -C build build APP=runtime",
     ),
     SandboxCgroup().required(),
 ]

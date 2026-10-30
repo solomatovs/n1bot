@@ -85,7 +85,7 @@ class LookPaths:
     ELEMENTS: ClassVar[Path] = ASSETS / "public" / "elements"
     THEME: ClassVar[Path] = ASSETS / "public" / "theme.json"
     CHAINLIT_UI: ClassVar[Path] = PACKAGE / "web" / "chainlit-ui"
-    BUILD_SCRIPT: ClassVar[Path] = REPO / "build" / "scripts" / "chainlit_ui.sh"
+    BUILD_SCRIPT: ClassVar[Path] = REPO / "build" / "ui.Dockerfile"
 
 
 class LookTheme(StrEnum):
@@ -363,7 +363,7 @@ class LookEnvironments:
 
 class FrontBuild:
     """Свежесть сборки UI chainlit: `.source-digest`, который пишет
-    build/scripts/chainlit_ui.sh, против тех же хешей текущих исходников.
+    build/ui.Dockerfile, против тех же хешей текущих исходников.
     Старая сборка дала бы ложную разницу с эталонами."""
 
     def check(self) -> None:
@@ -372,7 +372,10 @@ class FrontBuild:
         """
         path = LookPaths.UI_DIGEST
         if not path.is_file():
-            msg = f"look tests: the chainlit UI has no {path}; build it with make web"
+            msg = (
+                f"look tests: the chainlit UI has no {path}; build it with "
+                "make -C build build APP=runtime"
+            )
             raise LookError(msg)
 
         built = path.read_text(encoding="utf-8")
@@ -383,7 +386,7 @@ class FrontBuild:
         msg = (
             f"look tests: the chainlit UI in {path.parent} is built from other "
             f"sources: built {built!r}, the sources give {expected!r}; rebuild it "
-            "with make web"
+            "with make -C build build APP=runtime"
         )
         raise LookError(msg)
 

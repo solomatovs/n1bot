@@ -1,260 +1,71 @@
-# Сборка boba: образы boba-aid и boba-mcp, образы корней плагинов, агент boba каталогом,
-# деревья запуска. Образы собирает классический сборщик docker (DOCKER_BUILDKIT=0).
-# Сеть: в интернет ходит только fetch. Остальные цели — только в реестры через прокси:
-# apt-зеркало из sources.list образов dmp/*, pypi из conf/pip.conf и conf/uv.toml, npm из
-# глобального npmrc образа nodejs (<prefix>/etc/npmrc: ~/.npmrc root сборка фронта не
-# читает, она идёт с HOME=/tmp). Проверка этого — make offline-check.
+# Сборка boba. Публичные цели: help, fetch, all, build APP=<деталь>, version,
+# version-set. Каждая деталь проходит шаги, у каждого шага одно правило сети:
+#   fetch   — curl, интернет; кладёт build/src
+#   prepare — docker build, только реестры контура (apt, npm, pypi); образы boba-build-*
+#   compile — docker run --network none; build/out
+#   image   — docker build без сети; образы boba-mcp, boba, boba-aid
+# Классический сборщик docker (DOCKER_BUILDKIT=0), в том числе rootless. Хосту нужны
+# make, bash, coreutils, curl, tar и docker
 
-# от каталога Makefile, а не от cwd: make -f build/Makefile из корня искал бы
-# test/ и conf/ рядом с собой
-# путь запоминается сразу: после include последним в MAKEFILE_LIST стоит уже не Makefile
 THIS_MAKEFILE   := $(abspath $(lastword $(MAKEFILE_LIST)))
-BASE_DIR        ?= $(patsubst %/,%,$(dir $(THIS_MAKEFILE)))
-SRC_DIR         ?= $(abspath $(BASE_DIR)/..)
-# вложенные вызовы: make -f build/Makefile не подставляет его в $(MAKE)
-MAKEFILE        := $(BASE_DIR)/Makefile
-BUILD_CONTEXT   ?= $(SRC_DIR)
-TEST_DIR        := $(BASE_DIR)/test
-SCRIPTS_DIR     := $(BASE_DIR)/scripts
-CONF_DIR        := $(BASE_DIR)/conf
-# значения переменных сборки для этого хоста (в git не попадает)
--include $(CONF_DIR)/local.mk
-# артефакты для сборки: tarball'ы, uv, webassets, колесо oracledb
-DEPS_DIR        ?= $(BASE_DIR)/src
-# собранное для отладки и тестов из .venv (BOBA_RUNTIME), чего в исходниках нет: libexec
-# (bwrap, fuse2fs, mke2fs), models, sandbox (workspace.ext4, plugins/<id>.ext4), bin
-# (программы на Nuitka, <программа>.dist) — в той же раскладке, что у каталога программы
-# в образе; статику чата программа из исходников
-# берёт из ассетов пакета. Один на репозиторий: образы корней плагинов, модели и
-# workspace из него берёт и сборка образа mcp
-RUNTIME_DIR     := $(SRC_DIR)/runtime
-MODELS_DIR      := $(RUNTIME_DIR)/models
-LIBEXEC_DIR     := $(RUNTIME_DIR)/libexec
-SANDBOX_DIR     := $(RUNTIME_DIR)/sandbox
-RELEASE_DIR     := $(SRC_DIR)/release
+BUILD           := $(patsubst %/,%,$(dir $(THIS_MAKEFILE)))
+ROOT            := $(abspath $(BUILD)/..)
+-include $(BUILD)/conf/local.mk
 
-# приложения сборки; цели build, test, dev, debug, release и install работают
-# по одному приложению (APP=<имя> либо <цель>-<имя>), без APP — по всем
-APPS            := aid mcp boba
-APP             ?=
+SRC             := $(BUILD)/src
+OUT             := $(BUILD)/out
+CACHE           := $(BUILD)/cache
+RUNTIME         := $(ROOT)/runtime
+AID_ASSETS      := $(ROOT)/packages/apps/boba-aid/assets
+PLUGIN_CONF_DIR := $(ROOT)/packages/apps/boba-mcp/conf/plugins
 
-# чат инструментов не исполняет: песочницы, cgroup и моделей у него нет
-PACKAGES_aid      = boba-aid boba-llm-http
-NAME_aid         := boba-aid
-IMPORTS_aid      := boba.aid
-MODULE_aid       := boba.aid.main
-PROGRAM_aid      := bin/boba-aid
-STAGE_aid        := runtime-aid
-SANDBOX_aid      :=
-MODELS_aid       :=
-PARTS_aid        := share/public share/public/page.js share/public/vendor \
-                    share/public/vendor/inter/files \
-                    share/ui/index.html share/ui/index.js share/mcp-apps/sandbox.html
-# агента в образе чата нет: на выкатке чат ходит в службу агента (образ boba, boba serve)
-BUILD_ARGS_aid    =
-# фронт на хосте нужен только отладке чата: образ собирает его сам
-WEB_aid          := web
-
-# boba-mcp — MCP-сервер с инструментами boba; фронта у него нет, модели, образы корней
-# плагинов и шаблон workspace лежат внутри образа. Программа — бинарник Nuitka без python:
-# код плагинов в него не входит, входят виды соединений, которые сервер знает
-PACKAGES_mcp      = boba-mcp boba-db-postgres boba-db-oracle boba-db-clickhouse boba-transport-http
-NAME_mcp         := boba-mcp
-IMPORTS_mcp      := boba.mcp_server.app fastmcp
-MODULE_mcp       := boba.mcp_server
-PROGRAM_mcp      := bin/boba-mcp.dist/boba-mcp.bin
-ENTRY_mcp        := boba/mcp_server/program.py
-STAGE_mcp        := runtime-mcp
-SANDBOX_mcp      := yes
-MODELS_mcp       := fastembed rapidocr
-PARTS_mcp        :=
-BUILD_ARGS_mcp    = $(NUITKA_TOOL_ARGS)
-WEB_mcp          :=
-
-# агент как служба — `boba serve` пакета boba-cli: агент сам слушает ACP по сети,
-# сессии — потоки одного процесса; образ запускает бинарник boba-bin, установка без
-# Docker — модуль интерпретатором; песочницы, моделей и фронта нет
-PACKAGES_boba     = boba-cli
-NAME_boba        := boba
-IMPORTS_boba     := boba.cli.serve
-MODULE_boba      := boba.cli.app
-PROGRAM_boba     := bin/boba.dist/boba.bin
-STAGE_boba       := runtime-boba
-SANDBOX_boba     :=
-MODELS_boba      :=
-PARTS_boba       := bin/boba.dist/boba.bin
-BUILD_ARGS_boba   = $(BIN_TOOL_ARGS) --build-arg BIN_ONNX=
-WEB_boba         :=
-
-# лимиты пользовательского юнита установки без Docker: те же, что у контейнера compose
-UNIT_LIMITS_aid      := 4G 400% 512
-UNIT_LIMITS_mcp      := 16G 800% 2048
-UNIT_LIMITS_boba     := 8G 400% 1024
-
-APP_PACKAGES      = $(PACKAGES_$(APP))
-APP_IMPORTS       = $(IMPORTS_$(APP))
-APP_MODULE        = $(MODULE_$(APP))
-APP_PROGRAM       = $(PROGRAM_$(APP))
-# файл входа программы на Nuitka в дереве колёс; пусто — программа на python
-APP_ENTRY         = $(ENTRY_$(APP))
-APP_STAGE         = $(STAGE_$(APP))
-APP_SANDBOX       = $(SANDBOX_$(APP))
-APP_MODELS        = $(MODELS_$(APP))
-APP_BUILD_ARGS    = $(BUILD_ARGS_$(APP))
-
-ifneq ($(APP),)
-ifeq ($(filter $(APP),$(APPS)),)
-$(error APP=$(APP): такого приложения нет, есть $(APPS))
-endif
-endif
-
-.DEFAULT_GOAL := help
-
-# цели делят runtime/, build/src и демон docker: по одной за раз, в том числе при make -j.
-# Исключение — ветки all: они пишут разные файлы, и all-branches ведёт их по PARALLEL
-ifeq ($(filter all-branches,$(MAKECMDGOALS)),)
-.NOTPARALLEL:
-endif
-
-# рецепт целиком в одном shell: без -e упавшая команда в середине не свалит цель.
-# Поэтому make -n исполняет рецепты с $(MAKE) целиком — их читают глазами
+.DEFAULT_GOAL   := help
 .ONESHELL:
+.DELETE_ON_ERROR:
 SHELL           := /bin/bash
 .SHELLFLAGS     := -eu -o pipefail -c
 
-# версия у всех пакетов одна, лежит в их pyproject.toml (менять: make version-set);
-# скрипты сборки зовутся python'ом venv репозитория, системный может быть старым
-PYTHON          ?= $(SRC_DIR)/.venv/bin/python
-VERSION_PY      := $(PYTHON) $(SCRIPTS_DIR)/version.py
-VERSION         := $(shell $(VERSION_PY) show $(SRC_DIR)/packages)
-# плагины приложения — пакеты с entry points группы boba.tools; списка в extras нет.
-# Плагин — имя entry point'а (id): у пакета их может быть несколько, у каждого свой образ
-PLUGIN_PACKAGES := $(shell $(PYTHON) $(SCRIPTS_DIR)/plugin_rootfs.py list $(SRC_DIR)/packages)
-PLUGIN_IDS      := $(shell $(PYTHON) $(SCRIPTS_DIR)/plugin_rootfs.py ids $(SRC_DIR)/packages)
-plugin-package   = $(shell $(PYTHON) $(SCRIPTS_DIR)/plugin_rootfs.py package $(SRC_DIR)/packages $(1))
-BOBA_TAG        ?= $(VERSION)
-# второй тег образов base, build и testapps; пусто — только BOBA_TAG
-LATEST_TAG      ?= latest
+# сколько рецептов идёт сразу и сколько заданий у компилятора в одной компиляции
+# Nuitka: пик одной компиляции ~5 ГиБ, 4 × 8 заданий занимают 32 ядра
+PARALLEL        ?= 4
+JOBS            ?= 8
+MAKEFLAGS       += -j$(PARALLEL) --output-sync=target --no-print-directory
 
-# экземпляр установки: имя каталога, юнитов и среза. По умолчанию — имя приложения;
-# второй узел того же приложения на одной машине получает своё имя
-INSTANCE        ?= $(APP)
-INSTALL_ROOT    ?= /app
-# 1 — release кладёт в third/lib системные библиотеки образа: дерево запускается на
-# системе, отличной от системы образа (нужна только glibc не старше, чем в образе)
-BUNDLE_OS_LIBS  ?=
-INSTALL_DIR      = $(INSTALL_ROOT)/boba-$(INSTANCE)
-# дефис в имени среза systemd означает вложенность (boba-a-b.slice лежит в boba-a.slice),
-# и каталог cgroup экземпляра оказался бы не там, где его ищут юниты
-ifneq ($(findstring -,$(INSTANCE)),)
-$(error INSTANCE=$(INSTANCE): имя без «-», например $(APP)2)
-endif
-# экземпляр принадлежит одному приложению: release и install без APP шли бы по обоим
-# приложениям с одним именем
-ifeq ($(APP),)
-ifneq ($(filter release install,$(MAKECMDGOALS)),)
-ifeq ($(origin INSTANCE),command line)
-$(error INSTANCE=$(INSTANCE) задаётся вместе с APP, например make release APP=mcp INSTANCE=mcp2)
-endif
-endif
-endif
-DATA_DIR         = $(INSTALL_DIR)/data
-# корень релиза в образе: его же называют CMD образов и тома compose
-DEST_DIR        := /app/boba
-
-IMAGE            = $(NAME_$(APP)):$(BOBA_TAG)
-# основа образа приложения с песочницей: runtime-sandbox и образы корней плагинов
-SANDBOX_IMAGE    = boba-$(APP)-sandbox:$(BOBA_TAG)
-# основа с бинарником программы на Nuitka поверх SANDBOX_IMAGE
-PROGRAM_IMAGE    = boba-$(APP)-program:$(BOBA_TAG)
-OUT              = $(RELEASE_DIR)/$(VERSION)/$(INSTANCE)
-
-# режим sec.sh: all, full, sast, sca или rules
-MODE            ?= all
+VERSION         := $(shell sed -n 's/^version = "\(.*\)"$$/\1/p' $(ROOT)/packages/core/boba-core/pyproject.toml)
+TAG             ?= $(VERSION)
+NO_CACHE        ?=
 
 PYTHON_VERSION  ?= 3.11
 GLIBC_IMAGE     ?= dmp/glibc:2.28
 GCC_IMAGE       ?= dmp/gcc:8.5.0
 PYTHON_IMAGE    ?= dmp/python:$(PYTHON_VERSION)-dist
 NODE_IMAGE      ?= dmp/nodejs:20
-BASE_IMAGE      ?= boba-base:$(PYTHON_VERSION)
-# сколько кэша BuildKit оставляет prune
-PRUNE_KEEP      ?= 20GB
-empty           :=
-space           := $(empty) $(empty)
+TESTAPPS_NODE_IMAGE ?= dmp/nodejs:22
 
-# --- агент boba каталогом standalone -----------------------------------------------
-
-# 1 — агент boba-bin с рантаймом onnxruntime-genai (отдельная компиляция Nuitka, каталог
-# bin/boba-onnx.dist), а fetch качает модели onnx-genai. Пусто — без него, как в образе aid:
-# профиль модели onnx агент отвергает на старте
-BIN_ONNX           ?=
-BIN_DIST            = $(RELEASE_DIR)/$(VERSION)/bin/boba$(if $(BIN_ONNX),-onnx).dist
-BIN_FILE            = $(BIN_DIST)/boba.bin
-NUITKA_VERSION     ?= 4.3
-# patchelf 0.18+ выравнивает новый сегмент по p_align библиотек образа (2 МБ): каждая
-# .so, которой Nuitka правит RPATH, вырастает до 2 МБ; 0.17 добавляет к ней килобайты
-PATCHELF_VERSION   ?= 0.17.2.4
+NUITKA_VERSION  ?= 4.3
+# patchelf 0.18+ выравнивает новый сегмент по p_align библиотек образа (2 МБ):
+# каждая .so, которой Nuitka правит RPATH, вырастает до 2 МБ; 0.17 добавляет килобайты
+PATCHELF_VERSION ?= 0.17.2.4
 ORDERED_SET_VERSION ?= 4.1.0
-# инструменты компиляции (стадия nuitka-tools) — одни на программы, плагины и агента
-NUITKA_TOOL_ARGS    = --build-arg NUITKA_TOOLS=$(NUITKA_VERSION)             \
-    --build-arg PATCHELF_VERSION=$(PATCHELF_VERSION)                     \
-    --build-arg ORDERED_SET_VERSION=$(ORDERED_SET_VERSION)
-BIN_TOOL_ARGS       = --build-arg NUITKA_VERSION=$(NUITKA_VERSION) $(NUITKA_TOOL_ARGS)
-BIN_ARGS            = $(BIN_TOOL_ARGS) --build-arg BIN_ONNX=$(BIN_ONNX)
-# кэш компиляции Nuitka (ccache и кэш Nuitka) — каталог хоста: он живёт между сборками,
-# и повторная сборка не компилирует общий код заново
-NUITKA_CACHE       ?= $(DEPS_DIR)/nuitka-cache
+ORACLEDB_VERSION ?= 26.0.0
+ORACLEDB_SHA256 ?= d15728bae7546984203ae17f8296153d52d10ffdaf4929bebe46b70d5819d270
+ORACLEDB_LOCAL  ?= boba.1
+CYTHON_VERSION  ?= 3.3.0
+WORKSPACE_SIZE  ?= 1G
 
-# --- что скачивает fetch -------------------------------------------------------
+# --- что качает fetch ------------------------------------------------------------
 
 UV_VERSION      ?= 0.11.21
-UV_PLATFORM     ?= x86_64-unknown-linux-musl
-UV_URL          ?= https://github.com/astral-sh/uv/releases/download/$(UV_VERSION)/uv-$(UV_PLATFORM).tar.gz
-UV_BIN          := $(DEPS_DIR)/uv/uv
-
+UV_URL          ?= https://github.com/astral-sh/uv/releases/download/$(UV_VERSION)/uv-x86_64-unknown-linux-musl.tar.gz
 BWRAP_VERSION   ?= 0.11.2
 BWRAP_URL       ?= https://github.com/containers/bubblewrap/releases/download/v$(BWRAP_VERSION)/bubblewrap-$(BWRAP_VERSION).tar.xz
-BWRAP_TARBALL   := $(DEPS_DIR)/bubblewrap-$(BWRAP_VERSION).tar.xz
 # 3.12.0 — последний libfuse, которому хватает meson 0.49 из apt Astra 2.12
 LIBFUSE_VERSION ?= 3.12.0
 LIBFUSE_URL     ?= https://github.com/libfuse/libfuse/releases/download/fuse-$(LIBFUSE_VERSION)/fuse-$(LIBFUSE_VERSION).tar.xz
-LIBFUSE_TARBALL := $(DEPS_DIR)/fuse-$(LIBFUSE_VERSION).tar.xz
-# патч fuse2fs к версии — build/scripts/e2fsprogs-<версия>-ro-mount.patch
 E2FSPROGS_VERSION ?= 1.47.4
 E2FSPROGS_URL   ?= https://www.kernel.org/pub/linux/kernel/people/tytso/e2fsprogs/v$(E2FSPROGS_VERSION)/e2fsprogs-$(E2FSPROGS_VERSION).tar.xz
-E2FSPROGS_TARBALL := $(DEPS_DIR)/e2fsprogs-$(E2FSPROGS_VERSION).tar.xz
-SANDBOX_WS_SIZE ?= 1G
-
-RAPIDOCR_VERSION ?= 3.9.2
-RAPIDOCR_LANGS  ?= eslav
-RAPIDOCR_REPO   ?= https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v$(RAPIDOCR_VERSION)/onnx
-RAPIDOCR_FILES  := $(MODELS_DIR)/rapidocr/ch_PP-OCRv5_det_mobile.onnx \
-                   $(MODELS_DIR)/rapidocr/ch_ppocr_mobile_v2.0_cls_mobile.onnx \
-                   $(RAPIDOCR_LANGS:%=$(MODELS_DIR)/rapidocr/%_PP-OCRv5_rec_mobile.onnx)
-
-# версии качалок моделей (fastembed, huggingface_hub) и их зависимостей — из uv.lock,
-# теми же constraints, что у образов (стадия boba-wheels): свежий huggingface_hub
-# раскладывает кэш так, что onnxruntime из uv.lock модель не открывает
-FETCH_CONSTRAINTS := $(DEPS_DIR)/constraints.txt
-# зеркало huggingface для всех моделей fetch: веса fastembed и onnx-genai
-HF_URL          ?= https://huggingface.co
-EMBED_MODELS    ?= intfloat/multilingual-e5-large
-FASTEMBED_STAMPS := $(foreach m,$(EMBED_MODELS),$(MODELS_DIR)/fastembed/.$(subst /,--,$(m)))
-
-# локальные модели агента (BIN_ONNX=1): onnxruntime-genai держит каждую каталогом
-# genai_config.json + веса + токенайзер; какую берёт профиль, решают настройки агента
-ONNX_MODELS     ?= qwen3-0.6b-int4 qwen3-1.7b-int4 qwen3-4b-int4
-ONNX_REPO_qwen3-0.6b-int4   := xiaoyao9184/Qwen3-0.6B-onnx-genai
-ONNX_SUBDIR_qwen3-0.6b-int4 := cpu_and_mobile/cpu-int4-rtn-block-32-acc-level-4/
-ONNX_REPO_qwen3-1.7b-int4   := Hug0007/qwen3-1.7b-int4-onnx-genai
-ONNX_SUBDIR_qwen3-1.7b-int4 :=
-ONNX_REPO_qwen3-4b-int4     := robinsmits/qwen3-4b-instruct-2507-onnx-int4
-ONNX_SUBDIR_qwen3-4b-int4   :=
-ONNX_DIRS       := $(ONNX_MODELS:%=$(MODELS_DIR)/onnx-genai/%)
-
-# статика фронта: KaTeX (формулы), Inter (шрифт UI), mermaid (диаграммы) вместо CDN
-WEBASSETS_DIR   := $(DEPS_DIR)/webassets
+CHAINLIT_VERSION := $(shell cat $(ROOT)/packages/apps/boba-aid/web/chainlit-ui/UPSTREAM)
+CHAINLIT_URL    ?= https://codeload.github.com/Chainlit/chainlit/tar.gz/refs/tags/$(CHAINLIT_VERSION)
 KATEX_VERSION   ?= 0.16.22
 KATEX_URL       ?= https://github.com/KaTeX/KaTeX/releases/download/v$(KATEX_VERSION)/katex.tar.gz
 INTER_VERSION   ?= 5.3.0
@@ -262,1237 +73,525 @@ INTER_URL       ?= https://registry.npmjs.org/@fontsource/inter/-/inter-$(INTER_
 INTER_WEIGHTS   ?= 400 500 700
 MERMAID_VERSION ?= 11.16.1
 MERMAID_URL     ?= https://registry.npmjs.org/mermaid/-/mermaid-$(MERMAID_VERSION).tgz
-WEB_FILES       := $(WEBASSETS_DIR)/katex/katex.min.css $(WEBASSETS_DIR)/inter/inter.css $(WEBASSETS_DIR)/mermaid/mermaid.min.js
 
-# python-oracledb с патчем (build/scripts/oracledb-*.patch): sdist ровно этой
-# версии с индекса pypi, sha256 из uv.lock, сборка в образе base; локальный суффикс
-# версии пинится в boba-db-oracle, колесо для .venv хоста лежит в src/oracledb
-ORACLEDB_VERSION ?= 26.0.0
-ORACLEDB_SHA256  ?= d15728bae7546984203ae17f8296153d52d10ffdaf4929bebe46b70d5819d270
-ORACLEDB_LOCAL   ?= boba.1
-CYTHON_VERSION   ?= 3.3.0
-ORACLEDB_DIR     := $(DEPS_DIR)/oracledb
-ORACLEDB_WHEEL   := $(ORACLEDB_DIR)/oracledb-$(ORACLEDB_VERSION)+$(ORACLEDB_LOCAL)-cp$(subst .,,$(PYTHON_VERSION))-cp$(subst .,,$(PYTHON_VERSION))-linux_x86_64.whl
+# модели: веса по закреплённым версиям и ревизиям, каталог на модель в build/src/models
+MODELS          := rapidocr fastembed onnx-genai
+HF_URL          ?= https://huggingface.co
+RAPIDOCR_VERSION ?= 3.9.2
+RAPIDOCR_URL    ?= https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v$(RAPIDOCR_VERSION)/onnx
+RAPIDOCR_LANGS  ?= eslav
+RAPIDOCR_FILES  := ch_PP-OCRv5_det_mobile.onnx ch_ppocr_mobile_v2.0_cls_mobile.onnx \
+                   $(RAPIDOCR_LANGS:%=%_PP-OCRv5_rec_mobile.onnx)
+# раскладка кэша Hugging Face, которую fastembed читает с local_files_only
+FASTEMBED_REPO  := qdrant/multilingual-e5-large-onnx
+FASTEMBED_REV   := 66076b8dc6e367337e3e90e6fb309fb0f3addaf6
+FASTEMBED_CACHE := models--$(subst /,--,$(FASTEMBED_REPO))
+FASTEMBED_FILES := config.json model.onnx model.onnx_data special_tokens_map.json \
+                   tokenizer.json tokenizer_config.json
+# локальные модели агента: каталог на модель, его называет профиль модели в конфиге агента
+ONNX_MODELS     := qwen3-0.6b-int4 qwen3-1.7b-int4 qwen3-4b-int4
+ONNX_URL_qwen3-0.6b-int4   := $(HF_URL)/xiaoyao9184/Qwen3-0.6B-onnx-genai/resolve/dfaa6540d16eb3e12eeac660ac80cf69cd5e282d/cpu_and_mobile/cpu-int4-rtn-block-32-acc-level-4
+ONNX_FILES_qwen3-0.6b-int4 := chat_template.jinja genai_config.json model.onnx model.onnx.data \
+                              tokenizer.json tokenizer_config.json
+ONNX_URL_qwen3-1.7b-int4   := $(HF_URL)/Hug0007/qwen3-1.7b-int4-onnx-genai/resolve/fd1e1e4bc66ad91531525d645ebbbbe14a186a92
+ONNX_FILES_qwen3-1.7b-int4 := chat_template.jinja genai_config.json model.onnx model.onnx.data \
+                              tokenizer.json tokenizer_config.json
+ONNX_URL_qwen3-4b-int4     := $(HF_URL)/robinsmits/qwen3-4b-instruct-2507-onnx-int4/resolve/97d8690faf0cad28279dd10334a67c79f673a57f
+ONNX_FILES_qwen3-4b-int4   := added_tokens.json chat_template.jinja config.json genai_config.json \
+                              generation_config.json merges.txt model.onnx model.onnx.data \
+                              model_config.json special_tokens_map.json tokenizer.json \
+                              tokenizer_config.json vocab.json
 
-# исходники chainlit: UI собирается из тега, версия — в UPSTREAM рядом с overlay
-AID_DIR         := $(SRC_DIR)/packages/apps/boba-aid
-UI_DIR          := $(AID_DIR)/web/chainlit-ui
-CHAINLIT_VERSION := $(shell cat $(UI_DIR)/UPSTREAM)
-CHAINLIT_SRC_URL ?= https://codeload.github.com/Chainlit/chainlit/tar.gz/refs/tags/$(CHAINLIT_VERSION)
-CHAINLIT_TARBALL := $(DEPS_DIR)/chainlit-$(CHAINLIT_VERSION).tar.gz
+MODEL_FILES_rapidocr   := $(RAPIDOCR_FILES:%=$(SRC)/models/rapidocr/%)
+MODEL_FILES_fastembed  := $(FASTEMBED_FILES:%=$(SRC)/models/fastembed/$(FASTEMBED_CACHE)/snapshots/$(FASTEMBED_REV)/%) \
+                          $(SRC)/models/fastembed/$(FASTEMBED_CACHE)/refs/main
+MODEL_FILES_onnx-genai := $(foreach m,$(ONNX_MODELS),$(ONNX_FILES_$(m):%=$(SRC)/models/onnx-genai/$(m)/%))
 
-# входы по потребителю. Песочница — tarball'ы и uv; классический сборщик проходит её
-# стадии в каждой сборке ниже по Dockerfile, поэтому они нужны всем сборкам образов
-SANDBOX_INPUTS  := $(BWRAP_TARBALL) $(LIBFUSE_TARBALL) $(E2FSPROGS_TARBALL) $(UV_BIN)
-WEB_INPUTS      := $(WEB_FILES) $(CHAINLIT_TARBALL)
-IMAGE_INPUTS    := $(SANDBOX_INPUTS) $(WEB_INPUTS)
-# модели приложения по именам MODELS_<приложение>: каталоги models/ образа приложения
-MODEL_FILES_fastembed := $(FASTEMBED_STAMPS)
-MODEL_FILES_rapidocr  := $(RAPIDOCR_FILES)
-APP_MODEL_FILES  = $(foreach model,$(APP_MODELS),$(MODEL_FILES_$(model)))
-# модели, которые секции песочницы монтируют образом данных, а не каталогом: тогда в
-# mountinfo тела нет пути хоста. Образ лежит рядом с каталогом, процессный режим читает
-# сам каталог
-MODEL_IMAGES    := fastembed rapidocr
-APP_MODEL_IMAGES = $(if $(APP_SANDBOX),$(filter $(MODEL_IMAGES),$(APP_MODELS)))
-# всё, что качает fetch: входы образов, модели, колесо oracledb для .venv хоста
-INPUTS          := $(IMAGE_INPUTS) $(RAPIDOCR_FILES) $(FASTEMBED_STAMPS) $(ORACLEDB_WHEEL) \
-                   $(if $(BIN_ONNX),$(ONNX_DIRS))
+TARBALLS        := $(SRC)/bubblewrap-$(BWRAP_VERSION).tar.xz $(SRC)/fuse-$(LIBFUSE_VERSION).tar.xz \
+                   $(SRC)/e2fsprogs-$(E2FSPROGS_VERSION).tar.xz
+CHAINLIT_TARBALL := $(SRC)/chainlit-$(CHAINLIT_VERSION).tar.gz
+WEBASSETS       := $(SRC)/webassets/katex/katex.min.css $(SRC)/webassets/inter/inter.css \
+                   $(SRC)/webassets/mermaid/mermaid.min.js
+FETCHED         := $(SRC)/uv/uv $(TARBALLS) $(CHAINLIT_TARBALL) $(WEBASSETS) \
+                   $(foreach m,$(MODELS),$(MODEL_FILES_$(m)))
 
-# --- фронт -----------------------------------------------------------------------
+# --- программы и плагины -----------------------------------------------------------
 
-ASSETS_DIR      := $(AID_DIR)/assets
-ASSETS_VENDOR   := $(ASSETS_DIR)/public/vendor
-# скрипт страницы: в образ его собирает стадия aid-page-build, для отладки — цель web
-WEB_PROJECT     := $(AID_DIR)/web/page
-PAGE_JS         := $(ASSETS_DIR)/public/page.js
-PAGE_SRCS       := $(shell find $(WEB_PROJECT)/src -type f) \
-                   $(wildcard $(WEB_PROJECT)/*.json $(WEB_PROJECT)/*.ts $(WEB_PROJECT)/*.js)
-# UI chainlit (фронт + copilot) с overlay: в образ его собирает стадия chainlit-ui-build
-UI_DIST         := $(ASSETS_DIR)/ui
-UI_ELEMENTS     := $(ASSETS_DIR)/public/elements
-UI_SRCS         := $(shell find $(UI_DIR) $(UI_ELEMENTS) -type f) $(SCRIPTS_DIR)/chainlit_ui.sh
-# store pnpm цели chainlit-ui: живёт между сборками, из реестра качается только недостающее
-PNPM_STORE      ?= $(DEPS_DIR)/pnpm-store
+# программы на Nuitka: пакеты дерева, файл входа, исполняемый файл, флаги Nuitka
+mcp_PACKAGES    := boba-mcp boba-db-postgres boba-db-oracle boba-db-clickhouse boba-transport-http
+mcp_ENTRY       := boba/mcp_server/program.py
+mcp_BIN         := boba-mcp
+mcp_PORT        := 8650
+mcp_FLAGS       :=
+boba_PACKAGES   := boba-cli boba-llm-onnx[generation]
+boba_ENTRY      := boba/cli/app.py
+boba_BIN        := boba
+boba_PORT       := 8660
+# onnxruntime_genai находит onnxruntime через find_spec, не импортом: пакет — явно
+boba_FLAGS      := --user-package-configuration-file=/conf/nuitka-boba.yml \
+                   --include-distribution-metadata=boba-cli --include-package=onnxruntime_genai \
+                   --include-package-data=onnxruntime_genai --include-package=onnxruntime
+# чат пока на python: дерево пакетов и интерпретатор в каталоге программы
+aid_PACKAGES    := boba-aid boba-llm-http
+aid_PORT        := 8501
+# группа плагинов — одна программа над несколькими плагинами: `run <id> <подкоманда>`
+plugins_ENTRY   := boba/sandbox/program.py
 
-# --- что кладут sandbox и release ------------------------------------------------
+# плагины, их программы и корни — из конфигов, уходящих в образ mcp: строки
+# `program = "plugins/<группа>"` и `rootfs = "rootfs/<имя>.ext4"` секции [sandbox]
+PLUGIN_MAP      := $(shell cd $(PLUGIN_CONF_DIR) && for conf in *.toml; do \
+                       program=$$(sed -n 's|^ *program *= *"plugins/\([^"]*\)".*|\1|p' "$$conf"); \
+                       rootfs=$$(sed -n 's|^ *rootfs *= *"rootfs/\([^"]*\)\.ext4".*|\1|p' "$$conf"); \
+                       printf '%s:%s:%s ' "$${conf%.toml}" "$$program" "$$rootfs"; done)
+PLUGINS         := $(foreach e,$(PLUGIN_MAP),$(word 1,$(subst :, ,$(e))))
+GROUPS          := $(sort $(foreach e,$(PLUGIN_MAP),$(word 2,$(subst :, ,$(e)))))
+ROOTFS          := $(sort $(foreach e,$(PLUGIN_MAP),$(word 3,$(subst :, ,$(e)))))
+group-plugins    = $(foreach e,$(PLUGIN_MAP),$(if $(filter $(1),$(word 2,$(subst :, ,$(e)))),$(word 1,$(subst :, ,$(e)))))
+rootfs-plugins   = $(foreach e,$(PLUGIN_MAP),$(if $(filter $(1),$(word 3,$(subst :, ,$(e)))),$(word 1,$(subst :, ,$(e)))))
+group-rootfs     = $(sort $(foreach e,$(PLUGIN_MAP),$(if $(filter $(1),$(word 2,$(subst :, ,$(e)))),$(word 3,$(subst :, ,$(e))))))
 
-SANDBOX_PARTS   := $(LIBEXEC_DIR)/bwrap $(LIBEXEC_DIR)/fuse2fs $(SANDBOX_DIR)/workspace.ext4
-# образы корней всех плагинов репозитория
-PLUGIN_IMAGES    = $(PLUGIN_IDS:%=$(SANDBOX_DIR)/plugins/%.ext4)
-# приложения, которые исполняют инструменты в песочнице
-SANDBOX_APPS    := $(strip $(foreach app,$(APPS),$(if $(SANDBOX_$(app)),$(app))))
-# mke2fs из сборки: им make делает workspace.ext4 и rootfs плагинов вне docker build
-SANDBOX_TOOLS   := $(LIBEXEC_DIR)/mke2fs $(LIBEXEC_DIR)/mke2fs.conf
-
-RELEASE_SANDBOX := sandbox/plugins sandbox/workspace.ext4 libexec/bwrap libexec/fuse2fs
-# интерпретатор и код — только у программы на python; программа на Nuitka — один каталог bin/
-RELEASE_PYTHON  := third/bin/python3 third/lib/libstdc++.so.6 third/lib/libgcc_s.so.1 app/bin
-RELEASE_PARTS    = $(if $(APP_SANDBOX),$(RELEASE_SANDBOX)) $(APP_PROGRAM) \
-                   $(if $(APP_ENTRY),,$(RELEASE_PYTHON)) $(PARTS_$(APP)) $(APP_MODELS:%=models/%) \
-                   $(APP_MODEL_IMAGES:%=models/%.ext4)
-
-# каталоги krb dev-деревьев: точки монтирования в образе корня плагина
-SANDBOX_DEV_KRB := $(foreach app,$(SANDBOX_APPS),$(SRC_DIR)/compose/$(app)/conf/krb)
-
-# --- docker ---------------------------------------------------------------------
-
-# число заданий одного компилирующего шага сборки (ninja, make, Nuitka, сборки и
-# установки uv). Значение — ENV стадии base: оно входит в ключ кэша всех сборочных
-# стадий от неё, и другое число пересобирает их вместе с apt-шагами. На машине держат
-# одно значение — в conf/local.mk
-JOBS            ?= 4
-
-# сколько работы идёт одновременно: образов корней плагинов (plugin-rootfs-all и недостающие
-# у build; каждый — свой docker build и mke2fs, около 4 ГБ памяти) и веток all. Лог каждой
-# сборки плагина — в PLUGIN_LOG_DIR, ветки — в ALL_LOG_DIR, на экран — строка начала и итога
-PARALLEL        ?= 10
-PLUGIN_LOG_DIR  := $(RELEASE_DIR)/logs/plugin-rootfs
-ALL_LOG_DIR     := $(RELEASE_DIR)/logs/all
-# устаревшие образы плагинов, которые отметили правила файлов; их собирает build разом
-PLUGIN_STALE    := $(RELEASE_DIR)/logs/plugin-rootfs.stale
-
-# сеть шагов docker build и запусков docker run, которым нужен реестр (npm фронта):
-# пусто — сеть docker по умолчанию; offline-check ставит container:<ловушка>
-BUILD_NETWORK   ?=
-NETWORK_OPT      = $(if $(BUILD_NETWORK),--network $(BUILD_NETWORK))
-# своя область кэша сборщика: стадии от образов-основ в build/Dockerfile и
-# testapps.Dockerfile объявляют ARG CACHE_SCOPE, и с новым значением каждый шаг сборки
-# исполняется заново ровно один раз. Пусто — обычный кэш
-CACHE_SCOPE     ?=
-CACHE_SCOPE_ARG  = $(if $(CACHE_SCOPE),--build-arg CACHE_SCOPE=$(CACHE_SCOPE))
-
-# классический сборщик, как в закрытом контуре, где BuildKit нет; --force-rm убирает
-# контейнер упавшего шага
-DOCKER_BUILD     = DOCKER_BUILDKIT=0 docker build --force-rm $(NETWORK_OPT)
-
-# от кого идёт docker run с томами хоста и кому отдаются его результаты. Rootless-демон
-# отображает root контейнера на пользователя демона, а его же uid внутри контейнера —
-# на чужой subuid, которому каталоги хоста закрыты: там контейнер идёт от root.
-# Обычному демону называется пользователь хоста, иначе результаты достались бы root
-HOST_UID        := $(shell id -u)
-RUN_OWNER       := $(HOST_UID):$(shell id -g)
-ifneq ($(findstring name=rootless,$(shell docker info --format '{{.SecurityOptions}}' 2>/dev/null)),)
-RUN_OWNER       := 0:0
+DETAILS         := mcp boba aid rootfs models runtime testapps oracledb $(GROUPS:%=plugins-%)
+APP             ?=
+ifneq ($(filter build,$(MAKECMDGOALS)),)
+ifeq ($(filter $(APP),$(DETAILS)),)
+$(error APP=$(APP): such a detail does not exist, the details are: $(DETAILS))
+endif
 endif
 
-NO_CACHE        ?= 0
-NO_CACHE_OPT    :=
-ifeq ($(NO_CACHE),1)
-NO_CACHE_OPT    := --no-cache
-endif
+# --- docker -----------------------------------------------------------------------
 
-# закрытый контур: CA внутреннего TLS для curl хоста; в образы его кладёт Dockerfile из conf/
-CA_CHAIN        := $(wildcard $(CONF_DIR)/ca-chain.crt)
-CURL_OPTS       := $(if $(CA_CHAIN),--cacert "$(CA_CHAIN)")
-# node образа nodejs на хосте (фронт для отладки): CA контура в дополнение к своим
-NODE_CA_OPTS    := $(if $(CA_CHAIN),-v "$(CA_CHAIN):/etc/boba-ca-chain.crt:ro" -e NODE_EXTRA_CA_CERTS=/etc/boba-ca-chain.crt)
-
-# прокси: в docker build аргументами, в docker run окружением
+DOCKER_BUILD     = DOCKER_BUILDKIT=0 docker build --force-rm $(if $(NO_CACHE),--no-cache) $(PROXY_ARGS)
 PROXY_VARS      := http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY
 PROXY_ARGS      := $(foreach v,$(PROXY_VARS),$(if $($(v)),--build-arg $(v)="$($(v))"))
-PROXY_ENV       := $(foreach v,$(PROXY_VARS),-e $(v))
+CA_CHAIN        := $(wildcard $(BUILD)/conf/ca-chain.crt)
+CURL            := curl -fsSL --retry 3 $(if $(CA_CHAIN),--cacert "$(CA_CHAIN)")
+# от кого идёт docker run с каталогами хоста: rootless-демон отображает root контейнера
+# на пользователя демона, обычному демону называется пользователь хоста
+RUN_OWNER        = $(if $(findstring name=rootless,$(shell docker info --format '{{.SecurityOptions}}')),0:0,$(shell id -u):$(shell id -g))
 
-DOCKER_ARGS      = --build-arg GLIBC_IMAGE=$(GLIBC_IMAGE)              \
-    --build-arg GCC_IMAGE=$(GCC_IMAGE)                                 \
-    --build-arg PYTHON_IMAGE=$(PYTHON_IMAGE)                           \
-    --build-arg PYTHON_VERSION=$(PYTHON_VERSION)                       \
-    --build-arg BWRAP_VERSION=$(BWRAP_VERSION)                         \
-    --build-arg LIBFUSE_VERSION=$(LIBFUSE_VERSION)                     \
-    --build-arg E2FSPROGS_VERSION=$(E2FSPROGS_VERSION)                 \
-    --build-arg NODE_IMAGE=$(NODE_IMAGE)                               \
-    --build-arg CHAINLIT_VERSION=$(CHAINLIT_VERSION)                   \
-    --build-arg ORACLEDB_VERSION=$(ORACLEDB_VERSION)                   \
-    --build-arg ORACLEDB_SHA256=$(ORACLEDB_SHA256)                     \
-    --build-arg ORACLEDB_LOCAL=$(ORACLEDB_LOCAL)                       \
-    --build-arg CYTHON_VERSION=$(CYTHON_VERSION)                       \
-    --build-arg JOBS=$(JOBS) $(CACHE_SCOPE_ARG)
+BUILD_ARGS       = --build-arg PYTHON_VERSION=$(PYTHON_VERSION) --build-arg GLIBC_IMAGE=$(GLIBC_IMAGE) \
+    --build-arg GCC_IMAGE=$(GCC_IMAGE) --build-arg PYTHON_IMAGE=$(PYTHON_IMAGE)                       \
+    --build-arg BWRAP_VERSION=$(BWRAP_VERSION) --build-arg LIBFUSE_VERSION=$(LIBFUSE_VERSION)          \
+    --build-arg E2FSPROGS_VERSION=$(E2FSPROGS_VERSION) --build-arg ORACLEDB_VERSION=$(ORACLEDB_VERSION) \
+    --build-arg ORACLEDB_SHA256=$(ORACLEDB_SHA256) --build-arg ORACLEDB_LOCAL=$(ORACLEDB_LOCAL)        \
+    --build-arg CYTHON_VERSION=$(CYTHON_VERSION) --build-arg NUITKA_VERSION=$(NUITKA_VERSION)          \
+    --build-arg PATCHELF_VERSION=$(PATCHELF_VERSION) --build-arg ORDERED_SET_VERSION=$(ORDERED_SET_VERSION)
 
-# аргументы стадий одного приложения
-APP_ARGS         = --build-arg APP_PACKAGES="$(APP_PACKAGES)"       \
-    --build-arg APP_IMPORTS="$(APP_IMPORTS)"                        \
-    --build-arg BOBA_DIR="$(DEST_DIR)" $(APP_BUILD_ARGS)
-
-# аргументы стадий образа корня плагина: образ один на все приложения
-PLUGIN_ARGS      = --build-arg SANDBOX_DEV_KRB="$(SANDBOX_DEV_KRB)" --build-arg BOBA_DIR="$(DEST_DIR)"
-
-# сборка стадии в образ: $(1) — стадия, $(2) — тег, $(3) — дополнительные аргументы
-define docker-stage
-$(DOCKER_BUILD) -f $(BASE_DIR)/Dockerfile $(NO_CACHE_OPT) $(DOCKER_ARGS) $(PROXY_ARGS) $(3) \
-    --target $(1) --tag $(2) $(BUILD_CONTEXT)
+# стадия base.Dockerfile в образ: $(1) — стадия, $(2) — тег, $(3) — аргументы
+define base-stage
+$(DOCKER_BUILD) -f $(BUILD)/base.Dockerfile $(BUILD_ARGS) $(3) --target $(1) --tag $(2) $(ROOT)
 endef
 
-# образ стадии без тега: $(1) — стадия, $(2) — файл для ID образа, $(3) — аргументы.
-# Лог сборки уходит в stderr: stdout рецепта бывает занят tar'ом
-define docker-image
-$(DOCKER_BUILD) -f $(BASE_DIR)/Dockerfile $(NO_CACHE_OPT) $(DOCKER_ARGS) $(PROXY_ARGS) $(3) \
-    --target $(1) --iidfile "$(2)" $(BUILD_CONTEXT) >&2
-endef
-
-# основа образа приложения с песочницей: стадия runtime-sandbox (ID образа в файле $(1)) и
-# поверх неё модели приложения, образы корней плагинов и workspace — сборка
-# build/sandbox.Dockerfile в контексте $(RUNTIME_DIR), из которого .dockerignore пускает
-# только их. Отпечаток основы и файлов (размер, время) лежит меткой образа: с тем же
-# отпечатком образ берётся готовым и гигабайты контекста в демон не уходят
-define sandbox-image
-base=$$(cat "$(1)")
-printf '%s\n' '*' $(APP_MODELS:%='!models/%') $(APP_MODEL_IMAGES:%='!models/%.ext4') \
-    '!sandbox/workspace.ext4' '!sandbox/plugins' > "$(RUNTIME_DIR)/.dockerignore"
-stamp=$$({ echo "$$base"; cat "$(BASE_DIR)/sandbox.Dockerfile" "$(RUNTIME_DIR)/.dockerignore"; find "$(SANDBOX_DIR)/plugins" "$(SANDBOX_DIR)/workspace.ext4" $(APP_MODELS:%="$(MODELS_DIR)/%") $(APP_MODEL_IMAGES:%="$(MODELS_DIR)/%.ext4") -type f -printf '%p %s %T@\n' | sort; } | sha256sum | cut -c1-16)
-built=$$(docker image inspect --format '{{index .Config.Labels "boba.sandbox"}}' "$(SANDBOX_IMAGE)" 2>/dev/null || true)
-if [ "$$built" = "$$stamp" ] && [ "$(NO_CACHE)" != 1 ]; then
-    echo "    $(SANDBOX_IMAGE): модели, образы плагинов и основа не менялись, образ готов"
-else
-    $(DOCKER_BUILD) -f "$(BASE_DIR)/sandbox.Dockerfile" $(NO_CACHE_OPT) --build-arg RUNTIME_SANDBOX="$$base" \
-        --build-arg BOBA_DIR="$(DEST_DIR)" --label boba.sandbox="$$stamp" --tag "$(SANDBOX_IMAGE)" "$(RUNTIME_DIR)"
-fi
-endef
-
-# программа приложения на Nuitka: образ дерева колёс app-site с инструментами (файл с
-# ID — $(1)) идёт docker run'ом без сети со сценарием nuitka.sh и кэшем NUITKA_CACHE;
-# каталог <программа>.dist заменяет прежний в runtime/bin целиком
-define nuitka-program
-mkdir -p "$(NUITKA_CACHE)" "$(RUNTIME_DIR)/bin"
-stage=$$(mktemp -d "$(STAGE_TEMPLATE)")
-docker run --rm --network none -u "$(RUN_OWNER)" -v "$(NUITKA_CACHE):/cache" \
-    -v "$(SCRIPTS_DIR):/scripts:ro" -v "$(CONF_DIR):/conf:ro" -v "$$stage:/out" \
-    --entrypoint sh "$$(cat "$(1)")" /scripts/nuitka.sh /opt/app-site "/opt/app-site/$(APP_ENTRY)" "$(NAME_$(APP))" /out $(JOBS) < /dev/null
-rm -rf "$(RUNTIME_DIR)/bin/$(NAME_$(APP)).dist"
-mv "$$stage/$(NAME_$(APP)).dist" "$(RUNTIME_DIR)/bin/"
-rm -rf "$$stage"
-endef
-
-# слой бинарника программы поверх основы с песочницей: сборка build/program.Dockerfile в
-# контексте runtime/bin, из которого .dockerignore пускает только эту программу
-define program-image
-printf '%s\n' '*' '!$(NAME_$(APP)).dist' > "$(RUNTIME_DIR)/bin/.dockerignore"
-$(DOCKER_BUILD) -f "$(BASE_DIR)/program.Dockerfile" $(NO_CACHE_OPT) --build-arg BASE_IMAGE="$(SANDBOX_IMAGE)" \
-    --build-arg BOBA_DIR="$(DEST_DIR)" --build-arg PROGRAM="$(NAME_$(APP))" --tag "$(PROGRAM_IMAGE)" "$(RUNTIME_DIR)/bin"
-endef
-
-# mke2fs из runtime/libexec в контейнере glibc: $(1) — скрипт, $(2) — каталог результата,
-# $(3) — аргументы скрипта, $(4) — дополнительные тома docker (источник дерева образа).
-# root в контейнере нужен, чтобы сохранить владельцев из tar
-define mke2fs-run
-docker run --rm -i --network none -e MKE2FS_CONFIG=/tools/mke2fs.conf -e PATH=/tools:/usr/sbin:/usr/bin:/sbin:/bin \
-    -v "$(LIBEXEC_DIR):/tools:ro" -v "$(SCRIPTS_DIR):/scripts:ro" -v "$(2):/out" $(4) \
-    --entrypoint sh $(GLIBC_IMAGE) /scripts/$(1) $(3) "$(RUN_OWNER)"
-endef
-
-# образ данных песочницы $(1) из уже скачанного каталога весов $(MODELS_DIR)/$(1): ext4
-# рядом с каталогом; в сеть не ходит, источник монтируется в контейнер read-only.
-# Пересобирается, когда образа нет или в каталоге модели либо в скрипте есть файл новее
-define model-image
-image="$(MODELS_DIR)/$(1).ext4"
-if [ -e "$$image" ] && [ -z "$$(find "$(MODELS_DIR)/$(1)" "$(SCRIPTS_DIR)/mkmodels.sh" -newer "$$image" -print -quit)" ]; then
-    echo "    $$image: модель не менялась, образ готов"
-else
-    echo "== образ данных $(1): $(MODELS_DIR)/$(1) -> $$image =="
-    stage=$$(mktemp -d "$(STAGE_TEMPLATE)")
-    $(call mke2fs-run,mkmodels.sh,$$stage,/out/$(1).ext4 /src $(1) 16,-v "$(MODELS_DIR)/$(1):/src:ro") < /dev/null
-    chmod 0644 "$$stage/$(1).ext4"
-    mv -f "$$stage/$(1).ext4" "$$image"
-    rm -rf "$$stage"
-fi
-endef
-
-# в интернет ходит только fetch (и all, который начинается с него): цель, которой не
-# хватило входа, падает с подсказкой, а не качает его сама мимо реестров
-FETCH_GOALS     := $(filter fetch all,$(MAKECMDGOALS))
-define fetch-only
-if [ -z "$(FETCH_GOALS)" ]; then
-    echo "нет $@ — его кладёт make fetch, другие цели в интернет не ходят" >&2
-    exit 1
-fi
-endef
-
-# загрузка: $(1) — url, $(2) — файл
-define fetch
-$(fetch-only)
-mkdir -p "$(dir $(2))"
-curl -fSL $(CURL_OPTS) -o "$(2)" "$(1)"
-endef
-
-# скрипт загрузки моделей в образе base: $(1) — pip-пакет качалки, $(2) — каталог назначения,
-# $(3) — аргументы fetch_models.py. Версии пакетов держит $(FETCH_CONSTRAINTS), файлы
-# отдаются владельцу хоста
-define fetch-model
-$(fetch-only)
-mkdir -p "$(2)"
-docker run --rm $(PROXY_ENV) -e HF_ENDPOINT="$(HF_URL)"             \
-    -v "$(2)":/out -v "$(SCRIPTS_DIR)":/scripts:ro                  \
-    -v "$(FETCH_CONSTRAINTS)":/constraints.txt:ro                   \
-    --entrypoint sh $(BASE_IMAGE) -c '
-        set -e
-        pip3 install --no-cache-dir --constraint /constraints.txt "$(1)"
-        python3 /scripts/fetch_models.py $(3)
-        chown -R $(RUN_OWNER) /out'
-endef
-
-# дерево релиза из образа: $(1) — образ, $(2) — путь внутри, $(3) — куда
+# каталог $(2) образа $(1) в каталог хоста $(3) целиком
 define image-copy
+rm -rf "$(3)" && mkdir -p "$(dir $(3))"
 cid=$$(docker create $(1) /bin/true)
 docker cp "$$cid:$(2)" "$(3)"
 docker rm "$$cid" > /dev/null
 endef
 
-# наличие путей: $(1) — список, $(2) — подсказка, что сделать
-define check
-for path in $(1); do
-    if [ ! -e "$$path" ]; then
-        echo "нет $$path — $(2)" >&2
-        exit 1
-    fi
-done
+# сумма дерева $(2) образа $(1) по путям, режимам и содержимому файлов (без времени):
+# в файл $@ она пишется, только если изменилась, и правила за ним не перезапускаются
+# зря. Файлы, которые docker кладёт в каждый контейнер, не считаются
+define tree-sum
+docker run --rm --network none --entrypoint sh $(1) -c 'cd "$(2)" \
+    && find . -xdev \( -path ./proc -o -path ./sys -o -path ./dev -o -path ./.dockerenv \
+                       -o -path ./etc/hosts -o -path ./etc/hostname -o -path ./etc/resolv.conf \) -prune \
+              -o -printf "%p %m %U %G %l\n" | LC_ALL=C sort \
+    && find . -xdev \( -path ./proc -o -path ./sys -o -path ./dev -o -path ./.dockerenv \
+                       -o -path ./etc/hosts -o -path ./etc/hostname -o -path ./etc/resolv.conf \) -prune \
+              -o -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum' | sha256sum > "$@.new"
+if cmp -s "$@.new" "$@"; then rm "$@.new"; else mv "$@.new" "$@"; fi
 endef
 
-# установка в runtime/ без окна: результат готовится во временном каталоге внутри
-# runtime/ (та же файловая система) и ставится на место переименованием. У работающих
-# приложения и тестов всегда есть либо прежний файл, либо новый; открытый образ
-# процесс дочитывает прежним
-STAGE_TEMPLATE  := $(RUNTIME_DIR)/.stage.XXXXXX
-
-# файлы дерева $(1) — на те же места в каталоге $(2), каждый переименованием
-define install-tree
-find "$(1)" ! -type d -printf '%P\n' | while IFS= read -r name; do
-    mkdir -p "$(2)/$$(dirname "$$name")"
-    mv -f "$(1)/$$name" "$(2)/$$name"
-done
-endef
-
-# каталоги данных $(1) — фиксированная раскладка [instance].data_dir: дампы, билеты,
-# вложения и приватные каталоги агента, у приложения с песочницей — ещё workspace
-# пользователей и журналы вызовов
-define data-dirs
-mkdir -p "$(1)/dump" "$(1)/krb" "$(1)/files" "$(1)/agents"
-if [ -n "$(APP_SANDBOX)" ]; then
-    mkdir -p "$(1)/workspace" "$(1)/tool-logs"
-fi
-endef
-
-# каталог cgroup песочницы экземпляра $(1) у текущего пользователя: подкаталог sandbox
-# юнита boba-sandbox@$(1).service
-sandbox-cgroup   = /sys/fs/cgroup/user.slice/user-$(HOST_UID).slice/user@$(HOST_UID).service/boba.slice/boba-$(1).slice/boba-sandbox@$(1).service/sandbox
-USER_UNITS      := $(HOME)/.config/systemd/user
-
-# шина пользовательского systemd: systemctl --user из make без сеанса входа её не находит
-define user-bus
-export XDG_RUNTIME_DIR="$${XDG_RUNTIME_DIR:-/run/user/$(HOST_UID)}"
-export DBUS_SESSION_BUS_ADDRESS="$${DBUS_SESSION_BUS_ADDRESS:-unix:path=$$XDG_RUNTIME_DIR/bus}"
-endef
-
-# шаблон юнита песочницы -> каталог юнитов пользователя и запуск экземпляра $(1).
-# Работающий экземпляр не перезапускается: перезапуск пересоздаёт каталог sandbox, а у
-# приложения остался бы старый. Обновлённый шаблон применится при следующем старте
-define sandbox-unit
-$(user-bus)
-mkdir -p "$(USER_UNITS)"
-if ! cmp -s "$(CONF_DIR)/boba-sandbox@.service" "$(USER_UNITS)/boba-sandbox@.service"; then
-    install -m 0644 "$(CONF_DIR)/boba-sandbox@.service" "$(USER_UNITS)/boba-sandbox@.service"
-    systemctl --user daemon-reload
-    echo "    юнит песочницы: $(USER_UNITS)/boba-sandbox@.service обновлён из $(CONF_DIR)"
-fi
-systemctl --user enable --quiet "boba-sandbox@$(1).service"
-if systemctl --user --quiet is-active "boba-sandbox@$(1).service"; then
-    echo "    cgroup песочницы: boba-sandbox@$(1).service уже работает, не трогаю"
-else
-    systemctl --user start "boba-sandbox@$(1).service"
-    echo "    cgroup песочницы: boba-sandbox@$(1).service запущен"
-fi
-endef
-
-# .env дерева compose называет каждую переменную docker-compose.yml: значений по
-# умолчанию в compose-файлах нет, и пропущенная переменная молча стала бы пустой строкой
-COMPOSE_VARS     = BOBA_USER BOBA_NETWORK BOBA_NETWORK_EXTERNAL BOBA_ADDRESS \
-                   $(if $(APP_SANDBOX),BOBA_SANDBOX_CGROUP)
-COMPOSE_REQUIRED = BOBA_USER BOBA_NETWORK BOBA_NETWORK_EXTERNAL $(if $(APP_SANDBOX),BOBA_SANDBOX_CGROUP)
-define compose-env-check
-for name in $(COMPOSE_VARS); do
-    if ! grep -q "^$$name=" "$(OUT)/.env"; then
-        echo "$(OUT)/.env: нет строки $$name= — добавь её по образцу $(CONF_DIR)/compose.env.example" >&2
-        exit 1
-    fi
-done
-for name in $(COMPOSE_REQUIRED); do
-    if grep -q "^$$name=$$" "$(OUT)/.env"; then
-        echo "$(OUT)/.env: $$name пуста — значение обязательно, см. $(CONF_DIR)/compose.env.example" >&2
-        exit 1
-    fi
-done
-if [ -n "$(APP_SANDBOX)" ]; then
-    cgroup=$$(sed -n 's|^BOBA_SANDBOX_CGROUP=||p' "$(OUT)/.env")
-    if [ ! -d "$$cgroup" ]; then
-        echo "$(OUT)/.env: каталога BOBA_SANDBOX_CGROUP нет: $$cgroup — запусти юнит: systemctl --user start boba-sandbox@$(APP).service" >&2
-        exit 1
-    fi
-fi
-network=$$(sed -n 's|^BOBA_NETWORK=||p' "$(OUT)/.env")
-if grep -q "^BOBA_NETWORK_EXTERNAL=true$$" "$(OUT)/.env" && ! docker network inspect "$$network" > /dev/null 2>&1; then
-    echo "$(OUT)/.env: сети $$network нет, а BOBA_NETWORK_EXTERNAL=true — создай её: docker network create $$network" >&2
-    exit 1
-fi
-echo "    .env проверен: $(OUT)/.env"
-endef
-
-# config.toml экземпляра пишет администратор: в нём устройство приложения, адреса и
-# секреты машины. Цель его не порождает. $(1) — каталог conf
-define config-hint
-if [ -e "$(1)/config.toml" ]; then
-    echo "    config.toml на месте: $(1)/config.toml"
-else
-    echo "    нет $(1)/config.toml — напиши его (docs/admin-guide.md, раздел «Конфигурация»)"
-fi
-endef
-
-# проверка машины: $(1) — compose, debug или systemd
-define host-check
-"$(SCRIPTS_DIR)/hostcheck.sh" $(1) $(if $(APP_SANDBOX),sandbox,plain)
-endef
-
-# --- справка --------------------------------------------------------------------
+# --- справка ---------------------------------------------------------------------
 
 define HELP
-Сборка boba $(VERSION): образы boba-aid и boba-mcp, образы корней плагинов, агент boba
+Сборка boba $(VERSION)
 
-С нуля по порядку (каждый шаг кладёт то, что нужно следующему):
-  fetch                 артефакты и модели из сети -> build/src, runtime/models
-  sandbox               bwrap, fuse2fs, mke2fs, шаблон workspace.ext4 -> runtime/libexec, runtime/sandbox
-  models-image          образы данных из скачанных моделей -> runtime/models/<модель>.ext4
-  plugin-rootfs-all     образы корней плагинов -> runtime/sandbox/plugins (уезжают в образ mcp)
-  test                  собрать оба образа и проверить их: test = build + проверка в образе
-  all                   всё это и фронт для отладки (web): fetch, sandbox и общие стадии образов
-                        первыми, затем ветки по PARALLEL одновременно — плагины, модели, aid с web,
-                        boba, после плагинов и моделей mcp (лог ветки — release/logs/all/<ветка>.log),
-                        в конце деревья compose (dev)
+Цели:
+  help                  эта справка (цель по умолчанию)
+  fetch                 всё внешнее, что не из реестров, curl'ом в build/src: uv,
+                        bubblewrap, libfuse, e2fsprogs, тег chainlit $(CHAINLIT_VERSION),
+                        KaTeX/Inter/mermaid, модели $(MODELS); нужен интернет
+  all                   все детали, кроме testapps, офлайн; на машине с интернетом — make fetch all
+  build APP=<деталь>    одна деталь со всем, что ей нужно
+  version               версия пакетов; падает, если версии или пины boba-* разошлись
+  version-set VER=X.Y.Z версия и пины boba-* во всех pyproject.toml
 
-Входы:
-  fetch                 tarball'ы bwrap/libfuse/e2fsprogs, uv, исходники chainlit $(CHAINLIT_VERSION),
-                        katex/Inter/mermaid, модели rapidocr и fastembed, колесо python-oracledb
-                        $(ORACLEDB_VERSION)+$(ORACLEDB_LOCAL); с BIN_ONNX=1 — ещё модели onnx-genai
-  base                  образ сборки $(BASE_IMAGE): gcc, python, uv, CA и индексы контура
-  oracledb-wheel        только колесо python-oracledb -> build/src/oracledb (для .venv, его зовёт dev.sh)
+Детали (APP=):
+  mcp                   образ boba-mcp:$(TAG): сервер, программы плагинов ($(GROUPS)),
+                        корни песочниц rootfs/{$(subst $(space),$(comma),$(ROOTFS))}.ext4, libexec, workspace.ext4
+  boba                  образ boba:$(TAG): агент с onnxruntime-genai, без моделей
+  aid                   образ boba-aid:$(TAG): чат (python) и его фронт
+  plugins-<группа>      программа группы плагинов -> build/out/compiled/plugins-<группа>,
+                        проверенная в корне каждого плагина; группы: $(GROUPS)
+  rootfs                корни песочниц ext4 -> build/out/rootfs
+  models                каталоги моделей для админа -> build/out/models/{$(subst $(space),$(comma),$(MODELS))}
+  runtime               запуск из исходников и тесты -> runtime/ (libexec, workspace, корни с
+                        python, программы плагинов на python, модели), фронт чата -> assets boba-aid
+  testapps              образ boba-testapps:$(TAG) — серверы MCP для тестов, в all не входит
+  oracledb              колесо python-oracledb $(ORACLEDB_VERSION)+$(ORACLEDB_LOCAL) для .venv -> build/out/oracledb
 
-Песочница и плагины:
-  sandbox               песочница приложений, исполняющих инструменты: $(SANDBOX_APPS)
-  plugin-rootfs         образ корня одного плагина: PLUGIN=<id> -> runtime/sandbox/plugins/<id>.ext4
-  plugin-rootfs-all     образы корней всех плагинов (entry points boba.tools), всегда заново,
-                        по PARALLEL одновременно (лог — release/logs/plugin-rootfs/<id>.log)
-  models-image          образы данных песочницы ($(MODEL_IMAGES)): ext4 рядом с каталогом модели,
-                        секции монтируют их read-only вместо каталога; пересобираются по файлам моделей
+Шаги и сеть: fetch — интернет (curl); prepare — docker build, только реестры
+контура: apt из sources.list образов dmp/*, pypi из build/conf/pip.conf и uv.toml,
+npm из образа nodejs, CA — build/conf/ca-chain.crt; compile — docker run
+--network none; image — docker build без сети.
 
-Закрытый контур:
-  offline-check         сборка без интернета: цели OFFLINE_TARGETS (по умолчанию все, кроме
-                        fetch и dev), у шагов сборки сеть none, наружу — только прокси реестров
-                        pypi, apt и npm из конфигурации сборки; обращение мимо них роняет
-                        проверку с целью, стадией и хостом. Итог — release/offline-check/report.txt
-
-Тестовые образы (не поставка):
-  testapps              boba-testapps:$(BOBA_TAG)$(if $(LATEST_TAG), и :$(LATEST_TAG)) — серверы MCP для тестов клиента:
-                        примеры MCP Apps, свой сервер на TypeScript SDK 1.x и серверы fastmcp[apps]
-                        с рендерером Prefab статикой; TESTAPPS_TAGS=<образ> — свой тег, тесты берут
-                        его --testapps-image <образ>
-
-Образы — APP=$(subst $(space),|,$(APPS)) либо <цель>-<приложение>, без APP — оба:
-  build                 образ приложения (boba-aid, boba-mcp, boba):$(BOBA_TAG)$(if $(LATEST_TAG), и :$(LATEST_TAG)); в boba — агент bin/boba.dist (Nuitka),
-                        в mcp — программа Nuitka без python (компиляция в runtime/bin, кэш
-                        NUITKA_CACHE), модели, образы корней плагинов и workspace из runtime/;
-                        недостающие или устаревшие (новее исходники пакетов плагина) собирает сам
-  test                  build, затем проверка в образе без сети: пакеты, точки входа, у boba —
-                        ход агента, итог — RESULT: ALL OK; у mcp — самопроверка бинарника
-  boba-bin              агент каталогом -> release/$(VERSION)/bin/boba.dist; BIN_ONNX=1 —
-                        bin/boba-onnx.dist с рантаймом onnxruntime-genai (вторая компиляция Nuitka)
-
-Деревья запуска (тоже по APP):
-  dev                   compose/<приложение>: conf/krb, data, .env, юнит песочницы (mcp), владельцы
-  debug                 debug/<приложение> и .vscode из образцов; для aid собирает фронт (web)
-  dev-db                базы разработчика: DEVELOPER=<логин> SOURCE=<база стенда> TEMPLATE=<шаблон>
-                        CH_CLUSTER=<кластер>; aid_<логин>, playground_<логин> в postgres и ClickHouse,
-                        соединения стенда на них. Postgres — PGHOST/PGUSER…, ClickHouse — CH_URL,
-                        CH_AUTH=negotiate|password (CH_USER, CH_PASSWORD)
-  release               дерево установки из образа -> release/$(VERSION)/<экземпляр>;
-                        INSTANCE=<имя> (по умолчанию имя приложения), INSTALL_ROOT=$(INSTALL_ROOT),
-                        BUNDLE_OS_LIBS=1 — с системными библиотеками образа в third/lib
-  install               дерево релиза в INSTALL_ROOT/boba-<экземпляр> и юниты systemd пользователя
-
-Фронт чата на хосте (для debug; образ собирает его сам):
-  web                   page.js, UI chainlit (фронт + copilot) и vendor в assets пакета boba-aid
-  chainlit-ui           UI chainlit заново
-
-Обслуживание:
-  version               версия пакетов
-  version-set           проставить версию во все pyproject.toml: VER=X.Y.Z
-  version-check         версии и пины boba-* совпадают
-  vscode                .vscode из образцов build/conf/vscode; готовые файлы не трогает
-  prune                 старые теги образов, образы без тега, кэш BuildKit до PRUNE_KEEP=$(PRUNE_KEEP).
-                        Образы без тега — кэш классического сборщика: после prune сборке
-                        снова нужны apt-зеркало и реестры
-  clean                 release, артефакты fetch в build/src, собранный фронт, runtime/libexec,
-                        runtime/bin и runtime/sandbox (песочница, программы и образы плагинов);
-                        модели и кэш компиляции NUITKA_CACHE остаются
-  sec                   sec.sh, MODE=all|full|sast|sca|rules
-
-Переменные: JOBS=$(JOBS) — заданий на шаг сборки; входит в ключ кэша, другое значение
-пересобирает всё от base — держать одно. PARALLEL=$(PARALLEL) — сколько веток all и образов
-корней плагинов собирать одновременно (около 4 ГБ памяти на образ плагина). NO_CACHE=1, BOBA_TAG, LATEST_TAG (пусто — без
-второго тега), BASE_IMAGE, BIN_ONNX=1, PLUGIN, VER, MODE, INSTANCE, INSTALL_ROOT, BUNDLE_OS_LIBS=1, PRUNE_KEEP, PYTHON_VERSION=$(PYTHON_VERSION),
-GLIBC_IMAGE, GCC_IMAGE, PYTHON_IMAGE, NODE_IMAGE, TESTAPPS_NODE_IMAGE. Версии и состав
-входов: UV_VERSION, BWRAP_VERSION, LIBFUSE_VERSION, E2FSPROGS_VERSION, CHAINLIT (файл
-UPSTREAM), KATEX_VERSION, INTER_VERSION, MERMAID_VERSION, ORACLEDB_VERSION, NUITKA_VERSION,
-NUITKA_CACHE (ccache и кэш Nuitka программ между сборками),
-RAPIDOCR_LANGS, EMBED_MODELS, ONNX_MODELS, SANDBOX_WS_SIZE (размер workspace), PNPM_STORE
-(store pnpm цели chainlit-ui между сборками). PYTHON — python хоста для скриптов сборки
-(.venv). Значения для машины — в conf/local.mk.
-
-Сеть: в интернет ходит только fetch, остальные цели — только в реестры. apt — зеркало из
-sources.list образов dmp/*: стадии base, oracledb-wheel, bwrap-build, fuse2fs-build,
-sandbox-base, plugin-root, runtime-os. Классический сборщик проходит стадии до цели по
-порядку Dockerfile, повторно — из кэша. pypi — conf/pip.conf, conf/uv.toml; npm — npmrc
-образа nodejs; CA — conf/ca-chain.crt; прокси из env уходит в docker. BUILD_NETWORK — сеть
-шагов сборки, CACHE_SCOPE — своя область кэша; их ставит offline-check. Зеркала fetch:
-UV_URL, BWRAP_URL, LIBFUSE_URL, E2FSPROGS_URL, RAPIDOCR_REPO, KATEX_URL, INTER_URL,
-MERMAID_URL, HF_URL, CHAINLIT_SRC_URL. Хосту нужны docker, make и python >= 3.11 (.venv).
+Переменные: PARALLEL=$(PARALLEL) (рецептов сразу), JOBS=$(JOBS) (заданий компилятора
+в одной компиляции Nuitka), TAG=$(TAG), NO_CACHE=1 (docker build --no-cache),
+версии и адреса внешних артефактов (*_VERSION, *_URL, HF_URL), образы dmp/*
+(GLIBC_IMAGE, GCC_IMAGE, PYTHON_IMAGE, NODE_IMAGE). Значения машины — в build/conf/local.mk.
 endef
+empty           :=
+space           := $(empty) $(empty)
+comma           := ,
 
-.PHONY: help
+.PHONY: help all build version version-set fetch FORCE
 help:
 	@:$(info $(HELP))
 
-# --- версия ---------------------------------------------------------------------
+FORCE:
 
-.PHONY: version version-set version-check
+all: app-mcp app-boba app-aid app-models app-runtime app-oracledb
+
+build: app-$(APP)
+
+# --- версия ------------------------------------------------------------------------
+
+PYPROJECTS       = $(shell find $(ROOT)/packages -name pyproject.toml -not -path '*/node_modules/*')
+
 version:
-	@echo $(VERSION)
+	@versions=$$(sed -n 's/^version = "\(.*\)"$$/\1/p' $(PYPROJECTS) | sort -u)
+	pins=$$(grep -ohE '"boba-[a-z0-9-]+(\[[a-z0-9,_-]+\])?==[^"]+"' $(PYPROJECTS) | sed 's/.*==\(.*\)"/\1/' | sort -u)
+	if [ "$$versions" != "$(VERSION)" ] || [ -n "$$(echo "$$pins" | grep -vx '$(VERSION)' || true)" ]; then
+	    echo "versions of the packages differ: versions [$$(echo $$versions)], pins boba-*== [$$(echo $$pins)]; set one with make version-set VER=X.Y.Z" >&2
+	    exit 1
+	fi
+	echo "$(VERSION)"
 
 version-set:
-	@$(VERSION_PY) set $(SRC_DIR)/packages "$(VER)"
+	@if ! [[ "$(VER)" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.dev[0-9]+)?$$ ]]; then
+	    echo "version-set expects VER=X.Y.Z or X.Y.Z.devN, got '$(VER)'" >&2
+	    exit 1
+	fi
+	sed -i -E -e 's/^version = ".*"$$/version = "$(VER)"/' \
+	    -e 's/("boba-[a-z0-9-]+(\[[a-z0-9,_-]+\])?==)[^"]+"/\1$(VER)"/g' $(PYPROJECTS)
+	echo "version $(VER) is set; refresh uv.lock: uv lock"
 
-version-check:
-	@$(VERSION_PY) check $(SRC_DIR)/packages
+# --- fetch -------------------------------------------------------------------------
 
-# --- входы: fetch и образ сборки ---------------------------------------------------
+fetch: $(FETCHED)
+	@du -sh $(SRC)/* | sort -k2
 
-.PHONY: fetch
-fetch: $(INPUTS)
-	@du -sh $(DEPS_DIR)/* $(MODELS_DIR)/*
+# в интернет ходит только fetch: входа, которого нет, другие цели не качают сами
+define fetch-only
+if [ -z "$(filter fetch,$(MAKECMDGOALS))" ]; then
+    echo "missing $@: make fetch puts it there, the other goals do not go to the internet" >&2
+    exit 1
+fi
+endef
 
-$(BWRAP_TARBALL):
-	@$(call fetch,$(BWRAP_URL),$@)
+# загрузка $(1) в файл $@ через временный файл рядом: оборванная загрузка не ляжет целью
+define download
+$(fetch-only)
+mkdir -p "$(@D)"
+$(CURL) -o "$@.part" "$(1)"
+mv "$@.part" "$@"
+endef
 
-$(LIBFUSE_TARBALL):
-	@$(call fetch,$(LIBFUSE_URL),$@)
+$(SRC)/bubblewrap-%.tar.xz:
+	@$(call download,$(BWRAP_URL))
 
-$(E2FSPROGS_TARBALL):
-	@$(call fetch,$(E2FSPROGS_URL),$@)
+$(SRC)/fuse-%.tar.xz:
+	@$(call download,$(LIBFUSE_URL))
+
+$(SRC)/e2fsprogs-%.tar.xz:
+	@$(call download,$(E2FSPROGS_URL))
 
 $(CHAINLIT_TARBALL):
-	@$(call fetch,$(CHAINLIT_SRC_URL),$@)
+	@$(call download,$(CHAINLIT_URL))
 
-$(UV_BIN):
-	@tmp=$$(mktemp -d)
-	trap 'rm -rf "$$tmp"' EXIT
-	$(call fetch,$(UV_URL),$$tmp/uv.tar.gz)
-	tar -xzf "$$tmp/uv.tar.gz" -C "$$tmp"
-	install -D -m 0755 "$$tmp/uv-$(UV_PLATFORM)/uv" "$@"
-	"$@" --version
-
-# колесо патченного python-oracledb: стадия oracledb-wheel, наружу для .venv хоста.
-# Пересобирается по патчу: прочие правки Dockerfile колесо не меняют
-.PHONY: oracledb-wheel
-oracledb-wheel: $(ORACLEDB_WHEEL)
-
-$(ORACLEDB_WHEEL): $(SCRIPTS_DIR)/oracledb-$(ORACLEDB_VERSION)-arrow-duplicates.patch | base
-	@echo "== колесо python-oracledb $(ORACLEDB_VERSION)+$(ORACLEDB_LOCAL) =="
+$(SRC)/uv/uv:
+	@$(fetch-only)
 	tmp=$$(mktemp -d)
 	trap 'rm -rf "$$tmp"' EXIT
-	$(call docker-image,oracledb-wheel,$$tmp/oracledb.iid)
-	rm -rf "$(ORACLEDB_DIR)"
-	$(call image-copy,$$(cat "$$tmp/oracledb.iid"),/out,$(ORACLEDB_DIR))
-	$(call check,$@,колесо не собралось: смотри вывод стадии oracledb-wheel выше)
-	echo ">>> колесо: $@"
+	$(CURL) -o "$$tmp/uv.tar.gz" "$(UV_URL)"
+	tar -xzf "$$tmp/uv.tar.gz" -C "$$tmp" --strip-components=1
+	install -D -m 0755 "$$tmp/uv" "$@"
 
-# модели OCR: детектор и классификатор общие, распознаватель — на язык (boba.doc OcrModel)
-$(MODELS_DIR)/rapidocr/ch_PP-OCRv5_det_mobile.onnx:
-	@$(call fetch,$(RAPIDOCR_REPO)/PP-OCRv5/det/$(notdir $@),$@)
-
-$(MODELS_DIR)/rapidocr/ch_ppocr_mobile_v2.0_cls_mobile.onnx:
-	@$(call fetch,$(RAPIDOCR_REPO)/PP-OCRv4/cls/$(notdir $@),$@)
-
-$(MODELS_DIR)/rapidocr/%_PP-OCRv5_rec_mobile.onnx:
-	@$(call fetch,$(RAPIDOCR_REPO)/PP-OCRv5/rec/$(notdir $@),$@)
-
-# order-only: смена uv.lock не перекачивает гигабайты уже лежащих моделей
-$(FETCH_CONSTRAINTS): $(SRC_DIR)/uv.lock | $(UV_BIN)
-	@mkdir -p "$(@D)"
-	"$(UV_BIN)" export --directory "$(SRC_DIR)" --frozen --all-packages --all-extras \
-	    --no-emit-workspace --no-hashes -o "$@" > /dev/null
-
-$(MODELS_DIR)/fastembed/.%: | base $(FETCH_CONSTRAINTS)
-	@$(call fetch-model,fastembed,$(MODELS_DIR)/fastembed,fastembed "$(subst --,/,$*)" /out)
-	touch "$@"
-
-$(MODELS_DIR)/onnx-genai/%: | base $(FETCH_CONSTRAINTS)
-	@$(call fetch-model,huggingface_hub,$(MODELS_DIR)/onnx-genai,onnx "$(ONNX_REPO_$*)" "$(ONNX_SUBDIR_$*)" /out/$*)
-
-$(WEBASSETS_DIR)/katex/katex.min.css:
-	@tmp=$$(mktemp -d)
-	$(call fetch,$(KATEX_URL),$$tmp/katex.tar.gz)
+$(SRC)/webassets/katex/katex.min.css:
+	@$(fetch-only)
+	tmp=$$(mktemp -d)
+	trap 'rm -rf "$$tmp"' EXIT
+	$(CURL) -o "$$tmp/katex.tar.gz" "$(KATEX_URL)"
 	tar -xzf "$$tmp/katex.tar.gz" -C "$$tmp" --wildcards katex/katex.min.css 'katex/fonts/*.woff2'
 	mkdir -p "$(@D)/fonts"
-	cp "$$tmp/katex/katex.min.css" "$(@D)/"
 	cp "$$tmp"/katex/fonts/*.woff2 "$(@D)/fonts/"
-	rm -rf "$$tmp"
+	cp "$$tmp/katex/katex.min.css" "$@"
 
-$(WEBASSETS_DIR)/inter/inter.css:
-	@tmp=$$(mktemp -d)
-	$(call fetch,$(INTER_URL),$$tmp/inter.tgz)
+$(SRC)/webassets/inter/inter.css:
+	@$(fetch-only)
+	tmp=$$(mktemp -d)
+	trap 'rm -rf "$$tmp"' EXIT
+	$(CURL) -o "$$tmp/inter.tgz" "$(INTER_URL)"
 	tar -xzf "$$tmp/inter.tgz" -C "$$tmp"
 	mkdir -p "$(@D)/files"
-	: > "$@"
+	: > "$$tmp/inter.css"
 	for weight in $(INTER_WEIGHTS); do
-	    cat "$$tmp/package/$$weight.css" >> "$@"
+	    cat "$$tmp/package/$$weight.css" >> "$$tmp/inter.css"
 	    cp "$$tmp"/package/files/inter-*-$$weight-normal.woff2 "$(@D)/files/"
 	done
-	rm -rf "$$tmp"
+	mv "$$tmp/inter.css" "$@"
 
-$(WEBASSETS_DIR)/mermaid/mermaid.min.js:
-	@tmp=$$(mktemp -d)
-	$(call fetch,$(MERMAID_URL),$$tmp/mermaid.tgz)
+$(SRC)/webassets/mermaid/mermaid.min.js:
+	@$(fetch-only)
+	tmp=$$(mktemp -d)
+	trap 'rm -rf "$$tmp"' EXIT
+	$(CURL) -o "$$tmp/mermaid.tgz" "$(MERMAID_URL)"
 	tar -xzf "$$tmp/mermaid.tgz" -C "$$tmp" package/dist/mermaid.min.js
+	install -D -m 0644 "$$tmp/package/dist/mermaid.min.js" "$@"
+
+# OCR: детектор и классификатор общие, распознаватель — на язык (boba.doc OcrModel)
+$(SRC)/models/rapidocr/ch_PP-OCRv5_det_mobile.onnx:
+	@$(call download,$(RAPIDOCR_URL)/PP-OCRv5/det/$(@F))
+
+$(SRC)/models/rapidocr/ch_ppocr_mobile_v2.0_cls_mobile.onnx:
+	@$(call download,$(RAPIDOCR_URL)/PP-OCRv4/cls/$(@F))
+
+$(SRC)/models/rapidocr/%_PP-OCRv5_rec_mobile.onnx:
+	@$(call download,$(RAPIDOCR_URL)/PP-OCRv5/rec/$(@F))
+
+$(SRC)/models/fastembed/$(FASTEMBED_CACHE)/snapshots/$(FASTEMBED_REV)/%:
+	@$(call download,$(HF_URL)/$(FASTEMBED_REPO)/resolve/$(FASTEMBED_REV)/$*)
+
+$(SRC)/models/fastembed/$(FASTEMBED_CACHE)/refs/main:
+	@$(fetch-only)
 	mkdir -p "$(@D)"
-	cp "$$tmp/package/dist/mermaid.min.js" "$@"
-	rm -rf "$$tmp"
+	printf '%s' "$(FASTEMBED_REV)" > "$@"
 
-# среда сборки и качалок моделей: gcc + python + индексы и CA закрытого контура
-.PHONY: base
-base: $(UV_BIN)
-	@$(VERSION_PY) python-check $(SRC_DIR)/packages $(PYTHON_VERSION)
-	echo "== образ сборки $(BASE_IMAGE) =="
-	$(call docker-stage,base,$(BASE_IMAGE),$(if $(LATEST_TAG),--tag boba-base:$(LATEST_TAG)))
+$(SRC)/models/onnx-genai/%:
+	@$(call download,$(ONNX_URL_$(firstword $(subst /, ,$*)))/$(@F))
 
-# --- песочница и плагины ---------------------------------------------------------
+# --- prepare: образы среды сборки ---------------------------------------------------
 
-# песочница приложения: bwrap и fuse2fs, шаблон workspace
-.PHONY: sandbox
-sandbox: version-check
-	@$(call check,$(SANDBOX_INPUTS),запусти: make fetch)
-	echo "== песочница: bwrap, fuse2fs, mke2fs и шаблон workspace =="
-	mkdir -p "$(SANDBOX_DIR)"
-	tmp= stage=
-	trap 'rm -rf "$$tmp" "$$stage"' EXIT
-	tmp=$$(mktemp -d)
-	stage=$$(mktemp -d "$(STAGE_TEMPLATE)")
-	$(call docker-image,sandbox-out,$$tmp/sandbox.iid)
-	$(call image-copy,$$(cat "$$tmp/sandbox.iid"),/libexec,$$stage)
-	chmod 0755 "$$stage/libexec/bwrap" "$$stage/libexec/fuse2fs" "$$stage/libexec/mke2fs"
-	# mke2fs-run берёт mke2fs из runtime/libexec: вспомогательные программы ставятся первыми
-	$(call install-tree,$$stage/libexec,$(LIBEXEC_DIR))
-	$(call mke2fs-run,mkworkspace.sh,$$stage,/out/workspace.ext4 $(SANDBOX_WS_SIZE)) < /dev/null
-	# режим файла уезжает в образ mcp как есть: классический COPY не умеет --chmod
-	chmod 0644 "$$stage/workspace.ext4"
-	mv -f "$$stage/workspace.ext4" "$(SANDBOX_DIR)/workspace.ext4"
-	# TrustedBinaries отвергает каталог, открытый группе на запись
-	chmod -R go-w "$(LIBEXEC_DIR)"
-	chmod go-w "$(RUNTIME_DIR)"
-	# docker cp оставляет время файла из слоя образа: по нему make счёл бы результат старше входов
-	touch $(SANDBOX_PARTS) $(SANDBOX_TOOLS)
-	ls -lh $(LIBEXEC_DIR) $(SANDBOX_DIR)/workspace.ext4
+.PHONY: prepare-nuitka prepare-os prepare-pyos prepare-share
+prepare-nuitka: $(SRC)/uv/uv $(TARBALLS)
+	@$(call base-stage,nuitka,boba-build-nuitka:$(TAG))
+	$(call base-stage,base,boba-build-base:$(TAG))
 
-# результаты sandbox для сборки образа: собираются, когда их нет или входы новее
-$(SANDBOX_PARTS) $(SANDBOX_TOOLS) &: $(SANDBOX_INPUTS) $(BASE_DIR)/Dockerfile $(SCRIPTS_DIR)/mkworkspace.sh \
-        $(SCRIPTS_DIR)/e2fsprogs-$(E2FSPROGS_VERSION)-ro-mount.patch
-	@$(MAKE) -f "$(MAKEFILE)" sandbox
+# стадии base.Dockerfile идут после nuitka: она проходит общие стадии один раз, а
+# параллельные сборки того же файла берут их из кэша, а не собирают заново
+prepare-os: | prepare-nuitka
+	@$(call base-stage,os,boba-build-os:$(TAG))
 
-# образ корня одного плагина: цель читает декларации [tool.boba.sandbox] его пакета и кладёт
-# в корень программу плагина /plugin/run — подкоманды manifest, setup, zygote и call
-PLUGIN_ROOTFS    = $(SANDBOX_DIR)/plugins/$(PLUGIN).ext4
-PLUGIN_PACKAGE   = $(call plugin-package,$(PLUGIN))
+prepare-pyos: | prepare-nuitka
+	@$(call base-stage,pyos,boba-build-pyos:$(TAG))
 
-.PHONY: plugin-rootfs
-plugin-rootfs: version-check
-	@$(if $(PLUGIN),,$(error нужен PLUGIN=<id плагина>: make plugin-rootfs PLUGIN=pg))
-	$(if $(PLUGIN_PACKAGE),,$(error плагина $(PLUGIN) нет среди entry points boba.tools: $(PLUGIN_IDS)))
-	$(call check,$(SANDBOX_INPUTS),запусти: make fetch)
-	$(call check,$(SANDBOX_TOOLS),запусти: make sandbox)
-	echo "== образ корня плагина $(PLUGIN) =="
-	# корень и site-packages стримятся в mke2fs двумя tar'ами через docker cp в stdout:
-	# ext4 не оседает ни в образах, ни на диске хоста. Пути site и кода раскладывает
-	# стадия plugin-site-out, переписывать tar на хосте не нужно
-	tmp= stage= root_cid= site_cid=
-	trap 'docker rm -f $$root_cid $$site_cid > /dev/null 2>&1 || true; rm -rf "$$tmp" "$$stage"' EXIT
-	tmp=$$(mktemp -d)
-	stage=$$(mktemp -d "$(STAGE_TEMPLATE)")
-	$(call docker-image,plugin-root,$$tmp/root.iid,$(PLUGIN_ARGS) --build-arg PLUGIN=$(PLUGIN_PACKAGE))
-	$(call docker-image,plugin-site-out,$$tmp/site.iid,$(PLUGIN_ARGS) --build-arg PLUGIN=$(PLUGIN_PACKAGE))
-	root_cid=$$(docker create "$$(cat "$$tmp/root.iid")" /bin/true)
-	site_cid=$$(docker create "$$(cat "$$tmp/site.iid")" /bin/true)
-	# программа плагина: python образа над его объявлением, найденным по id
-	mkdir -p "$$tmp/run/plugin"
-	printf '#!/bin/sh\nexec python3 -m boba.sandbox.program %s "$$@"\n' "$(PLUGIN)" > "$$tmp/run/plugin/run"
-	chmod 0755 "$$tmp/run/plugin/run"
-	{
-	docker cp "$$root_cid:/." -
-	docker cp "$$site_cid:/usr" -
-	tar -C "$$tmp/run" --owner=0 --group=0 -cf - plugin
-	} | $(call mke2fs-run,mkrootfs.sh,$$stage,/out/rootfs.ext4 $(PYTHON_VERSION) 16 $(JOBS))
-	mkdir -p "$(dir $(PLUGIN_ROOTFS))"
-	mv -f "$$stage/rootfs.ext4" "$(PLUGIN_ROOTFS)"
-	echo ">>> образ корня: $(PLUGIN_ROOTFS)"
+prepare-share: $(CHAINLIT_TARBALL) $(WEBASSETS) | prepare-os
+	@$(DOCKER_BUILD) -f $(BUILD)/ui.Dockerfile --build-arg NODE_IMAGE=$(NODE_IMAGE) \
+	    --build-arg OS_IMAGE=boba-build-os:$(TAG) --build-arg CHAINLIT_VERSION=$(CHAINLIT_VERSION) \
+	    --target share --tag boba-build-share:$(TAG) $(ROOT)
+	$(call image-copy,boba-build-share:$(TAG),/share,$(OUT)/share)
 
-# образ корня плагина для сборки образа: собирается, когда его нет или новее хоть один
-# файл пакетов его закрытия, Dockerfile, сценарии корня либо uv.lock
-plugin-sources   = $(shell $(PYTHON) $(SCRIPTS_DIR)/plugin_rootfs.py sources $(SRC_DIR)/packages $(1))
-PLUGIN_ROOT_SRCS := $(BASE_DIR)/Dockerfile $(SCRIPTS_DIR)/plugin_rootfs.py $(SCRIPTS_DIR)/mkrootfs.sh \
-                    $(SRC_DIR)/pyproject.toml $(SRC_DIR)/uv.lock
+$(OUT)/libexec/bwrap $(OUT)/libexec/fuse2fs $(OUT)/libexec/mke2fs &: $(TARBALLS) $(SRC)/uv/uv \
+        $(BUILD)/base.Dockerfile $(BUILD)/patches/e2fsprogs-$(E2FSPROGS_VERSION)-ro-mount.patch | prepare-nuitka
+	@$(call base-stage,libexec,boba-build-libexec:$(TAG))
+	$(call image-copy,boba-build-libexec:$(TAG),/libexec,$(OUT)/libexec)
+	chmod -R go-w "$(OUT)/libexec"
+	touch $(OUT)/libexec/*
 
-.SECONDEXPANSION:
-$(SANDBOX_DIR)/plugins/%.ext4: $$(call plugin-sources,$$(call plugin-package,$$*)) $(PLUGIN_ROOT_SRCS) | $(SANDBOX_INPUTS) $(SANDBOX_TOOLS)
-	@mkdir -p "$(dir $(PLUGIN_STALE))"
-	echo "$*" >> "$(PLUGIN_STALE)"
+# дерево пакетов детали $*: программы — пакеты $*_PACKAGES, группы плагинов — id плагинов
+$(OUT)/site/%.sum: FORCE | prepare-nuitka
+	@mkdir -p "$(@D)"
+	$(DOCKER_BUILD) -f $(BUILD)/base.Dockerfile $(BUILD_ARGS) --target site --tag boba-build-site-$*:$(TAG) \
+	    --build-arg PACKAGES="$($*_PACKAGES)" \
+	    --build-arg PLUGINS="$(call group-plugins,$(patsubst plugins-%,%,$(filter plugins-%,$*)))" $(ROOT)
+	$(call tree-sum,boba-build-site-$*:$(TAG),/opt/site)
 
-# образы корней плагинов $(1) по PARALLEL одновременно; первый упавший останавливает
-# запуск новых и печатает хвост своего лога
-define plugin-rootfs-many
-mkdir -p "$(PLUGIN_LOG_DIR)"
-printf '%s\n' $(1) | xargs -r -P "$(PARALLEL)" -I{} bash -c '
-    log="$(PLUGIN_LOG_DIR)/{}.log"
-    echo "== образ корня плагина {}: лог $$log"
-    if ! $(MAKE) -f "$(MAKEFILE)" plugin-rootfs PLUGIN={} > "$$log" 2>&1; then
-        echo "образ корня плагина {} не собран, хвост лога $$log:" >&2
-        tail -n 30 "$$log" >&2
-        exit 255
-    fi
-    echo ">>> образ корня плагина {} готов"'
+# корень песочницы $* (плагины, чей конфиг его называет); -python — вариант для тестов
+$(OUT)/rootfs/%.sum: FORCE | prepare-nuitka prepare-os
+	@mkdir -p "$(@D)"
+	$(DOCKER_BUILD) -f $(BUILD)/rootfs.Dockerfile --build-arg BUILD_IMAGE=boba-build-nuitka:$(TAG) \
+	    --build-arg OS_IMAGE=boba-build-os:$(TAG) --build-arg PYTHON_VERSION=$(PYTHON_VERSION) \
+	    --build-arg PLUGINS="$(call rootfs-plugins,$*)" --tag boba-build-rootfs-$*:$(TAG) $(ROOT)
+	$(call tree-sum,boba-build-rootfs-$*:$(TAG),/)
+
+$(OUT)/rootfs-python/%.sum: FORCE | prepare-nuitka prepare-os
+	@mkdir -p "$(@D)"
+	$(DOCKER_BUILD) -f $(BUILD)/rootfs.Dockerfile --build-arg BUILD_IMAGE=boba-build-nuitka:$(TAG) \
+	    --build-arg OS_IMAGE=boba-build-os:$(TAG) --build-arg PYTHON_VERSION=$(PYTHON_VERSION) \
+	    --build-arg PLUGINS="$(call rootfs-plugins,$*)" --build-arg PYTHON=1 \
+	    --tag boba-build-rootfs-$*-python:$(TAG) $(ROOT)
+	$(call tree-sum,boba-build-rootfs-$*-python:$(TAG),/)
+
+# --- compile ----------------------------------------------------------------------
+
+# ext4 корня: дерево образа tar'ом в mke2fs сборки, root'ом в контейнере glibc без сети
+define rootfs-ext4
+stage=$$(mktemp -d "$(@D)/.stage.XXXXXX")
+trap 'rm -rf "$$stage"; docker rm -f "$$cid" > /dev/null 2>&1 || true' EXIT
+cid=$$(docker create $(1) /bin/true)
+docker cp "$$cid:/." - | docker run --rm -i --network none -e MKE2FS_CONFIG=/tools/mke2fs.conf \
+    -e PATH=/tools:/usr/sbin:/usr/bin:/sbin:/bin -v "$(OUT)/libexec:/tools:ro" \
+    -v "$(BUILD)/mkrootfs.sh:/mkrootfs.sh:ro" -v "$$stage:/out" --entrypoint sh $(GLIBC_IMAGE) \
+    /mkrootfs.sh /out/rootfs.ext4 $(PYTHON_VERSION) 16 $(JOBS) "$(RUN_OWNER)"
+chmod 0644 "$$stage/rootfs.ext4"
+mv -f "$$stage/rootfs.ext4" "$@"
 endef
 
-# образы всех плагинов с entry points группы boba.tools
-.PHONY: plugin-rootfs-all
-plugin-rootfs-all: version-check
-	@if [ -z "$(PLUGIN_IDS)" ]; then
-	    echo "плагинов с entry points boba.tools в $(SRC_DIR)/packages не найдено — проверь $(PYTHON): нужен .venv репозитория (source dev.sh)" >&2
-	    exit 1
-	fi
-	$(call plugin-rootfs-many,$(PLUGIN_IDS))
+$(OUT)/rootfs/%.ext4: $(OUT)/rootfs/%.sum $(BUILD)/mkrootfs.sh | $(OUT)/libexec/mke2fs
+	@$(call rootfs-ext4,boba-build-rootfs-$*:$(TAG))
 
-# образ корня плагина с программой Nuitka: голый glibc без python, в /plugin — программа
-# run и её каталог run.dist. Компиляция — docker run образа plugin-bin-site (дерево колёс
-# плагина над nuitka-tools) со сценарием nuitka.sh и каталогом кэша NUITKA_CACHE, затем в
-# голом корне проверка ldd и self-check (build/scripts/plugin_ldd.sh), затем mke2fs. Образ ложится в комплект
-# релиза, runtime/ с образами для тестов не трогается. Цель внутренняя: в справке её нет
-PLUGIN_BIN_DIR   = $(RELEASE_DIR)/$(VERSION)/plugins/$(PLUGIN)
-PLUGIN_BIN_IMAGE = $(PLUGIN_BIN_DIR)/$(PLUGIN).ext4
+$(OUT)/rootfs-python/%.ext4: $(OUT)/rootfs-python/%.sum $(BUILD)/mkrootfs.sh | $(OUT)/libexec/mke2fs
+	@$(call rootfs-ext4,boba-build-rootfs-$*-python:$(TAG))
 
-.PHONY: plugin-bin
-plugin-bin: version-check
-	@$(if $(PLUGIN),,$(error нужен PLUGIN=<id плагина>: make plugin-bin PLUGIN=mail))
-	$(if $(PLUGIN_PACKAGE),,$(error плагина $(PLUGIN) нет среди entry points boba.tools: $(PLUGIN_IDS)))
-	$(call check,$(SANDBOX_INPUTS),запусти: make fetch)
-	$(call check,$(SANDBOX_TOOLS),запусти: make sandbox)
-	echo "== программа плагина $(PLUGIN) каталогом Nuitka $(NUITKA_VERSION), JOBS=$(JOBS), кэш $(NUITKA_CACHE) =="
-	tmp= stage= root_cid=
-	trap 'docker rm -f $$root_cid > /dev/null 2>&1 || true; rm -rf "$$tmp" "$$stage"' EXIT
-	tmp=$$(mktemp -d)
-	mkdir -p "$(PLUGIN_BIN_DIR)" "$(NUITKA_CACHE)"
-	stage=$$(mktemp -d "$(PLUGIN_BIN_DIR)/.stage.XXXXXX")
-	$(call docker-image,plugin-bin-site,$$tmp/site.iid,$(PLUGIN_ARGS) $(NUITKA_TOOL_ARGS) --build-arg PLUGIN=$(PLUGIN_PACKAGE))
-	$(call docker-image,plugin-bin-root,$$tmp/root.iid,$(PLUGIN_ARGS) $(NUITKA_TOOL_ARGS) --build-arg PLUGIN=$(PLUGIN_PACKAGE))
-	mkdir -p "$$tmp/bin/plugin"
-	docker run --rm --network none -u "$(RUN_OWNER)" -v "$(NUITKA_CACHE):/cache" \
-	    -v "$(SCRIPTS_DIR):/scripts:ro" -v "$(CONF_DIR):/conf:ro" -v "$$tmp/bin/plugin:/out" \
-	    --entrypoint sh "$$(cat "$$tmp/site.iid")" /scripts/nuitka.sh /opt/code-sandbox:/opt/site \
-	    /opt/code-sandbox/boba/sandbox/program.py run /out $(JOBS) $(PLUGIN) < /dev/null
-	docker run --rm --network none --entrypoint dpkg-query $(GLIBC_IMAGE) -W -f '$${Package}\n' > "$$tmp/base.txt"
-	docker run --rm --network none -v "$$tmp/bin/plugin:/plugin:ro" -v "$(SCRIPTS_DIR):/scripts:ro" \
-	    -v "$$tmp/base.txt:/tmp/base.txt:ro" --entrypoint sh "$$(cat "$$tmp/root.iid")" \
-	    /scripts/plugin_ldd.sh $(PLUGIN) /tmp/base.txt
-	root_cid=$$(docker create "$$(cat "$$tmp/root.iid")" /bin/true)
-	{
-	docker cp "$$root_cid:/." -
-	tar -C "$$tmp/bin" --owner=0 --group=0 -cf - plugin
-	} | $(call mke2fs-run,mkrootfs.sh,$$stage,/out/rootfs.ext4 $(PYTHON_VERSION) 16 $(JOBS))
-	mv -f "$$stage/rootfs.ext4" "$(PLUGIN_BIN_IMAGE)"
-	echo ">>> образ корня с программой Nuitka: $(PLUGIN_BIN_IMAGE) ($$(du -h "$(PLUGIN_BIN_IMAGE)" | cut -f1))"
+$(OUT)/workspace.ext4: | $(OUT)/libexec/mke2fs
+	@docker run --rm --network none -e MKE2FS_CONFIG=/tools/mke2fs.conf -v "$(OUT)/libexec:/tools:ro" \
+	    -v "$(OUT):/out" --entrypoint sh $(GLIBC_IMAGE) -c ' \
+	        truncate -s $(WORKSPACE_SIZE) /out/workspace.ext4.part \
+	        && /tools/mke2fs -F -q -t ext4 -O ^has_journal -m 0 -L workspace /out/workspace.ext4.part \
+	        && chown "$(RUN_OWNER)" /out/workspace.ext4.part && chmod 0644 /out/workspace.ext4.part'
+	mv "$@.part" "$@"
 
-# образы данных песочницы: веса моделей ext4-файлом из уже скачанного; входы проверяются,
-# а не делаются — модели кладёт fetch
-.PHONY: models-image
-models-image: version-check
-	@$(call check,$(SANDBOX_TOOLS),запусти: make sandbox)
-	$(call check,$(foreach model,$(MODEL_IMAGES),$(MODEL_FILES_$(model))),запусти: make fetch)
-	stage=
+# пакеты базового образа glibc: программе плагина на них опираться нельзя
+$(OUT)/glibc-packages.txt:
+	@mkdir -p "$(@D)"
+	docker run --rm --network none --entrypoint dpkg-query $(GLIBC_IMAGE) -W -f '$${Package}\n' > "$@"
+
+# компиляция Nuitka детали $(1) в каталог $(OUT)/compiled/$(1): файл входа $(2),
+# исполняемый файл $(3), флаги $(4); сумма дерева пакетов копируется в $@ последней
+define nuitka-compile
+mkdir -p "$(CACHE)" "$(OUT)/compiled"
+stage=$$(mktemp -d "$(OUT)/compiled/.stage.XXXXXX")
+trap 'rm -rf "$$stage"' EXIT
+docker run --rm --network none -u "$(RUN_OWNER)" -v "$(CACHE):/cache" -v "$(BUILD)/conf:/conf:ro" \
+    -v "$(BUILD)/nuitka.sh:/nuitka.sh:ro" -v "$$stage:/out" --entrypoint sh boba-build-site-$(1):$(TAG) \
+    /nuitka.sh /opt/site "/opt/site/$(2)" "$(3)" $(1) $(JOBS) $(4) < /dev/null
+rm -rf "$(OUT)/compiled/$(1)"
+mv "$$stage/$(1)" "$(OUT)/compiled/$(1)"
+endef
+
+$(OUT)/compiled/%.sum: $(OUT)/site/%.sum $(BUILD)/nuitka.sh $(BUILD)/conf/nuitka.yml $(BUILD)/conf/nuitka-boba.yml
+	@$(call nuitka-compile,$*,$($*_ENTRY),$($*_BIN).bin,$($*_FLAGS))
+	cp "$<" "$@"
+
+# проверка программы группы $(1) в корне $(2): build/plugin_check.sh в образе корня
+# без сети, программа на /plugin, id — плагины группы с этим корнем
+define plugin-check
+docker run --rm --network none -v "$(OUT)/compiled/plugins-$(1):/plugin:ro" \
+    -v "$(BUILD)/plugin_check.sh:/plugin_check.sh:ro" -v "$(OUT)/glibc-packages.txt:/base.txt:ro" \
+    --entrypoint sh boba-build-rootfs-$(2):$(TAG) /plugin_check.sh /base.txt \
+    $(filter $(call rootfs-plugins,$(2)),$(call group-plugins,$(1)))
+
+endef
+
+# группа плагинов: программа `run`, затем проверка в корне каждого её плагина
+$(OUT)/compiled/plugins-%.sum: $(OUT)/site/plugins-%.sum $(BUILD)/nuitka.sh $(BUILD)/conf/nuitka.yml \
+        $(BUILD)/plugin_check.sh $(OUT)/glibc-packages.txt | $(ROOTFS:%=$(OUT)/rootfs/%.sum)
+	@$(call nuitka-compile,plugins-$*,$(plugins_ENTRY),run,)
+	$(foreach rootfs,$(call group-rootfs,$*),$(call plugin-check,$*,$(rootfs)))
+	cp "$<" "$@"
+
+# чат на python: интерпретатор, дерево пакетов и вход каталогом программы, без сети
+$(OUT)/compiled/aid.sum: $(OUT)/site/aid.sum
+	@mkdir -p "$(OUT)/compiled"
+	stage=$$(mktemp -d "$(OUT)/compiled/.stage.XXXXXX")
 	trap 'rm -rf "$$stage"' EXIT
-	$(foreach model,$(MODEL_IMAGES),$(call model-image,$(model))
-	)
+	docker run --rm --network none -u "$(RUN_OWNER)" -v "$$stage:/out" --entrypoint sh \
+	    boba-build-site-aid:$(TAG) -c ' \
+	        mkdir -p /out/aid/bin /out/aid/third/lib \
+	        && cp -a /opt/python-slim/. /out/aid/third/ \
+	        && cp "$$(readlink -f /usr/lib/x86_64-linux-gnu/libstdc++.so.6)" /out/aid/third/lib/libstdc++.so.6 \
+	        && cp /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 /out/aid/third/lib/ \
+	        && cp -a /opt/site /out/aid/app \
+	        && sed -i "1s|^#!.*python3.*|#!/app/boba/third/bin/python3|" /out/aid/app/bin/*' < /dev/null
+	printf '%s\n' '#!/bin/sh' 'root=$$(cd "$$(dirname "$$0")/.." && pwd -P)' \
+	    'export BOBA_RUNTIME="$$root" PYTHONHOME="$$root/third" PYTHONPATH="$$root/app" PYTHONNOUSERSITE=1 PYTHONUTF8=1 LD_LIBRARY_PATH="$$root/third/lib"' \
+	    'exec "$$root/third/bin/python3" -m boba.aid.main "$$@"' > "$$stage/aid/bin/boba-aid"
+	chmod 0755 "$$stage/aid/bin/boba-aid"
+	rm -rf "$(OUT)/compiled/aid"
+	mv "$$stage/aid" "$(OUT)/compiled/aid"
+	cp "$<" "$@"
 
-# --- тестовые образы -------------------------------------------------------------
+# --- image и детали ------------------------------------------------------------------
 
-# серверы MCP для тестов клиента; контекст — их каталог, пакеты npm ci и dist рендерера
-# Prefab берёт из реестра образа nodejs, пакеты python — pip по conf/pip.conf в дерево
-# python образа PYTHON_IMAGE; CA и pip.conf — из образа сборки BASE_IMAGE
-TESTAPPS_DIR        := $(SRC_DIR)/tests/services/testapps
-TESTAPPS_NODE_IMAGE ?= dmp/nodejs:22
-TESTAPPS_TAGS       ?= boba-testapps:$(BOBA_TAG) $(if $(LATEST_TAG),boba-testapps:$(LATEST_TAG))
-
-.PHONY: testapps
-testapps: base
-	@echo "== тестовые серверы MCP: $(TESTAPPS_TAGS) от $(TESTAPPS_NODE_IMAGE) и $(PYTHON_IMAGE) =="
-	$(DOCKER_BUILD) -f "$(BASE_DIR)/testapps.Dockerfile" $(NO_CACHE_OPT) $(PROXY_ARGS) $(CACHE_SCOPE_ARG) \
-	    --build-arg NODE_IMAGE=$(TESTAPPS_NODE_IMAGE) --build-arg PYTHON_IMAGE=$(PYTHON_IMAGE) \
-	    --build-arg BASE_IMAGE=$(BASE_IMAGE) \
-	    $(addprefix --tag ,$(TESTAPPS_TAGS)) "$(TESTAPPS_DIR)"
-
-# --- проверка закрытого контура ---------------------------------------------------
-
-# сборка целей OFFLINE_TARGETS без выхода в интернет. Шаги docker build и docker run
-# сборки делят сеть контейнера-ловушки (docker --network container:<ловушка>), у которой
-# сеть none: есть только loopback, маршрута наружу нет. На 127.0.0.1:53 ловушка пишет
-# каждое имя, которое инструмент разрешает сам, мимо прокси; на 127.0.0.1:$(OFFLINE_PORT)
-# передаёт соединения через unix-сокет в OFFLINE_DIR прокси, который стоит в сети docker
-# по умолчанию и пускает только хосты реестров из конфигурации сборки (conf/pip.conf,
-# conf/uv.toml, sources.list и npm config образов). Между контейнерами нет ни одного
-# сетевого пакета: только файл сокета. Кэш сборщика — своя область CACHE_SCOPE, store pnpm —
-# пустой в OFFLINE_DIR: каждый шаг исполняется и качает заново один раз. Журналы и итог —
-# в OFFLINE_DIR: allow.jsonl, proxy.jsonl, dns.jsonl, marks.jsonl, build.log, report.txt
-OFFLINE_TARGETS ?= sandbox models-image plugin-rootfs-all chainlit-ui web test testapps boba-bin
-OFFLINE_DIR     ?= $(RELEASE_DIR)/offline-check
-OFFLINE_NAME    := boba-offline-check
-OFFLINE_PORT    := 3128
-OFFLINE_CHECK   := $(PYTHON) $(SCRIPTS_DIR)/offline_check.py
-OFFLINE_SOCKET  := /log/proxy.sock
-# образы-основы стадий: недостающий демон взял бы из registry мимо прокси
-OFFLINE_IMAGES   = $(GLIBC_IMAGE) $(GCC_IMAGE) $(PYTHON_IMAGE) $(NODE_IMAGE) $(TESTAPPS_NODE_IMAGE)
-
-# контейнер проверки на python образа PYTHON_IMAGE (скрипт — только stdlib):
-# $(1) — роль, $(2) — сеть, $(3) — команда offline_check.py
-define offline-daemon
-docker run -d --name "$(OFFLINE_NAME)-$(1)" $(2) -v "$(SCRIPTS_DIR):/scripts:ro" -v "$(OFFLINE_DIR):/log" \
-    -e LD_LIBRARY_PATH=/opt/python/usr/local/lib --entrypoint /opt/python/usr/local/bin/python3 \
-    $(PYTHON_IMAGE) -u /scripts/offline_check.py $(3) > /dev/null
+# образ программы $(1) из каталога $(OUT)/$(1): основа $(2), исполняемый файл $(3),
+# порт $(4), самопроверка $(5)
+define program-image
+$(DOCKER_BUILD) --network none -f $(BUILD)/program.Dockerfile --build-arg BASE=$(2) \
+    --build-arg PROGRAM=$(3) --build-arg PORT=$(4) --build-arg CHECK="$(5)" \
+    --tag $(1):$(TAG) "$(OUT)/$(1)"
+echo ">>> image $(1):$(TAG) from $(OUT)/$(1) ($$(du -sh "$(OUT)/$(1)" | cut -f1))"
 endef
 
-# контейнеры проверки: и до запуска (остались от прерванного), и по выходу
-offline-clean    = docker rm -f $(OFFLINE_NAME)-proxy $(OFFLINE_NAME)-jail > /dev/null 2>&1 || true
+.PHONY: $(DETAILS:%=app-%)
 
-.PHONY: offline-check
-offline-check: version-check
-	@$(call check,$(IMAGE_INPUTS),запусти: make fetch)
-	for image in $(OFFLINE_IMAGES); do
-	    if ! docker image inspect "$$image" > /dev/null 2>&1; then
-	        echo "нет образа $$image: docker build взял бы его из registry мимо прокси — загрузи его: docker load" >&2
-	        exit 1
-	    fi
-	done
-	$(offline-clean)
-	trap '$(offline-clean)' EXIT
-	rm -rf "$(OFFLINE_DIR)"
-	mkdir -p "$(OFFLINE_DIR)"
-	$(OFFLINE_CHECK) hosts --pip-conf "$(CONF_DIR)/pip.conf" --uv-toml "$(CONF_DIR)/uv.toml" \
-	    $(OFFLINE_IMAGES:%=--apt-image %) --npm-image $(NODE_IMAGE) --npm-image $(TESTAPPS_NODE_IMAGE) \
-	    --out "$(OFFLINE_DIR)/allow.jsonl"
-	$(call offline-daemon,proxy,,proxy --allow /log/allow.jsonl --log /log/proxy.jsonl --socket $(OFFLINE_SOCKET))
-	$(call offline-daemon,jail,--network none --dns 127.0.0.1,jail --log /log/dns.jsonl --socket $(OFFLINE_SOCKET) --port $(OFFLINE_PORT))
-	for attempt in $$(seq 20); do
-	    if [ -S "$(OFFLINE_DIR)/proxy.sock" ]; then
-	        break
-	    fi
-	    sleep 0.5
-	done
-	if [ ! -S "$(OFFLINE_DIR)/proxy.sock" ]; then
-	    echo "offline-check: прокси не открыл сокет $(OFFLINE_DIR)/proxy.sock за 10 с — смотри docker logs $(OFFLINE_NAME)-proxy" >&2
-	    docker logs "$(OFFLINE_NAME)-proxy" >&2
-	    exit 1
-	fi
-	proxy="http://127.0.0.1:$(OFFLINE_PORT)"
-	scope="offline-$$(date +%Y%m%d%H%M%S)"
-	echo "== проверка закрытого контура: $(OFFLINE_TARGETS); прокси $$proxy, кэш $$scope, журналы $(OFFLINE_DIR) =="
-	build=0
-	{
-	    for target in $(OFFLINE_TARGETS); do
-	        echo "== offline-check: make $$target =="
-	        $(MAKE) -f "$(MAKEFILE)" "$$target" BUILD_NETWORK="container:$(OFFLINE_NAME)-jail" CACHE_SCOPE="$$scope" \
-	            PNPM_STORE="$(OFFLINE_DIR)/pnpm-store" \
-	            http_proxy="$$proxy" https_proxy="$$proxy" HTTP_PROXY="$$proxy" HTTPS_PROXY="$$proxy" \
-	            no_proxy= NO_PROXY= || exit $$?
-	    done
-	} 2>&1 | $(OFFLINE_CHECK) stamp --marks "$(OFFLINE_DIR)/marks.jsonl" | tee "$(OFFLINE_DIR)/build.log" || build=$$?
-	verdict=0
-	$(OFFLINE_CHECK) report --allow "$(OFFLINE_DIR)/allow.jsonl" --proxy "$(OFFLINE_DIR)/proxy.jsonl" \
-	    --dns "$(OFFLINE_DIR)/dns.jsonl" --marks "$(OFFLINE_DIR)/marks.jsonl" | tee "$(OFFLINE_DIR)/report.txt" || verdict=$$?
-	if [ "$$build" != 0 ]; then
-	    echo "offline-check: сборка упала с кодом $$build — причина в $(OFFLINE_DIR)/build.log; нарушения сети, если были, — выше" >&2
-	    exit 1
-	fi
-	exit $$verdict
+app-mcp: $(OUT)/compiled/mcp.sum $(GROUPS:%=$(OUT)/compiled/plugins-%.sum) $(ROOTFS:%=$(OUT)/rootfs/%.ext4) \
+        $(OUT)/workspace.ext4 $(OUT)/libexec/bwrap | prepare-os
+	@rm -rf "$(OUT)/boba-mcp"
+	mkdir -p $(OUT)/boba-mcp/bin $(OUT)/boba-mcp/plugins $(OUT)/boba-mcp/rootfs $(OUT)/boba-mcp/sandbox $(OUT)/boba-mcp/conf
+	cp -al "$(OUT)/compiled/mcp" "$(OUT)/boba-mcp/bin/boba-mcp.dist"
+	$(foreach group,$(GROUPS),cp -al "$(OUT)/compiled/plugins-$(group)" "$(OUT)/boba-mcp/plugins/$(group)"
+	)
+	cp -al $(ROOTFS:%=$(OUT)/rootfs/%.ext4) "$(OUT)/boba-mcp/rootfs/"
+	cp -al "$(OUT)/libexec" "$(OUT)/boba-mcp/libexec"
+	cp -al "$(OUT)/workspace.ext4" "$(OUT)/boba-mcp/sandbox/workspace.ext4"
+	cp -a "$(PLUGIN_CONF_DIR)" "$(OUT)/boba-mcp/conf/plugins"
+	$(call program-image,boba-mcp,boba-build-os:$(TAG),bin/boba-mcp.dist/boba-mcp.bin,$(mcp_PORT),self-check)
 
-# --- агент boba каталогом standalone ---------------------------------------------
+app-boba: $(OUT)/compiled/boba.sum | prepare-os
+	@rm -rf "$(OUT)/boba"
+	mkdir -p "$(OUT)/boba/bin" "$(OUT)/boba/conf"
+	cp -al "$(OUT)/compiled/boba" "$(OUT)/boba/bin/boba.dist"
+	$(call program-image,boba,boba-build-os:$(TAG),bin/boba.dist/boba.bin,$(boba_PORT),self-check)
 
-# стадия boba-bin компилирует boba-cli Nuitka внутри образа base; образ boba берёт ту же
-# стадию с BIN_ONNX= — при пустом BIN_ONNX здесь компиляция одна на обе цели
-.PHONY: boba-bin
-boba-bin: version-check
-	@$(call check,$(SANDBOX_INPUTS),запусти: make fetch)
-	echo "== агент boba каталогом: Nuitka $(NUITKA_VERSION), JOBS=$(JOBS), BIN_ONNX=$(BIN_ONNX) =="
-	tmp=
-	trap 'rm -rf "$$tmp"' EXIT
-	tmp=$$(mktemp -d)
-	$(call docker-image,boba-bin-out,$$tmp/boba.iid,$(BIN_ARGS))
-	mkdir -p "$(dir $(BIN_DIST))"
-	rm -rf "$(BIN_DIST)"
-	$(call image-copy,$$(cat "$$tmp/boba.iid"),/boba.dist,$(BIN_DIST))
-	"$(BIN_FILE)" --help > /dev/null
-	"$(BIN_FILE)" self-check
-	echo ">>> агент: $(BIN_FILE) ($$(du -sh "$(BIN_DIST)" | cut -f1))"
+app-aid: $(OUT)/compiled/aid.sum prepare-share | prepare-pyos
+	@rm -rf "$(OUT)/boba-aid"
+	cp -al "$(OUT)/compiled/aid" "$(OUT)/boba-aid"
+	mkdir -p "$(OUT)/boba-aid/conf"
+	cp -al "$(OUT)/share" "$(OUT)/boba-aid/share"
+	$(call program-image,boba-aid,boba-build-pyos:$(TAG),bin/boba-aid,$(aid_PORT),--help)
 
-# --- по приложению: образ, проверка, деревья ---------------------------------------
+app-rootfs: $(ROOTFS:%=$(OUT)/rootfs/%.ext4)
 
-# <цель>-<приложение> — то же, что <цель> APP=<приложение>
-build-% test-% dev-% debug-% release-% install-%:
-	@$(MAKE) -f "$(MAKEFILE)" $(patsubst %-$*,%,$@) APP=$*
+$(GROUPS:%=app-plugins-%): app-plugins-%: $(OUT)/compiled/plugins-%.sum
 
-.PHONY: build test dev debug release install
+# каталоги моделей для админа: жёсткие ссылки на скачанное, места не занимают
+app-models: $(foreach m,$(MODELS),$(MODEL_FILES_$(m)))
+	@$(foreach m,$(MODELS),rm -rf "$(OUT)/models/$(m)" && mkdir -p "$(OUT)/models" && cp -al "$(SRC)/models/$(m)" "$(OUT)/models/$(m)"
+	)
+	du -sh $(OUT)/models/*
 
-ifeq ($(APP),)
+# runtime/ повторяет каталог программы mcp, только корни — с python, а программы
+# плагинов — python исходников; фронт чата — в assets пакета boba-aid
+app-runtime: $(ROOTFS:%=$(OUT)/rootfs-python/%.ext4) $(OUT)/workspace.ext4 $(OUT)/libexec/bwrap \
+        $(foreach m,$(MODELS),$(MODEL_FILES_$(m))) prepare-share
+	@mkdir -p "$(RUNTIME)/sandbox" "$(RUNTIME)/rootfs" "$(RUNTIME)/plugins" "$(RUNTIME)/models"
+	rm -rf "$(RUNTIME)/libexec"
+	cp -a "$(OUT)/libexec" "$(RUNTIME)/libexec"
+	cp "$(OUT)/workspace.ext4" "$(RUNTIME)/sandbox/workspace.ext4.part"
+	mv "$(RUNTIME)/sandbox/workspace.ext4.part" "$(RUNTIME)/sandbox/workspace.ext4"
+	$(foreach rootfs,$(ROOTFS),cp "$(OUT)/rootfs-python/$(rootfs).ext4" "$(RUNTIME)/rootfs/$(rootfs).ext4.part" && mv "$(RUNTIME)/rootfs/$(rootfs).ext4.part" "$(RUNTIME)/rootfs/$(rootfs).ext4"
+	)
+	$(foreach group,$(GROUPS),mkdir -p "$(RUNTIME)/plugins/$(group)" && printf '%s\n' '#!/bin/sh' 'exec python3 -m boba.sandbox.program "$$@"' > "$(RUNTIME)/plugins/$(group)/run" && chmod 0755 "$(RUNTIME)/plugins/$(group)/run"
+	)
+	$(foreach m,$(MODELS),rm -rf "$(RUNTIME)/models/$(m)" && cp -al "$(SRC)/models/$(m)" "$(RUNTIME)/models/$(m)"
+	)
+	rm -rf "$(AID_ASSETS)/ui" "$(AID_ASSETS)/public/vendor"
+	cp -a "$(OUT)/share/ui" "$(AID_ASSETS)/ui"
+	cp -a "$(OUT)/share/public/vendor" "$(AID_ASSETS)/public/vendor"
+	cp "$(OUT)/share/public/page.js" "$(AID_ASSETS)/public/page.js"
+	chmod -R go-w "$(RUNTIME)/libexec"
+	chmod go-w "$(RUNTIME)"
+	echo ">>> runtime: $(RUNTIME), frontend: $(AID_ASSETS)"
 
-build: $(APPS:%=build-%)
-test: $(APPS:%=test-%)
-dev: $(APPS:%=dev-%)
-debug: $(APPS:%=debug-%)
-release: $(APPS:%=release-%)
-install: $(APPS:%=install-%)
+app-testapps: | prepare-nuitka
+	@$(DOCKER_BUILD) -f $(ROOT)/tests/services/testapps/Dockerfile --build-arg NODE_IMAGE=$(TESTAPPS_NODE_IMAGE) \
+	    --build-arg PYTHON_IMAGE=$(PYTHON_IMAGE) --build-arg BASE_IMAGE=boba-build-base:$(TAG) \
+	    --tag boba-testapps:$(TAG) --tag boba-testapps:latest $(ROOT)/tests/services/testapps
 
-else
-
-# образ приложения. У приложения с песочницей сборок три: стадия runtime-sandbox, поверх
-# неё модели, образы корней плагинов и workspace (sandbox-image), затем код приложения.
-# Недостающие или устаревшие workspace, образы плагинов и образы моделей build собирает сам
-build: version-check $(if $(APP_SANDBOX),$(SANDBOX_DIR)/workspace.ext4 $(PLUGIN_IMAGES) models-image)
-	@$(call check,$(IMAGE_INPUTS),запусти: make fetch)
-	if [ -s "$(PLUGIN_STALE)" ]; then
-	    stale=$$(sort -u "$(PLUGIN_STALE)")
-	    rm -f "$(PLUGIN_STALE)"
-	    $(call plugin-rootfs-many,$$stale)
-	fi
-	tmp=
-	trap 'rm -rf "$$tmp"' EXIT
-	tmp=$$(mktemp -d)
-	if [ -n "$(APP_ENTRY)" ]; then
-	    echo "== программа $(NAME_$(APP)): Nuitka $(NUITKA_VERSION), JOBS=$(JOBS), кэш $(NUITKA_CACHE) =="
-	    $(call docker-image,app-site,$$tmp/app-site.iid,$(APP_ARGS))
-	    started=$$(date +%s)
-	    $(call nuitka-program,$$tmp/app-site.iid)
-	    echo ">>> программа: $(RUNTIME_DIR)/$(APP_PROGRAM) ($$(du -sh "$(RUNTIME_DIR)/bin/$(NAME_$(APP)).dist" | cut -f1), $$(( $$(date +%s) - started )) с)"
-	fi
-	if [ -n "$(APP_SANDBOX)" ]; then
-	    # в образ уезжает каталог целиком: образ плагина, которого больше нет, там лишний
-	    for entry in "$(SANDBOX_DIR)/plugins"/*; do
-	        name=$$(basename "$$entry" .ext4)
-	        case " $(PLUGIN_IDS) " in
-	            *" $$name "*) [ -f "$$entry" ] && continue ;;
-	        esac
-	        echo "$$entry: в репозитории нет плагина $$name с образом <id>.ext4 — удали его" >&2
-	        exit 1
-	    done
-	    echo "== основа $(SANDBOX_IMAGE): runtime-sandbox, модели и образы плагинов из $(RUNTIME_DIR) =="
-	    $(call docker-image,runtime-sandbox,$$tmp/runtime-sandbox.iid,$(APP_ARGS))
-	    $(call sandbox-image,$$tmp/runtime-sandbox.iid)
-	fi
-	if [ -n "$(APP_ENTRY)" ]; then
-	    echo "== основа $(PROGRAM_IMAGE): $(SANDBOX_IMAGE) и $(APP_PROGRAM) =="
-	    $(program-image)
-	fi
-	echo "== образ $(IMAGE), релиз внутри него лежит в $(DEST_DIR) =="
-	$(call docker-stage,$(APP_STAGE),$(IMAGE),$(if $(LATEST_TAG),--tag $(NAME_$(APP)):$(LATEST_TAG)) $(APP_ARGS) $(if $(APP_SANDBOX),--build-arg SANDBOX_IMAGE=$(if $(APP_ENTRY),$(PROGRAM_IMAGE),$(SANDBOX_IMAGE))))
-	echo ">>> образ готов: $(IMAGE); проверка: make test APP=$(APP)"
-
-# проверка образа интерпретатором программы над её кодом (third/ и app/ каталога
-# программы), модели — в самом образе; у программы на Nuitka — её самопроверка. Сети у
-# контейнера нет: модель хода агента живёт в нём же
-test: build
-	@echo "== проверка образа $(IMAGE) =="
-	if [ -n "$(APP_ENTRY)" ]; then
-	    # у программы на Nuitka интерпретатора нет: данные пакетов и entry points проверяет
-	    # её самопроверка в образе
-	    docker run --rm --network none --entrypoint "$(DEST_DIR)/$(APP_PROGRAM)" $(IMAGE) self-check
-	    exit 0
-	fi
-	docker run --rm -i --network none --tmpfs "$(DEST_DIR)/data:uid=1000,gid=1000" \
-	    -e PYTHONHOME="$(DEST_DIR)/third" -e PYTHONPATH="$(DEST_DIR)/app" -e PYTHONNOUSERSITE=1 \
-	    -e LD_LIBRARY_PATH="$(DEST_DIR)/third/lib" -e PYTHONUTF8=1 -e BOBA_RUNTIME="$(DEST_DIR)" \
-	    --entrypoint "$(DEST_DIR)/third/bin/python3" $(IMAGE) \
-	    - --app $(APP) --base $(DEST_DIR) --names $(DEST_DIR)/app/packages.txt $(if $(APP_SANDBOX),--sandbox --ocr $(notdir $(RAPIDOCR_FILES)) --model-images $(APP_MODEL_IMAGES)) \
-	    < "$(TEST_DIR)/bobacheck.py"
-
-# дерево установки из готового образа: пути и шебанги переводятся с DEST_DIR на INSTALL_DIR
-release:
-	@if ! docker image inspect "$(IMAGE)" > /dev/null 2>&1; then
-	    echo "нет образа $(IMAGE) — запусти: make build APP=$(APP)" >&2
-	    exit 1
-	fi
-	echo "== релиз $(APP) ($(INSTANCE)) из образа $(IMAGE) -> $(OUT) =="
-	rm -rf "$(OUT)"
-	mkdir -p "$(OUT)/conf" "$(OUT)/models"
-	$(call image-copy,$(IMAGE),$(DEST_DIR)/.,$(OUT)/)
-	# программа на python: системные библиотеки образа (libssl1.1, libffi6, krb5 ...) в
-	# third/lib нужны там, где система не та, на которой собран образ, и этих версий в ней
-	# нет; шебанги ведут на интерпретатор каталога установки. Программа на Nuitka несёт свои
-	# библиотеки в bin/<программа>.dist
-	if [ -z "$(APP_ENTRY)" ]; then
-	    if [ -n "$(BUNDLE_OS_LIBS)" ]; then
-	        docker run --rm --network none -v "$(SCRIPTS_DIR):/scripts:ro" --entrypoint sh "$(IMAGE)" \
-	            /scripts/oslibs.sh "$(DEST_DIR)" | tar -C "$(OUT)/third/lib" -xf -
-	        echo "    системные библиотеки образа добавлены в $(OUT)/third/lib"
-	    fi
-	    sed -i "1s|^#!.*python3.*|#!$(INSTALL_DIR)/third/bin/python3|" "$(OUT)/app/bin"/*
-	    chmod -R go-w "$(OUT)/third"
-	fi
-	chmod go-w "$(OUT)"
-	if [ -n "$(APP_SANDBOX)" ]; then
-	    install -m 0644 "$(CONF_DIR)/boba-sandbox@.service" "$(OUT)/boba-sandbox@.service"
-	    chmod -R go-w "$(OUT)/sandbox"
-	fi
-	sed -e 's|@APP@|$(APP)|g' -e 's|@INSTANCE@|$(INSTANCE)|g' -e 's|@INSTALL_DIR@|$(INSTALL_DIR)|g' \
-	    -e 's|@PROGRAM@|$(APP_PROGRAM)|g'                                                            \
-	    -e 's|@SANDBOX_UNIT@|$(if $(APP_SANDBOX),boba-sandbox@$(INSTANCE).service)|'                 \
-	    -e 's|@REQUIRES@|$(if $(APP_SANDBOX),Requires=boba-sandbox@$(INSTANCE).service)|'            \
-	    -e 's|@MEMORY_MAX@|$(word 1,$(UNIT_LIMITS_$(APP)))|' -e 's|@CPU_QUOTA@|$(word 2,$(UNIT_LIMITS_$(APP)))|' \
-	    -e 's|@TASKS_MAX@|$(word 3,$(UNIT_LIMITS_$(APP)))|'                                          \
-	    "$(CONF_DIR)/boba-app.service" > "$(OUT)/boba-$(INSTANCE).service"
-	$(call check,$(addprefix $(OUT)/,$(RELEASE_PARTS)),собери заново: make build release APP=$(APP))
-	echo ">>> релиз готов: $(OUT) ($$(du -sh --apparent-size "$(OUT)" | cut -f1))"
-	echo "    установка без Docker: make install APP=$(APP)$(if $(filter-out $(APP),$(INSTANCE)), INSTANCE=$(INSTANCE))$(if $(filter-out /app,$(INSTALL_ROOT)), INSTALL_ROOT=$(INSTALL_ROOT))"
-
-# установка дерева релиза в INSTALL_DIR и пользовательских юнитов systemd: приложение
-# работает без Docker от того пользователя, который запустил цель. Части релиза (код,
-# интерпретатор, агент, статика, модели, образы песочницы) и файлы плагинов заменяются
-# целиком; conf/config.toml, conf/prompts, conf/krb и data остаются.
-# Работающий экземпляр цель не трогает — его сначала останавливают
-install:
-	@$(call check,$(OUT)/$(APP_PROGRAM) $(OUT)/boba-$(INSTANCE).service,запусти: make release APP=$(APP))
-	$(user-bus)
-	echo "== установка $(APP) ($(INSTANCE)) в $(INSTALL_DIR) =="
-	$(call host-check,systemd)
-	if [ ! -d "$(INSTALL_DIR)" ] || [ ! -w "$(INSTALL_DIR)" ]; then
-	    echo "нет каталога $(INSTALL_DIR) либо он закрыт на запись — попросить root: install -d -o $$(id -un) -g $$(id -gn) -m 0755 $(INSTALL_DIR)" >&2
-	    exit 1
-	fi
-	if systemctl --user --quiet is-active "boba-$(INSTANCE).service"; then
-	    echo "boba-$(INSTANCE).service работает — останови его: systemctl --user stop boba-$(INSTANCE).service" >&2
-	    exit 1
-	fi
-	for part in "$(OUT)"/*; do
-	    name=$$(basename "$$part")
-	    case "$$name" in
-	        conf|data|*.service) continue ;;
-	    esac
-	    rm -rf "$(INSTALL_DIR)/$${name:?}"
-	    cp -a "$$part" "$(INSTALL_DIR)/$$name"
-	done
-	mkdir -p "$(INSTALL_DIR)/conf/krb"
-	$(call data-dirs,$(INSTALL_DIR)/data)
-	rm -rf "$(INSTALL_DIR)/conf/plugins"
-	if [ -d "$(OUT)/conf/plugins" ]; then
-	    cp -a "$(OUT)/conf/plugins" "$(INSTALL_DIR)/conf/plugins"
-	fi
-	$(call config-hint,$(INSTALL_DIR)/conf)
-	mkdir -p "$(USER_UNITS)"
-	install -m 0644 "$(OUT)/boba-$(INSTANCE).service" "$(USER_UNITS)/boba-$(INSTANCE).service"
-	systemctl --user daemon-reload
-	if [ -n "$(APP_SANDBOX)" ]; then
-	    $(call sandbox-unit,$(INSTANCE))
-	fi
-	systemctl --user enable --quiet "boba-$(INSTANCE).service"
-	echo ">>> установлено: $(INSTALL_DIR)"
-	echo "    запуск:  systemctl --user start boba-$(INSTANCE).service"
-	echo "    журнал:  journalctl --user -u boba-$(INSTANCE).service -f"
-
-# рабочее дерево приложения для docker compose: conf, data и .env;
-# docker-compose*.yml лежат в нём же и трекаются git'ом. Файлы плагинов, модели и образы
-# песочницы лежат в образе. В conf дерева — config.toml экземпляра (пишет
-# администратор), промпты mcp, keytab и krb5.conf. Готовые .env и config.toml цель
-# не трогает
-dev: OUT = $(SRC_DIR)/compose/$(APP)
-dev:
-	@echo "== дерево compose $(APP) в $(OUT) =="
-	$(call host-check,compose)
-	$(call data-dirs,$(OUT)/data)
-	if [ -n "$(APP_SANDBOX)" ]; then
-	    $(call sandbox-unit,$(APP))
-	fi
-	( umask 027; mkdir -p "$(OUT)/conf/krb" )
-	$(call config-hint,$(OUT)/conf)
-	if [ -e "$(OUT)/.env" ]; then
-	    echo "    .env уже есть, не трогаю: $(OUT)/.env"
-	else
-	    {
-	        echo "BOBA_USER=1000:1000"
-	        if [ -n "$(APP_SANDBOX)" ]; then
-	            echo "BOBA_SANDBOX_CGROUP=$(call sandbox-cgroup,$(APP))"
-	        fi
-	        echo "BOBA_NETWORK=boba"
-	        echo "BOBA_NETWORK_EXTERNAL=true"
-	        echo "BOBA_ADDRESS="
-	    } > "$(OUT)/.env"
-	    echo "    .env создан: $(OUT)/.env (сеть и адреса — по образцу $(CONF_DIR)/compose.env.example)"
-	fi
-	chmod go-w "$(OUT)"
-	$(compose-env-check)
-	"$(SCRIPTS_DIR)/composeown.sh" "$(OUT)" "$$(sed -n 's|^BOBA_USER=||p' "$(OUT)/.env")"
-	echo ">>> дерево готово: $(OUT)"
-	echo "    compose: cd $(OUT) && docker compose up -d $(APP)"
-	echo "    debug:   make debug APP=$(APP)"
-
-# дерево отладки и тестов на хосте: свои данные и свой config.toml, чтобы процесс на
-# хосте и контейнер compose не писали в одни каталоги. Файлы плагинов отладка читает
-# прямо из пакета mcp, статику — из ассетов пакета чата (собранный фронт кладёт туда цель
-# из WEB_<приложение>), собранное — libexec, модели, образы песочницы — из runtime/
-# (BOBA_RUNTIME). config.toml отладки и conf/krb пишет разработчик; цель их не порождает
-debug: OUT = $(SRC_DIR)/debug/$(APP)
-debug: $(WEB_$(APP)) vscode
-	@if [ -n "$(APP_SANDBOX)" ]; then
-	    $(call check,$(SANDBOX_PARTS),запусти: make sandbox)
-	fi
-	$(call check,$(APP_MODEL_FILES),запусти: make fetch)
-	echo "== дерево отладки $(APP) в $(OUT) =="
-	$(call host-check,debug)
-	if [ -n "$(APP_SANDBOX)" ]; then
-	    $(call sandbox-unit,debug)
-	fi
-	( umask 077; mkdir -p "$(OUT)/conf" )
-	$(call data-dirs,$(OUT)/data)
-	$(call config-hint,$(OUT)/conf)
-	echo ">>> дерево отладки готово: $(OUT)"
-	echo "    debug:   BOBA_RUNTIME=$(RUNTIME_DIR) python -m $(APP_MODULE) serve --config $(OUT)/conf/config.toml"
-	echo "    cgroup песочницы отладки для config.toml: $(call sandbox-cgroup,debug)"
-
-endif
-
-# --- фронт чата на хосте: для отладки, образ собирает его стадиями Dockerfile ----------
-
-.PHONY: web
-web: $(PAGE_JS) $(UI_DIST)/index.html $(WEB_FILES)
-	@rm -rf "$(ASSETS_VENDOR)"
-	cp -a "$(WEBASSETS_DIR)" "$(ASSETS_VENDOR)"
-	echo ">>> фронт чата: $(PAGE_JS), $(UI_DIST), $(ASSETS_VENDOR)"
-
-# скрипт страницы node'ом образа: на хосте node не нужен
-$(PAGE_JS): $(PAGE_SRCS)
-	@echo "== скрипт страницы page.js: $(NODE_IMAGE) =="
-	docker run --rm $(NETWORK_OPT) $(PROXY_ENV) $(NODE_CA_OPTS) --entrypoint /bin/sh -u "$(RUN_OWNER)" -e HOME=/tmp \
-	    -e npm_config_update_notifier=false -v "$(AID_DIR):/pkg" -w /pkg/web/page $(NODE_IMAGE) \
-	    -c 'npm ci --no-audit --no-fund && npm run check && npm run build'
-	ls -la "$@"
-
-# UI chainlit (фронт + copilot) с overlay в assets/ui: тот же скрипт, что у стадии chainlit-ui-build;
-# пересобирается, когда overlay, UPSTREAM, тарболл или скрипт новее сборки
-$(UI_DIST)/index.html: $(UI_SRCS) $(CHAINLIT_TARBALL)
-	@echo "== UI chainlit $(CHAINLIT_VERSION) (фронт + copilot) с overlay: $(NODE_IMAGE) -> $(UI_DIST) =="
-	mkdir -p "$(UI_DIST)" "$(PNPM_STORE)"
-	docker run --rm $(NETWORK_OPT) $(PROXY_ENV) $(NODE_CA_OPTS) --entrypoint /bin/sh -u "$(RUN_OWNER)" \
-	    -v "$(CHAINLIT_TARBALL):/deps/$(notdir $(CHAINLIT_TARBALL)):ro" -v "$(SCRIPTS_DIR):/scripts:ro" \
-	    -v "$(UI_DIR):/ui:ro" -v "$(UI_ELEMENTS):/elements:ro" -v "$(UI_DIST):/out" -v "$(PNPM_STORE):/store" \
-	    $(NODE_IMAGE) /scripts/chainlit_ui.sh build "/deps/$(notdir $(CHAINLIT_TARBALL))" /ui/overlay /elements /out /store
-	touch "$@"
-	ls -la "$(UI_DIST)/assets" | head -5
-
-.PHONY: chainlit-ui
-chainlit-ui:
-	@rm -f "$(UI_DIST)/index.html"
-	$(MAKE) -f "$(MAKEFILE)" "$(UI_DIST)/index.html"
-
-# --- VS Code ---------------------------------------------------------------------
-
-# цели запуска и задачи VS Code из образцов conf/vscode: .vscode/ в git не входит (кроме
-# settings.json), а в launch.json стоит путь cgroup с номером пользователя. Готовые
-# файлы цель не перезаписывает
-VSCODE_DIR      := $(SRC_DIR)/.vscode
-VSCODE_FILES    := launch.json tasks.json python-debug-slice.sh
-
-.PHONY: vscode
-vscode:
-	@mkdir -p "$(VSCODE_DIR)"
-	for name in $(VSCODE_FILES); do
-	    if [ -e "$(VSCODE_DIR)/$$name" ]; then
-	        continue
-	    fi
-	    sed 's|@DEBUG_CGROUP@|$(call sandbox-cgroup,debug)|g' "$(CONF_DIR)/vscode/$$name" > "$(VSCODE_DIR)/$$name"
-	    echo "    vscode: $(VSCODE_DIR)/$$name создан из образца"
-	done
-	chmod 0755 "$(VSCODE_DIR)/python-debug-slice.sh"
-
-# --- среда разработчика ------------------------------------------------------------
-
-# базы разработчика на общих серверах стенда: aid_<DEVELOPER> чата и сервиса,
-# playground_<DEVELOPER> соединений в postgres и ClickHouse, соединения из базы SOURCE
-# стенда, переведённые на них. Postgres — переменные libpq, ClickHouse — CH_URL и CH_AUTH
-.PHONY: dev-db
-dev-db:
-	@"$(SCRIPTS_DIR)/dev-db.sh" "$(DEVELOPER)" "$(SOURCE)" "$(TEMPLATE)" "$(CH_CLUSTER)"
-
-# --- обслуживание ------------------------------------------------------------------
-
-# всё целиком: артефакты, песочница, образы корней плагинов, образы данных, фронт для
-# отладки, образы с проверкой и compose-деревья всех приложений. Общий этап — fetch,
-# sandbox и стадии Dockerfile до sandbox-base (образ сборки, колёса пакетов) — идёт
-# первым, чтобы ветки не собирали его каждая; затем ветки по PARALLEL одновременно, затем dev
-.PHONY: all
-all: fetch sandbox
-	@echo "== общий этап веток: стадии $(BASE_DIR)/Dockerfile до sandbox-base =="
-	tmp=
-	trap 'rm -rf "$$tmp"' EXIT
-	tmp=$$(mktemp -d)
-	$(call docker-image,sandbox-base,$$tmp/common.iid)
-	$(MAKE) -f "$(MAKEFILE)" -j "$(PARALLEL)" all-branches
-	$(MAKE) -f "$(MAKEFILE)" dev APP=
-
-# ветки all: цели каждой идут одним make по порядку, вывод — в $(ALL_LOG_DIR)/<ветка>.log.
-# Ветки пишут разные файлы: плагины — runtime/sandbox/plugins, модели — runtime/models,
-# aid — assets пакета чата (их контекст docker build не берёт), boba — только демон docker;
-# mcp собирает основу из образов плагинов и моделей и потому ждёт их ветки
-ALL_BRANCHES     := plugins models aid boba mcp
-ALL_GOALS_plugins = plugin-rootfs-all
-ALL_GOALS_models  = models-image
-ALL_GOALS_aid     = web test-aid
-ALL_GOALS_boba    = test-boba
-ALL_GOALS_mcp     = test-mcp
-
-.PHONY: all-branches $(ALL_BRANCHES:%=all-branch-%)
-all-branches: $(ALL_BRANCHES:%=all-branch-%)
-
-all-branch-mcp: all-branch-plugins all-branch-models
-
-# первая упавшая ветка печатает хвост своего лога, и make больше не запускает новых
-$(ALL_BRANCHES:%=all-branch-%): all-branch-%:
-	@mkdir -p "$(ALL_LOG_DIR)"
-	log="$(ALL_LOG_DIR)/$*.log"
-	start=$$SECONDS
-	echo "== ветка $* ($(ALL_GOALS_$*)): лог $$log"
-	if ! $(MAKE) -f "$(MAKEFILE)" $(ALL_GOALS_$*) > "$$log" 2>&1; then
-	    echo "ветка $* не собрана, хвост лога $$log:" >&2
-	    tail -n 40 "$$log" >&2
-	    exit 1
-	fi
-	echo ">>> ветка $* готова за $$(( SECONDS - start )) с"
-
-.PHONY: sec
-sec:
-	@"$(SRC_DIR)/sec.sh" $(MODE)
-
-# теги прошлых версий (образ под живым контейнером остаётся), затем образы без тега —
-# результаты стадий и кэш классического сборщика — и кэш BuildKit до PRUNE_KEEP
-.PHONY: prune
-prune:
-	@docker images --format '{{.Repository}}:{{.Tag}}' \
-	    | { grep -E '^boba-($(subst $(space),|,$(APPS)))(-sandbox)?:' || true; } \
-	    | { grep -v -E ':($(BOBA_TAG)|latest)$$' || true; } \
-	    | { xargs -r -n1 docker rmi || true; }
-	docker image prune -f
-	docker builder prune -f --keep-storage $(PRUNE_KEEP)
-	docker system df
-
-# всё, что делают fetch, sandbox, plugin-rootfs, web и release, кроме моделей: те
-# качаются долго
-.PHONY: clean
-clean:
-	@echo "== чистка: release, артефакты fetch, собранный фронт, runtime/libexec, runtime/bin и runtime/sandbox =="
-	rm -rf $(RELEASE_DIR) $(DEPS_DIR)/uv $(WEBASSETS_DIR) $(ORACLEDB_DIR) $(FETCH_CONSTRAINTS) \
-	       $(DEPS_DIR)/*.tar.xz $(DEPS_DIR)/*.tar.gz $(PNPM_STORE) $(PAGE_JS) $(ASSETS_VENDOR) $(UI_DIST) \
-	       $(LIBEXEC_DIR) $(RUNTIME_DIR)/bin $(SANDBOX_DIR)
+app-oracledb: | prepare-nuitka
+	@$(call base-stage,oracledb,boba-build-oracledb:$(TAG))
+	$(call image-copy,boba-build-oracledb:$(TAG),/out,$(OUT)/oracledb)
+	ls -l $(OUT)/oracledb

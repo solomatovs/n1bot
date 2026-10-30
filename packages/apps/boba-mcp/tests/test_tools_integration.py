@@ -81,12 +81,12 @@ def sandbox_ready() -> None:
     if shutil.which("bwrap") is None:
         raise AssertionError(
             "bwrap is not on PATH: expected runtime/third/bin of the repository "
-            "in PATH (make fetch sandbox)"
+            "in PATH (make -C build build APP=runtime)"
         )
 
     if not ROOTFS_IMAGE.exists():
         raise AssertionError(
-            f"sandbox image {ROOTFS_IMAGE} is missing (make fetch sandbox)"
+            f"sandbox image {ROOTFS_IMAGE} is missing (make -C build build APP=runtime)"
         )
 
     missing = SandboxCgroup().missing()

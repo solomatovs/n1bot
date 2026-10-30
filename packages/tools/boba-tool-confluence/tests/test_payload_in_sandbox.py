@@ -338,7 +338,8 @@ class TestRootfsContents:
 
         if outcome.exit_code != 0:
             raise AssertionError(
-                f"в песочнице нет {module}: пересобери — make fetch sandbox "
+                f"в песочнице нет {module}: пересобери — "
+                "make -C build build APP=runtime "
                 f"(stderr: {outcome.stderr.strip()})"
             )
 

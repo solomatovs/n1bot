@@ -213,7 +213,7 @@ class SandboxStand:
         if not cls.FUSE2FS.exists():
             msg = (
                 f"sandbox stand: fuse2fs binary {cls.FUSE2FS} does not exist, "
-                f"build the deployment with `make sandbox`"
+                f"build the deployment with `make -C build build APP=runtime`"
             )
             raise RuntimeError(msg)
 

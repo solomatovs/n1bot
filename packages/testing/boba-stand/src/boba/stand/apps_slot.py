@@ -58,7 +58,7 @@ class AppsDocker(StrEnum):
     NETWORK = "ss-stands"
     LABEL = "boba.e2e=1"
     OWNER = "boba.e2e.apps"
-    BUILD = "make -C build testapps"
+    BUILD = "make -C build build APP=testapps"
     OPTION = "--testapps-image"
     OPTION_DEST = "testapps_image"
 

@@ -6,7 +6,7 @@ services:
     devices:
       - /dev/fuse
     security_opt:
-      - seccomp=../../build/conf/seccomp-sandbox.json
+      - seccomp=../seccomp-sandbox.json
       - systempaths=unconfined
       - no-new-privileges:true
     cap_drop:
@@ -30,6 +30,7 @@ services:
       - ./conf/config.toml:/app/boba/conf/config.toml:ro
       - ./conf/prompts:/app/boba/conf/prompts:ro
       - ./conf/krb:/app/boba/conf/krb:ro
+      - ${BOBA_MODELS}:/app/boba/models:ro
       - ./data:/app/boba/data:rw
       - ${BOBA_SANDBOX_CGROUP}:/cgroup/boba-sandbox-mcp:rw
     ports:

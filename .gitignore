@@ -40,7 +40,8 @@ packages/**/dist/
 
 # сборка: артефакты make fetch и локальные настройки закрытого контура
 /build/src/
-/build/test/__pycache__/
+/build/out/
+/build/cache/
 /build/conf/pip.conf
 /build/conf/uv.toml
 /build/conf/ca-chain.crt

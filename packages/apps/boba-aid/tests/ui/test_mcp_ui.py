@@ -1381,7 +1381,9 @@ class TestSandboxOrigin:
         prefix = mcp_stand.config.url_prefix
         faces = sorted(self.FONTS.glob("*.woff2"))
         if not faces:
-            raise AssertionError(f"no Inter fonts in {self.FONTS}: make -C build web")
+            raise AssertionError(
+                f"no Inter fonts in {self.FONTS}: make -C build build APP=runtime"
+            )
 
         with httpx.Client(base_url=self._sandbox(mcp_stand), timeout=30.0) as client:
             page = client.get("/")

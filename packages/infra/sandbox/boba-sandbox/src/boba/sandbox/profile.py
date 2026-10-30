@@ -168,7 +168,7 @@ class WorkspaceSpec(BaseModel):
         min_length=1,
         description=(
             "Шаблонный ext4-образ: с него копируется образ пользователя при "
-            "первом обращении. Собирается целью make sandbox."
+            "первом обращении. Собирается деталью runtime."
         ),
     )
     mount: BindSpec = Field(

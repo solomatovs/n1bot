@@ -68,7 +68,7 @@ SANDBOX = RUNTIME.sandbox
 
 needs_sandbox = pytest.mark.failif(
     shutil.which("bwrap") is None or not ROOTFS_IMAGE.exists(),
-    reason="нет bwrap или артефактов песочницы (собрать: make fetch sandbox)",
+    reason="нет bwrap или артефактов песочницы: make -C build build APP=runtime",
 )
 needs_userns = pytest.mark.failif(
     os.geteuid() == 0, reason="под root user namespace ведёт себя иначе"
@@ -646,7 +646,7 @@ class TestWorkspaceImages:
 
 needs_rootfs_image = pytest.mark.failif(
     not ROOTFS_IMAGE.exists() or shutil.which("fuse2fs") is None,
-    reason="нет rootfs.ext4 или fuse2fs (собрать: make sandbox)",
+    reason="нет rootfs.ext4 или fuse2fs (собрать: make -C build build APP=runtime)",
 )
 
 
