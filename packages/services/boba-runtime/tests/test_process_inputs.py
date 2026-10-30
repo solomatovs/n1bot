@@ -13,11 +13,13 @@ import pytest
 from boba.config import ConfigError
 from boba.runtime.config import (
     ConfigArguments,
+    InstalledProgram,
     InstanceConfig,
     InstanceData,
     ProgramCommand,
     ProgramDir,
     ProgramRoots,
+    SourceProgram,
 )
 
 
@@ -77,18 +79,40 @@ def test_interpreter_snapshot_leaves_the_working_directory_out(
         assert root != str(tmp_path)
 
 
-def test_program_from_sources_is_the_runtime_directory(
+def test_installed_python_program_is_its_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Каталог без дерева исходников рядом — установленная программа:
+    все части, и статика тоже, в нём самом."""
     monkeypatch.setenv(ProgramRoots.RUNTIME_ENV, str(tmp_path))
 
     program = ProgramRoots().locate()
 
-    assert program.root == tmp_path.resolve()
-    assert program.path(ProgramDir.LIBEXEC) == tmp_path.resolve() / "libexec"
-    assert program.plugin_image("pg") == tmp_path.resolve() / "sandbox/plugins/pg.ext4"
-    assert program.binaries().dirs[0] == str(tmp_path.resolve() / "libexec")
-    assert program.python_module("boba.cli.app")[1:] == ("-m", "boba.cli.app")
+    root = tmp_path.resolve()
+    assert isinstance(program, InstalledProgram)
+    assert program.root == root
+    assert program.path(ProgramDir.SHARE) == root / "share"
+    assert program.plugin_image("pg") == root / "sandbox/plugins/pg.ext4"
+    assert program.binaries().dirs[0] == str(root / "libexec")
+
+
+def test_program_from_sources_takes_git_files_from_the_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """runtime/ в дереве исходников: статика чата — ассеты пакета, собранное
+    (libexec, models, sandbox) — из runtime/."""
+    tree = tmp_path.resolve()
+    (tree / "packages").mkdir()
+    (tree / "runtime").mkdir()
+    monkeypatch.setenv(ProgramRoots.RUNTIME_ENV, str(tree / "runtime"))
+
+    program = ProgramRoots().locate()
+
+    assert isinstance(program, SourceProgram)
+    assert program.path(ProgramDir.SHARE) == tree / "packages/apps/boba-aid/assets"
+    assert program.path(ProgramDir.LIBEXEC) == tree / "runtime/libexec"
+    assert program.model_image("rapidocr") == tree / "runtime/models/rapidocr.ext4"
+    assert program.workspace_template() == tree / "runtime/sandbox/workspace.ext4"
 
 
 def test_program_from_sources_without_runtime_refuses(

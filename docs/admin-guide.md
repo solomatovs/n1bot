@@ -270,14 +270,17 @@ WantedBy=multi-user.target
 | `compose/<приложение>/` | случай запуска в Docker: `docker-compose.yml`, `.env`, `conf/` (специфика машины), `data/` | администратор — `conf` и `.env`; контейнер — `data` | только `docker-compose.yml` |
 | `debug/<приложение>/` | случай запуска на хосте под отладчиком и для тестов: `conf/`, `data/` | администратор — `conf`; процесс на хосте — `data` | нет |
 
-`runtime/` один на репозиторий и разложен так же, как каталог программы
-(подраздел ниже): программы из исходников (`.venv`) находят его переменной
-`BOBA_RUNTIME`, другого способа узнать пути программы у них нет.
+`runtime/` один на репозиторий и держит только собранное, чего в исходниках
+нет, — в той же раскладке, что каталог программы (подраздел ниже). Программы
+из исходников (`.venv`) находят его переменной `BOBA_RUNTIME`; раз рядом с ним
+лежит дерево исходников (`packages/`), всё, что есть в git, они берут прямо
+оттуда: статику чата — из `packages/apps/boba-aid/assets` (туда же `make web`
+кладёт собранный фронт `ui/`, `public/page.js`, `public/vendor`, в git они не
+входят), файлы плагинов — из пакета boba-mcp. Правка ассета видна без сборки.
 
 ```
 runtime/
   libexec/   bwrap  fuse2fs  mke2fs  mke2fs.conf
-  share/     статика чата: .chainlit/  public/  ui/  mcp-apps/  chainlit.md
   models/    fastembed/  rapidocr/  (onnx-genai/ — только с BIN_ONNX=1)
              fastembed.ext4  rapidocr.ext4  — те же веса образами данных для песочницы
   sandbox/   workspace.ext4  plugins/<id>.ext4
@@ -398,7 +401,7 @@ runtime/
 | `build APP=<приложение>` | образ `boba-aid`, `boba-mcp` или `boba` с тегом `<версия>`; фронт чата образ собирает сам, стадия `boba-bin` кладёт в образ boba агента каталогом `bin/boba.dist` (Nuitka standalone, исполняемый `bin/boba.dist/boba.bin`); в образ mcp уезжают модели, образы корней плагинов и workspace, а недостающие или устаревшие (исходники пакетов плагина, Dockerfile или uv.lock новее образа) он сначала собирает сам | демон Docker | aid — минуты; boba — первая компиляция 15–40 минут; mcp — 5–10 минут |
 | `test APP=<приложение>` | `build`, затем проверка образа без сети: пакеты, точки входа, у mcp — образы плагинов и модели, у aid — файлы, которые .chainlit/config.toml называет в custom_css и default_avatar_file_url, и ход агента с моделью проверки | — | секунды после сборки; печатает `RESULT: ALL OK` |
 | `dev APP=<приложение>` | готовит дерево `compose/<приложение>` | `compose/<приложение>` | секунды |
-| `debug APP=<приложение>` | готовит дерево `debug/<приложение>` и цели VS Code; для aid собирает фронт на хосте (`web`) и кладёт копию ассетов в `runtime/share` | `debug/<приложение>`, `.vscode`, `assets` пакета чата, `runtime/share` | секунды, фронт — минуты в первый раз |
+| `debug APP=<приложение>` | готовит дерево `debug/<приложение>` и цели VS Code; для aid собирает фронт на хосте (`web`) | `debug/<приложение>`, `.vscode`, `assets` пакета чата | секунды, фронт — минуты в первый раз |
 | `release APP=<приложение>` | дерево установки без Docker из готового образа | `release/<версия>/<экземпляр>` | до минуты; mcp 11 ГБ |
 | `boba-bin` | агент каталогом `bin/boba.dist` (его берут тесты `test_cli_binary.py`); `BIN_ONNX=1` — каталог `boba-onnx.dist` с рантаймом onnxruntime-genai, тогда `fetch` качает и модели onnx-genai (3,9 ГБ) | `release/<версия>/bin` | без `BIN_ONNX` — из кэша сборки agent; с ним — вторая компиляция |
 
@@ -1559,7 +1562,7 @@ browser: ...` и сообщением mermaid, и модель исправля�
 `/app/boba/share/mcp-apps/sandbox.html` и
 `/app/boba/share/public/vendor/inter/files/`, в дереве установки без Docker
 — те же пути под `<каталог установки>/share/`, в исходниках —
-`runtime/share/` (копия `packages/apps/boba-aid/assets/`, её кладёт `make web`). Чат передаёт приложению `@font-face` шрифта с
+`packages/apps/boba-aid/assets/`. Чат передаёт приложению `@font-face` шрифта с
 адресами рядом со страницей песочницы, и приложение рисует текст тем же
 шрифтом, что лента.
 
@@ -2281,8 +2284,8 @@ ClickHouse, Confluence, KDC, второй пользователь катало�
 поднимают приложение, пишут для него своё наложение только с изменёнными
 ключами (база, порты, каталог данных, способы входа, выключенные плагины) и
 запускают его с `serve --config <конфиг отладки> --config <наложение>`; стенд
-со своим языком интерфейса даёт процессу чата свой `BOBA_RUNTIME` с копией
-статики в `share/`. Порты и
+со своим языком интерфейса даёт процессу чата свой `BOBA_RUNTIME` — пустой
+`runtime/` рядом с копией ассетов чата в своём дереве `packages/`. Порты и
 каталоги данных у них свои, поэтому они идут рядом с запущенной отладкой. По умолчанию
 отбираются тесты без меток; `-m integration`, `-m ui`, `-m load` запускают
 соответствующие наборы.
@@ -2539,7 +2542,7 @@ keep/boba-mcp:<версия>-prev`. Образы workspace пользовате�
 сами не удаляются.
 
 `make -C build clean` удаляет то, что сборка делает заново: `release/`,
-артефакты `fetch` в `build/src`, собранный на хосте фронт, `runtime/libexec`, `runtime/share` и
+артефакты `fetch` в `build/src`, собранный на хосте фронт, `runtime/libexec` и
 `runtime/sandbox` (песочницу и образы корней плагинов — их пересборка занимает
 20–40 минут). Модели в `runtime/models` остаются: они качаются долго.
 
@@ -3743,7 +3746,7 @@ curl -s -b cookies.txt -X POST "$B/logout"
 ### Разрешённые origin (CORS)
 
 Файл `packages/apps/boba-aid/assets/.chainlit/config.toml` (в образе и
-релизе — `share/.chainlit/config.toml`, в отладке — `runtime/share/.chainlit/config.toml` после `make web`), ключ `allow_origins` в секции
+релизе — `share/.chainlit/config.toml`, в отладке — сам файл пакета), ключ `allow_origins` в секции
 `[project]`. Файл входит в образ при сборке, поэтому правка требует пересборки
 образа чата. По умолчанию список пуст: страница чата ходит в chainlit со
 своего же источника, и CORS ей не нужен. Запросы к chainlit идут с cookie

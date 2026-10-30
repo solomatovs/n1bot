@@ -35,7 +35,7 @@ packages/**/dist/
 .chainlit/
 .files/
 
-# ассеты — готовая статика чата: make web копирует их в runtime/share
+# ассеты — готовая статика чата: программа из исходников отдаёт их напрямую
 !/packages/apps/boba-aid/assets/.chainlit/
 
 # сборка: артефакты make fetch и локальные настройки закрытого контура
