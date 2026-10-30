@@ -17,6 +17,9 @@ tables           = "${kb_tables}"
 embedding        = "${embedding.main}"
 
 [sandbox]
+    program   = "plugins/docs"
+    rootfs    = "rootfs/base.ext4"
+    images    = ["models/fastembed:/var/cache/fastembed"]
     [sandbox.limits]
         process_memory_bytes = 17179869184
         group_memory_bytes   = 8589934592

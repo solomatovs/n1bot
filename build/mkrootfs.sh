@@ -1,0 +1,38 @@
+#!/bin/sh
+# Шаг compile: образ корня песочницы. Дерево корня tar'ом со stdin (docker cp образа
+# rootfs.Dockerfile) -> ext4-файл $1 через mke2fs сборки (build/out/libexec на
+# PATH). Запускается root'ом в контейнере glibc без сети, чтобы владельцы файлов из
+# tar сохранились; итог отдаётся владельцу хоста $5. Байткод компилируется
+# python'ом дерева, если он там есть: образ монтируется read-only, .pyc на лету не
+# появятся; компиляция идёт в $4 заданий. Размер — занятое место с запасом в 5% и
+# reserve_mb $3. $2 — версия python дерева.
+set -eu
+
+out=$1
+python_version=$2
+reserve_mb=$3
+jobs=$4
+owner=$5
+tree=/tree
+
+mkdir -p "$tree"
+tar -x -i -f - -C "$tree"
+# docker cp берёт дерево из контейнера: маркер docker'а в корень образа не нужен
+rm -f "$tree/.dockerenv"
+
+if [ -x "$tree/usr/local/bin/python3" ]; then
+    PYTHONHOME="$tree/usr/local" LD_LIBRARY_PATH="$tree/usr/local/lib" "$tree/usr/local/bin/python3" \
+        -m compileall -q -j "$jobs" -s "$tree" -p / -x '/(test|tests|lib2to3|idle_test)/' \
+        "$tree/usr/local/lib/python$python_version" "$tree/usr/src"
+fi
+
+used_mb=$(du -sm "$tree" | cut -f1)
+size_mb=$(( used_mb + used_mb / 20 + reserve_mb ))
+inodes=$(find "$tree" | wc -l)
+inodes=$(( inodes + inodes / 5 + 1000 ))
+
+rm -f "$out"
+truncate -s "${size_mb}M" "$out"
+mke2fs -F -q -t ext4 -O ^has_journal -m 0 -L rootfs -N "$inodes" -d "$tree" "$out"
+chown "$owner" "$out"
+ls -lh "$out"

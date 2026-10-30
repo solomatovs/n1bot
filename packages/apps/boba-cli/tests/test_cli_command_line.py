@@ -60,4 +60,4 @@ class TestModes:
         assert done.returncode == 0
         assert "--stdio" in done.stdout
         assert "--settings" in done.stdout
-        assert "{serve,self-check,settings-schema}" in done.stdout
+        assert "{serve,health,self-check,settings-schema}" in done.stdout

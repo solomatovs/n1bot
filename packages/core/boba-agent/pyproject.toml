@@ -20,8 +20,6 @@ dev = [
     "boba-stand==0.0.30.dev7",
     "boba-history-jsonl==0.0.30.dev7",
     "boba-prompt-assembly==0.0.30.dev7",
-    "boba-llm-http==0.0.30.dev7",
-    "boba-transport-http==0.0.30.dev7",
     "boba-llm-onnx==0.0.30.dev7",
     "boba-config==0.0.30.dev7",
     "omegaconf>=2.3,<3",

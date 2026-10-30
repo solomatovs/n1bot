@@ -28,7 +28,7 @@ kerberos по keytab (`[postgres.auth]` и `[postgres_history.auth]`, `method =
 Прежняя версия (ветка `dev`, чат chainlit и studio, базы `boba` и `boba_debug`)
 выведена 2026-10-24: её треды, история, соединения, база знаний и индекс
 перенесены в `aid` и `aid_debug` (теперь `aid_ss`) скриптами
-`build/scripts/migrations/2026-10-24-history-merge`, базы `boba`, `boba_debug` и
+`scripts/migrations/2026-10-24-history-merge`, базы `boba`, `boba_debug` и
 `solomatovs` удалены, их дампы лежат в `/mnt/nas/ss/pg-backup-2026-10-24`.
 
 Базы `aid` и `aid_<разработчик>` — системные. Рабочая база чат-бота, куда
@@ -37,7 +37,8 @@ kerberos по keytab (`[postgres.auth]` и `[postgres_history.auth]`, `method =
 отладки: владелец `boba-svc`, группа `adusers` может создавать в ней схемы и
 объекты в `public`. Соединения ClickHouse у стенда смотрят в `default`, у отладки
 — в `playground_<разработчик>` кластера `gpn`. Базы разработчика заводит
-`make -C build dev-db` (руководство, раздел 8).
+`scripts/dev-db.sh <логин> <база стенда> <шаблон> <кластер ClickHouse>`
+(руководство, раздел 8).
 
 Индексаторы и скраперы ix (`compose/ix-*`, `compose/cfl-indexer`,
 `compose/*-meta-scraper`) пишут в схему `ix` базы `aid`; схему они создают сами

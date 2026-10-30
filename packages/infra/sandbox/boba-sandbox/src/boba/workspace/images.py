@@ -1,4 +1,4 @@
-"""Образы ext4 песочницы: копия шаблона под flock и fuse2fs-монтирование.
+"""Образы ext4 песочницы: развёртка шаблона gzip под flock и монтирование fuse2fs.
 
 Исполняется внутри песочницы — лаунчером цепочки и ребёнком зиготы, поэтому
 живёт в toolkit: пакет песочницы в образ не попадает. Ход монтирования
@@ -14,13 +14,14 @@ from __future__ import annotations
 
 import contextlib
 import ctypes
-import errno
 import fcntl
+import gzip
 import os
 import signal
 import subprocess
 import sys
 import time
+import zlib
 from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import StrEnum
@@ -60,44 +61,53 @@ class MountError(RuntimeError):
 
 
 class SparseCopier:
-    """Копирует только данные: дыры и нулевые блоки остаются дырами."""
+    """Разворачивает шаблон образа, сжатый gzip, в разреженный файл.
+
+    Нулевые блоки шаблона остаются дырами: пустой ext4 на гигабайт занимает
+    на диске только свои метаданные. Шаблоны workspace и прочих rw-образов
+    лежат сжатыми; ImageStore зовёт развёртку один раз на образ.
+    """
+
+    BLOCK: ClassVar[int] = 4096
+    """Гранулярность дыр: блок ext4 шаблона."""
 
     def __init__(self, chunk_bytes: int) -> None:
         self._chunk = chunk_bytes
-        self._zero = b"\0" * chunk_bytes
+        self._zero = b"\0" * max(chunk_bytes, self.BLOCK)
 
     def copy(self, src: str, dst: str) -> None:
-        with open(src, "rb") as fin, open(dst, "wb") as fout:
-            size = os.fstat(fin.fileno()).st_size
-            fout.truncate(size)
-            offset = 0
-            while offset < size:
-                offset = self._copy_next_extent(fin, fout, offset, size)
-
-    def _copy_next_extent(
-        self, fin: BinaryIO, fout: BinaryIO, offset: int, size: int
-    ) -> int:
         try:
-            start = os.lseek(fin.fileno(), offset, os.SEEK_DATA)
-        except OSError as e:
-            if e.errno != errno.ENXIO:
-                raise
-            return size
-        end = os.lseek(fin.fileno(), start, os.SEEK_HOLE)
-        fin.seek(start)
-        while start < end:
-            chunk = fin.read(min(end - start, self._chunk))
-            if not chunk:
-                msg = (
-                    f"sparse copy of {fin.name!r}: unexpected end of file "
-                    f"at offset {start}, data segment expected up to {end}"
-                )
-                raise MountError(msg)
-            if chunk != self._zero[: len(chunk)]:
-                fout.seek(start)
-                fout.write(chunk)
-            start += len(chunk)
-        return start
+            with gzip.open(src, "rb") as fin, open(dst, "wb") as fout:
+                size = self._unpack(fin, fout)
+                fout.truncate(size)
+        except (gzip.BadGzipFile, EOFError, zlib.error) as exc:
+            msg = (
+                f"unpacking template {src!r} into {dst!r}: expected a gzip "
+                f"stream, got: {exc}"
+            )
+            raise MountError(msg) from exc
+
+    def _unpack(self, fin: gzip.GzipFile, fout: BinaryIO) -> int:
+        offset = 0
+        while chunk := fin.read(self._chunk):
+            self._write_data(fout, offset, chunk)
+            offset += len(chunk)
+
+        return offset
+
+    def _write_data(self, fout: BinaryIO, offset: int, chunk: bytes) -> None:
+        """Ненулевые блоки куска chunk со смещения offset; нулевые — дыры."""
+        if chunk == self._zero[: len(chunk)]:
+            return
+
+        view = memoryview(chunk)
+        for start in range(0, len(chunk), self.BLOCK):
+            block = view[start : start + self.BLOCK]
+            if block == self._zero[: len(block)]:
+                continue
+
+            fout.seek(offset + start)
+            fout.write(block)
 
 
 class PartialCopy:

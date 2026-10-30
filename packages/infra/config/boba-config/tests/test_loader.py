@@ -91,7 +91,9 @@ def test_prompt_directory_becomes_a_table_of_files(tmp_path: Path) -> None:
 def test_overlay_changes_only_its_keys_and_references_follow(tmp_path: Path) -> None:
     main = _instance(tmp_path)
     overlay = tmp_path / "stand.toml"
-    overlay.write_text('[postgres]\n    dbname = "stand_db"\n[tool.kb]\n    enable = false\n')
+    overlay.write_text(
+        '[postgres]\n    dbname = "stand_db"\n[tool.kb]\n    enable = false\n'
+    )
 
     raw = ConfigLoader([main, overlay]).load()
     plugin = bind(raw, "tool.kb", _Plugin)
@@ -129,7 +131,9 @@ def test_loaded_tree_is_read_only(tmp_path: Path) -> None:
 
 def test_missing_environment_variable_fails_the_load(tmp_path: Path) -> None:
     main = tmp_path / "config.toml"
-    main.write_text('[postgres]\n    password = "${oc.env:BOBA_TEST_ABSENT_PASSWORD}"\n')
+    main.write_text(
+        '[postgres]\n    password = "${oc.env:BOBA_TEST_ABSENT_PASSWORD}"\n'
+    )
 
     with pytest.raises(ConfigError, match="BOBA_TEST_ABSENT_PASSWORD"):
         ConfigLoader([main]).load()
@@ -155,5 +159,5 @@ def test_broken_toml_names_the_file(tmp_path: Path) -> None:
     main = tmp_path / "config.toml"
     main.write_text("[app\n")
 
-    with pytest.raises(ConfigError, match="config.toml"):
+    with pytest.raises(ConfigError, match=r"config\.toml"):
         ConfigLoader([main]).load()

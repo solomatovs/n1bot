@@ -51,7 +51,7 @@ lxml = "парсер BeautifulSoup, который boba.doc.html называе�
 
 [tool.boba.sandbox]
 data = ["/var/cache/rapidocr"]
-apt = ["libgl1", "libglib2.0-0"]
+libs = ["libgl1", "libglib2.0-0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

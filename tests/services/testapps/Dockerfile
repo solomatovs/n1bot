@@ -5,10 +5,10 @@
 # ставит npm ci по package-lock.json из реестра npm образа nodejs, dist рендерера — npm pack
 # по пину; python — дерево образа python, пакеты по requirements.txt из реестра pypi.
 # CA и pip.conf закрытого контура — те же, что у образа сборки BASE_IMAGE (build/conf).
-# Контекст — каталог tests/services/testapps. Собирает make testapps
+# Контекст — каталог tests/services/testapps. Собирает make build APP=testapps
 ARG NODE_IMAGE=dmp/nodejs:22
 ARG PYTHON_IMAGE=dmp/python:3.11-dist
-ARG BASE_IMAGE=boba-base:3.11
+ARG BASE_IMAGE
 
 FROM ${PYTHON_IMAGE} AS python-dist
 
@@ -16,8 +16,7 @@ FROM ${BASE_IMAGE} AS site-conf
 
 FROM ${NODE_IMAGE}
 
-# область кэша make offline-check; npm не спрашивает реестр о своей новой версии
-ARG CACHE_SCOPE
+# npm не спрашивает реестр о своей новой версии
 ARG PREFAB_UI_VERSION=0.20.2
 ENV npm_config_update_notifier=false PIP_CERT=/etc/ssl/certs/ca-certificates.crt
 

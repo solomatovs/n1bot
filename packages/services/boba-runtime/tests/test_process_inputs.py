@@ -92,7 +92,8 @@ def test_installed_python_program_is_its_directory(
     assert isinstance(program, InstalledProgram)
     assert program.root == root
     assert program.path(ProgramDir.SHARE) == root / "share"
-    assert program.plugin_image("pg") == root / "sandbox/plugins/pg.ext4"
+    assert program.located("rootfs/base.ext4") == root / "rootfs/base.ext4"
+    assert program.located("/srv/models") == Path("/srv/models")
     assert program.binaries().dirs[0] == str(root / "libexec")
 
 
@@ -100,7 +101,7 @@ def test_program_from_sources_takes_git_files_from_the_tree(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """runtime/ в дереве исходников: статика чата — ассеты пакета, собранное
-    (libexec, models, sandbox) — из runtime/."""
+    (libexec, sandbox, rootfs, models) — из runtime/."""
     tree = tmp_path.resolve()
     (tree / "packages").mkdir()
     (tree / "runtime").mkdir()
@@ -111,8 +112,8 @@ def test_program_from_sources_takes_git_files_from_the_tree(
     assert isinstance(program, SourceProgram)
     assert program.path(ProgramDir.SHARE) == tree / "packages/apps/boba-aid/assets"
     assert program.path(ProgramDir.LIBEXEC) == tree / "runtime/libexec"
-    assert program.model_image("rapidocr") == tree / "runtime/models/rapidocr.ext4"
-    assert program.workspace_template() == tree / "runtime/sandbox/workspace.ext4"
+    assert program.located("models/rapidocr") == tree / "runtime/models/rapidocr"
+    assert program.workspace_template() == tree / "runtime/sandbox/workspace.ext4.gz"
 
 
 def test_program_from_sources_without_runtime_refuses(

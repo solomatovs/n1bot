@@ -12,6 +12,7 @@ dependencies = [
     "agent-client-protocol==1.0.0rc3",
     "boba-agent==0.0.30.dev7",
     "boba-cancellation==0.0.30.dev7",
+    "boba-config==0.0.30.dev7",
     "boba-history-jsonl==0.0.30.dev7",
     "boba-history-postgres==0.0.30.dev7",
     "boba-db-postgres==0.0.30.dev7",
@@ -42,7 +43,6 @@ boba = "boba.cli.app:cli"
 [project.optional-dependencies]
 dev = [
     "boba-stand==0.0.30.dev7",
-    "boba-config==0.0.30.dev7",
     "boba-krb==0.0.30.dev7",
     "httpx2>=2.10,<3",
     "omegaconf>=2.3,<3",

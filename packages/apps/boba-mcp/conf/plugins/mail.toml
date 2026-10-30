@@ -8,5 +8,7 @@ sender    = "${mail.sender}"
 recipient = "${mail.recipient}"
 
 [sandbox]
+    program   = "plugins/core"
+    rootfs    = "rootfs/base.ext4"
     [sandbox.limits]
         group_memory_bytes = 1073741824

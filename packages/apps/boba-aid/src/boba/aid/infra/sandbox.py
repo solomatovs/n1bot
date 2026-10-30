@@ -212,7 +212,7 @@ class AidListeners:
             msg = (
                 f"[mcp.servers.{name}.apps]: the chat serves the app sandbox from "
                 f"share/ of the program {root}, but {path} is missing; install "
-                "the chat with its assets (in the sources make -C build web "
-                "copies them to runtime/share)"
+                "the chat with its assets (in the sources make -C build build "
+                "APP=runtime puts them into the assets of boba-aid)"
             )
             raise ConfigError(msg)

@@ -6,7 +6,7 @@ from boba.db.pgvector.config import KnowledgeBaseSchemaConfig
 from boba.db.pgvector.schema import KbSchema
 from boba.tool.kb.tools import TOOLS as KB_TOOLS
 from boba.tool.kb.tools import warm_embedder
-from boba.toolkit.manifest import DataImage, PluginSetup, ToolPlugin
+from boba.toolkit.manifest import PluginSetup, ToolPlugin
 
 KB: Final = ToolPlugin(
     id="kb",
@@ -14,5 +14,4 @@ KB: Final = ToolPlugin(
     setup=PluginSetup(KnowledgeBaseSchemaConfig, KbSchema),
     warmups=(warm_embedder,),
     network=True,
-    data=(DataImage(name="fastembed", target="/var/cache/fastembed"),),
 )

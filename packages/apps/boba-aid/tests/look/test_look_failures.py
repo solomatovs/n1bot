@@ -41,7 +41,7 @@ from aid_look import (
 from playwright.sync_api import Error, Locator, Page, Response, WebSocket, expect
 
 from boba.cli.serve import ServeHistory
-from boba.runtime.config import ProcessConfig
+from boba.runtime.config import InstanceData, ProcessConfig
 from boba.stand.agent_service import (
     AgentServiceStand,
     ServeAddress,
@@ -306,7 +306,7 @@ class AgentPids:
     """Процессы `boba --stdio` стенда: по каталогу настроек в argv."""
 
     def __init__(self, stand: StandProcess) -> None:
-        self._agents = str(stand.config.workdir / "agents")
+        self._agents = str(stand.config.data_dir / InstanceData.AGENTS.value)
 
     def killed(self) -> list[int]:
         """SIGKILL всем процессам агента стенда и ожидание их ухода."""

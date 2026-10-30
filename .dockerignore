@@ -10,7 +10,8 @@ build/src/*
 !build/src/webassets
 !build/src/*.tar.xz
 !build/src/chainlit-[0-9]*.tar.gz
-build/test
+build/out
+build/cache
 
 **/__pycache__
 packages/**/*.egg-info

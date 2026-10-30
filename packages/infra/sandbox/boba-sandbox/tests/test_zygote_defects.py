@@ -50,7 +50,7 @@ from boba.workspace.images import PartialCopy
 
 needs_sandbox = pytest.mark.failif(
     shutil.which("bwrap") is None or not ROOTFS_IMAGE.exists(),
-    reason="нет bwrap или артефактов песочницы (собрать: make fetch sandbox)",
+    reason="нет bwrap или артефактов песочницы: make -C build build APP=runtime",
 )
 needs_userns = pytest.mark.failif(
     os.geteuid() == 0, reason="под root user namespace ведёт себя иначе"
@@ -395,7 +395,7 @@ class TestRootMountRecovery:
 
     needs_image = pytest.mark.failif(
         not ROOTFS_IMAGE.exists(),
-        reason="нет rootfs.ext4 (собрать: make sandbox)",
+        reason="нет rootfs.ext4 (собрать: make -C build build APP=runtime)",
     )
 
     LOGGER: ClassVar[str] = "boba.sandbox.zygote"

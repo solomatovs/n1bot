@@ -269,7 +269,7 @@ class TestContentBlocks:
         ),
         GroupFailureResult(error_kind="stream_group_failed", cause=CRASH),
         TableResult(rows=[{"a": 1}], note="n"),
-        VisualResult(element="plotly", props={"spec": {"data": []}}, title="t"),
+        VisualResult(element="card", props={"path": "/workspace/t/a.md"}, title="t"),
     )
 
     @pytest.mark.parametrize("artifact", KINDS, ids=lambda artifact: artifact.kind)
@@ -376,19 +376,23 @@ class TestContentBlocks:
         ):
             raise AssertionError(f"код возврата строкой: {blocks[1]!r}")
 
-    def test_plotly_figure_is_its_resource(self) -> None:
-        figure = {"data": [{"type": "bar", "y": [1, 2]}]}
-        chart = VisualResult.plotly(figure, "orders")
+    def test_stored_plotly_visual_shows_only_its_caption(self) -> None:
+        """Результат plotly из истории до удаления вида графика: модель его
+        читает, а выдача пользователю — подпись без ресурса фигуры."""
+        stored = {
+            "kind": "visual",
+            "element": "plotly",
+            "props": {"spec": {"data": [{"type": "bar", "y": [1, 2]}]}},
+            "title": "orders",
+        }
+        visual = VisualResult.model_validate(stored)
 
-        blocks = self._user_blocks(chart)
+        blocks = self._user_blocks(visual)
 
-        resource = self._resource(blocks[1])
-        if resource.mime_type != ContentMime.PLOTLY:
-            raise AssertionError(f"фигура plotly: {resource.mime_type}")
-        if json.loads(resource.text) != figure:
-            raise AssertionError(f"фигура доехала: {resource.text}")
-        if not str(resource.uri).endswith("/orders"):
-            raise AssertionError(f"имя ресурса — заголовок: {resource.uri}")
+        if len(blocks) != 1:
+            raise AssertionError(f"только подпись: {blocks!r}")
+        if blocks[0].type != "text":
+            raise AssertionError(f"подпись текстом: {blocks[0]!r}")
 
     def test_file_and_canvas_are_links_under_one_text(self) -> None:
         attached = FileResult(

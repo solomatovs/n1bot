@@ -1,7 +1,0 @@
-enable  = false
-tools   = ["visualize"]
-
-[sandbox]
-    [sandbox.limits]
-        process_memory_bytes = 17179869184
-        group_memory_bytes   = 4294967296

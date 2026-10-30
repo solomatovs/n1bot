@@ -905,14 +905,14 @@ class TestStagesOnPostgres:
 
 
 class TestCutoverTable:
-    """Перенос чата на агента (build/scripts/migrations/2026-10-16-chat-agent-cutover)
+    """Перенос чата на агента (scripts/migrations/2026-10-16-chat-agent-cutover)
     создаёт таблицы истории своим SQL до первого обращения агента: это
     раскладка выпуска 2026-10-16, и хранилище обязано довести её на месте до
     той, что создаёт само."""
 
     SCRIPT: ClassVar[Path] = (
         REPO_ROOT
-        / "build/scripts/migrations/2026-10-16-chat-agent-cutover/history_tables.sql"
+        / "scripts/migrations/2026-10-16-chat-agent-cutover/history_tables.sql"
     )
     COLUMNS: ClassVar[LiteralString] = (
         "select table_name, column_name, data_type, is_nullable, column_default "

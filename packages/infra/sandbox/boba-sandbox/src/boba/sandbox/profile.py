@@ -150,8 +150,8 @@ class TmpfsSpec(BaseModel):
 class WorkspaceSpec(BaseModel):
     """Рабочий каталог чата: единственное описание workspace на всё приложение.
 
-    template — эталон, с которого снимается копия при первом обращении
-    пользователя. mount — сама копия и её точка внутри песочницы одной
+    template — эталон, сжатый gzip, из которого разворачивается образ при
+    первом обращении пользователя. mount — сама копия и её точка внутри песочницы одной
     записью `host:target`, где host обязан содержать {user_id}: иначе все
     пользователи писали бы в один образ.
     """
@@ -167,8 +167,8 @@ class WorkspaceSpec(BaseModel):
     template: str = Field(
         min_length=1,
         description=(
-            "Шаблонный ext4-образ: с него копируется образ пользователя при "
-            "первом обращении. Собирается целью make sandbox."
+            "Шаблонный ext4-образ, сжатый gzip: из него разворачивается образ "
+            "пользователя при первом обращении. Собирается деталью runtime."
         ),
     )
     mount: BindSpec = Field(
@@ -316,7 +316,7 @@ class SandboxMount(StrEnum):
     DEV = "/dev"
     TMP = "/tmp"  # noqa: S108 — путь внутри песочницы  # nosec B108
     SETUP = "/mnt"
-    SETUP_TEMPLATE = "/mnt/template.ext4"
+    SETUP_TEMPLATE = "/mnt/template.ext4.gz"
     SETUP_FUSE2FS = "/mnt/fuse2fs"
     SETUP_IMAGES = "/mnt/images"
 
@@ -379,15 +379,6 @@ class SandboxLayout:
         """Путь образа пользователя внутри песочницы: каталог образов фиксирован."""
         return SandboxMount.SETUP_IMAGES.under(os.path.basename(image_host))
 
-    DATA_IMAGE_PREFIX: ClassVar[str] = "/tmp/boba-image-"  # noqa: S108  # nosec B108
-    """Точка образа данных во внешнем слое цепочки: рядом с корнем, на той же
-    tmpfs /tmp, и только там — во вложенный слой её приносит бинд."""
-
-    @classmethod
-    def data_image_mount(cls, index: int) -> str:
-        """Точка index-го образа данных профиля во внешнем слое цепочки."""
-        return f"{cls.DATA_IMAGE_PREFIX}{index}"
-
 
 class MountsSpec(BaseModel):
     """Что песочница монтирует и что из этого доезжает до тела инструмента.
@@ -430,11 +421,10 @@ class MountsSpec(BaseModel):
     images: tuple[BindSpec, ...] = Field(
         default=(),
         description=(
-            "Ext4-образы данных read-only, формат `образ:точка`, например "
-            "`/app/boba/models/fastembed.ext4:/var/cache/fastembed`. "
-            "Монтируются fuse2fs один раз на жизнь зиготы, как корень: в "
-            "mountinfo тела источник нейтрален, пути хоста нет. Точка обязана "
-            "существовать в образе корня. Отсутствие — образов данных нет."
+            "Каталоги программы и данных read-only, формат `каталог:точка`, "
+            "например `/app/boba/models/fastembed:/var/cache/fastembed`. "
+            "Бинд строгий: нет каталога — зигота не стартует. Точка обязана "
+            "существовать в образе корня. Отсутствие — каталогов нет."
         ),
     )
 
@@ -683,9 +673,9 @@ class SandboxProfile(BaseModel):
     rootfs: str = Field(
         min_length=1,
         description=(
-            "Ext4-образ корня, монтируемый read-only на всю жизнь зиготы; "
-            "внутри уже лежат python, site-packages и код инструментов. "
-            "Собирается целью make sandbox."
+            "Ext4-образ корня, монтируемый read-only на всю жизнь зиготы: "
+            "glibc, системные пакеты и точки монтирования. Собирается "
+            "деталью rootfs (make build APP=rootfs)."
         ),
     )
     mounts: MountsSpec = Field(description="Что монтируется и что видит тело.")

@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import subprocess
 import threading
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
@@ -68,7 +67,7 @@ SANDBOX = RUNTIME.sandbox
 
 needs_sandbox = pytest.mark.failif(
     shutil.which("bwrap") is None or not ROOTFS_IMAGE.exists(),
-    reason="нет bwrap или артефактов песочницы (собрать: make fetch sandbox)",
+    reason="нет bwrap или артефактов песочницы: make -C build build APP=runtime",
 )
 needs_userns = pytest.mark.failif(
     os.geteuid() == 0, reason="под root user namespace ведёт себя иначе"
@@ -521,22 +520,9 @@ class TestWarmup:
             zygote_stand.registry().obtain(section)
 
 
-def _mkfs_template(tmp_path: Path) -> str:
-    """Шаблон workspace-образа: пустой ext4 на 8 МБ."""
-    mkfs = shutil.which("mkfs.ext4")
-    if mkfs is None:
-        pytest.fail("mkfs.ext4 недоступен")
-
-    template = tmp_path / "workspace.ext4"
-    subprocess.run(
-        [mkfs, "-q", "-F", str(template), "8m"], check=True, capture_output=True
-    )
-    return str(template)
-
-
 def _image_profile(tmp_path: Path, **overrides: Any) -> SandboxProfile:
     """Профиль с образом workspace: обвязку монтирования ставит профиль."""
-    template = _mkfs_template(tmp_path)
+    template = SandboxStand.mkfs_template(tmp_path)
     images = tmp_path / "ws"
     images.mkdir(exist_ok=True)
 
@@ -646,7 +632,7 @@ class TestWorkspaceImages:
 
 needs_rootfs_image = pytest.mark.failif(
     not ROOTFS_IMAGE.exists() or shutil.which("fuse2fs") is None,
-    reason="нет rootfs.ext4 или fuse2fs (собрать: make sandbox)",
+    reason="нет rootfs.ext4 или fuse2fs (собрать: make -C build build APP=runtime)",
 )
 
 

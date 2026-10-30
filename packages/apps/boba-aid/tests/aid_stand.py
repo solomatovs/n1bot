@@ -293,10 +293,13 @@ class ToolService:
         """Чего сервису не хватает для песочницы на этом хосте; пустая
         строка — всё на месте."""
         if shutil.which("bwrap") is None:
-            return "bwrap is not on PATH (build: make fetch sandbox)"
+            return "bwrap is not on PATH (build: make -C build build APP=runtime)"
 
         if not ROOTFS_IMAGE.exists():
-            return f"plugin rootfs {ROOTFS_IMAGE} is not built (make plugin-rootfs-all)"
+            return (
+                f"plugin rootfs {ROOTFS_IMAGE} is not built "
+                "(make -C build build APP=runtime)"
+            )
 
         return SandboxCgroup().missing()
 

@@ -1,14 +1,16 @@
 #!/bin/sh
-# Проверка программы плагина в голом корне его образа (стадия plugin-bin-root):
-# каждая ELF в /plugin находит все библиотеки, а снаружи /plugin берёт только
-# glibc (пакет libc6) и пакеты, которые поставил ключ apt плагина. Библиотека
-# пакета базового образа glibc, кроме libc6, — отказ: на неё программа
-# опирается случайно. Затем самопроверка программы по описи сборки.
-# $1 — id плагина, $2 — файл со списком пакетов базового образа glibc.
+# Шаг compile: проверка программы группы плагинов в корне песочницы — docker run
+# образа rootfs.Dockerfile без сети, программа на /plugin. Каждая ELF в /plugin
+# находит все библиотеки, а снаружи /plugin берёт только glibc (пакет libc6) и
+# пакеты, которые поставил ключ apt деклараций. Библиотека пакета базового образа
+# glibc, кроме libc6, — отказ: на неё программа опирается случайно. Затем
+# самопроверка программы по описи сборки для каждого плагина в окружении песочницы.
+# $1 — файл со списком пакетов базового образа glibc, дальше — id плагинов.
 set -eu
 
-plugin=$1
-base=$2
+base=$1
+shift
+plugin="$*"
 report=$(mktemp -d)
 
 find /plugin -type f \( -name '*.so' -o -name '*.so.*' -o -perm -u+x \) | sort > "$report/files"
@@ -62,9 +64,11 @@ if [ -s "$report/accidental" ]; then
     cut -d' ' -f1 "$report/accidental" | while read -r lib; do
         grep "^$lib " "$report/resolved" >&2
     done
-    echo "the build must bundle them into /plugin/run.dist or the plugin declares them by apt" >&2
+    echo "the build must bundle them into /plugin or the plugin declares them by apt" >&2
     exit 1
 fi
 
 # окружение песочницы (SandboxDefaults): образ docker несёт свои LC_*, песочница — нет
-env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/tmp LANG=C.UTF-8 /plugin/run self-check
+for id in "$@"; do
+    env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/tmp LANG=C.UTF-8 /plugin/run "$id" self-check
+done

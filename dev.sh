@@ -48,17 +48,13 @@ fi
 
 export PATH="$DIR/build/src/uv:$PATH"
 
-# python-oracledb в .venv идёт патченным колесом из build/src/oracledb
+# python-oracledb в .venv идёт патченным колесом из build/out/oracledb
 # (find-links в pyproject); без него uv sync не соберёт окружение
-ORACLEDB_WHEELS="$DIR/build/src/oracledb"
-ORACLEDB_PYTHON="$DIR/.venv/bin/python"
-if [ ! -d "$DIR/.venv" ]; then
-  ORACLEDB_PYTHON=python3
-fi
+ORACLEDB_WHEELS="$DIR/build/out/oracledb"
 
 if ! ls "$ORACLEDB_WHEELS"/oracledb-*.whl > /dev/null 2>&1; then
-  echo "dev: собираю колесо python-oracledb: make -C build oracledb-wheel"
-  if ! make -C "$DIR/build" oracledb-wheel PYTHON="$ORACLEDB_PYTHON"; then
+  echo "dev: собираю колесо python-oracledb: make -C build build APP=oracledb"
+  if ! make -C "$DIR/build" build APP=oracledb; then
     echo "dev: колесо python-oracledb не собралось, .venv не готовится" >&2
     return 1 2> /dev/null || exit 1
   fi

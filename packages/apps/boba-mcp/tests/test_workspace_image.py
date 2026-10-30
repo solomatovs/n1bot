@@ -137,7 +137,7 @@ def template(tmp_path: Path) -> Path:
         [mkfs, "-F", "-q", "-O", "^has_journal", "-m", "0", str(path)],
         check=True,
     )
-    return path
+    return Path(SandboxStand.packed(path))
 
 
 @pytest.fixture
@@ -147,7 +147,8 @@ def build_template() -> Path:
     path = RUNTIME.workspace_template
     if not path.is_file():
         pytest.fail(
-            f"workspace template {path} does not exist, build it with `make sandbox`"
+            f"workspace template {path} does not exist, build it with "
+            "`make -C build build APP=runtime`"
         )
 
     return path

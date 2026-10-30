@@ -1,9 +1,9 @@
 """Плагин инструментов по спецификации v1: объявление автора и манифест.
 
 Автор плагина объявляет его объектом ToolPlugin: инструменты, хранилище,
-прогревы зиготы, сеть и образы данных. Программа плагина строит из
-объявления манифест PluginManifest (ManifestBuilder) и отдаёт его серверу
-JSON-ом; сервер читает только манифест и кода плагина не импортирует.
+прогревы зиготы и сеть. Программа плагина строит из объявления манифест
+PluginManifest (ManifestBuilder) и отдаёт его серверу JSON-ом; сервер читает
+только манифест и кода плагина не импортирует.
 Здесь же роли служебных параметров тела (InjectedRole) и базы моделей, по
 которым построитель узнаёт роль: контекст вызова (ContextValue) и профиль
 соединения (ConnectionProfile).
@@ -51,7 +51,6 @@ __all__ = [
     "ConfigConnection",
     "ConnectionProfile",
     "ContextValue",
-    "DataImage",
     "InjectedRole",
     "ManifestBuilder",
     "ManifestError",
@@ -146,26 +145,13 @@ class PluginSetup(Generic[CfgT]):
         return self.storage(cfg)
 
 
-class DataImage(BaseModel):
-    """Образ данных плагина: имя образа модели и точка монтирования в песочнице.
-
-    Сервер берёт образ <models>/<name>.ext4 своей программы и монтирует его
-    read-only в target.
-    """
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    name: str = Field(min_length=1)
-    target: str = Field(min_length=1)
-
-
 @dataclass(frozen=True)
 class ToolPlugin:
     """Объявление плагина автором: то, из чего программа плагина строит манифест.
 
-    id — единственное имя плагина: имя секции [tool.<id>], файлов комплекта
-    <id>.ext4 и <id>.toml и entry point'а группы GROUP, по которому
-    программа плагина находит объявление в своём процессе.
+    id — единственное имя плагина: имя секции [tool.<id>], файла конфига
+    <id>.toml и entry point'а группы GROUP, по которому программа плагина
+    находит объявление в своём процессе.
     """
 
     GROUP: ClassVar[str] = "boba.tools"
@@ -175,7 +161,6 @@ class ToolPlugin:
     setup: PluginSetup[Any] | None = None
     warmups: tuple[WarmupHook, ...] = ()
     network: bool = False
-    data: tuple[DataImage, ...] = ()
 
     def joined(self, other: ToolPlugin) -> ToolPlugin:
         """Этот плагин с инструментами и прогревами other: так стенд тестов
@@ -271,7 +256,6 @@ class PluginManifest(BaseModel):
     version: str = Field(min_length=1)
     setup: bool
     warmups: tuple[WarmupDecl, ...] = ()
-    data: tuple[DataImage, ...] = ()
     network: bool
     connections_in_config: tuple[ConfigConnection, ...] = ()
     tools: tuple[ToolDecl, ...]
@@ -351,7 +335,6 @@ class ManifestBuilder:
             version=version,
             setup=plugin.setup is not None,
             warmups=tuple(warmups),
-            data=plugin.data,
             network=plugin.network,
             connections_in_config=self._config_connections(plugin),
             tools=tuple(tools),

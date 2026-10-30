@@ -49,13 +49,19 @@ class TomlFiles:
             with path.open("rb") as body:
                 return tomllib.load(body)
         except (OSError, tomllib.TOMLDecodeError) as exc:
-            msg = f"config {path}: reading a toml file failed: {type(exc).__name__}: {exc}"
+            msg = (
+                f"config {path}: reading a toml file failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
             raise ConfigError(msg) from exc
 
     def read_dir(self, path: Path) -> dict[str, Any]:
         """Файлы <имя>.toml каталога — таблица по именам файлов."""
         if not path.is_dir():
-            msg = f"config {path}: expected a directory of {self.SUFFIX} files, it does not exist"
+            msg = (
+                f"config {path}: expected a directory of {self.SUFFIX} files, "
+                "it does not exist"
+            )
             raise ConfigError(msg)
 
         tables: dict[str, Any] = {}
@@ -99,7 +105,9 @@ class ConfigLoader:
         return self._resolved(layers)
 
     def _resolved(self, layers: Sequence[DictConfig]) -> DictConfig:
-        OmegaConf.register_new_resolver(ConfigResolver.TOML.value, self._toml, replace=True)
+        OmegaConf.register_new_resolver(
+            ConfigResolver.TOML.value, self._toml, replace=True
+        )
         OmegaConf.register_new_resolver(
             ConfigResolver.TOML_DIR.value, self._toml_dir, replace=True
         )
@@ -114,7 +122,10 @@ class ConfigLoader:
 
         if not isinstance(tree, DictConfig):
             got = type(tree).__name__
-            msg = f"config {self._named()}: expected the files to merge into a table, got {got}"
+            msg = (
+                f"config {self._named()}: expected the files to merge into a "
+                f"table, got {got}"
+            )
             raise ConfigError(msg)
 
         OmegaConf.set_readonly(tree, True)
@@ -129,7 +140,8 @@ class ConfigLoader:
         return OmegaConf.create(self._files.read(self._base / path), parent=_parent_)
 
     def _toml_dir(self, path: str, _parent_: BaseContainer) -> DictConfig:
-        return OmegaConf.create(self._files.read_dir(self._base / path), parent=_parent_)
+        files = self._files.read_dir(self._base / path)
+        return OmegaConf.create(files, parent=_parent_)
 
     def _named(self) -> str:
         names: list[str] = []

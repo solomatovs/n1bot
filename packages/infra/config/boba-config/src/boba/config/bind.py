@@ -33,7 +33,10 @@ def bind(config: DictConfig, path: str, model: type[M]) -> M:
 
         if not isinstance(node, DictConfig):
             got = type(node).__name__
-            msg = f"config: section [{path}] expects a table for {model.__name__}, got {got}"
+            msg = (
+                f"config: section [{path}] expects a table for {model.__name__}, "
+                f"got {got}"
+            )
             raise ConfigError(msg)
 
         data = OmegaConf.to_container(node, resolve=True)

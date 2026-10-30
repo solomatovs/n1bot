@@ -300,7 +300,6 @@ class StepRole(StrEnum):
     PULSE = "pulse"
     THINKING = "thinking"
     TOOL = "tool"
-    CHART = "chart"
     ELEMENT = "element"
     STREAM = "stream"
     APP = "app"
@@ -814,7 +813,7 @@ class ChatView:
     Контракт id: каждый шаг адресуется детерминированно через derive_id, чтобы
     live-отрисовка и повтор из истории давали одинаковую ленту. Ключи:
     контейнер и ответ — id вопроса (turn key), thinking — id AIMessage,
-    tool/chart/element — tool_call_id.
+    tool/element — tool_call_id.
 
     Стримящиеся элементы хода — ответ и рассуждения — живут в TurnDraft: пока
     ход открыт, их дописывают токен за токеном, и лишь закрытие уходит в sink.
@@ -827,7 +826,7 @@ class ChatView:
     контейнер сразу получает итоговую подпись.
 
     Итог вызова — ответ сервера MCP: блоки для человека рисуются реестром по
-    виду блока и MIME ресурса (таблица, блок кода, график, вьювер канваса
+    виду блока и MIME ресурса (таблица, блок кода, вьювер канваса
     или вложение); картинка и звук ложатся файлом в хранилище треда
     (storage) и рисуются как файл workspace; неизвестное — JSON без байтов.
     """
@@ -887,7 +886,6 @@ class ChatView:
         """Отрисовка блока ответа по его виду (type)."""
         self._resources: dict[str, ResourceDrawing] = {
             ContentMime.CSV: self._table,
-            ContentMime.PLOTLY: self._chart,
             ContentMime.SQL: self._fenced,
             ContentMime.JSON: self._tree,
         }
@@ -1733,26 +1731,6 @@ class ChatView:
         """Текст блоком кода; подпись ограды — имя ресурса."""
         return Fence.around(text, name)
 
-    async def _chart(
-        self, text: str, name: str, step: Step, key: str | None, number: int
-    ) -> str:
-        """Фигура plotly — график шагом рядом с вызовом; заголовок — имя
-        ресурса. Фигура не JSON — текстом."""
-        try:
-            figure = json.loads(text)
-        except ValueError as exc:
-            logger.info(
-                "thread %s: plotly figure of call %s is not JSON, shown as text: %s",
-                self._thread_id,
-                key,
-                exc,
-            )
-            return await self._fenced(text, name, step, key, number)
-
-        await self._element(figure, name, key)
-
-        return ""
-
     async def _tree(
         self, text: str, name: str, step: Step, key: str | None, number: int
     ) -> str:
@@ -2071,30 +2049,6 @@ class ChatView:
         await self._sink.put(step)
         await self._relabel(step.id, step.name)
         await self._app_settled(step, AppProp.CANCELLED, markdown)
-
-    async def _element(
-        self, figure: Mapping[str, Any], title: str, tool_call_id: str | None
-    ) -> None:
-        """Шаг-носитель графика plotly рядом с шагом вызова."""
-        step = self._step(
-            self._assistant_name,
-            StepKind.ASSISTANT,
-            parent_id=None,
-            step_id=self.derive_id(self._thread_id, tool_call_id, StepRole.CHART),
-        )
-
-        step.output = title
-
-        if self._sink.emits_elements:
-            element = self._elements.plotly(figure, title)
-            element_id = self.derive_id(self._thread_id, tool_call_id, StepRole.ELEMENT)
-            if not element_id:
-                element_id = element.id
-            element.id = str(element_id)
-            step.elements = [element]
-
-        await self._sink.put(step)
-        await self._pulse.bump()
 
     @classmethod
     def derive_id(cls, thread_id: str, key: str | None, role: StepRole) -> str | None:

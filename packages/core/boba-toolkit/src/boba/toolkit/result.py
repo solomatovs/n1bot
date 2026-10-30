@@ -221,7 +221,6 @@ class ContentMime(StrEnum):
     JSON = "application/json"
     BASH = "text/x-shellscript"
     MERMAID = "text/vnd.mermaid"
-    PLOTLY = "application/vnd.plotly.v1+json"
     PLAIN = "text/plain"
     OCTET = "application/octet-stream"
     PDF = "application/pdf"
@@ -324,7 +323,7 @@ class ContentOut(Protocol):
     @abstractmethod
     def resource(self, mime: str, text: str, name: str) -> None:
         """Встроенный ресурс человеку: текст вида mime; name — подпись блока
-        (язык ограды, поток вывода, заголовок графика)."""
+        (язык ограды, поток вывода)."""
 
     @abstractmethod
     def link(self, uri: str, name: str, mime: str, shown: bool) -> None:
@@ -1034,12 +1033,8 @@ class SqlResult(ToolResultBase):
 
 
 class VisualResult(ToolResultBase):
-    """Визуальный виджет: имя элемента и его props.
-
-    Элемент PLOTLY — график plotly с фигурой в props, клиенту он уходит
-    ресурсом application/vnd.plotly.v1+json; любое другое имя — карточка
-    вьювера канваса ленты (jsx-компонент public/elements/<element>.jsx).
-    """
+    """Визуальный виджет: имя элемента и его props — карточка вьювера канваса
+    ленты (jsx-компонент public/elements/<element>.jsx)."""
 
     kind: Literal["visual"] = "visual"
     element: str
@@ -1048,16 +1043,6 @@ class VisualResult(ToolResultBase):
     """Человекочитаемый заголовок — для сводки в LLM и подписи в UI."""
     summary: str = ""
     """Текст для LLM вместо пометки о показе: что сделано и что дальше."""
-
-    PLOTLY: ClassVar[str] = "plotly"
-    """Имя элемента графика plotly."""
-    PLOTLY_SPEC: ClassVar[str] = "spec"
-    """Ключ props графика, под которым едет figure spec."""
-
-    @classmethod
-    def plotly(cls, spec: Mapping[str, Any], title: str | None) -> VisualResult:
-        """График plotly: элемент встроенный, spec — figure как dict."""
-        return cls(element=cls.PLOTLY, props={cls.PLOTLY_SPEC: spec}, title=title)
 
     def llm_view(self) -> str:
         if self.summary:
@@ -1069,19 +1054,12 @@ class VisualResult(ToolResultBase):
         return f"[{self.element} rendered]"
 
     def shown(self, out: ContentOut) -> None:
-        """Подпись, а у графика plotly — его фигура ресурсом с заголовком."""
-        name = self.element
+        """Подпись карточки: имя элемента и заголовок."""
         caption = f"({self.element})"
         if self.title:
-            name = self.title
             caption = f"({self.element}: {self.title})"
 
         out.text(NoteLine.render(caption), BlockAudience.USER)
-        if self.element != self.PLOTLY:
-            return
-
-        figure = json.dumps(self.props[self.PLOTLY_SPEC], ensure_ascii=False)
-        out.resource(ContentMime.PLOTLY, figure, name)
 
     def bound(self, value: Any) -> Self:
         return self.model_copy(update={"props": dict(value)})

@@ -188,7 +188,7 @@ class InteractiveMode:
 
 class Installed:
     """Версия процесса из метаданных установленного дистрибутива: источник
-    один — `pyproject.toml`, который правит `build/scripts/version.py`."""
+    один — `pyproject.toml`, который правит `make -C build version-set`."""
 
     DISTRIBUTION: ClassVar[str] = "boba-cli"
 

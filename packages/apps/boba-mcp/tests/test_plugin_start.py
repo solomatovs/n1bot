@@ -34,12 +34,13 @@ from boba.stand.overlay import ConfigOverlay
 from boba.stand.refs import StandRefs
 from boba.stand.toolsetup import ToolSetup
 from boba.stand.ui.stand import REPO_ROOT, ServiceStand, StandApp, StandPorts
-from boba.stand_core.context import CallStand
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 EXIT_SEC = 90.0
-"""Срок выхода: импорты сервиса, старт плагинов и закрытие контейнера."""
+"""Срок ожидания: импорты сервиса и старт плагинов."""
+START_MARK = "plugin kb is not started"
+"""Строка журнала, по которой видно, что старт kb разобран."""
 
 
 class BareDatabase:
@@ -117,9 +118,11 @@ async def bare_database(stand_postgres: PostgresConfig) -> AsyncIterator[str]:
         await database.drop()
 
 
-async def test_service_without_vector_exits_naming_the_extensions(
+async def test_service_without_vector_leaves_kb_out_naming_the_extensions(
     tmp_path: Path, bare_database: str
 ) -> None:
+    """Хранилище kb не готовится в базе без расширений: kb не поднимается, а
+    журнал старта называет базу и расширения; сервис стартует без него."""
     config = ServiceStand(
         workdir=tmp_path,
         app_port=StandPorts().free(),
@@ -145,21 +148,38 @@ async def test_service_without_vector_exits_naming_the_extensions(
             stderr=subprocess.STDOUT,
         )
         try:
-            code = process.wait(timeout=EXIT_SEC)
-        except subprocess.TimeoutExpired as exc:
+            output = await _logged(log_path, process, START_MARK)
+        finally:
             process.kill()
             process.wait()
-            tail = "\n".join(log_path.read_text(errors="replace").splitlines()[-40:])
-            msg = f"boba-mcp did not exit in {EXIT_SEC}s without vector:\n{tail}"
-            raise AssertionError(msg) from exc
 
-    output = log_path.read_text(encoding="utf-8", errors="replace")
     tail = "\n".join(output.splitlines()[-40:])
-    assert code != 0, tail
+    assert "plugin kb is not started" in output, tail
     assert "plugin kb: `setup`" in output, tail
     assert "preparing its storage failed" in output, tail
     assert f"/{bare_database}" in output, tail
     assert "vector, pg_trgm, unaccent, btree_gin must exist" in output, tail
+
+
+async def _logged(path: Path, process: subprocess.Popen[bytes], mark: str) -> str:
+    """Журнал процесса, как только в нём появилась строка mark; процесс,
+    вышедший раньше, или срок EXIT_SEC — отказ с хвостом журнала."""
+    deadline = asyncio.get_running_loop().time() + EXIT_SEC
+    while asyncio.get_running_loop().time() < deadline:
+        output = path.read_text(encoding="utf-8", errors="replace")
+        if mark in output:
+            return output
+
+        if process.poll() is not None:
+            tail = "\n".join(output.splitlines()[-40:])
+            msg = f"boba-mcp exited with {process.returncode} before {mark!r}:\n{tail}"
+            raise AssertionError(msg)
+
+        await asyncio.sleep(0.5)
+
+    tail = "\n".join(path.read_text(errors="replace").splitlines()[-40:])
+    msg = f"boba-mcp did not log {mark!r} in {EXIT_SEC}s:\n{tail}"
+    raise AssertionError(msg)
 
 
 def _credentials() -> KerberosCredentialSource:
@@ -168,7 +188,6 @@ def _credentials() -> KerberosCredentialSource:
 
 async def test_setup_in_the_sandbox_creates_the_kb_tables(
     runtime_stand: StandRefs,
-    call_stand: CallStand,
     raw_config: DictConfig,
     config_overlay: ConfigOverlay,
     test_database: str,

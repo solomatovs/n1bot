@@ -31,7 +31,7 @@ fi
 
 for pair in "stand database:$source_db" "template:$template" "clickhouse cluster:$ch_cluster"; do
     if [ -z "${pair#*:}" ]; then
-        echo "dev-db: the ${pair%%:*} is empty; pass it to the script (make dev-db SOURCE=… TEMPLATE=… CH_CLUSTER=…)" >&2
+        echo "dev-db: the ${pair%%:*} is empty; pass it to the script (scripts/dev-db.sh <developer> <stand database> <template> <clickhouse cluster>)" >&2
         exit 2
     fi
 done

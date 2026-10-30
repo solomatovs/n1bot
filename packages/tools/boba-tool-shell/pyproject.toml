@@ -40,6 +40,7 @@ include = ["boba*"]
 namespaces = true
 
 [tool.boba.sandbox]
+python = true
 imports = [
     "pandas",
     "openpyxl",

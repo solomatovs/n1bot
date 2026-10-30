@@ -50,7 +50,6 @@ pythonpath = [
     "packages/apps/boba-mcp/src",
     "packages/tools/boba-tool-shell/src",
     "packages/tools/boba-tool-canvas/src",
-    "packages/tools/boba-tool-chart/src",
     "packages/tools/boba-tool-web/src",
     "packages/tools/boba-tool-doc/src",
     "packages/tools/boba-tool-postgres/src",
@@ -85,12 +84,12 @@ markers = [
     "load: нагрузка и аварийные завершения песочницы; минуты и десятки процессов. Запускать вручную: `pytest -m load`. По умолчанию исключаются.",
     "failif(condition, reason): обязательное окружение теста с подписью skipif. При истинном условии тест не пропускается, а падает с причиной.",
     "perf: замер времени на живом хосте с абсолютными порогами; в полном прогоне идёт отдельной фазой в одиночку, когда параллельные наборы закончились.",
-    "binary: проверка собранного агента release/<версия>/bin/boba.dist, а не кода. В обычный прогон не входит; запускать `pytest -m binary` после `make -C build boba-bin`.",
-    "binary_onnx: проверка агента boba-onnx.dist с рантаймом onnxruntime-genai. Запускать `pytest -m binary_onnx` после `make -C build boba-bin BIN_ONNX=1`.",
+    "binary: проверка собранного агента build/out/boba/bin/boba.dist, а не кода. В обычный прогон не входит; запускать `pytest -m binary` после `make -C build build APP=boba`.",
+    "binary_onnx: проверка агента boba.dist на рантайме onnxruntime-genai с локальной моделью из build/out/models/onnx-genai. Запускать `pytest -m binary_onnx` после `make -C build build APP=boba` и `make -C build build APP=models`.",
 ]
 
 [tool.pyright]
-include = ["packages", "build/test"]
+include = ["packages", "build"]
 exclude = [
     ".venv",
     "**/node_modules",
@@ -149,7 +148,6 @@ extraPaths = [
     "packages/apps/boba-mcp/src",
     "packages/tools/boba-tool-shell/src",
     "packages/tools/boba-tool-canvas/src",
-    "packages/tools/boba-tool-chart/src",
     "packages/tools/boba-tool-web/src",
     "packages/tools/boba-tool-doc/src",
     "packages/tools/boba-tool-mail/src",
@@ -231,15 +229,14 @@ extend-immutable-calls = [
     "S101", "PLR2004", "SLF001", "S105", "S106", "PLC0415", "TID251", "T201",
     "C901", "E402", "B008", "S603", "RUF012", "PLC0414",
 ]
-"build/test/**" = ["T201", "E402", "TID251", "S603", "PLW1510", "S108"]
-"build/scripts/**" = ["T201", "PLR2004", "PLC0415", "S603", "S104"]
+"build/**" = ["T201", "PLR2004", "PLC0415", "S603", "S104"]
 "packages/testing/boba-prompt-assembly/**" = [
     "E501", "SIM110", "C901", "PLW0108", "UP035", "I001", "PLR0911", "PLR2004",
     "PLR0913", "B905", "PLR0912", "UP037", "PLW2901", "S105", "PLR0915", "PLR1714",
 ]
 
 [tool.uv]
-find-links = ["build/src/oracledb"]
+find-links = ["build/out/oracledb"]
 override-dependencies = ["mcp>=2.3,<3"]
 python-downloads = "never"
 python-preference = "only-system"
@@ -285,7 +282,6 @@ boba-indexing       = { workspace = true }
 boba-toolkit        = { workspace = true }
 boba-tool-shell     = { workspace = true }
 boba-tool-canvas = { workspace = true }
-boba-tool-chart     = { workspace = true }
 boba-tool-web       = { workspace = true }
 boba-tool-doc       = { workspace = true }
 boba-tool-postgres  = { workspace = true }

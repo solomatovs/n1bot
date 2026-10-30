@@ -67,8 +67,9 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         dest=AppsDocker.OPTION_DEST.value,
         default=AppsDocker.IMAGE.value,
         help=(
-            "образ тестовых серверов MCP прежних редакций (make -C build testapps "
-            "TESTAPPS_TAGS=<образ>); по умолчанию общий boba-testapps:latest"
+            "образ тестовых серверов MCP прежних редакций (make -C build build "
+            "APP=testapps TAG=<тег> кладёт boba-testapps:<тег> и :latest); по "
+            "умолчанию общий boba-testapps:latest"
         ),
     )
 

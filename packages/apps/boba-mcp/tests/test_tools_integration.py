@@ -6,7 +6,6 @@ Cgroup-лимиты сняты: pytest живёт вне делегирован�
 from __future__ import annotations
 
 import base64
-import json
 import re
 import shutil
 from collections.abc import Mapping, Sequence
@@ -42,7 +41,6 @@ from boba.toolkit.result import (
     SqlStatement,
     TableResult,
     ToolResultBase,
-    VisualResult,
 )
 from boba.toolrun.hosted import HostedTool, PluginSection, ToolSchema
 from boba.toolrun.injected import InjectedConfig, ParamSource, StaticSection
@@ -81,12 +79,12 @@ def sandbox_ready() -> None:
     if shutil.which("bwrap") is None:
         raise AssertionError(
             "bwrap is not on PATH: expected runtime/third/bin of the repository "
-            "in PATH (make fetch sandbox)"
+            "in PATH (make -C build build APP=runtime)"
         )
 
     if not ROOTFS_IMAGE.exists():
         raise AssertionError(
-            f"sandbox image {ROOTFS_IMAGE} is missing (make fetch sandbox)"
+            f"sandbox image {ROOTFS_IMAGE} is missing (make -C build build APP=runtime)"
         )
 
     missing = SandboxCgroup().missing()
@@ -124,20 +122,6 @@ def doc_tools(zygote_stand: ZygoteStand, raw_config, sandbox_raw_config):
     return ToolSetup.launched(
         module.TOOLS, launcher, (config,), _section(sandbox_raw_config, "doc")
     )
-
-
-@pytest.fixture(scope="module")
-def chart_tool(zygote_stand: ZygoteStand, raw_config, sandbox_raw_config):
-    """visualize новой модели: обёртка запуска на профиле секции."""
-    from importlib import reload
-
-    import boba.tool.chart.tools as chart_module
-
-    module = reload(chart_module)
-
-    launcher = ToolSetup.caller(zygote_stand, sandbox_raw_config, "chart")
-
-    return ToolSetup.launched([module.visualize], launcher, ())[module.visualize.name]
 
 
 @pytest.fixture(scope="module")
@@ -723,35 +707,6 @@ class TestDocTools:
             raise AssertionError(f"failure: {failure.value.failure()!r}")
         if "no.pdf" not in str(failure.value):
             raise AssertionError('"no.pdf" in str(failure.value)')
-
-
-class TestChartTool:
-    """chart: спеку проверяет payload, приложение plotly не держит."""
-
-    async def test_valid_figure(self, chart_tool) -> None:
-        spec = json.dumps(
-            {
-                "data": [{"type": "bar", "x": ["a", "b"], "y": [1, 2]}],
-                "layout": {"title": "итоги"},
-            }
-        )
-        result = await Call.ok(chart_tool, spec=spec)
-        if not (isinstance(result, VisualResult)):
-            raise AssertionError("isinstance(result, VisualResult)")
-        if result.element != VisualResult.PLOTLY:
-            raise AssertionError("result.element == VisualResult.PLOTLY")
-        if result.title != "итоги":
-            raise AssertionError('result.title == "итоги"')
-        spec = result.props[VisualResult.PLOTLY_SPEC]
-        if spec["data"][0]["type"] != "bar":
-            raise AssertionError('spec["data"][0]["type"] == "bar"')
-
-    async def test_broken_spec_fails_loudly(self, chart_tool) -> None:
-        with pytest.raises(PayloadFailureError) as caught:
-            await Call.result(chart_tool, spec="не json")
-
-        if caught.value.failure().error_kind != "InvalidFigureSpecError":
-            raise AssertionError(f"failure: {caught.value.failure()!r}")
 
 
 class TestWebTools:
