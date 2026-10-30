@@ -96,31 +96,15 @@ def _config_file(tmp_path: Path, data_dir: Path) -> Path:
 
 
 class TestExportEnv:
-    def test_env_taken_from_config_and_program(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Корень chainlit — share/ каталога программы, остальное — конфиг."""
-        monkeypatch.delenv(ChainlitEnv.APP_ROOT, raising=False)
-        monkeypatch.delenv(ChainlitEnv.ROOT_PATH, raising=False)
-        monkeypatch.delenv(ChainlitEnv.AUTH_SECRET, raising=False)
-        runtime = tmp_path / "runtime"
-        monkeypatch.setenv(ProgramRoots.RUNTIME_ENV, str(runtime))
-        runtime.mkdir()
-
-        raw = ConfigLoader([_config_file(tmp_path, tmp_path / "data")]).load()
-        AppEntry().export_env(raw)
-
-        assert os.environ[ChainlitEnv.APP_ROOT] == str(runtime / "share")
-        assert os.environ[ChainlitEnv.ROOT_PATH] == "/boba"
-        assert os.environ[ChainlitEnv.AUTH_SECRET] == FakeSecret.AUTH
-        assert os.environ[ChainlitEnv.COOKIE_NAME] == "boba_token"
-        assert os.environ[ChainlitEnv.COOKIE_SAMESITE] == "strict"
-
     def test_sources_serve_the_package_assets(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Из исходников корень chainlit — ассеты пакета в дереве, а не
-        собранный runtime/: правка ассета видна без сборки."""
+        собранный runtime/: правка ассета видна без сборки; остальное — из
+        конфига."""
+        monkeypatch.delenv(ChainlitEnv.APP_ROOT, raising=False)
+        monkeypatch.delenv(ChainlitEnv.ROOT_PATH, raising=False)
+        monkeypatch.delenv(ChainlitEnv.AUTH_SECRET, raising=False)
         tree = tmp_path / "tree"
         (tree / "runtime").mkdir(parents=True)
         (tree / "packages").mkdir()
@@ -131,6 +115,10 @@ class TestExportEnv:
 
         expected = tree.resolve() / "packages/apps/boba-aid/assets"
         assert os.environ[ChainlitEnv.APP_ROOT] == str(expected)
+        assert os.environ[ChainlitEnv.ROOT_PATH] == "/boba"
+        assert os.environ[ChainlitEnv.AUTH_SECRET] == FakeSecret.AUTH
+        assert os.environ[ChainlitEnv.COOKIE_NAME] == "boba_token"
+        assert os.environ[ChainlitEnv.COOKIE_SAMESITE] == "strict"
 
     def test_program_without_runtime_refused(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -194,8 +182,10 @@ class TestChainlitFilesOutsideAppRoot:
         return entries
 
     def test_app_root_stays_untouched(self, tmp_path: Path) -> None:
-        runtime = tmp_path / "runtime"
-        root = runtime / "share"
+        tree = tmp_path / "tree"
+        runtime = tree / "runtime"
+        runtime.mkdir(parents=True)
+        root = tree / "packages/apps/boba-aid/assets"
         shutil.copytree(ASSETS / ".chainlit", root / ".chainlit")
         data_dir = tmp_path / "data"
         files_dir = data_dir / "files"

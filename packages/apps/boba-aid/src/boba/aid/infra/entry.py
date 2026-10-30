@@ -3,7 +3,8 @@
 Ошибки:
 ConfigError — конфиг не загружается, секции [app].aid, [app].session,
     [instance] не сходятся с моделями либо каталог программы не найден.
-SystemExit — проба готовности: конфиг не прочитан или чат не ответил.
+SystemExit — проба готовности: конфиг не прочитан или чат не ответил;
+    самопроверка: данные пакетов или entry points описи сборки недоступны.
 """
 
 import argparse
@@ -20,6 +21,7 @@ from omegaconf import DictConfig
 
 from boba.aid.infra.config import AidSection
 from boba.config import ConfigError, ConfigLoader, bind
+from boba.core.package_data import PackageDataCheck, PackageDataError
 from boba.runtime.config import (
     ConfigArguments,
     InstanceConfig,
@@ -32,6 +34,7 @@ from boba.runtime.config import (
     SessionConfig,
 )
 from boba.runtime.http import HealthCheckError, HealthProbe
+from boba.runtime.program import ProgramTool
 
 __all__ = ["AppEntry", "ChainlitEnv", "ChainlitFiles", "cli"]
 
@@ -100,8 +103,10 @@ class ChainlitFiles:
 class AppEntry:
     """Конфиг -> env chainlit -> каталог вложений -> запуск приложения.
 
-    Создаёт его скрипт чата (main.py, консольная команда boba-aid) и зовёт
-    run(): `serve` поднимает чат, `health` пробует готовность запущенного.
+    Создаёт его скрипт чата (main.py — вход собранной программы, консольная
+    команда boba-aid) и зовёт run(): `serve` поднимает чат, `health` пробует
+    готовность запущенного, `self-check` проверяет собранный бинарник по
+    описи сборки.
     Конфиг загружается один раз, и то же дерево получают env chainlit, каталог
     вложений и сборка приложения. Статика chainlit — share/ каталога
     программы (ProgramRoots), вложения — files/ каталога данных экземпляра.
@@ -117,8 +122,13 @@ class AppEntry:
 
     def __init__(self) -> None:
         self._programs = ProgramRoots()
+        self._check = PackageDataCheck()
 
     def run(self) -> None:
+        if sys.argv[1:] == [ProgramTool.SELF_CHECK.value]:
+            self.self_check()
+            return
+
         call = self.call()
         match call.command:
             case ProgramCommand.SERVE:
@@ -156,6 +166,15 @@ class AppEntry:
             checked = HealthProbe(aid.port, aid.url_prefix, self.HEALTH).check()
         except (ConfigError, HealthCheckError) as exc:
             raise SystemExit(f"boba-aid health: {exc}") from exc
+
+        sys.stdout.write(f"{checked}\n")
+
+    def self_check(self) -> None:
+        """Данные пакетов и entry points описи сборки доступны в бинарнике."""
+        try:
+            checked = self._check.run()
+        except PackageDataError as exc:
+            raise SystemExit(f"boba-aid self-check: {exc}") from exc
 
         sys.stdout.write(f"{checked}\n")
 

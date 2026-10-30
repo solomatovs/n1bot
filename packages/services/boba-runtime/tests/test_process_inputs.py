@@ -13,7 +13,6 @@ import pytest
 from boba.config import ConfigError
 from boba.runtime.config import (
     ConfigArguments,
-    InstalledProgram,
     InstanceConfig,
     InstanceData,
     ProgramCommand,
@@ -79,22 +78,15 @@ def test_interpreter_snapshot_leaves_the_working_directory_out(
         assert root != str(tmp_path)
 
 
-def test_installed_python_program_is_its_directory(
+def test_python_program_outside_the_sources_refuses(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Каталог без дерева исходников рядом — установленная программа:
-    все части, и статика тоже, в нём самом."""
+    """Каталог без дерева исходников рядом: установленная программа только
+    собранная, на python бывают лишь исходники."""
     monkeypatch.setenv(ProgramRoots.RUNTIME_ENV, str(tmp_path))
 
-    program = ProgramRoots().locate()
-
-    root = tmp_path.resolve()
-    assert isinstance(program, InstalledProgram)
-    assert program.root == root
-    assert program.path(ProgramDir.SHARE) == root / "share"
-    assert program.located("rootfs/base.ext4") == root / "rootfs/base.ext4"
-    assert program.located("/srv/models") == Path("/srv/models")
-    assert program.binaries().dirs[0] == str(root / "libexec")
+    with pytest.raises(ConfigError, match=r"runtime/ of the repository with packages/"):
+        ProgramRoots().locate()
 
 
 def test_program_from_sources_takes_git_files_from_the_tree(
@@ -113,6 +105,8 @@ def test_program_from_sources_takes_git_files_from_the_tree(
     assert program.path(ProgramDir.SHARE) == tree / "packages/apps/boba-aid/assets"
     assert program.path(ProgramDir.LIBEXEC) == tree / "runtime/libexec"
     assert program.located("models/rapidocr") == tree / "runtime/models/rapidocr"
+    assert program.located("/srv/models") == Path("/srv/models")
+    assert program.binaries().dirs[0] == str(tree / "runtime/libexec")
     assert program.workspace_template() == tree / "runtime/sandbox/workspace.ext4.gz"
 
 

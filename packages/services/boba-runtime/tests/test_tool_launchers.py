@@ -81,9 +81,11 @@ def _sandbox_section(data_dir: Path) -> dict[str, object]:
 
 @pytest.fixture
 def program(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Каталог программы теста (BOBA_RUNTIME), пустой."""
-    runtime = tmp_path / "runtime"
-    runtime.mkdir()
+    """Каталог программы теста (BOBA_RUNTIME): пустой runtime/ в дереве
+    исходников."""
+    runtime = tmp_path / "tree" / "runtime"
+    runtime.mkdir(parents=True)
+    (tmp_path / "tree" / "packages").mkdir()
     monkeypatch.setenv(ProgramRoots.RUNTIME_ENV, str(runtime))
 
     return runtime

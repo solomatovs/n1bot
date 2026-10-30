@@ -27,8 +27,8 @@ RUN if [ -f /tmp/conf/pip.conf ]; then cp /tmp/conf/pip.conf /index/etc/pip.conf
 RUN if [ -f /tmp/conf/uv.toml ]; then cp /tmp/conf/uv.toml /index/etc/uv/uv.toml; fi
 
 
-# python без сборочного и учебного балласта: дерево программы на python и корней
-# песочницы с python
+# python без сборочного и учебного балласта: корни песочницы с python для запуска
+# из исходников и тестов
 FROM ${GLIBC_IMAGE} AS python-slim
 
 ARG PYTHON_VERSION
@@ -45,19 +45,6 @@ RUN lib="/python/lib/python${PYTHON_VERSION}" \
               "$lib/site-packages/pkg_resources" "$lib/site-packages/"*.dist-info
 
 RUN LD_LIBRARY_PATH=/python/lib PYTHONHOME=/python /python/bin/python3 -c "import ssl, sqlite3, lzma, bz2"
-
-
-# основа образа программы на python (чат, пока он не на Nuitka): glibc, CA и
-# системные библиотеки интерпретатора и kerberos
-FROM ${GLIBC_IMAGE} AS pyos
-
-COPY --from=conf /certs/  /
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        libssl1.1 libffi6 libsqlite3-0 libbz2-1.0                \
-        liblzma5 libreadline7 libncurses5 zlib1g                 \
-        libkrb5-3 libgssapi-krb5-2 krb5-user                     \
-    && rm -rf /var/lib/apt/lists/*
 
 
 # основа образа программы на Nuitka: glibc и CA, больше ничего

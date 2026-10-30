@@ -137,9 +137,12 @@ boba_FLAGS      := --user-package-configuration-file=/conf/nuitka-boba.yml \
                    --include-distribution-metadata=boba-cli --include-package=onnxruntime_genai \
                    --include-package-data=onnxruntime_genai --include-package=onnxruntime
 boba_DEST       := $(OUT_BOBA)/bin/boba.dist
-# чат пока на python: дерево пакетов и интерпретатор в каталоге программы
 aid_PACKAGES    := boba-aid boba-llm-http
+aid_ENTRY       := boba/aid/main.py
+aid_BIN         := boba-aid
 aid_PORT        := 8501
+aid_FLAGS       := --user-package-configuration-file=/conf/nuitka-aid.yml --include-distribution-metadata=boba-aid
+aid_DEST        := $(OUT_AID)/bin/boba-aid.dist
 # группа плагинов — одна программа над несколькими плагинами: `run <id> <подкоманда>`
 plugins_ENTRY   := boba/sandbox/program.py
 
@@ -157,8 +160,8 @@ rootfs-plugins   = $(foreach e,$(PLUGIN_MAP),$(if $(filter $(1),$(word 3,$(subst
 group-rootfs     = $(sort $(foreach e,$(PLUGIN_MAP),$(if $(filter $(1),$(word 2,$(subst :, ,$(e)))),$(word 3,$(subst :, ,$(e))))))
 
 # программы Nuitka и деревья пакетов: по ним make знает свои цели поимённо
-NUITKA_PROGRAMS := mcp boba
-SITES           := $(NUITKA_PROGRAMS) aid $(GROUPS:%=plugins-%)
+NUITKA_PROGRAMS := mcp boba aid
+SITES           := $(NUITKA_PROGRAMS) $(GROUPS:%=plugins-%)
 
 DETAILS         := mcp boba aid rootfs models runtime testapps oracledb $(GROUPS:%=plugins-%) \
                    $(GROUPS:%=plugins-%-image)
@@ -238,7 +241,7 @@ define HELP
   mcp                   образ boba-mcp:$(TAG): сервер, программы плагинов ($(GROUPS)),
                         корни песочниц rootfs/{$(subst $(space),$(comma),$(ROOTFS))}.ext4, libexec, workspace.ext4.gz
   boba                  образ boba:$(TAG): агент с onnxruntime-genai, без моделей
-  aid                   образ boba-aid:$(TAG): чат (python) и его фронт
+  aid                   образ boba-aid:$(TAG): чат (Nuitka) и его фронт
   plugins-<группа>      программа группы плагинов -> build/out/boba-mcp/plugins/<группа>,
                         проверенная в корне каждого плагина; группы: $(GROUPS)
   plugins-<группа>-image  образ boba-plugins-<группа>:$(TAG): корень группы и её программа в
@@ -392,7 +395,7 @@ $(SRC)/models/onnx-genai/%:
 
 # --- prepare: образы среды сборки ---------------------------------------------------
 
-.PHONY: prepare-nuitka prepare-os prepare-pyos prepare-share
+.PHONY: prepare-nuitka prepare-os prepare-share
 prepare-nuitka: $(SRC)/uv/uv $(TARBALLS)
 	@$(call base-stage,nuitka,boba-build-nuitka:$(TAG),$(FRESH))
 	$(call base-stage,base,boba-build-base:$(TAG))
@@ -401,9 +404,6 @@ prepare-nuitka: $(SRC)/uv/uv $(TARBALLS)
 # параллельные сборки того же файла берут их из кэша, а не собирают заново
 prepare-os: | prepare-nuitka
 	@$(call base-stage,os,boba-build-os:$(TAG))
-
-prepare-pyos: | prepare-nuitka
-	@$(call base-stage,pyos,boba-build-pyos:$(TAG))
 
 # share/ чата сразу в каталог программы aid
 prepare-share: $(CHAINLIT_TARBALL) $(WEBASSETS) | prepare-os
@@ -496,8 +496,10 @@ endef
 
 # сумма дерева пакетов ложится в $(OUT)/compiled последней: по ней make видит, что
 # программа собрана из этого дерева
-$(NUITKA_PROGRAMS:%=$(OUT)/compiled/%.sum): $(OUT)/compiled/%.sum: $(OUT)/site/%.sum $(BUILD)/nuitka.sh $(BUILD)/conf/nuitka.yml $(BUILD)/conf/nuitka-boba.yml
+$(NUITKA_PROGRAMS:%=$(OUT)/compiled/%.sum): $(OUT)/compiled/%.sum: $(OUT)/site/%.sum $(BUILD)/nuitka.sh $(BUILD)/conf/nuitka.yml \
+        $(BUILD)/conf/nuitka-boba.yml $(BUILD)/conf/nuitka-aid.yml
 	@$(call nuitka-compile,$*,$($*_ENTRY),$($*_BIN).bin,$($*_FLAGS),$($*_DEST))
+	mkdir -p "$(@D)"
 	cp "$<" "$@"
 
 # проверка программы группы $(1) в её корне $(2): build/plugin_check.sh в образе
@@ -516,29 +518,7 @@ $(GROUPS:%=$(OUT)/compiled/plugins-%.sum): $(OUT)/compiled/plugins-%.sum: $(OUT)
         $(BUILD)/plugin_check.sh $(OUT)/glibc-packages.txt | $(ROOTFS:%=$(OUT)/rootfs/%.sum)
 	@$(call nuitka-compile,plugins-$*,$(plugins_ENTRY),run,$(plugins-$*_FLAGS),$(OUT_MCP)/plugins/$*)
 	$(foreach rootfs,$(call group-rootfs,$*),$(call plugin-check,$*,$(rootfs)))
-	cp "$<" "$@"
-
-# чат на python: интерпретатор, дерево пакетов и вход в каталог программы, без сети
-$(OUT)/compiled/aid.sum: $(OUT)/site/aid.sum
-	@mkdir -p "$(OUT)/compiled" "$(OUT_AID)"
-	stage=$$(mktemp -d "$(OUT_AID)/.stage.XXXXXX")
-	trap 'rm -rf "$$stage"' EXIT
-	docker run --rm --network none -u "$(RUN_OWNER)" -v "$$stage:/out" --entrypoint sh \
-	    boba-build-site-aid:$(TAG) -c ' \
-	        mkdir -p /out/bin /out/third/lib \
-	        && cp -a /opt/python-slim/. /out/third/ \
-	        && cp "$$(readlink -f /usr/lib/x86_64-linux-gnu/libstdc++.so.6)" /out/third/lib/libstdc++.so.6 \
-	        && cp /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 /out/third/lib/ \
-	        && cp -a /opt/site /out/app \
-	        && sed -i "1s|^#!.*python3.*|#!/app/boba/third/bin/python3|" /out/app/bin/*' < /dev/null
-	printf '%s\n' '#!/bin/sh' 'root=$$(cd "$$(dirname "$$0")/.." && pwd -P)' \
-	    'export BOBA_RUNTIME="$$root" PYTHONHOME="$$root/third" PYTHONPATH="$$root/app" PYTHONNOUSERSITE=1 PYTHONUTF8=1 LD_LIBRARY_PATH="$$root/third/lib"' \
-	    'exec "$$root/third/bin/python3" -m boba.aid.main "$$@"' > "$$stage/bin/boba-aid"
-	chmod 0755 "$$stage/bin/boba-aid"
-	for part in bin third app; do
-	    rm -rf "$(OUT_AID)/$$part"
-	    mv "$$stage/$$part" "$(OUT_AID)/$$part"
-	done
+	mkdir -p "$(@D)"
 	cp "$<" "$@"
 
 # --- image и детали ------------------------------------------------------------------
@@ -565,8 +545,8 @@ app-mcp: $(OUT)/compiled/mcp.sum $(GROUPS:%=$(OUT)/compiled/plugins-%.sum) $(ROO
 app-boba: $(OUT)/compiled/boba.sum | prepare-os
 	@$(call program-image,$(OUT_BOBA),boba,boba-build-os:$(TAG),bin/boba.dist/boba.bin,$(boba_PORT),self-check)
 
-app-aid: $(OUT)/compiled/aid.sum prepare-share | prepare-pyos
-	@$(call program-image,$(OUT_AID),boba-aid,boba-build-pyos:$(TAG),bin/boba-aid,$(aid_PORT),--help)
+app-aid: $(OUT)/compiled/aid.sum prepare-share | prepare-os
+	@$(call program-image,$(OUT_AID),boba-aid,boba-build-os:$(TAG),bin/boba-aid.dist/boba-aid.bin,$(aid_PORT),self-check)
 
 app-rootfs: $(ROOTFS:%=$(OUT_MCP)/rootfs/%.ext4)
 
