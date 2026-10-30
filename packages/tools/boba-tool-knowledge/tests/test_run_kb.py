@@ -8,9 +8,9 @@ from __future__ import annotations
 from typing import ClassVar
 
 import pytest
-from omegaconf import DictConfig, OmegaConf
 
 from boba.config import bind
+from boba.stand.overlay import ConfigOverlay
 from boba.tool.kb.tools import (
     KbToolConfig,
     kb_catalog2,
@@ -36,12 +36,11 @@ class RunArgs:
 
 
 @pytest.fixture(scope="module")
-def kb_cfg(raw_config) -> KbToolConfig:
+def kb_cfg(config_overlay: ConfigOverlay) -> KbToolConfig:
     """Конфиг с процессным запуском: кэш моделей эмбеддинга берётся с хоста."""
-    copied = OmegaConf.merge(raw_config, {"env": {"tool_launcher": "process"}})
-    assert isinstance(copied, DictConfig)
+    raw = config_overlay.tree({"env.tool_launcher": "process"})
 
-    return bind(copied, path="tool.kb", model=KbToolConfig)
+    return bind(raw, path="tool.kb", model=KbToolConfig)
 
 
 async def test_run_kb_catalog(kb_cfg: KbToolConfig) -> None:

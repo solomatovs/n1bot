@@ -13,7 +13,6 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 import pytest
-from omegaconf import DictConfig, OmegaConf
 from psycopg import sql
 
 from boba.config import bind
@@ -21,6 +20,7 @@ from boba.db.postgres import PayloadPostgres
 from boba.ix_core.indexes import IndexKind
 from boba.ix_core.registry import IxRegistry
 from boba.ix_core.search import IxSearchError
+from boba.stand.overlay import ConfigOverlay
 from boba.tool.kb.kb import KbToolConfig
 from boba.tool.kb.tools import (
     kb_catalog2,
@@ -52,13 +52,12 @@ class Body:
 
 
 @pytest.fixture(scope="module")
-def kb_cfg(raw_config) -> KbToolConfig:
+def kb_cfg(config_overlay: ConfigOverlay) -> KbToolConfig:
     """Конфиг с процессным запуском: кэш моделей эмбеддинга берётся с хоста,
     живой индекс ix — из базы приложения."""
-    copied = OmegaConf.merge(raw_config, {"env": {"tool_launcher": "process"}})
-    assert isinstance(copied, DictConfig)
+    raw = config_overlay.tree({"env.tool_launcher": "process"})
 
-    return bind(copied, path="tool.kb", model=KbToolConfig)
+    return bind(raw, path="tool.kb", model=KbToolConfig)
 
 
 @pytest.fixture(scope="module")

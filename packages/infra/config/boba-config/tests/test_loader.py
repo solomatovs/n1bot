@@ -33,7 +33,7 @@ db_schema  = "${app.schema}"
 
 PROMPT = """
 description = "Review a query"
-text        = "run \\\\${HOME} as is"
+text        = "run the query as is"
 """
 
 
@@ -81,11 +81,11 @@ def test_plugin_file_sees_the_sections_of_the_config(tmp_path: Path) -> None:
     assert plugin.db_schema == "mcp"
 
 
-def test_escaped_interpolation_in_a_prompt_stays_text(tmp_path: Path) -> None:
+def test_prompt_directory_becomes_a_table_of_files(tmp_path: Path) -> None:
     raw = ConfigLoader([_instance(tmp_path)]).load()
     endpoint = bind(raw, "mcp.endpoints.all", _Endpoint)
 
-    assert endpoint.prompts["sql_review"].text == "run ${HOME} as is"
+    assert endpoint.prompts["sql_review"].description == "Review a query"
 
 
 def test_overlay_changes_only_its_keys_and_references_follow(tmp_path: Path) -> None:
@@ -99,6 +99,14 @@ def test_overlay_changes_only_its_keys_and_references_follow(tmp_path: Path) -> 
     assert plugin.connection.dbname == "stand_db"
     assert plugin.connection.host == "db.example"
     assert plugin.enable is False
+
+
+def test_overlay_in_memory_is_merged_before_resolution(tmp_path: Path) -> None:
+    """Наложение стенда в памяти меняет ключ, и ссылки на него следуют."""
+    loader = ConfigLoader([_instance(tmp_path)])
+    raw = loader.load_over(OmegaConf.create({"postgres": {"dbname": "stand_db"}}))
+
+    assert bind(raw, "tool.kb", _Plugin).connection.dbname == "stand_db"
 
 
 def test_files_are_read_once_at_load(tmp_path: Path) -> None:

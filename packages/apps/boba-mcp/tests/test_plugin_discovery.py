@@ -22,15 +22,17 @@ ENABLED = ("bash", "canvas", "ch", "doc", "pg")
 """Плагины без хранилища: их старт — только манифест, setup не нужен."""
 
 
-def _enabled_only(raw: DictConfig, enabled: Iterable[str], launcher: str) -> DictConfig:
-    """Конфиг сервиса, где включены только плагины enabled, способ запуска —
-    launcher."""
+def _enabled_only(
+    raw: DictConfig, enabled: Iterable[str], launcher: str
+) -> dict[str, object]:
+    """Изменения конфига сервиса: включены только плагины enabled, способ
+    запуска — launcher."""
     kept = frozenset(enabled)
     changes: dict[str, object] = {"env.tool_launcher": launcher}
     for plugin_id in raw["tool"]:
         changes[f"tool.{plugin_id}.enable"] = plugin_id in kept
 
-    return ConfigOverlay(raw).merged(changes)
+    return changes
 
 
 @pytest.mark.parametrize("launcher", ["process", "sandbox"])
@@ -38,9 +40,10 @@ async def test_manifests_come_from_the_plugin_programs(
     runtime_stand: StandRefs,
     call_stand: CallStand,
     raw_config: DictConfig,
+    config_overlay: ConfigOverlay,
     launcher: str,
 ) -> None:
-    raw = _enabled_only(raw_config, ENABLED, launcher)
+    raw = config_overlay.tree(_enabled_only(raw_config, ENABLED, launcher))
 
     kits = await PluginKits(raw, runtime_stand.launchers(raw), StaticSection()).load()
 
@@ -59,10 +62,14 @@ async def test_manifests_come_from_the_plugin_programs(
 
 
 async def test_config_without_image_refuses_start(
-    runtime_stand: StandRefs, call_stand: CallStand, raw_config: DictConfig
+    runtime_stand: StandRefs,
+    call_stand: CallStand,
+    raw_config: DictConfig,
+    config_overlay: ConfigOverlay,
 ) -> None:
-    enabled = _enabled_only(raw_config, ("pg",), "sandbox")
-    raw = ConfigOverlay(enabled).merged({"tool.nope": {"enable": False}})
+    changes = _enabled_only(raw_config, ("pg",), "sandbox")
+    changes["tool.nope"] = {"enable": False}
+    raw = config_overlay.tree(changes)
 
     loading = PluginKits(raw, runtime_stand.launchers(raw), StaticSection())
 
@@ -71,15 +78,20 @@ async def test_config_without_image_refuses_start(
 
 
 async def test_image_without_config_refuses_start(
-    runtime_stand: StandRefs, call_stand: CallStand, raw_config: DictConfig
+    runtime_stand: StandRefs,
+    call_stand: CallStand,
+    raw_config: DictConfig,
+    config_overlay: ConfigOverlay,
 ) -> None:
-    enabled = _enabled_only(raw_config, ("pg",), "sandbox")
+    changes = _enabled_only(raw_config, ("pg",), "sandbox")
+    enabled = config_overlay.tree(changes)
     plugins = OmegaConf.to_container(enabled["tool"], resolve=False)
     assert isinstance(plugins, dict)
     plugins.pop("mail")
-    raw = ConfigOverlay(enabled).replaced(
-        "tool", {str(k): v for k, v in plugins.items()}
+    changes.update(
+        config_overlay.replacement("tool", {str(k): v for k, v in plugins.items()})
     )
+    raw = config_overlay.tree(changes)
 
     loading = PluginKits(raw, runtime_stand.launchers(raw), StaticSection())
 
@@ -88,10 +100,14 @@ async def test_image_without_config_refuses_start(
 
 
 async def test_tool_the_plugin_does_not_declare_refuses_start(
-    runtime_stand: StandRefs, call_stand: CallStand, raw_config: DictConfig
+    runtime_stand: StandRefs,
+    call_stand: CallStand,
+    raw_config: DictConfig,
+    config_overlay: ConfigOverlay,
 ) -> None:
-    enabled = _enabled_only(raw_config, ("pg",), "process")
-    raw = ConfigOverlay(enabled).merged({"tool.pg.tools": ["pg_query", "pg_nope"]})
+    changes = _enabled_only(raw_config, ("pg",), "process")
+    changes["tool.pg.tools"] = ["pg_query", "pg_nope"]
+    raw = config_overlay.tree(changes)
 
     with pytest.raises(RuntimeError, match=r"\[tool\.pg\] tools names \['pg_nope'\]"):
         await runtime_stand.registry(
@@ -100,12 +116,17 @@ async def test_tool_the_plugin_does_not_declare_refuses_start(
 
 
 async def test_plugin_section_is_checked_by_the_plugin(
-    runtime_stand: StandRefs, call_stand: CallStand, raw_config: DictConfig
+    runtime_stand: StandRefs,
+    call_stand: CallStand,
+    raw_config: DictConfig,
+    config_overlay: ConfigOverlay,
 ) -> None:
     """Ключи секции сверх ключей фреймворка проверяет сам плагин: сервер их
     не знает, а непригодную секцию отвергает программа плагина."""
-    enabled = _enabled_only(ToolSetup.sandbox_raw(raw_config), ("pg",), "sandbox")
-    raw = ConfigOverlay(enabled).merged({"tool.pg.max_rows": 0})
+    changes = ToolSetup.sandbox_changes()
+    changes.update(_enabled_only(raw_config, ("pg",), "sandbox"))
+    changes["tool.pg.max_rows"] = 0
+    raw = config_overlay.tree(changes)
 
     loading = PluginKits(raw, runtime_stand.launchers(raw), StaticSection())
 

@@ -38,9 +38,9 @@ async def no_pools() -> AsyncIterator[None]:
 
 
 @pytest.fixture
-def stand_raw(raw_config: DictConfig, test_database: str) -> DictConfig:
+def stand_raw(config_overlay: ConfigOverlay, test_database: str) -> DictConfig:
     """Конфиг стенда, у которого общий [postgres] смотрит в тестовую базу."""
-    return ConfigOverlay(raw_config).merged({"postgres.dbname": test_database})
+    return config_overlay.tree({"postgres.dbname": test_database})
 
 
 @pytest.fixture

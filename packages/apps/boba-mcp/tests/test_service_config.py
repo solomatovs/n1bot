@@ -85,9 +85,9 @@ class TestConnectionConfigRefusesStart:
     }
 
     def test_connection_name_with_a_dot_is_refused(
-        self, raw_config: DictConfig
+        self, config_overlay: ConfigOverlay
     ) -> None:
-        raw = ConfigOverlay(raw_config).merged({"connections": {"site.ro": self.WEB}})
+        raw = config_overlay.tree({"connections": {"site.ro": self.WEB}})
 
         with pytest.raises(ConfigError, match=r"site\.ro"):
             bind(raw, path="app", model=McpAppConfig)
@@ -98,7 +98,11 @@ class TestConnectionConfigRefusesStart:
         ids=["source", "client"],
     )
     def test_unknown_source_or_client_of_a_rule_is_refused(
-        self, raw_config: DictConfig, key: str, value: object
+        self,
+        raw_config: DictConfig,
+        config_overlay: ConfigOverlay,
+        key: str,
+        value: object,
     ) -> None:
         path = "mcp.endpoints.all.connections"
         rules = OmegaConf.to_container(
@@ -108,15 +112,15 @@ class TestConnectionConfigRefusesStart:
         rule = rules[0]
         assert isinstance(rule, dict)
         rule[key] = value
-        raw = ConfigOverlay(raw_config).merged({path: rules})
+        raw = config_overlay.tree({path: rules})
 
         with pytest.raises(ConfigError, match=key):
             bind(raw, path="app", model=McpAppConfig)
 
     def test_unknown_name_in_a_tool_list_is_refused(
-        self, raw_config: DictConfig, runtime_stand: StandRefs
+        self, config_overlay: ConfigOverlay, runtime_stand: StandRefs
     ) -> None:
-        raw = ConfigOverlay(raw_config).merged(
+        raw = config_overlay.tree(
             {"tool.pg.connections": {"pg_query": ["ghost"]}}
         )
         loader = self._loader(raw, runtime_stand, runtime_stand.none().execution())
@@ -125,9 +129,12 @@ class TestConnectionConfigRefusesStart:
             loader.load()
 
     def test_connection_of_another_kind_in_a_tool_list_is_refused(
-        self, raw_config: DictConfig, runtime_stand: StandRefs, call_stand: CallStand
+        self,
+        config_overlay: ConfigOverlay,
+        runtime_stand: StandRefs,
+        call_stand: CallStand,
     ) -> None:
-        raw = ConfigOverlay(raw_config).merged(
+        raw = config_overlay.tree(
             {"tool.pg.connections": {"pg_query": ["site"]}}
         )
         params = SealedConnectionParams(

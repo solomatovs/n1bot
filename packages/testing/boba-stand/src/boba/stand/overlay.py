@@ -1,13 +1,13 @@
-"""Наложение на загруженное дерево конфига в памяти теста.
+"""Наложение теста на конфиг прогона: изменённые ключи слоем до разрешения.
 
-Дерево ConfigLoader только для чтения: тест не правит его, а кладёт поверх
-изменённые ключи штатным OmegaConf.merge. Ссылки дерева остаются ссылками,
-поэтому смена env.data или postgres.dbname доходит до всех секций, которые на
-них ссылаются. Слияние не удаляет ключей: таблицу, из которой нужно убрать
-ключ, replaced кладёт целиком в секцию REPLACED и ставит на её место ссылку.
+Дерево ConfigLoader разрешено и только для чтения, ссылок в нём нет. Тест
+поэтому не правит готовое дерево, а загружает файлы заново с наложением в
+памяти последним слоем (ConfigLoader.load_over): ссылки на изменённые ключи
+(env.data, env.tool_launcher, postgres.dbname) следуют за ними штатным
+разрешением omegaconf.
 
 Ошибки:
-TypeError — наложение не дало таблицы.
+ConfigError — конфиг с наложением не загружается.
 """
 
 from __future__ import annotations
@@ -17,38 +17,41 @@ from typing import ClassVar
 
 from omegaconf import DictConfig, OmegaConf
 
+from boba.config import ConfigLoader
+
 __all__ = ["ConfigOverlay"]
 
 
 class ConfigOverlay:
-    """Ключи теста поверх дерева конфига: ключ — путь через точку, значение
-    кладётся целиком (таблица сливается с таблицей дерева, список и скаляр
-    заменяют прежние). Создаёт тест или фикстура над raw_config."""
+    """Файлы конфига прогона и постоянные изменения стенда (base); tree
+    добавляет изменения теста. Ключ изменения — путь через точку, значение
+    кладётся целиком (таблица сливается с таблицей конфига, список и скаляр
+    заменяют прежние). Создают фикстуры стенда (config_overlay,
+    service_overlay)."""
 
     REPLACED: ClassVar[str] = "stand_replaced"
 
-    def __init__(self, raw: DictConfig) -> None:
-        self._raw = raw
+    def __init__(self, loader: ConfigLoader, base: Mapping[str, object]) -> None:
+        self._loader = loader
+        self._base = dict(base)
 
-    def merged(self, changes: Mapping[str, object]) -> DictConfig:
+    def tree(self, changes: Mapping[str, object]) -> DictConfig:
         overlay = OmegaConf.create()
+        for key, value in self._base.items():
+            OmegaConf.update(overlay, key, value, merge=False)
+
         for key, value in changes.items():
             OmegaConf.update(overlay, key, value, merge=False)
 
-        merged = OmegaConf.merge(self._raw, overlay)
-        if not isinstance(merged, DictConfig):
-            got = type(merged).__name__
-            msg = f"config overlay {sorted(changes)}: expected a table, got {got}"
-            raise TypeError(msg)
+        return self._loader.load_over(overlay)
 
-        return merged
-
-    def replaced(self, path: str, table: Mapping[str, object]) -> DictConfig:
-        """Таблица path заменена table целиком: её прежние ключи уходят."""
+    def replacement(self, path: str, table: Mapping[str, object]) -> dict[str, object]:
+        """Изменения, которые заменяют таблицу path целиком: слияние ключей не
+        удаляет, поэтому таблица ложится в секцию REPLACED, а на её место —
+        ссылка."""
         name = path.replace(".", "__")
-        changes: dict[str, object] = {
+
+        return {
             f"{self.REPLACED}.{name}": dict(table),
             path: f"${{{self.REPLACED}.{name}}}",
         }
-
-        return self.merged(changes)
