@@ -10,10 +10,10 @@ ARG SANDBOX_IMAGE=runtime-sandbox
 
 # Собирает make классическим сборщиком (DOCKER_BUILDKIT=0): он проходит все стадии до
 # --target по порядку файла. Поэтому стадии идут по целям make — base, oracledb-wheel,
-# sandbox-out, plugin-site-out и plugin-root, boba-bin-out, program-tools, runtime-sandbox и
+# sandbox-out, nuitka-tools, plugin-site-out и plugin-root, boba-bin-out, runtime-sandbox и
 # runtime-mcp, runtime-aid, — а стадия, которой нужны аргументы одной цели, без них пуста
-# (plugin-site без PLUGIN, bin-site и boba-bin без NUITKA_VERSION, program-tools без
-# PROGRAM_NUITKA).
+# (nuitka-tools без NUITKA_TOOLS, plugin-site без PLUGIN, bin-site и boba-bin без
+# NUITKA_VERSION).
 # Синтаксис только классический: без RUN --mount, COPY --chmod/--link и heredoc
 
 FROM ${PYTHON_IMAGE} AS python-dist
@@ -219,12 +219,33 @@ RUN python3 -c "import tomllib, pathlib; uv = tomllib.loads(pathlib.Path('pyproj
         > /tmp/wheels/overrides.txt
 
 
+# инструменты компиляции Nuitka: Nuitka и patchelf из индекса pypi образа в /opt/bin-tools,
+# ccache из apt. Одна стадия на все бинарники: от неё идут деревья колёс программ
+# (app-site), плагинов (plugin-site) и агента (boba-bin). Компилирует не сборка образа, а
+# make: docker run образа дерева со сценарием scripts/nuitka.sh, конфигом conf/nuitka.yml и
+# кэшем NUITKA_CACHE на /cache — классический сборщик не умеет кэш-монтирований. Без
+# NUITKA_TOOLS стадия пуста
+FROM base AS nuitka-tools
+
+ARG CACHE_SCOPE
+ARG NUITKA_TOOLS
+ARG PATCHELF_VERSION
+ARG ORDERED_SET_VERSION
+
+RUN mkdir -p /opt/bin-tools && { [ -z "${NUITKA_TOOLS}" ] || { \
+        apt-get update && apt-get install -y --no-install-recommends ccache \
+        && rm -rf /var/lib/apt/lists/* \
+        && uv pip install --python "$(command -v python3)" --target /opt/bin-tools \
+            "nuitka==${NUITKA_TOOLS}" "patchelf==${PATCHELF_VERSION}" \
+            "ordered-set==${ORDERED_SET_VERSION}"; }; }
+
+
 # --- образ корня одного плагина: make plugin-rootfs PLUGIN=<пакет> ---------------
 
 # site-packages плагина: закрытие payload одного пакета и его сборочные декларации.
 # Без PLUGIN (стадию проходят цели ниже) стадия отдаёт пустые заготовки, которые ждут
 # plugin-root и plugin-site-out, а шаги плагина пропускаются
-FROM base AS plugin-site
+FROM nuitka-tools AS plugin-site
 
 ARG PLUGIN
 
@@ -370,29 +391,24 @@ RUN mkdir -p /opt/bin-site && { [ -z "${NUITKA_VERSION}" ] || { \
         && sed -i '/uv_cache\.json,/d' /opt/bin-site/*.dist-info/RECORD; }; }
 
 
-# boba каталогом standalone: Nuitka и patchelf из индекса pypi образа; каталог
+# boba каталогом standalone: Nuitka и patchelf из стадии nuitka-tools; каталог
 # boba.dist самодостаточен — gssapi (через транспорт http), данные пакетов и, по флагу
 # BIN_ONNX, рантайм onnxruntime-genai входят целиком; libpython линкуется статически.
 # Каталог, а не один файл: onefile на каждом запуске распаковывает себя (163 МБ) во
 # временный каталог, а в режиме кэша читает его целиком и сверяет CRC; каталогу не нужно
-# ни того ни другого, и ему не нужна запись — годится для корня только на чтение. Данные пакетов
-# и entry points boba называет опись boba.runtime.program по RECORD и entry points дерева
-# колёс: она же даёт флаги Nuitka и едет в бинарник, а `boba self-check` в конце шага
-# проверяет по ней, что всё внутри, — пропущенный каталог данных роняет сборку. onnxruntime_genai
+# ни того ни другого, и ему не нужна запись — годится для корня только на чтение. Данные пакетов boba
+# называет опись boba.core.package_data по RECORD дерева колёс: она же даёт флаги Nuitka
+# и едет в бинарник, а `boba self-check` в конце шага проверяет по ней, что все файлы
+# внутри, — пропущенный каталог данных роняет сборку. onnxruntime_genai
 # находит onnxruntime через find_spec, не импортом, поэтому пакет onnxruntime с его
 # библиотеками включается явно. Локальные модели внутрь не попадают: веса лежат в
 # каталоге models/ релиза. Без NUITKA_VERSION стадия отдаёт пустой /out
-FROM base AS boba-bin
+FROM nuitka-tools AS boba-bin
 
 ARG NUITKA_VERSION
-ARG PATCHELF_VERSION
-ARG ORDERED_SET_VERSION
 ARG BIN_ONNX
 
-RUN mkdir -p /out /opt/bin-tools && { [ -z "${NUITKA_VERSION}" ] || \
-        uv pip install --python "$(command -v python3)" --target /opt/bin-tools \
-            "nuitka==${NUITKA_VERSION}" "patchelf==${PATCHELF_VERSION}" \
-            "ordered-set==${ORDERED_SET_VERSION}"; }
+RUN mkdir -p /out
 
 COPY build/conf/nuitka.yml build/conf/nuitka-boba.yml  /tmp/
 COPY --from=bin-site /opt/bin-site/   /opt/bin-site/
@@ -405,16 +421,16 @@ RUN [ -z "${NUITKA_VERSION}" ] || { onnx=""; \
         onnx="--include-package=onnxruntime_genai --include-package-data=onnxruntime_genai \
               --include-package=onnxruntime"; \
     fi; \
-    python3 -m boba.runtime.program /opt/bin-site /tmp/program.json > /tmp/program.flags \
+    python3 -m boba.core.package_data /opt/bin-site /tmp/package_data.json > /tmp/package_data.flags \
     && python3 -m nuitka --standalone --static-libpython=yes --output-filename=boba.bin --update-check=never \
         --output-dir=/tmp/nuitka --jobs=${JOBS} \
         --user-package-configuration-file=/tmp/nuitka.yml \
         --user-package-configuration-file=/tmp/nuitka-boba.yml \
         --include-package=gssapi --nofollow-import-to=gssapi.tests --include-distribution-metadata=boba-cli \
-        $(cat /tmp/program.flags) ${onnx} \
+        $(cat /tmp/package_data.flags) ${onnx} \
         /opt/bin-site/boba/cli/app.py \
     && mv /tmp/nuitka/app.dist /out/boba.dist \
-    && rm -rf /tmp/nuitka /tmp/program.json /tmp/program.flags \
+    && rm -rf /tmp/nuitka /tmp/package_data.json /tmp/package_data.flags \
     && /out/boba.dist/boba.bin --help > /dev/null \
     && /out/boba.dist/boba.bin self-check; }
 
@@ -430,7 +446,7 @@ COPY --from=boba-bin /out/  /
 # site-packages приложения: ставится по своему графу зависимостей, парсеры и
 # эмбеддер сюда не попадают — они объявлены как extra payload у tool-пакетов.
 # Состав задаёт make build: APP_PACKAGES и APP_IMPORTS
-FROM base AS app-site
+FROM nuitka-tools AS app-site
 
 ARG APP_PACKAGES
 ARG APP_IMPORTS
@@ -445,30 +461,6 @@ RUN uv pip install --python "$(command -v python3)" --target /opt/app-site \
 ENV PYTHONPATH=/opt/app-site
 RUN for name in ${APP_IMPORTS}; do python3 -c "import $name; print('$name ok')"; done
 RUN pip3 list --path /opt/app-site --format=freeze | grep '^boba-' | cut -d= -f1 > /opt/app-packages.txt
-
-
-# компилятор программы приложения над деревом app-site: Nuitka и patchelf из индекса pypi
-# образа, ccache из apt. Компилирует не сборка образа, а make build: docker run этого образа
-# с томом кэша NUITKA_CACHE (ccache и кэш Nuitka) и скриптом scripts/nuitka.sh — классический
-# сборщик не умеет кэш-монтирований, а с томом повторная сборка не компилирует заново
-# общий код. Без PROGRAM_NUITKA (его задаёт только приложение на Nuitka) стадия пуста
-FROM app-site AS program-tools
-
-ARG CACHE_SCOPE
-ARG PROGRAM_NUITKA
-ARG PATCHELF_VERSION
-ARG ORDERED_SET_VERSION
-
-RUN [ -z "${PROGRAM_NUITKA}" ] || { apt-get update && apt-get install -y --no-install-recommends ccache \
-        && rm -rf /var/lib/apt/lists/*; }
-RUN mkdir -p /opt/bin-tools && { [ -z "${PROGRAM_NUITKA}" ] || \
-        uv pip install --python "$(command -v python3)" --target /opt/bin-tools \
-            "nuitka==${PROGRAM_NUITKA}" "patchelf==${PATCHELF_VERSION}" \
-            "ordered-set==${ORDERED_SET_VERSION}"; }
-
-COPY build/conf/nuitka.yml  /opt/nuitka/nuitka.yml
-
-ENV PYTHONPATH=/opt/app-site:/opt/bin-tools PATH=/opt/bin-tools/bin:${PATH}
 
 
 # общая основа образов приложений: python и библиотеки. Код приложения стадии образов

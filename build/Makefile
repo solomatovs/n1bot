@@ -22,8 +22,9 @@ CONF_DIR        := $(BASE_DIR)/conf
 # артефакты для сборки: tarball'ы, uv, webassets, колесо oracledb
 DEPS_DIR        ?= $(BASE_DIR)/src
 # собранное для отладки и тестов из .venv (BOBA_RUNTIME), чего в исходниках нет: libexec
-# (bwrap, fuse2fs, mke2fs), models, sandbox (workspace.ext4, plugins/<id>.ext4) — в той же
-# раскладке, что у каталога программы в образе; статику чата программа из исходников
+# (bwrap, fuse2fs, mke2fs), models, sandbox (workspace.ext4, plugins/<id>.ext4), bin
+# (программы на Nuitka, <программа>.dist) — в той же раскладке, что у каталога программы
+# в образе; статику чата программа из исходников
 # берёт из ассетов пакета. Один на репозиторий: образы корней плагинов, модели и
 # workspace из него берёт и сборка образа mcp
 RUNTIME_DIR     := $(SRC_DIR)/runtime
@@ -67,7 +68,7 @@ STAGE_mcp        := runtime-mcp
 SANDBOX_mcp      := yes
 MODELS_mcp       := fastembed rapidocr
 PARTS_mcp        :=
-BUILD_ARGS_mcp    = $(PROGRAM_TOOL_ARGS)
+BUILD_ARGS_mcp    = $(NUITKA_TOOL_ARGS)
 WEB_mcp          :=
 
 # агент как служба — `boba serve` пакета boba-cli: агент сам слушает ACP по сети,
@@ -195,15 +196,14 @@ NUITKA_VERSION     ?= 4.3
 # .so, которой Nuitka правит RPATH, вырастает до 2 МБ; 0.17 добавляет к ней килобайты
 PATCHELF_VERSION   ?= 0.17.2.4
 ORDERED_SET_VERSION ?= 4.1.0
-BIN_TOOL_ARGS       = --build-arg NUITKA_VERSION=$(NUITKA_VERSION)           \
+# инструменты компиляции (стадия nuitka-tools) — одни на программы, плагины и агента
+NUITKA_TOOL_ARGS    = --build-arg NUITKA_TOOLS=$(NUITKA_VERSION)             \
     --build-arg PATCHELF_VERSION=$(PATCHELF_VERSION)                     \
     --build-arg ORDERED_SET_VERSION=$(ORDERED_SET_VERSION)
+BIN_TOOL_ARGS       = --build-arg NUITKA_VERSION=$(NUITKA_VERSION) $(NUITKA_TOOL_ARGS)
 BIN_ARGS            = $(BIN_TOOL_ARGS) --build-arg BIN_ONNX=$(BIN_ONNX)
-# компилятор программы приложения на Nuitka (стадия program-tools) и том его кэша:
-# ccache и кэш Nuitka живут между сборками, повторная сборка не компилирует общий код
-PROGRAM_TOOL_ARGS   = --build-arg PROGRAM_NUITKA=$(NUITKA_VERSION)                  \
-    --build-arg PATCHELF_VERSION=$(PATCHELF_VERSION)                     \
-    --build-arg ORDERED_SET_VERSION=$(ORDERED_SET_VERSION)
+# кэш компиляции Nuitka (ccache и кэш Nuitka) — каталог хоста: он живёт между сборками,
+# и повторная сборка не компилирует общий код заново
 NUITKA_CACHE       ?= $(DEPS_DIR)/nuitka-cache
 
 # --- что скачивает fetch -------------------------------------------------------
@@ -448,15 +448,15 @@ else
 fi
 endef
 
-# программа приложения на Nuitka: образ компилятора program-tools (файл с ID — $(1)) идёт
-# docker run'ом с томом кэша NUITKA_CACHE без сети; каталог <программа>.dist заменяет
-# прежний в runtime/bin целиком
+# программа приложения на Nuitka: образ дерева колёс app-site с инструментами (файл с
+# ID — $(1)) идёт docker run'ом без сети со сценарием nuitka.sh и кэшем NUITKA_CACHE;
+# каталог <программа>.dist заменяет прежний в runtime/bin целиком
 define nuitka-program
 mkdir -p "$(NUITKA_CACHE)" "$(RUNTIME_DIR)/bin"
 stage=$$(mktemp -d "$(STAGE_TEMPLATE)")
 docker run --rm --network none -u "$(RUN_OWNER)" -v "$(NUITKA_CACHE):/cache" \
-    -v "$(SCRIPTS_DIR):/scripts:ro" -v "$$stage:/out" --entrypoint sh "$$(cat "$(1)")" \
-    /scripts/nuitka.sh "$(APP_ENTRY)" "$(NAME_$(APP))" /out < /dev/null
+    -v "$(SCRIPTS_DIR):/scripts:ro" -v "$(CONF_DIR):/conf:ro" -v "$$stage:/out" \
+    --entrypoint sh "$$(cat "$(1)")" /scripts/nuitka.sh /opt/app-site "/opt/app-site/$(APP_ENTRY)" "$(NAME_$(APP))" /out $(JOBS) < /dev/null
 rm -rf "$(RUNTIME_DIR)/bin/$(NAME_$(APP)).dist"
 mv "$$stage/$(NAME_$(APP)).dist" "$(RUNTIME_DIR)/bin/"
 rm -rf "$$stage"
@@ -726,8 +726,9 @@ define HELP
   prune                 старые теги образов, образы без тега, кэш BuildKit до PRUNE_KEEP=$(PRUNE_KEEP).
                         Образы без тега — кэш классического сборщика: после prune сборке
                         снова нужны apt-зеркало и реестры
-  clean                 release, артефакты fetch в build/src, собранный фронт, runtime/libexec и
-                        runtime/sandbox (песочница и образы плагинов); модели остаются
+  clean                 release, артефакты fetch в build/src, собранный фронт, runtime/libexec,
+                        runtime/bin и runtime/sandbox (песочница, программы и образы плагинов);
+                        модели и кэш компиляции NUITKA_CACHE остаются
   sec                   sec.sh, MODE=all|full|sast|sca|rules
 
 Переменные: JOBS=$(JOBS) — заданий на шаг сборки; входит в ключ кэша, другое значение
@@ -1136,9 +1137,9 @@ build: version-check $(if $(APP_SANDBOX),$(SANDBOX_DIR)/workspace.ext4 $(PLUGIN_
 	tmp=$$(mktemp -d)
 	if [ -n "$(APP_ENTRY)" ]; then
 	    echo "== программа $(NAME_$(APP)): Nuitka $(NUITKA_VERSION), JOBS=$(JOBS), кэш $(NUITKA_CACHE) =="
-	    $(call docker-image,program-tools,$$tmp/program-tools.iid,$(APP_ARGS))
+	    $(call docker-image,app-site,$$tmp/app-site.iid,$(APP_ARGS))
 	    started=$$(date +%s)
-	    $(call nuitka-program,$$tmp/program-tools.iid)
+	    $(call nuitka-program,$$tmp/app-site.iid)
 	    echo ">>> программа: $(RUNTIME_DIR)/$(APP_PROGRAM) ($$(du -sh "$(RUNTIME_DIR)/bin/$(NAME_$(APP)).dist" | cut -f1), $$(( $$(date +%s) - started )) с)"
 	fi
 	if [ -n "$(APP_SANDBOX)" ]; then
@@ -1452,7 +1453,7 @@ prune:
 # качаются долго
 .PHONY: clean
 clean:
-	@echo "== чистка: release, артефакты fetch, собранный фронт, runtime/libexec и runtime/sandbox =="
+	@echo "== чистка: release, артефакты fetch, собранный фронт, runtime/libexec, runtime/bin и runtime/sandbox =="
 	rm -rf $(RELEASE_DIR) $(DEPS_DIR)/uv $(WEBASSETS_DIR) $(ORACLEDB_DIR) $(FETCH_CONSTRAINTS) \
 	       $(DEPS_DIR)/*.tar.xz $(DEPS_DIR)/*.tar.gz $(PNPM_STORE) $(PAGE_JS) $(ASSETS_VENDOR) $(UI_DIST) \
-	       $(LIBEXEC_DIR) $(SANDBOX_DIR)
+	       $(LIBEXEC_DIR) $(RUNTIME_DIR)/bin $(SANDBOX_DIR)

@@ -18,12 +18,8 @@ import asyncio
 import sys
 from collections.abc import Sequence
 
-from boba.runtime.program import (
-    ProgramCheck,
-    ProgramExit,
-    ProgramManifestError,
-    ProgramTool,
-)
+from boba.core.package_data import PackageDataCheck, PackageDataError
+from boba.runtime.program import ProgramExit, ProgramTool
 from boba.workspace.launcher import Launcher
 
 __all__ = ["McpProgram", "cli"]
@@ -39,7 +35,7 @@ class McpProgram:
     """
 
     def __init__(self) -> None:
-        self._check = ProgramCheck()
+        self._check = PackageDataCheck()
 
     def serves(self, argv: Sequence[str]) -> bool:
         """Командная строка службы: не служебная подкоманда."""
@@ -71,7 +67,7 @@ class McpProgram:
     def _self_check(self) -> int:
         try:
             checked = self._check.run()
-        except ProgramManifestError as exc:
+        except PackageDataError as exc:
             raise SystemExit(str(exc)) from exc
 
         sys.stdout.write(f"{checked}\n")
