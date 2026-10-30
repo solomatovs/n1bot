@@ -5,13 +5,16 @@
 
 set -u
 
-_sec_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE:-$0}")" 2>/dev/null && pwd)
+_root=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE:-$0}")/.." 2>/dev/null && pwd)
+
+# semgrep берёт .semgrepignore из корня проверяемого дерева
+cd "$_root" || exit 1
 
 if [ -n "${PYTHONHOME:-}" ] || [ -n "${PYTHONPATH:-}" ]; then
   unset PYTHONHOME PYTHONPATH
 fi
 
-_uv="$_sec_dir/build/src/uv/uv"
+_uv="$_root/build/src/uv/uv"
 if [ ! -x "$_uv" ]; then
   _uv=$(command -v uv)
 fi
@@ -26,7 +29,7 @@ _rc=0
 
 _run_ruff() {
   echo "== ruff (flake8-bandit S + общий линт) =="
-  "$_sec_dir/.venv/bin/ruff" check "$_sec_dir/packages" || _rc=1
+  "$_root/.venv/bin/ruff" check "$_root/packages" || _rc=1
 }
 
 _run_bandit() {
@@ -34,7 +37,7 @@ _run_bandit() {
   # LOW отфильтрован: там только B404/B603 песочницы, для которой запуск
   # процессов и есть назначение
   "$_uv" tool run --system-certs bandit \
-    -q -r "$_sec_dir/packages" \
+    -q -r "$_root/packages" \
     --exclude '**/tests/**,**/.venv/**,**/boba-catalog-service/**,**/boba-catalog/**' \
     --severity-level medium --confidence-level medium || _rc=1
 }
@@ -42,13 +45,13 @@ _run_bandit() {
 _run_semgrep() {
   echo "== semgrep =="
   # правила скачиваются в sec/semgrep (как остальные артефакты) и в git
-  # не попадают: обновляются через sec.sh rules
+  # не попадают: обновляются через sec/sec.sh rules
   # --jobs 1: io_uring semgrep не поднимается при лимите memlock 8 МБ
   SEMGREP_SEND_METRICS=off "$_uv" tool run --system-certs semgrep \
-    scan --config="$_sec_dir/sec/semgrep" --metrics=off --jobs 1 \
+    scan --config="$_root/sec/semgrep" --metrics=off --jobs 1 \
     --exclude=.venv --exclude=build --exclude=release \
     --exclude=boba-catalog-service --exclude=boba-catalog \
-    --error "$_sec_dir/packages" || _rc=1
+    --error "$_root/packages" || _rc=1
 }
 
 # охват и правила как у сканера ИБ: всё дерево, а не только packages, плюс
@@ -56,10 +59,10 @@ _run_semgrep() {
 _run_full() {
   echo "== semgrep: полный охват (правила ИБ) =="
   SEMGREP_SEND_METRICS=off "$_uv" tool run --system-certs semgrep \
-    scan --config="$_sec_dir/sec/semgrep"                   \
-    --config="$_sec_dir/sec/semgrep-boba"                  \
+    scan --config="$_root/sec/semgrep"                   \
+    --config="$_root/sec/semgrep-boba"                  \
     --metrics=off --scan-unknown-extensions --jobs 1 --json -q    \
-    "$_sec_dir" > "$_full_json" || _rc=1
+    "$_root" > "$_full_json" || _rc=1
 
   python3 - "$_full_json" <<'PY'
 import collections
@@ -80,7 +83,7 @@ PY
 
   echo "== bandit: без порогов, вместе с тестами =="
   "$_uv" tool run --system-certs bandit                     \
-    -q -r "$_sec_dir/packages" "$_sec_dir/build/test"       \
+    -q -r "$_root/packages" "$_root/build/test"       \
     --exclude '**/.venv/**' -f json 2>/dev/null > "$_bandit_json" || true
 
   python3 - "$_bandit_json" <<'PY'
@@ -106,7 +109,7 @@ _update_rules() {
   echo "== semgrep rules =="
   for pack in python secrets dockerfile javascript react; do
     curl -fsS "https://semgrep.dev/c/p/$pack" \
-      -o "$_sec_dir/sec/semgrep/$pack.yml" || _rc=1
+      -o "$_root/sec/semgrep/$pack.yml" || _rc=1
     echo "$pack.yml updated"
   done
 }
@@ -152,7 +155,7 @@ case "$_mode" in
     _update_rules
     ;;
   *)
-    echo "usage: sec.sh [all|full|sast|sca|rules]" >&2
+    echo "usage: sec/sec.sh [all|full|sast|sca|rules]" >&2
     exit 2
     ;;
 esac
