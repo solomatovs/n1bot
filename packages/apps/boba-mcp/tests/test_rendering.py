@@ -90,14 +90,14 @@ class TestRenderForLlm:
         if result.llm_view() != '[{"a": 1}]':
             raise AssertionError("result.llm_view() == '[{\"a\": 1}]'")
 
-    def test_chart_confirmation(self) -> None:
-        titled = VisualResult.plotly({"data": []}, "Sales").llm_view()
-        if titled != "[plotly rendered: Sales]":
-            raise AssertionError('titled == "[plotly rendered: Sales]"')
+    def test_visual_confirmation(self) -> None:
+        titled = VisualResult(element="card", props={}, title="Sales").llm_view()
+        if titled != "[card rendered: Sales]":
+            raise AssertionError('titled == "[card rendered: Sales]"')
 
-        untitled = VisualResult.plotly({"data": []}, None).llm_view()
-        if untitled != "[plotly rendered]":
-            raise AssertionError('untitled == "[plotly rendered]"')
+        untitled = VisualResult(element="card", props={}).llm_view()
+        if untitled != "[card rendered]":
+            raise AssertionError('untitled == "[card rendered]"')
 
     def test_error(self) -> None:
         result = ErrorResult(message="boom", error_kind="timeout")
@@ -116,13 +116,10 @@ class TestPacked:
 
 
 class TestShownBlocks:
-    def test_chart_is_a_caption_and_its_figure(self) -> None:
-        result = VisualResult.plotly({"data": []}, "t")
+    def test_visual_is_its_caption(self) -> None:
+        result = VisualResult(element="card", props={"path": "/workspace/a"}, title="t")
 
-        if shown(result) != [
-            ("text", "", "_(plotly: t)_"),
-            ("resource", "application/vnd.plotly.v1+json t", '{"data": []}'),
-        ]:
+        if shown(result) != [("text", "", "_(card: t)_")]:
             raise AssertionError(shown(result))
 
     def test_table_is_csv_with_the_note_below(self) -> None:
@@ -339,17 +336,15 @@ class TestDeclaredDisplays:
 
     def test_module_declarations_register_through_the_facade(self) -> None:
         from boba.tool.ch.tools import TOOLS as CH_TOOLS
-        from boba.tool.chart.tools import TOOLS as CHART_TOOLS
         from boba.tool.pg.tools import TOOLS as PG_TOOLS
 
-        if not (PG_TOOLS and CH_TOOLS and CHART_TOOLS):
+        if not (PG_TOOLS and CH_TOOLS):
             raise AssertionError("модули отдали свои TOOLS")
 
         expected = {
             ("pg_query", "sql"): "sql",
             ("pg_stream_out", "sql"): "sql",
             ("ch_query", "sql"): "sql",
-            ("visualize", "spec"): "json",
         }
         for (name, arg), language in expected.items():
             call = ToolCallModels.call_of(name, {arg: "x"})

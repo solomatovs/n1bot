@@ -40,7 +40,6 @@ dependencies = [
     "anyio>=4,<5",
     "python-multipart>=0.0.18,<1",
     "omegaconf>=2.3,<3",
-    "plotly>=5.24,<6",
     "chainlit==2.11.1",
     "fastapi>=0.116,<1",
     "uvicorn[standard]>=0.35,<1",

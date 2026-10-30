@@ -786,7 +786,6 @@ class StandPlugins:
     SANDBOXED: ClassVar[tuple[str, ...]] = (
         "bash",
         "doc",
-        "chart",
         "web",
         "confluence",
         "ingest",

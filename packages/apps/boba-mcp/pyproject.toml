@@ -45,7 +45,6 @@ dev = [
     "boba-db-pgvector==0.0.30.dev7",
     "boba-db-postgres==0.0.30.dev7",
     "boba-tool-canvas==0.0.30.dev7",
-    "boba-tool-chart==0.0.30.dev7",
     "boba-tool-clickhouse==0.0.30.dev7",
     "boba-tool-confluence==0.0.30.dev7",
     "boba-tool-doc==0.0.30.dev7",

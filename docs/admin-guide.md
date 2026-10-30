@@ -271,7 +271,7 @@ runtime/
   libexec/   bwrap  fuse2fs  mke2fs  mke2fs.conf
   sandbox/   workspace.ext4
   rootfs/    base.ext4  shell.ext4      — корни песочницы с python и кодом пакетов
-  plugins/   core/run  shell/run  chart/run  db/run  docs/run — `python3 -m boba.sandbox.program "$@"`
+  plugins/   core/run  shell/run  db/run  docs/run — `python3 -m boba.sandbox.program "$@"`
   models/    rapidocr/  fastembed/  onnx-genai/
 ```
 
@@ -290,7 +290,7 @@ runtime/
   bin/       boba-mcp.dist/boba-mcp.bin | boba.dist/boba.bin (Nuitka); boba-aid — запуск чата на python
   libexec/   mcp: bwrap, fuse2fs, mke2fs
   sandbox/   mcp: workspace.ext4 — шаблон рабочего каталога пользователя
-  plugins/   mcp: программы групп плагинов (core, shell, chart, db, docs), каталог Nuitka с исполняемым run
+  plugins/   mcp: программы групп плагинов (core, shell, db, docs), каталог Nuitka с исполняемым run
   rootfs/    mcp: корни песочницы base.ext4 и shell.ext4
   conf/plugins/  mcp: конфиги плагинов <id>.toml
   share/     aid: статика chainlit (.chainlit, public, ui, mcp-apps, шрифты)
@@ -438,7 +438,6 @@ rootless, — так же, как в закрытом контуре, где Bui
 |---|---|---|
 | `core` | canvas, mail | `base` |
 | `shell` | bash | `shell` (утилиты apt и python с payload) |
-| `chart` | chart | `base` |
 | `db` | pg, ch, ora, describer | `base` |
 | `docs` | doc, web, confluence, ingest, kb | `base` |
 
@@ -1443,7 +1442,7 @@ this caller, use one of: ...`. Схема параметра для каждог
 
 Итог вызова приходит стандартными полями результата MCP, и чат рисует его по
 ним, а не по имени инструмента. Блоки `content` несут текст, встроенный ресурс
-с MIME (таблица `text/csv`, текст SQL, JSON, график plotly) или ссылку на
+с MIME (таблица `text/csv`, текст SQL, JSON) или ссылку на
 файл (`resource_link`); `annotations.audience` отделяет текст для модели от
 текста для человека; отказ инструмента помечен `isError`; `structuredContent`
 приходит только у инструментов, которые объявили схему вывода. Ссылка с
@@ -2792,7 +2791,6 @@ boba паролей учёток не меняет. Внешних провай�
 | Плагин | Сеть | Бинды для сети | Куда ходит |
 |---|---|---|---|
 | `bash`, `canvas`, `doc` | нет | — | — |
-| `chart` (в поставке выключен) | нет | — | — |
 | `pg`, `ch` | да | `/etc/resolv.conf`, `/etc/hosts`, `krb5.conf` | базы пользователей |
 | `ora` | да | `/etc/resolv.conf`, `/etc/hosts` | Oracle; без `krb5.conf` kerberos здесь недоступен |
 | `describer`, `kb` | да | `/etc/resolv.conf`, `/etc/hosts`, `krb5.conf` | PostgreSQL сервиса |

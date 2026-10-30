@@ -2211,7 +2211,7 @@ class TestBlockDrawings:
         ),
         "table": TableResult(rows=[{"a": 1}], note="n"),
         "visual": VisualResult(
-            element="plotly", props={"spec": {"data": []}}, title="t"
+            element="card", props={"path": "/workspace/t/a.md"}, title="t"
         ),
     }
     """Каждый вид результата boba-mcp, каким его отдаёт инструмент."""
@@ -2290,7 +2290,7 @@ class TestBlockDrawings:
             "_nothing was committed_"
         ),
         "table": ("| a  |\n|----|\n| 1  |\n\n_n_"),
-        "visual": ("_(plotly: t)_"),
+        "visual": ("_(card: t)_"),
     }
 
     async def _drawn(
@@ -2445,12 +2445,14 @@ class TestBlockDrawings:
             assert element.get("name") != CanvasElement.JSON_TREE, element
 
     @pytest.mark.anyio
-    async def test_plotly_figure_is_a_chart_next_to_the_step(
+    async def test_stored_plotly_figure_is_an_ordinary_block(
         self,
         runtime_stand: StandRefs,
         storage: LocalStorageClient,
         recorded: FakeEmitter,
     ) -> None:
+        """Тред из истории до удаления графиков plotly: ресурс фигуры лента
+        показывает обычным блоком, а не падает и не рисует график."""
         figure = {"data": [{"type": "bar", "y": [1, 2]}]}
         chart = self._resource(
             "application/vnd.plotly.v1+json", json.dumps(figure), "orders"
@@ -2458,14 +2460,11 @@ class TestBlockDrawings:
 
         await self._drawn(runtime_stand, storage, self._reply(chart))
 
-        assert self._output(recorded) == ""
-        carrier = recorded.last()[_id(CALL, StepRole.CHART)]
-        assert carrier.get(StepField.OUTPUT) == "orders"
-        plotted: list[str] = []
+        output = self._output(recorded)
+        assert output.startswith("```json"), output
+        assert "vnd.plotly" in output, output
         for element in recorded.elements:
-            plotted.append(str(element.get("type")))
-
-        assert plotted == ["plotly"], recorded.elements
+            assert element.get("type") != "plotly", element
 
     @pytest.mark.anyio
     async def test_image_and_audio_are_thread_files_of_the_answer(

@@ -435,9 +435,6 @@ class ShownBlocks:
 
             return TableText.render(rows)
 
-        if resource.mime_type == ContentMime.PLOTLY:
-            return ""
-
         name = PurePosixPath(urlsplit(str(resource.uri)).path).name
 
         return Fence.around(resource.text, unquote(name))

@@ -375,7 +375,7 @@ workspace, который уходит вложением в чат, `CanvasResu
 | `TableResult` | `resource` `text/csv` |
 | `SqlResult` | `resource` `application/sql` с текстом запроса и `resource` `text/csv` с выдачей, если она есть |
 | `ShellResult` | `resource` `text/plain` с показанным потоком (`stdout`, а если показан не он — `stderr`) и строка итога |
-| `VisualResult` | подпись; у графика plotly — `resource` `application/vnd.plotly.v1+json` с фигурой |
+| `VisualResult` | подпись карточки вьювера канваса |
 | `FileResult` | `resource_link` на файл workspace |
 | `CanvasResult` | `resource_link` с `annotations.priority = 1.0`: чат открывает файл в панели треда |
 | отказ (`ErrorResult` и родня) | `text`, а ответ помечен `isError` |

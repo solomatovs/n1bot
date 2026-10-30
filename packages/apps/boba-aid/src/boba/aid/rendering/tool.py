@@ -1,8 +1,8 @@
-"""Элементы ленты, которым нужен объект chainlit: график plotly из фигуры
-блока ответа, карточка вьювера канваса, карточка приложения MCP Apps в
-ленте и вопрос агента пользователю, а также разбор настроек MCP Apps
-инструмента из его _meta.ui и источник вызова инструмента (ToolSource) —
-то, по чему лента рисует вызов без обращения к серверу.
+"""Элементы ленты, которым нужен объект chainlit: карточка вьювера канваса,
+карточка приложения MCP Apps в ленте и вопрос агента пользователю, а также
+разбор настроек MCP Apps инструмента из его _meta.ui и источник вызова
+инструмента (ToolSource) — то, по чему лента рисует вызов без обращения к
+серверу.
 
 Ошибки: своих не выпускает.
 """
@@ -147,8 +147,8 @@ class ElementName(StrEnum):
 
 
 class ChatElements:
-    """Элементы ленты: cl.Plotly по фигуре plotly, jsx-компонент
-    public/elements/<имя>.jsx по карточке вьювера канваса (VisualResult),
+    """Элементы ленты: jsx-компонент public/elements/<имя>.jsx по карточке
+    вьювера канваса (VisualResult),
     карточка приложения MCP Apps и вопрос агента пользователю
     (ElementName). Создаёт его лента (ChatView) и приёмник вкладки (вопрос,
     который ждёт ответа)."""
@@ -180,11 +180,3 @@ class ChatElements:
         return cl.CustomElement(
             name=ElementName.QUESTION.value, props=dict(props), display="inline"
         )
-
-    def plotly(self, figure: Mapping[str, Any], title: str) -> cl.Plotly:
-        """cl.Plotly из фигуры — единственное место, знающее про plotly."""
-        from plotly import graph_objects as go  # noqa: PLC0415
-
-        plotted = go.Figure(dict(figure))
-
-        return cl.Plotly(name=title, figure=plotted, display="inline")
