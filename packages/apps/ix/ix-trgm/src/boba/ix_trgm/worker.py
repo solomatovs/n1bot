@@ -23,11 +23,11 @@ from psycopg import sql
 from pydantic import Field
 
 from boba.cancellation import ProcessStop
-from boba.config import ConfigError, bind_section
+from boba.config import ConfigError
 from boba.db.postgres import AsyncPostgresPool, PostgresError
 from boba.db.postgres.query import PgQueryBuilder
 from boba.ix_core.aspects import AspectClass
-from boba.ix_core.database import IxDatabase, enter_kerberos
+from boba.ix_core.database import IxConfigFile, IxDatabase
 from boba.ix_core.registry import IxRegistry
 from boba.ix_core.upgrade import SchemaUpgrade, SchemaUpgradeError
 
@@ -194,16 +194,17 @@ async def work() -> None:
     package_dir = Path(__file__).resolve().parent
     try:
         command, config_path = parse_args()
-        enter_kerberos(config_path)
+        config = IxConfigFile(config_path)
+        config.enter_kerberos()
 
         if command is Command.UPGRADE:
-            database = bind_section(config_path, section, IxDatabase)
+            database = config.section(section, IxDatabase)
             upgrade = SchemaUpgrade(package_dir / "schema")
             report = await upgrade.run(database)
             logger.info("schema applied: %s", ", ".join(report.files))
             return
 
-        cfg = bind_section(config_path, section, WorkerConfig)
+        cfg = config.section(section, WorkerConfig)
         worker = IndexerWorker(cfg, package_dir / "run")
         report = await worker.run()
         logger.info(

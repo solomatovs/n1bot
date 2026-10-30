@@ -47,10 +47,10 @@ from psycopg import sql
 from psycopg.errors import LockNotAvailable, SerializationFailure
 from pydantic import BaseModel, Field
 
-from boba.config import ConfigError, bind_section
+from boba.config import ConfigError
 from boba.db.postgres import AsyncPostgresPool, PostgresError
 from boba.db.postgres.query import PgQueryBuilder
-from boba.ix_core.database import IxDatabase, enter_kerberos
+from boba.ix_core.database import IxConfigFile, IxDatabase
 from boba.ix_core.upgrade import SchemaUpgrade, SchemaUpgradeError
 from boba.krb import KerberosWorkspaceConfig
 
@@ -819,15 +819,16 @@ async def run_cli(
 
     try:
         args = parse_args(prog, description, section, None)
-        krb = enter_kerberos(args.config)
+        file = IxConfigFile(args.config)
+        krb = file.enter_kerberos()
         if args.command is Command.UPGRADE:
-            database = bind_section(args.config, section, IxDatabase)
+            database = file.section(section, IxDatabase)
             upgrade = SchemaUpgrade(package_dir / PackageDir.SCHEMA)
             report = await upgrade.run(database)
             logger.info("schema applied: %s", ", ".join(report.files))
             return
 
-        config = bind_section(args.config, section, config_type)
+        config = file.section(section, config_type)
         for report in await run_sources(config, package_dir, krb, args.source):
             logger.info("done: %s", report.line())
     except (ConfigError, SchemaUpgradeError, ScrapeWorkerError) as exc:

@@ -29,8 +29,7 @@ worker.py      конфиг, обход спейса, процесс на спе
 ```
 
 Конфиг приложения на dev-стенде лежит в `compose/cfl-indexer/conf.toml` (каталог
-вне git, в нём креды). Пути в конфиге пишутся от `${env.base}` — каталога, где лежит
-файл. Секция `[ix.cfl_indexer]`: база ix (`db_schema`, `postgres`, `krb`), список
+вне git, в нём креды). Пути в конфиге абсолютные. Секция `[ix.cfl_indexer]`: база ix (`db_schema`, `postgres`, `krb`), список
 `sources` — по записи на сервер Confluence с именем, `spaces` и endpoint
 (`confluence.profile` — web-профиль с auth или без, `confluence.body_format`,
 `confluence.dump` — дамп HTTP-обмена), `parallel_spaces` — сколько процессов спейсов

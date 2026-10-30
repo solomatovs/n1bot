@@ -37,9 +37,9 @@ import psycopg
 from pydantic import Field
 
 from boba.cancellation import ProcessStop
-from boba.config import ConfigError, bind_section
+from boba.config import ConfigError
 from boba.db.postgres import AsyncPostgresPool, PostgresError
-from boba.ix_core.database import IxDatabase, enter_kerberos
+from boba.ix_core.database import IxConfigFile, IxDatabase
 from boba.ix_core.registry import IxRegistry
 from boba.ix_core.search import (
     Hit,
@@ -300,9 +300,10 @@ def parse_args(argv: Sequence[str] | None = None) -> LabConfig:
         ),
     )
     args = parser.parse_args(argv)
-    enter_kerberos(args.config)
+    config = IxConfigFile(args.config)
+    config.enter_kerberos()
 
-    return bind_section(args.config, "ix.search_lab", LabConfig)
+    return config.section("ix.search_lab", LabConfig)
 
 
 async def work() -> None:

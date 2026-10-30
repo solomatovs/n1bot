@@ -18,8 +18,8 @@ from collections.abc import Sequence
 from importlib.resources import files
 from pathlib import Path
 
-from boba.config import ConfigError, bind_section
-from boba.ix_core.database import IxDatabase, enter_kerberos
+from boba.config import ConfigError
+from boba.ix_core.database import IxConfigFile, IxDatabase
 from boba.ix_core.scrape import PackageDir
 from boba.ix_core.upgrade import SchemaUpgrade, SchemaUpgradeError
 
@@ -49,9 +49,10 @@ def parse_args(argv: Sequence[str] | None = None) -> IxDatabase:
         ),
     )
     args = parser.parse_args(argv)
-    enter_kerberos(args.config)
+    config = IxConfigFile(args.config)
+    config.enter_kerberos()
 
-    return bind_section(args.config, section, IxDatabase)
+    return config.section(section, IxDatabase)
 
 
 async def main() -> None:

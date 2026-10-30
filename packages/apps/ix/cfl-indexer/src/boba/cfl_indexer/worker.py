@@ -52,7 +52,6 @@ from boba.cfl_indexer.store import (
     State,
     Surface,
 )
-from boba.config import bind_section
 from boba.confluence.models import AttachmentVerdict
 from boba.confluence.rest import ConfluenceConnection, ContentType
 from boba.db.postgres import AsyncPostgresPool, PostgresError
@@ -60,7 +59,7 @@ from boba.db.postgres.schema import PostgresSchema
 from boba.doc.config import DocSection
 from boba.doc.document import DocumentError
 from boba.doc.ocr import OcrEngines
-from boba.ix_core.database import IxDatabase, enter_kerberos
+from boba.ix_core.database import IxConfigFile, IxDatabase
 from boba.ix_core.upgrade import SchemaUpgrade
 from boba.krb import KerberosWorkspaceConfig
 from boba.llm.providers import LlmProviders, LlmProviderTypes
@@ -733,15 +732,16 @@ class IndexerCli:
 
     async def run(self) -> None:
         args = self._args
-        krb = enter_kerberos(args.config)
+        config = IxConfigFile(args.config)
+        krb = config.enter_kerberos()
         if args.command is Command.UPGRADE:
-            database = bind_section(args.config, self.SECTION, IxDatabase)
+            database = config.section(self.SECTION, IxDatabase)
             upgrade = SchemaUpgrade(self._package_dir / "schema")
             report = await upgrade.run(database)
             logger.info("schema applied: %s", ", ".join(report.files))
             return
 
-        cfg = bind_section(args.config, self.SECTION, IndexerConfig)
+        cfg = config.section(self.SECTION, IndexerConfig)
         indexer = Indexer(cfg, self._package_dir / "run", krb)
         selection = SpaceSelection(
             source=args.source, space=args.space, reindex=args.reindex
