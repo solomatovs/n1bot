@@ -140,18 +140,14 @@ class ProgramDir(StrEnum):
     """Вспомогательные программы: bwrap, fuse2fs, mke2fs (mcp)."""
     SHARE = "share"
     """Статика: корень приложения chainlit (aid)."""
-    MODELS = "models"
-    """Образы данных моделей <имя>.ext4 (mcp)."""
     SANDBOX = "sandbox"
-    """Шаблон workspace.ext4 и образы плагинов plugins/<id>.ext4 (mcp)."""
+    """Шаблон workspace.ext4 (mcp)."""
 
 
 class ProgramFile(StrEnum):
     """Файлы каталога программы относительно его корня."""
 
     WORKSPACE = "sandbox/workspace.ext4"
-    PLUGINS = "sandbox/plugins"
-    IMAGE_SUFFIX = ".ext4"
 
 
 class SourceTree(StrEnum):
@@ -170,8 +166,8 @@ class ProgramRoot(ABC):
 
     Базовый класс; наследники — установленная программа (InstalledProgram) и
     программа из исходников (SourceProgram), выбирает их ProgramRoots на
-    границе конфига. Пользуются им способ запуска плагинов в песочнице (образы
-    плагинов и моделей, bwrap), хранилище образов workspace и вход чата
+    границе конфига. Пользуются им способ запуска плагинов в песочнице (пути
+    из конфигов плагинов, bwrap), хранилище образов workspace и вход чата
     (статика chainlit). root — каталог программы (у исходников — runtime/),
     interpreter — чем цепочка лаунчера песочницы запускает ту же программу во
     внешнем слое.
@@ -194,16 +190,15 @@ class ProgramRoot(ABC):
     def path(self, part: ProgramDir) -> Path:
         """Каталог части программы."""
 
-    def plugin_images(self) -> Path:
-        return self.root / ProgramFile.PLUGINS.value
+    def located(self, path: str) -> Path:
+        """Путь из конфига: абсолютный — как есть, относительный — от
+        каталога программы. Так один конфиг плагина ведёт в образе в
+        /app/boba, а из исходников — в runtime/."""
+        given = Path(path)
+        if given.is_absolute():
+            return given
 
-    def plugin_image(self, plugin_id: str) -> Path:
-        return self.plugin_images() / f"{plugin_id}{ProgramFile.IMAGE_SUFFIX.value}"
-
-    def model_image(self, name: str) -> Path:
-        models = self.path(ProgramDir.MODELS)
-
-        return models / f"{name}{ProgramFile.IMAGE_SUFFIX.value}"
+        return self.root / given
 
     def workspace_template(self) -> Path:
         return self.root / ProgramFile.WORKSPACE.value
@@ -239,7 +234,7 @@ class SourceProgram(ProgramRoot):
     """Реализация ProgramRoot программы из исходников (.venv): то, что лежит в
     git, берётся из дерева исходников sources (статика чата — ассеты пакета
     boba-aid), а собранное, чего в исходниках нет, — из root, каталога runtime/
-    (libexec, models, sandbox)."""
+    (libexec, sandbox, rootfs, plugins)."""
 
     sources: Path
 

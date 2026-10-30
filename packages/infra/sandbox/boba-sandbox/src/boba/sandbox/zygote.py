@@ -1261,7 +1261,7 @@ class ZygoteSpawner:
     только явный список путей, и источники биндов вложенного слоя он берёт
     у того же ZygoteArgv, что пишет его argv. tmpfs на /tmp обязателен — из
     него дети получают приватный размерный /tmp. program — команда зиготы в
-    корне песочницы: у плагина это `/plugin/run zygote`, аргументы
+    корне песочницы: у плагина это `/plugin/run <id> zygote`, аргументы
     ZygoteArgs дописываются за ней. run() исполняет в той же песочнице
     короткую команду до конца — подкоманды manifest и setup программы
     плагина.
@@ -1389,10 +1389,7 @@ class ZygoteSpawner:
 
         return self._chain.argv(
             images=(),
-            ro_images=(
-                (self._profile.rootfs, SandboxMount.ROOTFS.value),
-                *self._nested.data_images(),
-            ),
+            ro_images=((self._profile.rootfs, SandboxMount.ROOTFS.value),),
             template="",
             op=[LauncherMode.RUN.value, shlex.join(inner_argv)],
             limits=ResourceLimits(),

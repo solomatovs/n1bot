@@ -3,6 +3,8 @@ max_chars = 32000
 tools     = ["canvas_open", "send_file", "diagram_save"]
 
 [sandbox]
+    program   = "plugins/core"
+    rootfs    = "rootfs/base.ext4"
     workspace = true
     [sandbox.limits]
         group_memory_bytes = 1073741824

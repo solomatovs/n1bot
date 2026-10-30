@@ -2,6 +2,8 @@ enable  = false
 tools   = ["visualize"]
 
 [sandbox]
+    program   = "plugins/chart"
+    rootfs    = "rootfs/base.ext4"
     [sandbox.limits]
         process_memory_bytes = 17179869184
         group_memory_bytes   = 4294967296

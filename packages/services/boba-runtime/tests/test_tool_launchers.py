@@ -72,7 +72,7 @@ def test_process_without_the_section_launches_no_tool_sections(
 
 
 def _sandbox_section(data_dir: Path) -> dict[str, object]:
-    """Способ запуска песочницей; образы плагинов — в каталоге программы."""
+    """Способ запуска песочницей; пути плагинов — в их конфигах."""
     return {
         "instance": _instance(data_dir),
         "tool_launcher": {"provider": "sandbox", "cgroup_base": str(data_dir)},
@@ -81,7 +81,7 @@ def _sandbox_section(data_dir: Path) -> dict[str, object]:
 
 @pytest.fixture
 def program(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Каталог программы теста (BOBA_RUNTIME): образов плагинов пока нет."""
+    """Каталог программы теста (BOBA_RUNTIME), пустой."""
     runtime = tmp_path / "runtime"
     runtime.mkdir()
     monkeypatch.setenv(ProgramRoots.RUNTIME_ENV, str(runtime))
@@ -99,13 +99,14 @@ def test_sandbox_provider_builds_zygote_launchers(
     assert isinstance(launchers, ZygoteLaunchers)
 
 
-def test_sandbox_probe_requires_plugin_images(program: Path, tmp_path: Path) -> None:
+def test_sandbox_probe_needs_no_plugin_directory(program: Path, tmp_path: Path) -> None:
+    """Пути плагинов называют их конфиги: способ запуска каталога образов не
+    ищет."""
     raw = OmegaConf.create(_sandbox_section(tmp_path))
 
     launchers = ToolLaunchers(raw).build()
 
-    with pytest.raises(RuntimeError, match=r"no plugin images directory"):
-        launchers.probe()
+    launchers.probe()
 
 
 def test_sandbox_without_cgroup_base_is_refused(program: Path, tmp_path: Path) -> None:
@@ -182,20 +183,14 @@ def test_no_launchers_refuse_the_manifest() -> None:
         launchers.manifest_of("pg", PG_SECTION)
 
 
-def test_sandbox_config_without_image_is_refused(program: Path, tmp_path: Path) -> None:
-    (program / "sandbox" / "plugins").mkdir(parents=True)
-    launchers = ToolLaunchers(OmegaConf.create(_sandbox_section(tmp_path))).build()
+def test_sandbox_plugin_without_program_is_refused(
+    program: Path, tmp_path: Path
+) -> None:
+    """Каталог программы и образ корня называет конфиг плагина: без них
+    профиль не собирается, и отказ называет секцию."""
+    section = _sandbox_section(tmp_path)
+    section["tool"] = {"pg": {"sandbox": {"rootfs": "rootfs/base.ext4"}}}
+    launchers = ToolLaunchers(OmegaConf.create(section)).build()
 
-    with pytest.raises(RuntimeError, match=r"conf/plugins/pg.toml.*pg\.ext4"):
-        launchers.check_kits(["pg"])
-
-
-def test_sandbox_image_without_config_is_refused(program: Path, tmp_path: Path) -> None:
-    images = program / "sandbox" / "plugins"
-    images.mkdir(parents=True)
-    (images / "pg.ext4").write_bytes(b"")
-    (images / "mail.ext4").write_bytes(b"")
-    launchers = ToolLaunchers(OmegaConf.create(_sandbox_section(tmp_path))).build()
-
-    with pytest.raises(RuntimeError, match=r"mail\.ext4 has no config"):
-        launchers.check_kits(["pg"])
+    with pytest.raises(ConfigError, match=r"tool\.pg\.sandbox.*program"):
+        launchers.manifest_of("pg", PG_SECTION)

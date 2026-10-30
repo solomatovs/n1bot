@@ -1,46 +1,45 @@
 """Образы корней плагинов: точки монтирования данных обязаны быть в образе.
 
-Рантайм монтирует веса эмбеддера и модели OCR образами данных, которые
-объявил манифест плагина, а корень
-плагина read-only: нет пустого каталога в образе — bwrap не создаст его и
-секция не поднимется. Сборщик такие каталоги создаёт, тест проверяет результат.
+Каталоги моделей плагина называет его конфиг (images), а корень плагина
+read-only: нет пустого каталога в образе — bwrap не создаст его и секция не
+поднимется. Сборщик такие каталоги создаёт по декларациям пакетов, тест
+сверяет образ с конфигом.
 """
 
 from __future__ import annotations
 
 import subprocess
 from collections.abc import Sequence
-from importlib.metadata import entry_points
 from pathlib import Path
 from typing import ClassVar
 
 import pytest
 
-from boba.sandbox.program import PluginEntry
-from boba.stand.zygote import RUNTIME, PrivateImageMount, SandboxStand
-from boba.toolkit.manifest import ToolPlugin
+from boba.sandbox import BindSpec
+from boba.stand.ui.stand import RuntimeLayout
+from boba.stand.zygote import REPO, RUNTIME, PrivateImageMount, SandboxStand
 
 FUSE2FS = SandboxStand.FUSE2FS
 
 
 class DataPlugins:
-    """Плагины, объявившие образы данных: точки монтирования по манифесту."""
+    """Плагины, чей конфиг называет каталоги данных: точки монтирования."""
 
     def __init__(self) -> None:
-        self._entry = PluginEntry()
+        self._confs = REPO / RuntimeLayout.PLUGIN_CONFS.value
 
     def ids(self) -> list[str]:
         ids: list[str] = []
-        for entry in entry_points(group=ToolPlugin.GROUP):
-            if self.targets(entry.name):
-                ids.append(entry.name)
+        for conf in sorted(self._confs.glob(f"*{RuntimeLayout.CONF_SUFFIX.value}")):
+            if self.targets(conf.stem):
+                ids.append(conf.stem)
 
-        return sorted(ids)
+        return ids
 
     def targets(self, plugin_id: str) -> list[str]:
         targets: list[str] = []
-        for image in self._entry.program(plugin_id).plugin.data:
-            targets.append(image.target)
+        for raw in RUNTIME.plugin_sandbox(plugin_id).images:
+            targets.append(BindSpec.parse(raw).target)
 
         return targets
 
@@ -51,9 +50,7 @@ IDS = PLUGINS.ids()
 needs_images = pytest.mark.failif(
     not FUSE2FS.exists()
     or not all(RUNTIME.plugin_rootfs(plugin_id).exists() for plugin_id in IDS),
-    reason=(
-        "нет артефактов песочницы (собрать: make -C build sandbox plugin-rootfs-all)"
-    ),
+    reason="нет артефактов песочницы (собрать: make -C build build APP=runtime)",
 )
 
 

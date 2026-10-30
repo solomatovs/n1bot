@@ -1,22 +1,20 @@
-"""Собранный агент `release/<версия>/bin/boba.dist/boba.bin`: сценарий ACP через него —
+"""Собранный агент `build/out/boba/bin/boba.dist/boba.bin`: сценарий ACP через него —
 рукопожатие, сессия с регистрацией MCP-over-ACP, ход с инструментом,
 разрешение; история в Postgres стенда, как у чата в проде, — сессия, ход,
 возобновление с воспроизведением и второй ход; самопроверка данных пакетов;
-время старта и размер, отсутствие исходного текста внутри. Локальную модель
-onnx проверяет `bin/boba-onnx.dist/boba.bin` — сборка с рантаймом onnxruntime-genai.
+время старта и размер, отсутствие исходного текста внутри; ход на локальной
+модели onnx — рантайм onnxruntime-genai внутри того же бинарника.
 
-Тесты проверяют артефакт, а не код, и в обычный прогон не входят: маркер
-binary — после `make -C build boba-bin`, binary_onnx — после
-`make -C build boba-bin BIN_ONNX=1`. Каталог bin задаёт `--boba-bin`, без
-него берётся release основного дерева: бинарник собирают только там. Без
-файла тест падает с подсказкой сборки."""
+Тесты проверяют артефакт, а не код, и в обычный прогон не входят: маркеры
+binary и binary_onnx — после `make -C build build APP=boba`. Каталог bin
+задаёт `--boba-bin`, без него берётся build/out/boba/bin основного дерева:
+бинарник собирают только там. Без файла тест падает с подсказкой сборки."""
 
 from __future__ import annotations
 
 import subprocess
 import time
 from enum import StrEnum
-from importlib.metadata import version
 from pathlib import Path
 from typing import ClassVar
 
@@ -43,24 +41,20 @@ pytestmark = [pytest.mark.anyio, pytest.mark.integration]
 
 
 class ReleaseBinary(StrEnum):
-    """Бинарники выпуска в каталоге bin и команды, которые их собирают."""
+    """Бинарник агента в каталоге bin и команда, которая его собирает."""
 
     BOBA = "boba.dist/boba.bin"
-    ONNX = "boba-onnx.dist/boba.bin"
 
     @property
     def build(self) -> str:
-        if self is ReleaseBinary.ONNX:
-            return "make -C build boba-bin BIN_ONNX=1"
-
-        return "make -C build boba-bin"
+        return "make -C build build APP=boba"
 
 
 class ReleaseBin:
     """Каталог bin собранного выпуска для тестов артефакта.
 
     Создаётся фикстурой release_bin из опции `--boba-bin`; без опции — каталог
-    release/<версия boba-cli>/bin основного дерева репозитория, которое
+    build/out/boba/bin основного дерева репозитория, которое
     называет git (общий каталог .git worktree'ов). path() отдаёт файл
     бинарника или валит тест с командой сборки.
     """
@@ -100,7 +94,7 @@ class ReleaseBin:
             )
 
         main = Path(completed.stdout.strip()).parent
-        return main / "release" / version("boba-cli") / "bin"
+        return main / "build" / "out" / "boba" / "bin"
 
 
 @pytest.fixture(scope="module")
@@ -256,7 +250,7 @@ class TestBinary:
         проходит, веса лежат снаружи и называются профилем."""
         model_dir = str(raw_config["agent_stand"]["model_dir"])
         fake = FakeModel()
-        onnx = release_bin.path(ReleaseBinary.ONNX)
+        onnx = release_bin.path(ReleaseBinary.BOBA)
         boba = AcpProcess(tmp_path, fake, [str(onnx)])
         document = boba.settings_document()
         document["model"] = "local"

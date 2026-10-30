@@ -21,5 +21,7 @@ tools      = [
 max_bytes  = 1000000
 
 [sandbox]
+    program   = "plugins/db"
+    rootfs    = "rootfs/base.ext4"
     [sandbox.limits]
         group_memory_bytes = 1073741824

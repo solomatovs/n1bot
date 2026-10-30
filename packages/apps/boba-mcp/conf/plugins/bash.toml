@@ -4,6 +4,8 @@ timeout_sec      = 3600
 tools            = ["bash"]
 
 [sandbox]
+    program   = "plugins/core"
+    rootfs    = "rootfs/shell.ext4"
     workspace = true
     [sandbox.limits]
         group_memory_bytes = 1073741824

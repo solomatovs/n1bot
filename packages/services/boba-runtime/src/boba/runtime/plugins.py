@@ -1,16 +1,18 @@
 """Плагины инструментов процесса: комплекты, манифесты и инструменты хоста.
 
 Плагин процесса — секция [tool.<id>] из файла plugins/<id>.toml, который
-конфиг экземпляра подключает ключом tool = ${toml_dir:…}, и программа плагина, которую исполняет способ запуска
-(boba.runtime.launchers). Сервер кода плагинов не импортирует: манифест
-он получает от программы данными, хранилище готовит её подкомандой setup,
-инструменты хоста собирает из объявлений манифеста.
+конфиг экземпляра подключает ключом tool = ${toml_dir:…}, и программа
+плагина, которую исполняет способ запуска (boba.runtime.launchers). Сервер
+кода плагинов не импортирует: манифест он получает от программы данными,
+хранилище готовит её подкомандой setup, инструменты хоста собирает из
+объявлений манифеста.
 
 Ошибки:
-RuntimeError — конфиг противоречит плагину: комплект неполон, программа не
-    отдала манифест или не подготовила хранилище, список инструментов
-    секции называет то, чего плагин не объявил, способ запуска из
-    [tool_launcher] не согласован с секциями (см. boba.runtime.launchers).
+RuntimeError — конфиг противоречит плагину: список инструментов секции
+    называет то, чего плагин не объявил, способ запуска из [tool_launcher]
+    не согласован с секциями (см. boba.runtime.launchers). Плагин, чья
+    программа не отдала манифест или не подготовила хранилище, на старте не
+    поднимается: остальные работают, причина — в журнале старта.
 ToolConfigError — служебному параметру инструмента нечего подставить либо
     вид соединения из манифеста серверу неизвестен.
 StreamGroupsConfigError — нет секции [stream_groups] со сроками групп
@@ -30,11 +32,11 @@ from pydantic import BaseModel, ConfigDict
 
 from boba.access import GrantCheck, ToolAccess, ToolGrants
 from boba.chat.profiles import ProfilesSection, RolesSection
-from boba.config import bind
+from boba.config import ConfigError, bind
 from boba.connection_broker.tickets import SectionTickets, ServiceTickets
 from boba.runtime.launchers import PluginLaunch, SectionLaunchers
 from boba.runtime.refs import ExecRefs
-from boba.toolkit.manifest import PluginManifest, ToolDecl
+from boba.toolkit.manifest import ToolDecl
 from boba.toolkit.ports import StreamSpecs
 from boba.toolkit.types import StringList
 from boba.toolrun.callvalues import CallContextValues
@@ -137,10 +139,12 @@ class PluginKits:
     """Комплекты плагинов процесса из его конфига.
 
     Создаёт его провайдер процесса со способом запуска и довооружением
-    секций. load() проверяет полноту комплектов, получает манифесты
-    включённых плагинов от их программ одновременно и готовит хранилища
-    тех, чей манифест объявил setup: секция уезжает подкоманде с билетами
-    вместо keytab-профилей.
+    секций. load() получает манифесты включённых плагинов от их программ
+    одновременно и готовит хранилища тех, чей манифест объявил setup: секция
+    уезжает подкоманде с билетами вместо keytab-профилей. Плагин, которому
+    не хватило файла его конфига (программы, корня, каталога данных) или
+    чья подкоманда сорвалась, исключается с ошибкой в журнале — сервер
+    стартует с остальными.
     """
 
     def __init__(
@@ -152,7 +156,6 @@ class PluginKits:
 
     async def load(self) -> dict[str, PluginKit]:
         ids = list(self._sections.ids())
-        self._launchers.check_kits(ids)
 
         enabled: list[tuple[str, PluginMeta, dict[str, Any]]] = []
         for plugin_id in ids:
@@ -162,24 +165,42 @@ class PluginKits:
 
             enabled.append((plugin_id, meta, self._sections.values(plugin_id)))
 
-        manifests = await asyncio.gather(*self._manifests(enabled))
+        started = await asyncio.gather(*self._started(enabled))
 
         kits: dict[str, PluginKit] = {}
-        for (plugin_id, meta, values), manifest in zip(enabled, manifests, strict=True):
+        for kit in started:
+            if kit is None:
+                continue
+
+            kits[kit.launch.id] = kit
+
+        return kits
+
+    def _started(
+        self, enabled: Sequence[tuple[str, PluginMeta, dict[str, Any]]]
+    ) -> Iterator[Coroutine[Any, Any, PluginKit | None]]:
+        for plugin_id, meta, values in enabled:
+            yield self._start(plugin_id, meta, values)
+
+    async def _start(
+        self, plugin_id: str, meta: PluginMeta, values: dict[str, Any]
+    ) -> PluginKit | None:
+        """Манифест и хранилище одного плагина; отказ — None и ошибка в журнале
+        с причиной: плагин не поднят, остальные стартуют."""
+        try:
+            manifest = await asyncio.to_thread(
+                self._launchers.manifest_of, plugin_id, values
+            )
             launch = PluginLaunch(manifest=manifest, section=values)
             section = PluginSection(
                 values=values, connections=manifest.connections_in_config
             )
             await self._set_up(launch, section)
-            kits[plugin_id] = PluginKit(launch=launch, meta=meta, section=section)
+        except (RuntimeError, ConfigError) as exc:
+            logger.error("plugin %s is not started: %s", plugin_id, exc)
+            return None
 
-        return kits
-
-    def _manifests(
-        self, enabled: Sequence[tuple[str, PluginMeta, dict[str, Any]]]
-    ) -> Iterator[Coroutine[Any, Any, PluginManifest]]:
-        for plugin_id, _meta, values in enabled:
-            yield asyncio.to_thread(self._launchers.manifest_of, plugin_id, values)
+        return PluginKit(launch=launch, meta=meta, section=section)
 
     async def _set_up(self, launch: PluginLaunch, section: PluginSection) -> None:
         if not launch.manifest.setup:

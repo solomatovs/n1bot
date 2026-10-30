@@ -8,6 +8,9 @@ transport = "${http}"
 ocr                 = "${ocr}"
 
 [sandbox]
+    program   = "plugins/docs"
+    rootfs    = "rootfs/base.ext4"
+    images    = ["models/rapidocr:/var/cache/rapidocr"]
     [sandbox.limits]
         process_memory_bytes = 4294967296
         group_memory_bytes   = 2147483648

@@ -30,8 +30,8 @@ needs_sandbox = pytest.mark.failif(
     shutil.which("bwrap") is None  # noqa: TID251 — стенд ищет по PATH сознательно
     or not ROOTFS_IMAGE.exists(),
     reason=(
-        "нет bwrap или образов плагинов "
-        "(собрать: make -C build fetch plugin-rootfs-all)"
+        "нет bwrap или образа корня shell-плагина "
+        "(собрать: make -C build build APP=runtime)"
     ),
 )
 needs_userns = pytest.mark.failif(
@@ -71,9 +71,9 @@ SRC_PACKAGES = _src_packages()
 class SandboxLayout:
     """Монтирования и env: код пакетов кладётся поверх собранного site.
 
-    Образы весов моделей плагин объявляет манифестом (data): рантайм
-    монтирует их ext4-образами данных, как в бою; корень несёт только пустые
-    точки."""
+    Каталоги моделей плагина называет его конфиг (images): стенд берёт их
+    оттуда же, что сервер (StandRuntime.plugin_images); корень несёт только
+    пустые точки."""
 
     @staticmethod
     def ro_binds(docs_dir: Path | None) -> list[str]:
@@ -84,18 +84,6 @@ class SandboxLayout:
             binds.append(f"{docs_dir}:/workspace")
 
         return binds
-
-    @staticmethod
-    def images(plugin_id: str) -> list[str]:
-        """Образы весов моделей плагина по его объявлению: собирает make
-        models-image."""
-        plugin = PluginEntry().program(plugin_id).plugin
-
-        images: list[str] = []
-        for image in plugin.data:
-            images.append(f"{RUNTIME.model_image(image.name)}:{image.target}")
-
-        return images
 
     @staticmethod
     def python_path() -> str:
@@ -176,7 +164,7 @@ def sandbox_profile(
         "rootfs": str(RUNTIME.plugin_rootfs(plugin_id)),
         "mounts": {
             "ro": tuple(SandboxLayout.ro_binds(docs_dir)),
-            "images": tuple(SandboxLayout.images(plugin_id)),
+            "images": RUNTIME.plugin_images(plugin_id),
             "rw": (),
             "tmp": "256M",
         },

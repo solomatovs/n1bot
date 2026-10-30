@@ -204,9 +204,10 @@ class TestProfileRender:
 
 
 class TestDataImages:
-    """Образ данных монтирует внешний слой, во вложенный он едет ro-биндом."""
+    """Каталог данных едет во вложенный слой строгим ro-биндом, а внешний
+    слой показывает его источник."""
 
-    IMAGE = "/srv/models/fastembed.ext4"
+    IMAGE = "/srv/models/fastembed"
     TARGET = "/var/cache/fastembed"
 
     def test_image_is_bound_read_only_to_its_target(self) -> None:
@@ -218,18 +219,15 @@ class TestDataImages:
             if arg == "--ro-bind":
                 pairs.append(argv[index + 1 : index + 3])
 
-        if ["/tmp/boba-image-0", self.TARGET] not in pairs:  # noqa: S108
-            raise AssertionError(f"no read-only bind of the image mount: {pairs}")
+        if [self.IMAGE, self.TARGET] not in pairs:
+            raise AssertionError(f"no strict read-only bind of the data dir: {pairs}")
 
-        if self.IMAGE in argv:
-            raise AssertionError("the image file itself reaches the nested layer")
-
-    def test_chain_mounts_the_image_file(self) -> None:
+    def test_outer_layer_shows_the_data_directory(self) -> None:
         profile = _profile(images=(f"{self.IMAGE}:{self.TARGET}",))
-        images = ZygoteArgv(profile).data_images()
+        sources = ZygoteArgv(profile).sources()
 
-        if images != ((self.IMAGE, "/tmp/boba-image-0"),):  # noqa: S108
-            raise AssertionError(f"data images of the chain: {images}")
+        if self.IMAGE not in sources.ro:
+            raise AssertionError(f"read-only sources of the outer layer: {sources.ro}")
 
     def test_per_call_variable_is_rejected(self) -> None:
         with pytest.raises(ValueError, match="mounted once per zygote"):

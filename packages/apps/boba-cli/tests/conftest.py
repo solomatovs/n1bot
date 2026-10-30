@@ -38,7 +38,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         metavar="DIR",
         help=(
             "bin directory of the built release for the binary tests; "
-            "default: release/<version>/bin of the main tree"
+            "default: build/out/boba/bin of the main tree"
         ),
     )
 

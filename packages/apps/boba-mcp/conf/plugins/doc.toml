@@ -7,6 +7,9 @@ tools                   = ["read_document", "document_outline", "search_document
 ocr                     = "${ocr}"
 
 [sandbox]
+    program   = "plugins/docs"
+    rootfs    = "rootfs/base.ext4"
+    images    = ["models/rapidocr:/var/cache/rapidocr"]
     workspace = true
     [sandbox.limits]
         process_memory_bytes = 17179869184

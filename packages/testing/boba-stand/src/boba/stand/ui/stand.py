@@ -22,6 +22,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 from abc import abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -32,11 +33,14 @@ from typing import Any, ClassVar, Generic, Protocol
 
 import httpx
 from omegaconf import DictConfig, OmegaConf
+from pydantic import ValidationError
 from typing_extensions import TypeVar
 
 from boba.config import ConfigError, ConfigLoader
 from boba.core.mcp_names import McpToolNames
 from boba.runtime.config import ProgramDir, ProgramRoot, ProgramRoots
+from boba.runtime.launchers import PluginSandbox
+from boba.sandbox import BindSpec
 from boba.stand.ui.toml_text import TomlText
 
 __all__ = [
@@ -320,18 +324,26 @@ class StandApp(StrEnum):
 
 
 class RuntimeLayout(StrEnum):
-    """Образ плагина, по которому стенды берут базовый корень песочницы."""
+    """Что стенды берут из конфигов плагинов сервиса: базовый корень песочницы
+    — корень shell-плагина, а конфиги — те, что уходят в образ mcp."""
 
     SHELL_PLUGIN = "bash"
+    PLUGIN_CONFS = "packages/apps/boba-mcp/conf/plugins"
+    CONF_SUFFIX = ".toml"
+    SANDBOX = "sandbox"
 
 
 class StandRuntime:
-    """Каталог программы на стенде: образы песочницы, libexec и модели.
+    """Каталог программы на стенде: корни песочницы, программы плагинов,
+    libexec и модели.
 
     Его называет BOBA_RUNTIME окружения тестов — тот же каталог runtime/, по
     которому сервис из исходников собирает профили песочницы (ProgramRoots),
-    поэтому от положения дерева исходников он не зависит. Создают стенды
-    песочницы и зигот (boba.stand.zygote); тесты берут готовый объект оттуда.
+    поэтому от положения дерева исходников он не зависит. Пути корня и
+    каталогов данных плагина стенд берёт из его конфига в пакете boba-mcp
+    так же, как сервер, и разрешает от того же каталога программы. Создают
+    его стенды песочницы и зигот (boba.stand.zygote); тесты берут готовый
+    объект оттуда.
     """
 
     def __init__(self) -> None:
@@ -341,43 +353,62 @@ class StandRuntime:
             msg = f"stand runtime: the program directory of the tests: {exc}"
             raise StandError(msg) from exc
 
+        self._confs = REPO_ROOT / RuntimeLayout.PLUGIN_CONFS.value
+
     @property
     def program(self) -> ProgramRoot:
         return self._program
 
     @property
     def sandbox(self) -> Path:
-        """Артефакты песочницы: образы плагинов и workspace.ext4."""
+        """Артефакты песочницы: шаблон workspace.ext4."""
         return self._program.path(ProgramDir.SANDBOX)
 
     @property
     def libexec(self) -> Path:
-        """Вспомогательные программы: bwrap, fuse2fs и mke2fs из make sandbox."""
+        """Вспомогательные программы: bwrap, fuse2fs и mke2fs."""
         return self._program.path(ProgramDir.LIBEXEC)
 
-    @property
-    def models(self) -> Path:
-        """Модели плагинов: fastembed, rapidocr и прочие."""
-        return self._program.path(ProgramDir.MODELS)
+    def plugin_sandbox(self, plugin_id: str) -> PluginSandbox:
+        """Секция [sandbox] конфига плагина plugin_id."""
+        path = self._confs / f"{plugin_id}{RuntimeLayout.CONF_SUFFIX.value}"
+        try:
+            with path.open("rb") as handle:
+                table = tomllib.load(handle)
+        except (OSError, tomllib.TOMLDecodeError) as exc:
+            msg = f"stand runtime: reading the plugin config {path}: {exc}"
+            raise StandError(msg) from exc
+
+        try:
+            return PluginSandbox.model_validate(table[RuntimeLayout.SANDBOX.value])
+        except (KeyError, ValidationError) as exc:
+            msg = (
+                f"stand runtime: {path} expects a [sandbox] table with program "
+                f"and rootfs: {exc}"
+            )
+            raise StandError(msg) from exc
 
     def plugin_rootfs(self, plugin_id: str) -> Path:
-        """Образ корня плагина: make plugin-rootfs PLUGIN=<id>."""
-        return self._program.plugin_image(plugin_id)
+        """Образ корня плагина по его конфигу: make build APP=runtime."""
+        return self._program.located(self.plugin_sandbox(plugin_id).rootfs)
 
-    def model_image(self, name: str) -> Path:
-        """Образ весов модели name: make models-image кладёт его рядом с
-        каталогом модели."""
-        return self._program.model_image(name)
+    def plugin_images(self, plugin_id: str) -> tuple[str, ...]:
+        """Каталоги данных плагина `каталог:точка` по его конфигу."""
+        images: list[str] = []
+        for raw in self.plugin_sandbox(plugin_id).images:
+            spec = BindSpec.parse(raw)
+            images.append(f"{self._program.located(spec.host)}:{spec.target}")
+
+        return tuple(images)
 
     @property
     def workspace_template(self) -> Path:
-        """Шаблон workspace сборки: make sandbox делает его mke2fs из libexec."""
+        """Шаблон workspace сборки: make build APP=runtime."""
         return self._program.workspace_template()
 
     @property
     def shell_rootfs(self) -> Path:
-        """Базовый корень стендов: образ shell-плагина, bash и python без
-        payload'ов."""
+        """Базовый корень стендов: корень shell-плагина, bash и python."""
         return self.plugin_rootfs(RuntimeLayout.SHELL_PLUGIN)
 
 
