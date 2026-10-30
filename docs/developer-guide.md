@@ -1727,13 +1727,13 @@ BOBA_TOOL_LAUNCHER=process .venv/bin/python -m boba.runtime.toolcli redis redis_
 `BOBA_RUNTIME=<репозиторий>/runtime`. Тесты берут файлы конфигурации из
 переменных `BOBA_CONFIG_PATH` (чат) и `BOBA_MCP_CONFIG_PATH` (boba-mcp):
 конфиг compose, наложение отладки и последним наложение стенда
-`~/.config/boba/stand.toml` через `:`, как описано в руководстве
+`.dev/stand.toml` через `:`, как описано в руководстве
 администратора (раздел 8, «Тесты»); долгий прогон запускают в своей сессии
 tmux с выводом в файл:
 
 ```bash
 source dev.sh
-S=$HOME/.config/boba/stand.toml
+S=$PWD/.dev/stand.toml
 BOBA_AGENT_MODE=process BOBA_TOOL_LAUNCHER=process \
 BOBA_CONFIG_PATH=$PWD/compose/aid/conf/config.toml:$PWD/.vscode/boba/aid.toml:$S \
 BOBA_MCP_CONFIG_PATH=$PWD/compose/mcp/conf/config.toml:$PWD/.vscode/boba/mcp.toml:$S \
