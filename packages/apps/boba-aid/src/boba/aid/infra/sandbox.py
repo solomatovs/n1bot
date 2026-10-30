@@ -211,8 +211,8 @@ class AidListeners:
 
             msg = (
                 f"[mcp.servers.{name}.apps]: the chat serves the app sandbox from "
-                f"its app root [aid].root {root}, but {path} is missing; install "
-                "the chat with its assets (in the sources the fonts come from "
-                "make -C build web)"
+                f"share/ of the program {root}, but {path} is missing; install "
+                "the chat with its assets (in the sources make -C build web "
+                "copies them to runtime/share)"
             )
             raise ConfigError(msg)
