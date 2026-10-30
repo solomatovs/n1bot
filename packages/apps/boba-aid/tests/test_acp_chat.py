@@ -42,7 +42,7 @@ from boba.aid.rendering.renderer import SignalType
 from boba.canvas.canvas import CanvasAction, CanvasElement, CanvasKind
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
-from boba.runtime.config import RuntimeConfig
+from boba.runtime.config import InstanceData, RuntimeConfig
 from boba.stand.database import TestDatabase
 from boba.stand.names import StandNames
 from boba.stand.site import Stand
@@ -736,7 +736,7 @@ class AgentProcesses:
     """Процессы `boba --stdio`, запущенные стендом: по каталогу настроек в argv."""
 
     def __init__(self, app: StandProcess) -> None:
-        self._agents_dir = app.config.workdir / "agents"
+        self._agents_dir = app.config.data_dir / InstanceData.AGENTS.value
 
     def pids(self) -> list[int]:
         found: list[int] = []

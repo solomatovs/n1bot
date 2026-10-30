@@ -9,7 +9,6 @@ description = "Скрапер Confluence в граф ix: спейсы, стра�
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba-cancellation==0.0.30.dev7",
-    "boba-config==0.0.30.dev7",
     "boba-confluence[html]==0.0.30.dev7",
     "boba-db-postgres==0.0.30.dev7",
     "boba-doc[readers,ocr]==0.0.30.dev7",

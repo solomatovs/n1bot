@@ -547,8 +547,12 @@ def _script(expected: Expected) -> list[list[DagNode]]:
             _call(CallId.LIST_NODES, "describe_list_nodes", **WINDOW),
             _call(CallId.LIST_EDGES, "describe_list_edges", **WINDOW),
         ],
+        # ребро снимается до узла: id раздают параллельные шаги, и узел
+        # LAST_NODE_ID может оказаться концом ребра FIRST_EDGE_ID
         [
             _call(CallId.DELETE_EDGE, "describe_delete_edge", ids=[FIRST_EDGE_ID]),
+        ],
+        [
             _call(CallId.DELETE_NODE, "describe_delete_node", ids=[LAST_NODE_ID]),
             _call(CallId.BAD_DELETE, "describe_delete_node", ids=[999_999]),
         ],

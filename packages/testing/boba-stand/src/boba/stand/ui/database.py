@@ -36,7 +36,7 @@ from boba.db.postgres import AsyncPostgresPool, PgQuery, PgQueryBuilder
 from boba.db.postgres.connection.config import PostgresConfig
 from boba.ix_core.database import IxDatabase
 from boba.krb import KerberosWorkspaceConfig
-from boba.runtime.config import RuntimeConfig
+from boba.runtime.config import InstanceConfig, RuntimeConfig
 from boba.stand.database import TestDatabase
 from boba.stand.edm import EdmDataset, EdmSource, EdmSources
 from boba.stand.ix_index import IxPage, IxPages, SharedIndexers, StandIxStack
@@ -153,7 +153,9 @@ class StandDatabase:
         self._schema = runtime.db_schema
         self._cipher = SecretCipher(runtime.connections.cipher.get_secret_value())
         self._types = ConnectionTypes.discover()
-        self._krb = bind(self._built, path="krb", model=KerberosWorkspaceConfig)
+        instance = bind(self._built, path=InstanceConfig.SECTION, model=InstanceConfig)
+        layout = instance.layout(app.config_path().parent)
+        self._krb: KerberosWorkspaceConfig = layout.kerberos()
 
     @property
     def schema(self) -> str:

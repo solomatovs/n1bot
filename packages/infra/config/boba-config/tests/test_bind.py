@@ -39,7 +39,8 @@ def test_bind_missing_section_is_refused() -> None:
 
 def test_bind_section_not_fitting_the_model_is_refused() -> None:
     cfg = _tree({"a": {"port": 6000}})
-    with pytest.raises(ConfigError, match=r"(?s)section \[a\] does not fit _Conn.*host"):
+    unfit = r"(?s)section \[a\] does not fit _Conn.*host"
+    with pytest.raises(ConfigError, match=unfit):
         bind(cfg, "a", _Conn)
 
 

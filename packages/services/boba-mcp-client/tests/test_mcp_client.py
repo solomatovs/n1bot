@@ -905,7 +905,7 @@ class BobaMcpStand:
 
     def endpoint(self) -> HttpEndpoint:
         """Endpoint стенда с токеном пользователя alice с ролью dev."""
-        path = "/mcp/service"
+        path = "/service"
         token = self._sign_in.token("alice", "dev", f"{self._public}{path}")
 
         return HttpEndpoint(
@@ -1274,7 +1274,7 @@ class TestSignInAsTheUser:
     ) -> McpServers:
         auth = self._auth(process, secret, client_secret)
         wide = process.endpoint().model_copy(update={"auth": auth})
-        narrow = wide.model_copy(update={"path": "/mcp/narrow"})
+        narrow = wide.model_copy(update={"path": "/narrow"})
         config = McpServersConfig(
             servers={"boba": _config(wide), "narrow": _config(narrow)}
         )
@@ -1786,7 +1786,7 @@ class BobaMcpService:
     и адрес ресурса обязаны совпадать с тем, как клиент называет сервис."""
     PREFIX: str = "/mcp"
     """Префикс сервиса стенда: свой, а не префикс отладки разработчика."""
-    PROFILE: str = "general"
+    PROFILE: str = "all"
     CLIENT: str = "boba-chat"
     RUNTIME: Path = RUNTIME.program.root
     CONFIG: Path = REPO_ROOT / "debug" / "mcp" / "conf" / "config.toml"

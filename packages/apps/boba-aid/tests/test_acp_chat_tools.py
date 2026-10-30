@@ -42,7 +42,7 @@ from boba.config import ConfigLoader, bind
 from boba.core.mcp_names import McpToolNames
 from boba.db.postgres.connection import PostgresConfig
 from boba.mcp_client.client import McpServerConfig, McpServersConfig
-from boba.runtime.config import RuntimeConfig, TokenConfig
+from boba.runtime.config import RuntimeConfig, SessionConfig, TokenConfig
 from boba.runtime.http import RequestTokens
 from boba.stand.names import StandNames
 from boba.stand.site import Stand
@@ -513,8 +513,10 @@ class TestSeparateSessionSecrets:
         companion = app.companion
         assert companion is not None
 
-        chat_site = SiteSecrets(app.config.files.paths(app.config.app))
-        service_site = SiteSecrets(companion.config.files.paths(companion.config.app))
+        chat_paths = app.config.files.paths(app.config.app)
+        chat_site = SiteSecrets(chat_paths, SessionConfig)
+        service_paths = companion.config.files.paths(companion.config.app)
+        service_site = SiteSecrets(service_paths, TokenConfig)
         assert chat_site.auth_secret() != service_site.auth_secret(), (
             "the stand gives the chat and the service the same auth_secret"
         )
@@ -550,10 +552,11 @@ class TestSeparateSessionSecrets:
 
 
 class SiteSecrets:
-    """Секреты конфига приложения стенда: config.toml отладки с наложением."""
+    """Секреты конфига приложения стенда: config.toml отладки с наложением;
+    model — модель его [session]: SessionConfig у чата, TokenConfig у сервиса."""
 
-    def __init__(self, paths: Sequence[Path]) -> None:
-        self._session = bind(ConfigLoader(paths).load(), "session", TokenConfig)
+    def __init__(self, paths: Sequence[Path], model: type[TokenConfig]) -> None:
+        self._session = bind(ConfigLoader(paths).load(), "session", model)
 
     def auth_secret(self) -> str:
         return self._session.auth_secret
