@@ -4,8 +4,9 @@
 # glibc, чтобы владельцы файлов из tar сохранились; итог отдаётся владельцу хоста $5.
 # $1 — файл во временном каталоге: на место его ставит Makefile переименованием.
 # Байткод компилируется python'ом дерева: образ монтируется read-only, .pyc на
-# лету не появятся; компиляция идёт в $4 заданий. Размер — занятое место с запасом
-# в 5% и reserve_mb $3.
+# лету не появятся; компиляция идёт в $4 заданий. В корне программы Nuitka
+# python нет, и компилировать нечего. Размер — занятое место с запасом в 5% и
+# reserve_mb $3.
 set -eu
 
 out=$1
@@ -20,9 +21,11 @@ tar -x -i -f - -C "$tree"
 # docker cp берёт дерево из контейнера: маркер docker'а в корень образа не нужен
 rm -f "$tree/.dockerenv"
 
-PYTHONHOME="$tree/usr/local" LD_LIBRARY_PATH="$tree/usr/local/lib" "$tree/usr/local/bin/python3" \
-    -m compileall -q -j "$jobs" -s "$tree" -p / -x '/(test|tests|lib2to3|idle_test)/' \
-    "$tree/usr/local/lib/python$python_version" "$tree/usr/src"
+if [ -x "$tree/usr/local/bin/python3" ]; then
+    PYTHONHOME="$tree/usr/local" LD_LIBRARY_PATH="$tree/usr/local/lib" "$tree/usr/local/bin/python3" \
+        -m compileall -q -j "$jobs" -s "$tree" -p / -x '/(test|tests|lib2to3|idle_test)/' \
+        "$tree/usr/local/lib/python$python_version" "$tree/usr/src"
+fi
 
 used_mb=$(du -sm "$tree" | cut -f1)
 size_mb=$(( used_mb + used_mb / 20 + reserve_mb ))

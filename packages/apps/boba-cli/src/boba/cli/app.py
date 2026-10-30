@@ -1,6 +1,6 @@
 """Вход процесса агента: ACP по стандартным потокам `boba --stdio --settings
 <файл>`, служба `boba serve` (boba.cli.serve), самопроверка собранного
-бинарника `boba self-check` (boba.cli.package_data) и публикация схемы файла
+бинарника `boba self-check` (boba.core.package_data) и публикация схемы файла
 настроек `boba settings-schema` (JSON Schema слоя на stdout). `boba` без
 режима — интерактивный режим для человека; его ещё нет, процесс говорит об
 этом и выходит с кодом 2.
@@ -80,7 +80,6 @@ from boba.cli.acp_server import (
     SessionRefusedError,
     SessionSummary,
 )
-from boba.cli.package_data import PackageDataCheck, PackageDataError
 from boba.cli.settings import (
     Arguments,
     EffectiveSettings,
@@ -92,6 +91,7 @@ from boba.cli.settings import (
     SettingsSource,
 )
 from boba.cli.threads import LoopThread, SessionThreads, ThreadedHistoryStore
+from boba.core.package_data import PackageDataCheck, PackageDataError
 from boba.db.postgres import AsyncPostgresPool
 from boba.history.jsonl import JsonlHistoryStore
 from boba.history.postgres import PostgresHistoryStore, SessionLocks

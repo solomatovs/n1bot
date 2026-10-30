@@ -8,6 +8,7 @@ version = "0.0.30.dev7"
 description = "Boba sandbox: реализация ToolLauncher на bubblewrap — профили, cgroup-лимиты, запуск процессов, ext4-образ пользователя через fuse2fs."
 requires-python = ">=3.11,<4"
 dependencies = [
+    "boba-core==0.0.30.dev7",
     "boba-toolkit==0.0.30.dev7",
     "boba-cancellation==0.0.30.dev7",
     "pydantic>=2.12,<3",

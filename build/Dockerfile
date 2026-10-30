@@ -9,9 +9,10 @@ ARG SANDBOX_IMAGE=runtime-sandbox
 
 # Собирает make классическим сборщиком (DOCKER_BUILDKIT=0): он проходит все стадии до
 # --target по порядку файла. Поэтому стадии идут по целям make — base, oracledb-wheel,
-# sandbox-out, plugin-site-out и plugin-root, boba-bin-out, runtime-sandbox и runtime-mcp,
-# runtime-aid, — а стадия, которой нужны аргументы одной цели, без них пуста
-# (plugin-site без PLUGIN, bin-site и boba-bin без NUITKA_VERSION).
+# sandbox-out, plugin-site-out, plugin-bin-tools и plugin-bin-root, plugin-root, boba-bin-out,
+# runtime-sandbox и runtime-mcp, runtime-aid, — а стадия, которой нужны аргументы одной
+# цели, без них пуста (plugin-site без PLUGIN, plugin-bin-* без PLUGIN и NUITKA_VERSION,
+# bin-site и boba-bin без NUITKA_VERSION).
 # Синтаксис только классический: без RUN --mount, COPY --chmod/--link и heredoc
 
 FROM ${PYTHON_IMAGE} AS python-dist
@@ -276,6 +277,67 @@ COPY --from=plugin-site /opt/site          /usr/local/lib/python${PYTHON_VERSION
 COPY --from=plugin-site /opt/code-sandbox  /usr/src
 
 
+# --- программа плагина каталогом Nuitka: make plugin-bin PLUGIN=<id> ---------------
+
+# компилятор программы плагина: site-packages плагина из plugin-site, Nuitka, patchelf и
+# ccache. Компилирует make plugin-bin запуском docker run этого образа с томом кэша:
+# классический сборщик кэш-монтирований не знает. Стадии plugin-bin-* стоят до
+# sandbox-base: образ корня с python ради них не собирается. Без PLUGIN или
+# NUITKA_VERSION (их проходят цели ниже) стадии пусты
+FROM plugin-site AS plugin-bin-tools
+
+ARG PLUGIN
+ARG NUITKA_VERSION
+ARG PATCHELF_VERSION
+ARG ORDERED_SET_VERSION
+
+RUN mkdir -p /opt/bin-tools && { [ -z "${PLUGIN}" ] || [ -z "${NUITKA_VERSION}" ] || { \
+        apt-get update && apt-get install -y --no-install-recommends ccache \
+        && rm -rf /var/lib/apt/lists/* \
+        && uv pip install --python "$(command -v python3)" --target /opt/bin-tools \
+            "nuitka==${NUITKA_VERSION}" "patchelf==${PATCHELF_VERSION}" \
+            "ordered-set==${ORDERED_SET_VERSION}"; }; }
+
+ENV PYTHONPATH=/opt/code-sandbox:/opt/site:/opt/bin-tools PATH=/opt/bin-tools/bin:${PATH}
+
+
+# голый корень образа плагина под программу Nuitka: glibc, CA контура, apt, оверлей и
+# setup из декларации плагина, точки монтирования. python в корне нет: make plugin-bin
+# стримит эту стадию и каталог /plugin с программой в mke2fs
+FROM ${GLIBC_IMAGE} AS plugin-bin-root
+
+ARG CACHE_SCOPE
+ARG NUITKA_VERSION
+ARG BOBA_DIR=/app/boba
+ARG SANDBOX_DEV_KRB=/app/boba/conf/krb
+
+COPY --from=site-conf /certs/                 /
+COPY --from=plugin-site /opt/plugin-apt.txt   /tmp/plugin-apt.txt
+COPY --from=plugin-site /opt/plugin-setup.d/  /tmp/plugin-setup.d/
+COPY --from=plugin-site /opt/plugin-data.txt  /tmp/plugin-data.txt
+
+RUN if [ -n "${NUITKA_VERSION}" ] && [ -s /tmp/plugin-apt.txt ]; then \
+        apt-get update \
+        && apt-get install -y --no-install-recommends $(tr '\n' ' ' < /tmp/plugin-apt.txt) \
+        && rm -rf /var/lib/apt/lists/*; \
+    fi
+
+COPY --from=plugin-site /opt/plugin-root/  /
+RUN for setup in /tmp/plugin-setup.d/*.sh; do \
+        if [ -f "$setup" ]; then sh "$setup"; fi; \
+    done
+
+RUN rm -rf /tmp/plugin-setup.d /tmp/plugin-apt.txt \
+           /usr/share/man /usr/share/doc /usr/share/info /usr/share/locale \
+           /usr/share/lintian /var/cache/* /var/log/*
+
+RUN for path in $(cat /tmp/plugin-data.txt); do mkdir -p "$path"; done \
+    && for path in $(cat /tmp/plugin-data.txt); do test -d "$path"; done \
+    && rm -f /tmp/plugin-data.txt
+RUN mkdir -p /plugin /workspace /mnt/pgsock "${BOBA_DIR}/conf/krb" ${SANDBOX_DEV_KRB} \
+    && touch /etc/krb5.conf
+
+
 # общая база корней плагинов: glibc, библиотеки интерпретатора python и kerberos,
 # libstdc++ сборочного gcc и python. Одна на все плагины и версии; утилиты и
 # нативные пакеты тела объявляет плагин ключом apt декларации
@@ -374,7 +436,7 @@ RUN mkdir -p /opt/bin-site && { [ -z "${NUITKA_VERSION}" ] || { \
 # Каталог, а не один файл: onefile на каждом запуске распаковывает себя (163 МБ) во
 # временный каталог, а в режиме кэша читает его целиком и сверяет CRC; каталогу не нужно
 # ни того ни другого, и ему не нужна запись — годится для корня только на чтение. Данные пакетов boba
-# называет опись boba.cli.package_data по RECORD дерева колёс: она же даёт флаги Nuitka
+# называет опись boba.core.package_data по RECORD дерева колёс: она же даёт флаги Nuitka
 # и едет в бинарник, а `boba self-check` в конце шага проверяет по ней, что все файлы
 # внутри, — пропущенный каталог данных роняет сборку. onnxruntime_genai
 # находит onnxruntime через find_spec, не импортом, поэтому пакет onnxruntime с его
@@ -403,7 +465,7 @@ RUN [ -z "${NUITKA_VERSION}" ] || { onnx=""; \
         onnx="--include-package=onnxruntime_genai --include-package-data=onnxruntime_genai \
               --include-package=onnxruntime"; \
     fi; \
-    python3 -m boba.cli.package_data /opt/bin-site /tmp/package_data.json > /tmp/package_data.flags \
+    python3 -m boba.core.package_data /opt/bin-site /tmp/package_data.json > /tmp/package_data.flags \
     && python3 -m nuitka --standalone --static-libpython=yes --output-filename=boba.bin --update-check=never \
         --output-dir=/tmp/nuitka --jobs=${JOBS} \
         --user-package-configuration-file=/tmp/nuitka-boba.yml \

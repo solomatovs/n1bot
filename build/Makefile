@@ -642,6 +642,8 @@ define HELP
   plugin-rootfs         образ корня одного плагина: PLUGIN=<id> -> runtime/sandbox/plugins/<id>.ext4
   plugin-rootfs-all     образы корней всех плагинов (entry points boba.tools), всегда заново,
                         по PARALLEL одновременно (лог — release/logs/plugin-rootfs/<id>.log)
+  plugin-bin            образ корня плагина с программой Nuitka, без python: PLUGIN=<id> ->
+                        release/<версия>/plugins/<id>/<id>.ext4; кэш компиляции — том NUITKA_CACHE
   models-image          образы данных песочницы ($(MODEL_IMAGES)): ext4 рядом с каталогом модели,
                         секции монтируют их read-only вместо каталога; пересобираются по файлам моделей
 
@@ -935,6 +937,44 @@ plugin-rootfs-all: version-check
 	    exit 1
 	fi
 	$(call plugin-rootfs-many,$(PLUGIN_IDS))
+
+# образ корня плагина с программой Nuitka: голый glibc без python, в /plugin — программа
+# run и её каталог run.dist. Компиляция — docker run образа plugin-bin-tools с томом
+# кэша NUITKA_CACHE (ccache и кэш Nuitka), затем в голом корне проверка ldd и
+# self-check (build/scripts/plugin_ldd.sh), затем mke2fs. Образ ложится в комплект
+# релиза, runtime/ с образами для тестов не трогается
+PLUGIN_BIN_DIR   = $(RELEASE_DIR)/$(VERSION)/plugins/$(PLUGIN)
+PLUGIN_BIN_IMAGE = $(PLUGIN_BIN_DIR)/$(PLUGIN).ext4
+NUITKA_CACHE    ?= boba-nuitka-cache
+
+.PHONY: plugin-bin
+plugin-bin: version-check
+	@$(if $(PLUGIN),,$(error нужен PLUGIN=<id плагина>: make plugin-bin PLUGIN=mail))
+	$(if $(PLUGIN_PACKAGE),,$(error плагина $(PLUGIN) нет среди entry points boba.tools: $(PLUGIN_IDS)))
+	$(call check,$(SANDBOX_INPUTS),запусти: make fetch)
+	$(call check,$(SANDBOX_TOOLS),запусти: make sandbox)
+	echo "== программа плагина $(PLUGIN) каталогом Nuitka $(NUITKA_VERSION), JOBS=$(JOBS), кэш $(NUITKA_CACHE) =="
+	tmp= stage= root_cid=
+	trap 'docker rm -f $$root_cid > /dev/null 2>&1 || true; rm -rf "$$tmp" "$$stage"' EXIT
+	tmp=$$(mktemp -d)
+	mkdir -p "$(PLUGIN_BIN_DIR)"
+	stage=$$(mktemp -d "$(PLUGIN_BIN_DIR)/.stage.XXXXXX")
+	$(call docker-image,plugin-bin-tools,$$tmp/tools.iid,$(PLUGIN_ARGS) $(BIN_TOOL_ARGS) --build-arg PLUGIN=$(PLUGIN_PACKAGE))
+	$(call docker-image,plugin-bin-root,$$tmp/root.iid,$(PLUGIN_ARGS) $(BIN_TOOL_ARGS) --build-arg PLUGIN=$(PLUGIN_PACKAGE))
+	mkdir -p "$$tmp/bin"
+	docker run --rm --network none -v "$(NUITKA_CACHE):/cache" -v "$$tmp/bin:/out" -v "$(SCRIPTS_DIR):/scripts:ro" \
+	    --entrypoint sh "$$(cat "$$tmp/tools.iid")" /scripts/plugin_bin.sh $(PLUGIN) /out $(JOBS) "$(RUN_OWNER)"
+	docker run --rm --network none --entrypoint dpkg-query $(GLIBC_IMAGE) -W -f '$${Package}\n' > "$$tmp/base.txt"
+	docker run --rm --network none -v "$$tmp/bin/plugin:/plugin:ro" -v "$(SCRIPTS_DIR):/scripts:ro" \
+	    -v "$$tmp/base.txt:/tmp/base.txt:ro" --entrypoint sh "$$(cat "$$tmp/root.iid")" \
+	    /scripts/plugin_ldd.sh $(PLUGIN) /tmp/base.txt
+	root_cid=$$(docker create "$$(cat "$$tmp/root.iid")" /bin/true)
+	{
+	docker cp "$$root_cid:/." -
+	tar -C "$$tmp/bin" --owner=0 --group=0 -cf - plugin
+	} | $(call mke2fs-run,mkrootfs.sh,$$stage,/out/rootfs.ext4 $(PYTHON_VERSION) 16 $(JOBS))
+	mv -f "$$stage/rootfs.ext4" "$(PLUGIN_BIN_IMAGE)"
+	echo ">>> образ корня с программой Nuitka: $(PLUGIN_BIN_IMAGE) ($$(du -h "$(PLUGIN_BIN_IMAGE)" | cut -f1))"
 
 # образы данных песочницы: веса моделей ext4-файлом из уже скачанного; входы проверяются,
 # а не делаются — модели кладёт fetch

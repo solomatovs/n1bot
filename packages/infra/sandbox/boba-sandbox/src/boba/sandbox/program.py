@@ -13,6 +13,9 @@
   программа готовит хранилище плагина.
 - zygote: аргументы ZygoteArgs; зигота плагина в песочнице.
 - call <tool>: один вызов тела без зиготы (ToolMain).
+- self-check: самопроверка бинарника Nuitka по описи сборки
+  (PackageDataCheck): данные пакетов и entry points внутри; её зовёт сборка
+  образа плагина. Из исходников описи нет, и подкоманда это говорит.
 
 Ошибки:
 PluginEntryError — PluginEntry.program не нашёл объявления плагина.
@@ -32,6 +35,7 @@ from enum import IntEnum, StrEnum
 from importlib.metadata import EntryPoint, entry_points
 from typing import Any, ClassVar
 
+from boba.core.package_data import PackageDataCheck, PackageDataError
 from boba.sandbox.guest import ZygoteArgs, ZygoteMain
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.manifest import (
@@ -71,6 +75,7 @@ class PluginCommand(StrEnum):
     SETUP = "setup"
     ZYGOTE = "zygote"
     CALL = "call"
+    SELF_CHECK = "self-check"
 
 
 class PluginProgram:
@@ -108,11 +113,18 @@ class PluginProgram:
         if name == PluginCommand.ZYGOTE:
             return self._zygote(rest)
 
+        return self._without_args(name)
+
+    def _without_args(self, name: str) -> int:
+        """Подкоманды без аргументов: вход у них — stdin или опись сборки."""
         if name == PluginCommand.MANIFEST:
             return self._manifest()
 
         if name == PluginCommand.SETUP:
             return self._setup()
+
+        if name == PluginCommand.SELF_CHECK:
+            return self._self_check()
 
         return self._usage(f"unknown subcommand {name!r}")
 
@@ -173,6 +185,19 @@ class PluginProgram:
         except Exception as exc:
             self._fail(f"plugin {self._plugin.id}: preparing its storage failed: {exc}")
             return ProgramExit.FAILURE
+
+        return ProgramExit.OK
+
+    def _self_check(self) -> int:
+        """Опись сборки внутри бинарника сходится с его содержимым."""
+        try:
+            checked = PackageDataCheck().run()
+        except PackageDataError as exc:
+            self._fail(f"plugin {self._plugin.id}: {exc}")
+            return ProgramExit.FAILURE
+
+        sys.stdout.write(f"plugin {self._plugin.id}: {checked}\n")
+        sys.stdout.flush()
 
         return ProgramExit.OK
 

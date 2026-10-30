@@ -1,7 +1,7 @@
 """Опись данных пакетов и самопроверка по ней без сборки бинарника: дерево
-установки собирается из исходников пакетов boba-cli, boba-agent и
+установки собирается из исходников пакетов boba-core, boba-cli, boba-agent и
 boba-history-postgres так, как его раскладывает установщик колёс (каталоги
-пакетов и dist-info с RECORD); вход модуля boba.cli.package_data пишет опись
+пакетов и dist-info с RECORD); вход модуля boba.core.package_data пишет опись
 и флаги Nuitka, `boba self-check` над тем же деревом находит все файлы описи
 и называет пропавший. Из дерева исходников описи нет, и самопроверка это
 говорит."""
@@ -20,6 +20,7 @@ from typing import ClassVar
 
 import boba.agent
 import boba.cli
+import boba.core
 import boba.history.postgres
 
 
@@ -87,12 +88,13 @@ class TestPackageData:
         site = tmp_path / "site"
         (tmp_path / "home").mkdir()
         tree = InstalledTree(site, tmp_path / "home")
+        tree.install("boba-core", boba.core)
         tree.install("boba-cli", boba.cli)
         tree.install("boba-agent", boba.agent)
         tree.install("boba-history-postgres", boba.history.postgres)
         manifest = tmp_path / "package_data.json"
 
-        surveyed = tree.run("boba.cli.package_data", str(site), str(manifest))
+        surveyed = tree.run("boba.core.package_data", str(site), str(manifest))
 
         assert surveyed.returncode == 0, surveyed.stderr[-2000:]
         assert surveyed.stdout.splitlines() == [
@@ -100,13 +102,13 @@ class TestPackageData:
             "--include-package-data=boba.agent",
             "--include-module=boba.history.postgres",
             "--include-package-data=boba.history.postgres",
-            f"--include-data-files={manifest}=boba/cli/package_data.json",
+            f"--include-data-files={manifest}=boba/core/package_data.json",
         ]
         named = self._named(manifest)
         assert f"boba.history.postgres:{self.SCHEMA}" in named
         assert "boba.agent:template/attachments/date.txt" in named
 
-        shutil.copy(manifest, site / "boba" / "cli" / "package_data.json")
+        shutil.copy(manifest, site / "boba" / "core" / "package_data.json")
         checked = tree.run("boba.cli.app", "self-check")
 
         assert checked.returncode == 0, checked.stderr[-2000:]
@@ -142,11 +144,11 @@ class TestPackageData:
         tree = InstalledTree(tmp_path, tmp_path)
 
         surveyed = tree.run(
-            "boba.cli.package_data", str(tmp_path), str(tmp_path / "out.json")
+            "boba.core.package_data", str(tmp_path), str(tmp_path / "out.json")
         )
 
         assert surveyed.returncode == 1
-        assert "carry no data files" in surveyed.stderr
+        assert "no distributions boba-*" in surveyed.stderr
         assert not (tmp_path / "out.json").exists()
 
     @staticmethod

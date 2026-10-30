@@ -4,5 +4,6 @@
 код здесь не зависит ни от одной из них: только pydantic и stdlib. Модули:
 validation — текст ValidationError без разобранных данных, secrets —
 раскрытие SecretStr в дампе модели, mcp_names — форма полного имени
-инструмента сервера MCP `mcp__<server>__<tool>`.
+инструмента сервера MCP `mcp__<server>__<tool>`, package_data — опись данных
+пакетов и entry points бинарника Nuitka и самопроверка по ней.
 """
