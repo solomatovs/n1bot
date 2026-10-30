@@ -1,13 +1,13 @@
 """Процесс сервиса исполнения: сборка объектов и запуск MCP-сервера.
 
-`boba-mcp --config <toml> --site <toml>` читает конфиг и промпты endpoint'ов
-(prompts/<endpoint>/<имя>.toml рядом с общим конфигом), поднимает контейнер
+`boba-mcp --config <toml> [--config <наложение>]` читает конфиг экземпляра
+(промпты endpoint'ов он подключает сам), поднимает контейнер
 общих сервисов (журналы вызовов, реестр запусков, способ запуска, реестр
 инструментов, способы входа), строит endpoint'ы MCP над реестром — по одному на
 профиль конфига — и слушает адрес секции [mcp].
 
 Ошибки:
-SystemExit — конфиг или промпты не прочитаны либо сервис не поднялся; текст
+SystemExit — конфиг не прочитан либо сервис не поднялся; текст
     называет причину.
 """
 
@@ -18,7 +18,8 @@ import asyncio
 import logging
 import logging.config
 import signal
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
+from pathlib import Path
 from typing import Annotated, Self
 
 import uvicorn
@@ -33,7 +34,6 @@ from boba.connections.sealed import SealKeys
 from boba.identity.context import CallContexts
 from boba.identity.run import Runs
 from boba.mcp_server.auth import ServiceMark
-from boba.mcp_server.prompts import FilePrompt, PromptFiles
 from boba.mcp_server.server import (
     EndpointCatalog,
     McpEndpoint,
@@ -50,7 +50,7 @@ from boba.oauth.server import (
     TrustedClient,
 )
 from boba.runtime import providers
-from boba.runtime.config import ConfigArguments, ConfigFiles, ProcessConfig, RawConfig
+from boba.runtime.config import ConfigArguments, ProcessConfig, RawConfig
 from boba.runtime.di import Container
 from boba.runtime.http import SignalledServer
 from boba.runtime.launchers import ToolLaunchers
@@ -99,10 +99,10 @@ class McpAppConfig(ProcessConfig):
     без точек, поэтому его не спутать с запечатанным значением."""
 
     @classmethod
-    def load(cls, files: ConfigFiles) -> Self:
+    def load(cls, paths: Sequence[Path]) -> Self:
         """Конфиг процесса и проверка предпосылок способа запуска инструментов
         [tool_launcher]: отказ виден на старте сервиса."""
-        config = super().load(files)
+        config = super().load(paths)
         ToolLaunchers(RawConfig.get()).build().probe()
 
         return config
@@ -153,11 +153,8 @@ class McpHost:
     """Сборка процесса сервиса: контейнер общих сервисов и MCP-сервер над
     реестром инструментов. Создаётся входом процесса из конфига."""
 
-    def __init__(
-        self, config: McpAppConfig, prompts: Mapping[str, Sequence[FilePrompt]]
-    ) -> None:
+    def __init__(self, config: McpAppConfig) -> None:
         self._config = config
-        self._prompts = prompts
         self._container = Container(level="app")
         self._container.provide(providers.get_process_config, config)
         self._container.provide(providers.seal_keys, SealKeys())
@@ -198,7 +195,6 @@ class McpHost:
                 self._container.resolved(providers.connection_params),
                 section.limits,
                 self._config.storage,
-                self._prompts,
             )
             stop = ProcessStop()
             stop.on_stop(StoppedRuns(self._container.resolved(providers.runs)))
@@ -273,23 +269,21 @@ class McpHost:
 
 
 class McpEntry:
-    """Вход процесса: `boba-mcp --config <toml> --site <toml>`."""
+    """Вход процесса: `boba-mcp --config <toml> [--config <наложение>]`."""
 
-    def config_files(self) -> ConfigFiles:
-        """Пути общего конфига и site-файла — обязательные аргументы запуска."""
+    def config_paths(self) -> tuple[Path, ...]:
+        """Конфиг экземпляра и наложения — обязательные аргументы --config."""
         parser = argparse.ArgumentParser(
             prog="boba-mcp", description="Tool execution service of boba"
         )
 
-        return ConfigArguments(parser).files()
+        return ConfigArguments(parser).paths()
 
     async def run(self) -> None:
-        files = self.config_files()
-        config = McpAppConfig.load(files)
+        config = McpAppConfig.load(self.config_paths())
         logging.config.dictConfig(config.logger)
-        prompts = PromptFiles().read(files.prompts_dir(), config.mcp.endpoints)
 
-        await McpHost(config, prompts).serve()
+        await McpHost(config).serve()
 
 
 async def main() -> None:

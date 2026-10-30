@@ -1,13 +1,13 @@
 """Запуск тела инструмента на хосте по toml приложения.
 
-`python -m boba.runtime.toolcli <id> <имя> --config <toml> --site <toml>
+`python -m boba.runtime.toolcli <id> <имя> --config <toml> [--config <toml>]
 [--args <json>]` находит плагин <id> его entry point'ом, поднимает рабочий
 каталог kerberos из [krb], добавляет к аргументам модели из файла --args
 секцию [tool.<id>] на места параметров роли config и in-process исполняет
 подкоманду call программы плагина — тело идёт под отладчиком без песочницы.
 
 Ошибки:
-ToolCliError — argv не разобран: нет id, имени, пути --config или --site;
+ToolCliError — argv не разобран: нет id, имени или пути --config;
     плагин не найден, инструмента в нём нет, файл --args не JSON-объект,
     тело ждёт значение контекста вызова, которого у CLI нет.
 Код возврата тела — ToolMain.Exit, как у подкоманды call.
@@ -25,9 +25,8 @@ from typing import Any, ClassVar
 
 from omegaconf import DictConfig
 
-from boba.config import bind
+from boba.config import ConfigLoader, bind
 from boba.krb import KerberosWorkspaceConfig
-from boba.runtime.config import AppLayers, ConfigFiles
 from boba.runtime.plugins import PluginSections
 from boba.sandbox.program import PluginCommand, PluginEntry, PluginEntryError
 from boba.toolkit.entry import EntryFlag, ToolMain
@@ -44,7 +43,6 @@ class CliFlag(StrEnum):
     """Флаги CLI поверх аргументов подкоманды call."""
 
     CONFIG = "--config"
-    SITE = "--site"
 
 
 class HostConfig:
@@ -52,8 +50,8 @@ class HostConfig:
 
     KERBEROS_SECTION: ClassVar[str] = "krb"
 
-    def __init__(self, files: ConfigFiles) -> None:
-        self._raw: DictConfig = AppLayers.compose(files)
+    def __init__(self, paths: Sequence[Path]) -> None:
+        self._raw: DictConfig = ConfigLoader(paths).load()
         self._sections = PluginSections(self._raw)
 
     def enter_kerberos(self) -> None:
@@ -82,7 +80,8 @@ class ToolCli:
     """Роли контекста вызова: у CLI нет пользователя, значения даёт файл --args."""
     USAGE: ClassVar[str] = (
         "usage: python -m boba.runtime.toolcli <plugin id> <tool> "
-        f"{CliFlag.CONFIG} <toml> {CliFlag.SITE} <toml> [{EntryFlag.ARGS} <json>]"
+        f"{CliFlag.CONFIG} <toml> [{CliFlag.CONFIG} <overlay toml>] "
+        f"[{EntryFlag.ARGS} <json>]"
     )
 
     def __init__(self) -> None:
@@ -107,8 +106,7 @@ class ToolCli:
         plugin_id = arguments.pop(0)
         tool_name = arguments.pop(0)
 
-        config = self._pop_path(arguments, CliFlag.CONFIG)
-        site = self._pop_path(arguments, CliFlag.SITE)
+        paths = self._pop_paths(arguments, CliFlag.CONFIG)
         args = self._args(arguments)
 
         try:
@@ -117,7 +115,7 @@ class ToolCli:
             msg = f"toolcli: {exc}"
             raise ToolCliError(msg) from exc
 
-        host = HostConfig(ConfigFiles(config=config, site=site))
+        host = HostConfig(paths)
         host.enter_kerberos()
 
         decl = self._decl(program.plugin, tool_name)
@@ -195,6 +193,14 @@ class ToolCli:
             args[str(key)] = value
 
         return args
+
+    def _pop_paths(self, arguments: list[str], flag: str) -> Sequence[Path]:
+        """Все пути повторяемого флага: первый — конфиг, следующие — наложения."""
+        paths = [self._pop_path(arguments, flag)]
+        while flag in arguments:
+            paths.append(self._pop_path(arguments, flag))
+
+        return paths
 
     @staticmethod
     def _pop_path(arguments: list[str], flag: str) -> Path:

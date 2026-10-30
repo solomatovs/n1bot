@@ -106,7 +106,12 @@ from boba.mcp_server.files import (
     RouteCallers,
     ServerRefusal,
 )
-from boba.mcp_server.prompts import FilePrompt, FilePrompts
+from boba.mcp_server.prompts import (
+    EndpointPrompts,
+    FilePrompt,
+    FilePrompts,
+    PromptFile,
+)
 from boba.oauth.server import ServiceAuth
 from boba.runtime.storage import LocalStorageConfig, StorageFactory
 from boba.toolkit.channels import JournalChannels, ToolChannel
@@ -193,12 +198,15 @@ class ConnectionOfferRule(RoleVisibility):
 
 
 class McpEndpoint(ProfileGrant):
-    """Секция [mcp.endpoints.<имя>]: грант профиля (роли, инструменты) и
-    правила предложения соединений. Правило пишется явно, у endpoint'а без
-    соединений — пустым списком. Конфиг сервиса разбирает секцию на старте;
-    EndpointCatalog берёт её грантом профиля, RoleToolServers — правилами."""
+    """Секция [mcp.endpoints.<имя>]: грант профиля (роли, инструменты),
+    правила предложения соединений и промпты. Правило пишется явно, у
+    endpoint'а без соединений — пустым списком; промпты — таблицей по именам
+    (обычно ${toml_dir:prompts/<имя>}), у endpoint'а без промптов — пустой.
+    Конфиг сервиса разбирает секцию на старте; EndpointCatalog берёт её
+    грантом профиля, RoleToolServers — правилами, McpEndpoints — промптами."""
 
     connections: list[ConnectionOfferRule]
+    prompts: dict[str, PromptFile]
 
     def offer(self, roles: frozenset[str], sealing: bool) -> frozenset[OfferedSource]:
         """Источники соединений по первому подходящему правилу; ни одно не
@@ -1117,9 +1125,9 @@ class McpEndpoints:
         params: SealedConnectionParams,
         limits: RunLimits,
         storage: LocalStorageConfig,
-        prompts: Mapping[str, Sequence[FilePrompt]],
     ) -> None:
         self._auth = auth
+        self._prompts = EndpointPrompts()
         self._discovery: list[BaseRoute] = []
         self._endpoints: list[EndpointApp] = []
         self._servers: list[McpServer] = []
@@ -1139,7 +1147,7 @@ class McpEndpoints:
                 storage,
                 path,
                 auth.published(),
-                prompts.get(profile, ()),
+                self._prompts.prompts(endpoints[profile].prompts),
             )
             served = server.mcp().http_app(path=path, stateless_http=True)
             self._servers.append(server)

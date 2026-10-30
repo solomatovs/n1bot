@@ -1,11 +1,11 @@
 enable    = false
 tools     = ["mail"]
-server    = "${site.mail.server}"
-port      = "${site.mail.port}"
-use_tls   = "${site.mail.use_tls}"
-auth      = "${site.mail_auth.${site.mail_auth_method}}"
-sender    = "${site.mail.sender}"
-recipient = "${site.mail.recipient}"
+server    = "${mail.server}"
+port      = "${mail.port}"
+use_tls   = "${mail.use_tls}"
+auth      = "${mail.auth}"
+sender    = "${mail.sender}"
+recipient = "${mail.recipient}"
 
 [sandbox]
     [sandbox.limits]

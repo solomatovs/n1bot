@@ -37,6 +37,7 @@ from pydantic import (
 from boba.canvas.keys import WorkspaceMount
 from boba.config import bind
 from boba.identity.context import CallContexts
+from boba.runtime.config import ProcessInterpreter
 from boba.sandbox import (
     BindSpec,
     CgroupManager,
@@ -60,7 +61,6 @@ from boba.toolkit.manifest import (
     PluginManifest,
 )
 from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
-from boba.workspace.launcher import LauncherInterpreter
 
 __all__ = [
     "CallSurface",
@@ -488,14 +488,13 @@ class ZygoteLaunchers(SectionLaunchers):
 
     Реализация SectionLaunchers; объект один на процесс, зиготы плагинов
     живут в его реестре (ZygoteRegistry) между сборками инструментов. Цепочке
-    лаунчера реестр отдаёт интерпретатор процесса из секции [interpreter].
+    лаунчера реестр отдаёт снимок интерпретатора процесса (ProcessInterpreter).
     Программа плагина — /plugin/run его образа: manifest идёт в песочнице без
     сети и образов данных, setup и зигота — в профиле плагина."""
 
     def __init__(self, raw: DictConfig) -> None:
         self._raw = raw
-        interpreter = bind(raw, LauncherInterpreter.SECTION, LauncherInterpreter)
-        self._zygotes = ZygoteRegistry(interpreter)
+        self._zygotes = ZygoteRegistry(ProcessInterpreter().snapshot())
         self._output = PluginOutput()
 
     def settle(self) -> None:

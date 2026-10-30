@@ -1,4 +1,4 @@
-"""Агент как служба: команда `boba serve --config <toml> --site <toml>`.
+"""Агент как служба: команда `boba serve --config <toml> [--config <наложение>]`.
 
 Процесс агента сам слушает сеть: ACP по streamable HTTP и WebSocket
 (AcpServer и handle_websocket SDK) на адресе секции [agent], вход — сервер
@@ -84,6 +84,7 @@ from boba.cli.app import (
 )
 from boba.cli.settings import Arguments, EffectiveSettings, Settings, SettingsError
 from boba.cli.threads import LoopThread, SessionThreads, ThreadedHistoryStore
+from boba.config import ConfigError
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import LibpqConnection, PostgresConfig
 from boba.history.postgres import PostgresHistoryStore, SessionLocks
@@ -103,7 +104,7 @@ from boba.oauth.server import (
     TokenClaims,
     TrustedClient,
 )
-from boba.runtime.config import ConfigFiles, ProcessConfig
+from boba.runtime.config import ProcessConfig
 from boba.runtime.http import SignalledServer
 from boba.runtime.signin import SignInAssembly
 from boba.transport.acp.protocol import AgentSide
@@ -903,17 +904,17 @@ class ServeHost:
 class ServeEntry:
     """Вход команды `boba serve`: конфиг из файлов, журнал, служба."""
 
-    def __init__(self, config: Path, site: Path) -> None:
-        self._files = ConfigFiles(config=config, site=site)
+    def __init__(self, paths: Sequence[Path]) -> None:
+        self._paths = tuple(paths)
 
     async def run(self) -> None:
         """Ошибки:
         SystemExit — конфиг не прочитан или служба не поднялась.
         """
         try:
-            config = ServeConfig.load(self._files)
-        except (ValidationError, ValueError, OSError) as exc:
-            msg = f"boba serve: the config {self._files.config} is not usable: {exc}"
+            config = ServeConfig.load(self._paths)
+        except (ConfigError, ValueError, OSError) as exc:
+            msg = f"boba serve: the config {self._paths[0]} is not usable: {exc}"
             raise SystemExit(msg) from exc
 
         logging.config.dictConfig(config.logger)

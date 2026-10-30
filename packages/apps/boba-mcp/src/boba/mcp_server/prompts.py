@@ -1,52 +1,37 @@
-"""Промпты endpoint'ов сервиса из файлов conf/prompts/<endpoint>/<имя>.toml.
+"""Промпты endpoint'ов сервиса из файлов prompts/<endpoint>/<имя>.toml экземпляра.
 
-Файл — один промпт, его имя — имя файла без суффикса. Формат:
+Файлы подключает конфиг экземпляра ключом prompts секции endpoint'а
+(${toml_dir:prompts/<endpoint>}). Файл — один промпт, его имя — имя файла без
+суффикса. Формат:
 description — что промпт делает; [arguments.<имя>] — аргумент с
 description и required; [[messages]] — сообщения по порядку с role (user
 или assistant) и text. В text аргумент подставляется по `{<имя>}`,
 отсутствующий необязательный — пустой строкой; фигурная скобка текстом
 пишется удвоенной. Промпты публикуются по стандарту MCP: prompts/list и
-prompts/get (FilePrompts).
+prompts/get (FilePrompts). Знак ${ в тексте пишется экранированным \\${:
+иначе omegaconf примет его за ссылку конфига.
 
 Ошибки:
-PromptFileError — каталог промптов называет endpoint, которого нет, файл не
-    читается, не TOML или не по формату (поле, роль, неизвестный аргумент в
-    тексте).
+PromptError — prompts/get не называет обязательный аргумент или называет лишний.
 """
 
 from __future__ import annotations
 
 import string
-import tomllib
-from collections.abc import Collection, Mapping, Sequence
-from enum import StrEnum
-from pathlib import Path
+from collections.abc import Mapping, Sequence
 from typing import Any, Literal
 
 from fastmcp.exceptions import PromptError
 from fastmcp.prompts import Message, Prompt, PromptArgument
 from fastmcp.server.providers import Provider
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
-
-from boba.core.validation import ValidationText
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 __all__ = [
+    "EndpointPrompts",
     "FilePrompt",
     "FilePrompts",
     "PromptFile",
-    "PromptFileError",
-    "PromptFiles",
 ]
-
-
-class PromptFileError(Exception):
-    """Файл промпта или каталог промптов не по формату."""
-
-
-class PromptFileSuffix(StrEnum):
-    """Суффикс файла промпта."""
-
-    TOML = ".toml"
 
 
 class PromptArgumentFile(BaseModel):
@@ -106,7 +91,7 @@ class PromptFile(BaseModel):
 
 class FilePrompt(Prompt):
     """Промпт файла: объявление для prompts/list и сообщения с подставленными
-    аргументами для prompts/get. Создаёт читатель PromptFiles на каждый файл,
+    аргументами для prompts/get. Создаёт EndpointPrompts на каждый файл,
     отдаёт провайдер FilePrompts."""
 
     source: PromptFile
@@ -146,83 +131,32 @@ class FilePrompt(Prompt):
         return messages
 
 
-class PromptFiles:
-    """Читатель каталога промптов: подкаталог на endpoint, файл на промпт.
-    Каталога нет — промптов нет ни у кого. Создаёт вход процесса сервиса и
-    отдаёт итог сборке endpoint'ов."""
+class EndpointPrompts:
+    """Промпты endpoint'а из его секции конфига: объявление fastmcp на каждый
+    PromptFile. Файлы промптов подключает сам конфиг экземпляра
+    (prompts = "${toml_dir:prompts/<endpoint>}"), сюда приходят уже
+    провалидированные модели. Создаёт сборка endpoint'ов (McpEndpoints)."""
 
-    def read(
-        self, root: Path, endpoints: Collection[str]
-    ) -> Mapping[str, Sequence[FilePrompt]]:
-        """Промпты endpoint'ов по именам; endpoint без подкаталога — без
-        промптов.
-
-        Ошибки:
-        PromptFileError — подкаталог называет неизвестный endpoint, файл не
-            читается или не по формату.
-        """
-        if not root.is_dir():
-            return {}
-
-        prompts: dict[str, Sequence[FilePrompt]] = {}
-        for folder in sorted(root.iterdir()):
-            if folder.name not in endpoints:
-                msg = (
-                    f"prompts {folder}: expected a folder named after an mcp "
-                    f"endpoint {sorted(endpoints)}, got {folder.name!r}"
-                )
-                raise PromptFileError(msg)
-
-            prompts[folder.name] = self._folder(folder)
-
-        return prompts
-
-    def _folder(self, folder: Path) -> Sequence[FilePrompt]:
+    def prompts(self, sources: Mapping[str, PromptFile]) -> Sequence[FilePrompt]:
         prompts: list[FilePrompt] = []
-        for path in sorted(folder.iterdir()):
-            if path.suffix != PromptFileSuffix.TOML.value:
-                msg = (
-                    f"prompts {path}: expected a {PromptFileSuffix.TOML.value} "
-                    "file of one prompt"
-                )
-                raise PromptFileError(msg)
-
-            prompts.append(self._prompt(path))
+        for name, source in sorted(sources.items()):
+            prompts.append(self._prompt(name, source))
 
         return prompts
 
-    def _prompt(self, path: Path) -> FilePrompt:
-        try:
-            raw = tomllib.loads(path.read_text(encoding="utf-8"))
-        except OSError as exc:
-            msg = f"prompts {path}: the file is not read: {exc}"
-            raise PromptFileError(msg) from exc
-        except tomllib.TOMLDecodeError as exc:
-            msg = f"prompts {path}: expected TOML, got: {exc}"
-            raise PromptFileError(msg) from exc
-
-        try:
-            source = PromptFile.model_validate(raw)
-        except ValidationError as exc:
-            msg = (
-                f"prompts {path}: expected description, [arguments.<name>] with "
-                "description and required, and [[messages]] with role and text: "
-                f"{ValidationText.of(exc)}"
-            )
-            raise PromptFileError(msg) from exc
-
+    def _prompt(self, name: str, source: PromptFile) -> FilePrompt:
         arguments: list[PromptArgument] = []
-        for name, argument in source.arguments.items():
+        for argument_name, argument in source.arguments.items():
             arguments.append(
                 PromptArgument(
-                    name=name,
+                    name=argument_name,
                     description=argument.description,
                     required=argument.required,
                 )
             )
 
         return FilePrompt(
-            name=path.stem,
+            name=name,
             description=source.description,
             arguments=arguments,
             source=source,

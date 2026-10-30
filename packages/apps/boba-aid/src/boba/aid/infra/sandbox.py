@@ -19,7 +19,7 @@ from starlette.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from boba.aid.infra.config import AppConfig
-from boba.config.section import ConfigError
+from boba.config import ConfigError
 from boba.mcp_client.client import McpServerApps
 from boba.runtime.http import ServerStartError
 

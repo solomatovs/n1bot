@@ -1,10 +1,8 @@
 """Общие секции конфига приложений: каталоги kerberos, профили, роли, вход, данные, api.
 
 Ошибки:
-ConfigLayoutError — файлы конфигурации названы или разложены не так: нет файла,
-    не заданы переменные стенда, в общем конфиге есть секция [env] или [site],
-    в site-файле или в файле, который он подключает, есть секция сверх этих
-    двух, подключённого файла нет.
+ConfigError — файл конфигурации не читается, не разрешается или секция не
+    сходится с моделью.
 RuntimeError — конфиг ещё не загружен (RawConfig.get до RawConfig.load).
 """
 
@@ -14,8 +12,7 @@ import argparse
 import os
 import secrets
 import sys
-import tomllib
-from dataclasses import dataclass
+from collections.abc import Sequence
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any, ClassVar, Literal, Self
@@ -38,7 +35,7 @@ from boba.auth.config import (
     ProxyAuthConfig,
 )
 from boba.chat.profiles import ChatProfileConfig
-from boba.config import ConfigBuilder, ConfigError, TomlFile, bind
+from boba.config import ConfigLoader, bind
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.token import CookieSpec, SessionRenewal
 from boba.krb import KerberosWorkspaceConfig
@@ -46,18 +43,14 @@ from boba.krb.seal import SsoTickets, TicketSealer
 from boba.workspace.launcher import LauncherEnv, LauncherInterpreter
 
 __all__ = [
-    "AppLayers",
     "AppName",
     "ClusterConfig",
     "ConfigArguments",
-    "ConfigFiles",
-    "ConfigLayoutError",
-    "ConfigLocator",
-    "EnvOverride",
     "LocalMessagingConfig",
     "MessagingConfig",
     "PostgresMessagingConfig",
     "ProcessConfig",
+    "ProcessInterpreter",
     "ProcessLogging",
     "RawConfig",
     "RuntimeConfig",
@@ -68,171 +61,45 @@ __all__ = [
 ]
 
 
-class ConfigLayoutError(Exception):
-    """Файлы конфигурации названы или разложены не так, как ждёт загрузчик."""
-
-
-@dataclass(frozen=True)
-class ConfigFiles:
-    """Два файла конфигурации процесса.
-
-    config — общий конфиг приложения: устройство приложения, одинаковое на любой
-    машине, лежит в пакете и в git. site — специфика случая запуска: пути, адреса,
-    секреты; свой у compose, отладки и установки, в git не входит. Каталог над
-    conf/, в котором лежит site, становится env.base: данные случая лежат рядом
-    со спецификой.
-    """
-
-    config: Path
-    site: Path
-
-    def __post_init__(self) -> None:
-        for role, path in (("config", self.config), ("site", self.site)):
-            if not path.is_file():
-                msg = f"config files: {role} expects an existing toml file, got {path}"
-                raise ConfigLayoutError(msg)
-
-    def base(self) -> Path:
-        """Корень раскладки случая: каталог над conf/ с site-файлом."""
-        return self.site.resolve().parent.parent
-
-    def plugins_dir(self) -> Path:
-        """Файлы плагинов лежат рядом с общим конфигом."""
-        return self.config.parent / "plugins"
-
-    def prompts_dir(self) -> Path:
-        """Файлы промптов сервиса лежат рядом с общим конфигом."""
-        return self.config.parent / "prompts"
-
-
 class ConfigArguments:
-    """Аргументы запуска приложения: --config <общий конфиг> и --site <специфика>.
+    """Аргументы запуска приложения: --config <файл> один или несколько раз.
 
-    Оба обязательны, значений по умолчанию и поиска «рядом» нет: какой файл
-    читается, видно из командной строки.
+    Первый файл — конфиг экземпляра; следующие — наложения поверх него
+    (стенды и отладка). Значений по умолчанию и поиска «рядом» нет: какие
+    файлы читаются, видно из командной строки.
     """
 
     CONFIG: ClassVar[str] = "--config"
-    SITE: ClassVar[str] = "--site"
 
     def __init__(self, parser: argparse.ArgumentParser) -> None:
         self._parser = parser
 
-    def files(self) -> ConfigFiles:
+    def paths(self) -> tuple[Path, ...]:
         self._parser.add_argument(
             self.CONFIG,
             required=True,
+            action="append",
             type=Path,
-            help="path to the application config.toml (common, from the package)",
-        )
-        self._parser.add_argument(
-            self.SITE,
-            required=True,
-            type=Path,
-            help="path to site.toml (paths, addresses and secrets of this run)",
+            help=(
+                "path to config.toml of this instance; repeat to lay an overlay "
+                "file over it"
+            ),
         )
         arguments = self._parser.parse_args()
 
-        return ConfigFiles(config=arguments.config, site=arguments.site)
+        return tuple(arguments.config)
 
 
-class ConfigLocator:
-    """Файлы конфигурации тестового стенда: BOBA_CONFIG_PATH и BOBA_SITE_PATH.
+class ProcessInterpreter:
+    """Интерпретатор процесса и его окружение для цепочки лаунчера песочницы.
 
-    Приложения получают оба пути обязательными аргументами запуска; локатор
-    остаётся только фикстурам и стендам, которые аргументов не имеют.
+    Это не конфиг, а факт самого процесса: им цепочка лаунчера (LauncherChain,
+    зиготы) запускает тот же python во внешнем слое. Снимок делают реестр
+    способов запуска инструментов и хранилище образов, когда создаются.
     """
 
-    CONFIG_ENV: ClassVar[str] = "BOBA_CONFIG_PATH"
-    SITE_ENV: ClassVar[str] = "BOBA_SITE_PATH"
-
-    @classmethod
-    def files(cls) -> ConfigFiles:
-        config = os.environ.get(cls.CONFIG_ENV)
-        site = os.environ.get(cls.SITE_ENV)
-        if not config or not site:
-            msg = (
-                f"config files: {cls.CONFIG_ENV} and {cls.SITE_ENV} are both "
-                f"required in the environment, got {cls.CONFIG_ENV}={config!r}, "
-                f"{cls.SITE_ENV}={site!r}"
-            )
-            raise ConfigLayoutError(msg)
-
-        return ConfigFiles(config=Path(config), site=Path(site))
-
-
-class EnvOverride(StrEnum):
-    """Ключи секции [env], которые переменная окружения BOBA_* переопределяет.
-
-    Значение члена — имя ключа в [env]; имя переменной складывается из имени
-    члена: BASE -> BOBA_BASE. Всё остальное задаётся только конфигом.
-    """
-
-    BASE = "base"
-    DATA = "data"
-    PORT = "port"
-    INSTANCE_ID = "instance_id"
-    HOST = "host"
-    URL_PREFIX = "url_prefix"
-    CGROUP_BASE = "cgroup_base"
-    APP_ROOT = "app_root"
-    MESSAGING = "messaging_provider"
-    TOOL_LAUNCHER = "tool_launcher"
-    MCP_HOST = "mcp_host"
-    MCP_PORT = "mcp_port"
-    MCP_SCHEME = "mcp_scheme"
-    MCP_PREFIX = "mcp_prefix"
-    PUBLIC_URL = "public_url"
-    AGENT_MODE = "agent_mode"
-    AGENT_COMMAND = "agent_command"
-    AGENT_HOST = "agent_host"
-    AGENT_PORT = "agent_port"
-    AGENT_SCHEME = "agent_scheme"
-    AGENT_PREFIX = "agent_prefix"
-
-    @property
-    def var(self) -> str:
-        return f"BOBA_{self.name}"
-
-
-class AppLayers:
-    """Слои конфига процесса: вычисленные base и [interpreter] -> общий конфиг
-    -> плагины -> site-файл -> BOBA_-оверрайды.
-
-    Общий конфиг описывает устройство приложения и на [env] и [site] только
-    ссылается; сами секции лежат в site-файле, и другой секции в нём быть не
-    может — иначе устройство приложения описывалось бы в двух местах. Общую
-    для нескольких приложений часть site-файл берёт из файла среды ключом
-    include (TomlFile). base
-    выводится из раскладки случая (site.toml лежит в ${base}/conf), файлы
-    plugins/<id>.toml рядом с общим конфигом ложатся секциями tool.<id>, а
-    окружение лишь переопределяет ключи [env] из реестра EnvOverride.
-    [interpreter] снимается с самого процесса: им цепочка лаунчера песочницы
-    запускает тот же python во внешнем слое.
-    """
-
-    HOST_FALLBACK: ClassVar[str] = "HOSTNAME"
-    PLUGIN_SUFFIX: ClassVar[str] = ".toml"
-    SITE_SECTIONS: ClassVar[frozenset[str]] = frozenset({"env", "site"})
-
-    @classmethod
-    def compose(cls, files: ConfigFiles) -> DictConfig:
-        builder = ConfigBuilder()
-        builder.add_dict({"env": {"base": str(files.base())}})
-        interpreter = cls.interpreter().model_dump(mode="json")
-        builder.add_dict({LauncherInterpreter.SECTION: interpreter})
-        builder.add_dict(cls._common(files.config))
-        builder.add_dict(cls._plugins(files.plugins_dir()))
-        builder.add_dict(cls._site(files.site))
-        builder.add_dict(cls._overrides())
-
-        return builder.build()
-
-    @classmethod
-    def interpreter(cls) -> LauncherInterpreter:
-        """Интерпретатор процесса и его окружение для цепочки лаунчера.
-
-        Текущий каталог и его предки в корни не идут: python -m кладёт cwd в
+    def snapshot(self) -> LauncherInterpreter:
+        """Текущий каталог и его предки в корни не идут: python -m кладёт cwd в
         sys.path, а cwd сервиса — дерево установки с конфигом и данными.
         """
         env: dict[LauncherEnv, str] = {}
@@ -264,7 +131,7 @@ class AppLayers:
                 continue
 
             root = os.path.normpath(candidate)
-            if cls._holds(root, cwd):
+            if self._holds(root, cwd):
                 continue
 
             roots.append(root)
@@ -281,97 +148,15 @@ class AppLayers:
 
         return path.startswith(root.rstrip("/") + "/")
 
-    @classmethod
-    def _common(cls, path: Path) -> dict[str, Any]:
-        with path.open("rb") as body:
-            sections = tomllib.load(body)
-
-        misplaced = sorted(cls.SITE_SECTIONS & set(sections))
-        if misplaced:
-            msg = (
-                f"common config {path}: sections {misplaced} belong to the site "
-                "file; the common config only refers to them as ${env.*} and "
-                "${site.*}"
-            )
-            raise ConfigLayoutError(msg)
-
-        return sections
-
-    @classmethod
-    def _site(cls, path: Path) -> dict[str, Any]:
-        """Секции site-файла поверх файла, который он подключает ключом include."""
-        try:
-            sections = TomlFile(path).sections()
-        except ConfigError as exc:
-            msg = f"site file {path}: {exc}"
-            raise ConfigLayoutError(msg) from exc
-
-        foreign = sorted(set(sections) - cls.SITE_SECTIONS)
-        if foreign:
-            msg = (
-                f"site file {path} with its include: expected only sections "
-                f"{sorted(cls.SITE_SECTIONS)}, got also {foreign}; the structure "
-                "of the application is described in the common config alone"
-            )
-            raise ConfigLayoutError(msg)
-
-        return sections
-
-    @classmethod
-    def _plugins(cls, plugins_dir: Path) -> dict[str, Any]:
-        """Файлы plugins/<id>.toml -> секции tool.<id>; интерполяции файлов
-        резолвятся от корня собранного конфига.
-        """
-        if not plugins_dir.is_dir():
-            return {}
-
-        sections: dict[str, Any] = {}
-        for path in sorted(plugins_dir.glob(f"*{cls.PLUGIN_SUFFIX}")):
-            with path.open("rb") as body:
-                sections[path.stem] = tomllib.load(body)
-
-        if not sections:
-            return {}
-
-        return {"tool": sections}
-
-    @classmethod
-    def _overrides(cls) -> dict[str, Any]:
-        entries: dict[str, str] = {}
-        for override in EnvOverride:
-            value = cls._value_of(override)
-            if value is None:
-                continue
-
-            entries[override.value] = value
-
-        if not entries:
-            return {}
-
-        return {"env": entries}
-
-    @classmethod
-    def _value_of(cls, override: EnvOverride) -> str | None:
-        value = os.environ.get(override.var)
-        if value is not None:
-            return value
-
-        # имя узла в кластере по умолчанию берётся у контейнера: один конфиг
-        # обслуживает несколько узлов тест-стенда
-        if override is EnvOverride.HOST:
-            return os.environ.get(cls.HOST_FALLBACK)
-
-        return None
-
 
 class RawConfig:
-    """Загруженный toml приложения: один на процесс, провайдеры читают его секциями."""
+    """Загруженное дерево конфига: одно на процесс, провайдеры читают его секциями."""
 
     _raw: ClassVar[DictConfig | None] = None
 
     @classmethod
-    def load(cls, files: ConfigFiles) -> DictConfig:
-        cls._raw = AppLayers.compose(files)
+    def load(cls, paths: Sequence[Path]) -> DictConfig:
+        cls._raw = ConfigLoader(paths).load()
 
         return cls._raw
 
@@ -380,7 +165,7 @@ class RawConfig:
         if cls._raw is None:
             msg = (
                 "RawConfig.get: raw config is not loaded yet, "
-                "RawConfig.load(files) must run first"
+                "RawConfig.load(paths) must run first"
             )
             raise RuntimeError(msg)
 
@@ -679,9 +464,13 @@ class ProcessConfig(BaseModel):
     session: TokenConfig
 
     @classmethod
-    def load(cls, files: ConfigFiles) -> Self:
+    def load(cls, paths: Sequence[Path]) -> Self:
         """Читает файлы конфигурации и раскладывает кэши kerberos."""
-        raw = RawConfig.load(files)
+        return cls.of(RawConfig.load(paths))
+
+    @classmethod
+    def of(cls, raw: DictConfig) -> Self:
+        """Секция [app] уже загруженного дерева; раскладывает кэши kerberos."""
         config = bind(raw, path=cls.SECTION, model=cls)
         # кэши билетов раскладывает приложение: строкам соединений пути не задают
         config.krb.apply()

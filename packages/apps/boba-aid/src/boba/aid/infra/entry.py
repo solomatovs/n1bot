@@ -1,7 +1,9 @@
 """Точка входа: env chainlit выставляется до первого импорта его модулей.
 
 Ошибки:
-ValueError — в конфиге нет секции [aid] либо пусты root или files_dir.
+ConfigError — конфиг не загружается или секции [app].aid, [app].session не
+    сходятся с моделями.
+ValueError — пусты root или files_dir секции [app].aid.
 """
 
 import argparse
@@ -13,16 +15,11 @@ from enum import StrEnum
 from pathlib import Path
 from typing import ClassVar
 
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 
 from boba.aid.infra.config import AidSection
 from boba.config import bind
-from boba.runtime.config import (
-    AppLayers,
-    ConfigArguments,
-    ConfigFiles,
-    SessionConfig,
-)
+from boba.runtime.config import ConfigArguments, RawConfig, SessionConfig
 
 __all__ = ["AppEntry", "ChainlitEnv", "ChainlitFiles", "cli"]
 
@@ -92,7 +89,9 @@ class AppEntry:
     """Конфиг -> env chainlit -> каталог вложений -> запуск приложения.
 
     Создаёт его скрипт чата (main.py, консольная команда boba-aid) и зовёт
-    run(); тесты точки входа зовут export_env и attachments по отдельности.
+    run(); конфиг загружается один раз, и то же дерево получают env chainlit,
+    каталог вложений и сборка приложения. Тесты точки входа зовут export_env и
+    attachments по отдельности.
     """
 
     SECTION: ClassVar[str] = "app.aid"
@@ -100,30 +99,30 @@ class AppEntry:
     SESSION_SECTION: ClassVar[str] = "app.session"
 
     def run(self) -> None:
-        files = self.config_files()
-        self.export_env(files)
-        self.attachments(files).install()
+        raw = RawConfig.load(self.config_paths())
+        self.export_env(raw)
+        self.attachments(raw).install()
 
         # импорт здесь: chainlit фиксирует пути из env на импорте своих модулей
         from boba.aid.infra.bootstrap import run_app  # noqa: PLC0415
 
-        run_app(files)
+        run_app(raw)
 
-    def config_files(self) -> ConfigFiles:
-        """Пути общего конфига и site-файла — обязательные аргументы запуска."""
+    def config_paths(self) -> tuple[Path, ...]:
+        """Конфиг экземпляра и наложения — обязательные аргументы --config."""
         parser = argparse.ArgumentParser(
             prog="boba.aid",
             description="Aid: the chat web application of boba",
         )
 
-        return ConfigArguments(parser).files()
+        return ConfigArguments(parser).paths()
 
-    def attachments(self, files: ConfigFiles) -> ChainlitFiles:
+    def attachments(self, raw: DictConfig) -> ChainlitFiles:
         """Каталог вложений из [aid].files_dir; пустое значение отвергается."""
-        aid = self._section(files, AppLayers.compose(files))
+        aid = bind(raw, self.SECTION, AidSection)
         if not aid.files_dir:
             msg = (
-                f"{files.config}: section [{self.SECTION}] expects files_dir as a "
+                f"config: section [{self.SECTION}] expects files_dir as a "
                 f"non-empty path (chainlit attachments outside app root), "
                 f"got {aid.files_dir!r}"
             )
@@ -133,13 +132,12 @@ class AppEntry:
 
         return ChainlitFiles(root, Path(aid.files_dir).resolve())
 
-    def export_env(self, files: ConfigFiles) -> None:
+    def export_env(self, raw: DictConfig) -> None:
         """Секции [app].aid и [app].session -> переменные окружения chainlit."""
-        raw = AppLayers.compose(files)
-        aid = self._section(files, raw)
+        aid = bind(raw, self.SECTION, AidSection)
         if not aid.root:
             msg = (
-                f"{files.config}: section [{self.SECTION}] expects root as a "
+                f"config: section [{self.SECTION}] expects root as a "
                 f"non-empty path (chainlit app root), got {aid.root!r}"
             )
             raise ValueError(msg)
@@ -153,14 +151,6 @@ class AppEntry:
         os.environ[ChainlitEnv.AUTH_SECRET] = session.auth_secret
         os.environ[ChainlitEnv.COOKIE_NAME] = session.cookie
         os.environ[ChainlitEnv.COOKIE_SAMESITE] = session.cookie_samesite
-
-    def _section(self, files: ConfigFiles, raw: DictConfig) -> AidSection:
-        """Секция [aid] моделью; без секции — ValueError с путём конфига."""
-        if OmegaConf.select(raw, self.SECTION) is None:
-            msg = f"{files.config}: section [{self.SECTION}] is missing"
-            raise ValueError(msg)
-
-        return bind(raw, self.SECTION, AidSection)
 
 
 def cli() -> None:

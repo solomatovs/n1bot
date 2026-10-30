@@ -1,24 +1,11 @@
-"""boba.config: сборка конфига (builder), переход в pydantic (bind, секция файла)."""
+"""boba.config: загрузка TOML-конфига в omegaconf (ConfigLoader), переход секции в pydantic (bind)."""
 
 from boba.config.bind import bind
-from boba.config.builder import ConfigBuilder, build_app_config
-from boba.config.section import (
-    ConfigBase,
-    ConfigError,
-    TomlFile,
-    TomlKey,
-    bind_optional_section,
-    bind_section,
-)
+from boba.config.loader import ConfigError, ConfigLoader, ConfigResolver
 
 __all__ = [
-    "ConfigBase",
-    "ConfigBuilder",
     "ConfigError",
-    "TomlFile",
-    "TomlKey",
+    "ConfigLoader",
+    "ConfigResolver",
     "bind",
-    "bind_optional_section",
-    "bind_section",
-    "build_app_config",
 ]

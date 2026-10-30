@@ -44,6 +44,7 @@ from boba.canvas.storage import (
     StorageOp,
     StorageUrl,
 )
+from boba.runtime.config import ProcessInterpreter
 from boba.sandbox import WorkspaceSpec
 from boba.toolkit.result import ContentMime
 from boba.workspace.binaries import TrustedBinaries
@@ -51,7 +52,6 @@ from boba.workspace.launcher import (
     ImageMountPoint,
     LauncherChain,
     LauncherExit,
-    LauncherInterpreter,
     LauncherMarker,
     LauncherMode,
     LayerSources,
@@ -123,12 +123,6 @@ class LocalStorageConfig(BaseModel):
         description=(
             "kind=image: каталоги, откуда берутся bwrap и fuse2fs; "
             "$PATH не используется."
-        ),
-    )
-    interpreter: LauncherInterpreter = Field(
-        description=(
-            "kind=image: интерпретатор лаунчера образов — секция процесса "
-            "${interpreter}, которую собирает граница конфига."
         ),
     )
 
@@ -419,7 +413,9 @@ class ImageStorageClient(ConfiguredStorageClient):
     def __init__(self, config: LocalStorageConfig) -> None:
         super().__init__(config)
         self._chain = LauncherChain(
-            config.interpreter, config.binaries, config.mounting.to_options()
+            ProcessInterpreter().snapshot(),
+            config.binaries,
+            config.mounting.to_options(),
         )
 
     async def _upload_stream(

@@ -1,56 +1,54 @@
-"""bind: секция конфиг-инстанса -> pydantic-модель; сборка ссылками."""
+"""bind: секция дерева конфига -> pydantic-модель; сборка ссылками."""
 
 from __future__ import annotations
 
 import pytest
-from pydantic import BaseModel, ConfigDict, ValidationError
+from omegaconf import DictConfig, OmegaConf
+from pydantic import BaseModel, ConfigDict
 
-from boba.config import ConfigBuilder, bind
+from boba.config import ConfigError, bind
 
 
 class _Conn(BaseModel):
     model_config = ConfigDict(extra="ignore")
     host: str
-    port: int = 5432
+    port: int
 
 
 class _Pg(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    databases: dict[str, _Conn] = {}
+    databases: dict[str, _Conn]
+
+
+def _tree(data: dict[str, object]) -> DictConfig:
+    return OmegaConf.create(data)
 
 
 def test_bind_plain_section() -> None:
-    cfg = ConfigBuilder().add_dict({"a": {"b": {"host": "h", "port": 6000}}}).build()
+    cfg = _tree({"a": {"b": {"host": "h", "port": 6000}}})
     got = bind(cfg, "a.b", _Conn)
     if (got.host, got.port) != ("h", 6000):
         raise AssertionError('(got.host, got.port) == ("h", 6000)')
 
 
-def test_bind_missing_section_uses_defaults() -> None:
-    class _Opt(BaseModel):
-        x: int = 7
-
-    cfg = ConfigBuilder().add_dict({"a": {}}).build()
-    if bind(cfg, "nope.section", _Opt).x != 7:
-        raise AssertionError('bind(cfg, "nope.section", _Opt).x == 7')
+def test_bind_missing_section_is_refused() -> None:
+    cfg = _tree({"a": {}})
+    with pytest.raises(ConfigError, match=r"section \[nope\.section\] is missing"):
+        bind(cfg, "nope.section", _Conn)
 
 
-def test_bind_required_missing_raises() -> None:
-    cfg = ConfigBuilder().add_dict({"a": {"port": 6000}}).build()
-    with pytest.raises(ValidationError):
+def test_bind_section_not_fitting_the_model_is_refused() -> None:
+    cfg = _tree({"a": {"port": 6000}})
+    with pytest.raises(ConfigError, match=r"(?s)section \[a\] does not fit _Conn.*host"):
         bind(cfg, "a", _Conn)
 
 
 def test_bind_reference_assembly() -> None:
-    cfg = (
-        ConfigBuilder()
-        .add_dict(
-            {
-                "postgres": {"main": {"host": "10.0.0.9", "port": 5432}},
-                "tool": {"pg": {"databases": {"main": "${postgres.main}"}}},
-            }
-        )
-        .build()
+    cfg = _tree(
+        {
+            "postgres": {"main": {"host": "10.0.0.9", "port": 5432}},
+            "tool": {"pg": {"databases": {"main": "${postgres.main}"}}},
+        }
     )
     pg = bind(cfg, "tool.pg", _Pg)
     if pg.databases["main"].host != "10.0.0.9":

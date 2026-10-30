@@ -147,18 +147,16 @@ class Invocation:
 
 
 class ServeFlag(StrEnum):
-    """Флаги `boba serve`: общий конфиг службы и специфика установки."""
+    """Флаги `boba serve`: конфиг экземпляра службы и наложения поверх него."""
 
     CONFIG = "--config"
-    SITE = "--site"
 
 
 @dataclass(frozen=True)
 class ServeInvocation:
-    """Командная строка `boba serve`: файлы конфига службы."""
+    """Командная строка `boba serve`: конфиг экземпляра службы, затем наложения."""
 
-    config: Path
-    site: Path
+    config: tuple[Path, ...]
 
 
 class InteractiveMode:
@@ -170,7 +168,7 @@ class InteractiveMode:
         "boba: the interactive mode is not available yet.\n"
         "  boba --stdio [--settings FILE ...]     serve the Agent Client Protocol "
         "on stdin/stdout for a launcher\n"
-        "  boba serve --config FILE --site FILE   run the agent as a network service\n"
+        "  boba serve --config FILE [--config FILE] run the agent as a network service\n"
         "  boba --help                            all options"
     )
     EXIT_CODE: ClassVar[int] = 2
@@ -205,7 +203,7 @@ class Installed:
 
 
 class ArgumentParser:
-    """Командная строка `boba --stdio …`, `boba serve --config … --site …`,
+    """Командная строка `boba --stdio …`, `boba serve --config …`,
     `boba self-check`, `boba settings-schema` или `boba` без режима →
     Invocation. Ключи запуска ACP (--settings, --model, …) действуют только
     с --stdio. Секретов в аргументах нет: ключи и строки подключения живут в
@@ -238,14 +236,17 @@ class ArgumentParser:
             description=(
                 "Serve the Agent Client Protocol over streamable HTTP and "
                 "WebSocket with OAuth sign-in; sessions of all connections run "
-                "in this process. The config is config.toml of the service and "
-                "site.toml of the installation."
+                "in this process. The config is config.toml of this instance; "
+                "a repeated --config lays an overlay file over it."
             ),
         )
         serve.add_argument(
-            ServeFlag.CONFIG, required=True, type=Path, help="config.toml"
+            ServeFlag.CONFIG,
+            required=True,
+            action="append",
+            type=Path,
+            help="config.toml of this instance; repeat to lay an overlay file over it",
         )
-        serve.add_argument(ServeFlag.SITE, required=True, type=Path, help="site.toml")
         commands.add_parser(
             Command.SELF_CHECK.value,
             help="check that the package data of this build is inside, then exit",
@@ -269,7 +270,7 @@ class ArgumentParser:
         space = self._parser.parse_args(list(argv))
         command = self._command(space)
         if command is Command.SERVE:
-            return ServeInvocation(config=space.config, site=space.site)
+            return ServeInvocation(config=tuple(space.config))
 
         if not command.serves:
             return Invocation(command=command, arguments=Arguments())
@@ -1007,7 +1008,7 @@ async def main(argv: Sequence[str] | None = None) -> None:
         # сеть и вход грузит только служба: `boba --stdio` стартует без них
         from boba.cli.serve import ServeEntry  # noqa: PLC0415
 
-        await ServeEntry(invocation.config, invocation.site).run()
+        await ServeEntry(invocation.config).run()
         return
 
     if invocation.command is Command.SELF_CHECK:
