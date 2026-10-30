@@ -49,9 +49,12 @@ def chainlit_context() -> None:
 @pytest.fixture(scope="session")
 def look_settings(request: pytest.FixtureRequest) -> LookSettings:
     out = str(request.config.getoption(LookOption.OUT.value))
-    root = request.config.rootpath / "debug" / "look-out"
-    if out:
-        root = Path(out)
+    if not out:
+        msg = (
+            "look tests write their report outside git: pass its directory with "
+            "--look-out <dir>"
+        )
+        raise pytest.UsageError(msg)
 
     baseline = str(request.config.getoption(LookOption.BASELINE.value))
     if not baseline:
@@ -62,7 +65,7 @@ def look_settings(request: pytest.FixtureRequest) -> LookSettings:
         raise pytest.UsageError(msg)
 
     update = str(request.config.getoption(LookOption.UPDATE.value))
-    return LookSettings(update=update, out=root, baseline=Path(baseline))
+    return LookSettings(update=update, out=Path(out), baseline=Path(baseline))
 
 
 @pytest.fixture(scope="session")

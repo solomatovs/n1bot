@@ -104,7 +104,7 @@ from boba.runtime.users import UsersTable
 from boba.stand.refs import StandRefs
 from boba.stand.service_signin import ServiceSignIn
 from boba.stand.signin import SignInStand
-from boba.stand.site import StandConfigPaths
+from boba.stand.site import StandConfigEnv, StandConfigPaths
 from boba.stand.storage import StorageSeed
 from boba.stand.ui.stand import ServiceStand, StandPorts, StandProcess
 from boba.stand.zygote import ROOTFS_IMAGE, SandboxCgroup
@@ -825,7 +825,7 @@ def app_texts() -> UiText:
 
 @pytest.fixture(scope="session")
 def app_config() -> AppConfig:
-    built = StandConfigPaths().load()
+    built = StandConfigPaths(StandConfigEnv.RUN).load()
     return bind(built, path="app", model=AppConfig)
 
 

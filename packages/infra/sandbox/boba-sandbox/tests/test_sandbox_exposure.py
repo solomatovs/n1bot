@@ -30,7 +30,7 @@ from boba.sandbox.zygote import (
 )
 from boba.stand.sandbox import section_profile
 from boba.stand.shell import ShellRun
-from boba.stand.site import StandConfigPaths
+from boba.stand.site import StandConfigEnv, StandConfigPaths
 from boba.stand.zygote import SandboxStand, ZygoteStand
 from boba.toolkit.launcher import ChannelOverflowError
 
@@ -220,7 +220,7 @@ class TestMountinfoHasNoHostPaths:
         """Каталог программы, каталог данных экземпляра и conf/krb рядом с
         конфигом прогона."""
         instance = bind(raw_config, InstanceConfig.SECTION, InstanceConfig)
-        krb = StandConfigPaths().paths()[0].resolve().parent / "krb"
+        krb = StandConfigPaths(StandConfigEnv.RUN).main().resolve().parent / "krb"
         values = (str(ProgramRoots().locate().root), instance.data_dir, str(krb))
 
         markers: list[str] = []

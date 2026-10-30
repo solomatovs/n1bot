@@ -1,19 +1,22 @@
 """Стенд интеграционных тестов: адреса, принципалы и учётки берутся из конфига.
 
 В коде тестов остаются имена ключей, реальные хосты и учётки живут в секции
-[stand] файла-наложения стенда (stand.toml рядом с config.toml отладки), которого
-нет в репозитории. Файлы называет переменная BOBA_CONFIG_PATH прогона: главный
-конфиг и наложения через os.pathsep. Значения, которым не нужен живой сервис
-(примеры доменов, разбор шаблонов), в конфиг не ходят.
+[stand] файла-наложения стенда (stand.toml разработчика), которого нет в
+репозитории. Файлы называют переменные прогона (StandConfigEnv): у чата —
+BOBA_CONFIG_PATH, у сервиса boba-mcp — BOBA_MCP_CONFIG_PATH; в каждой через
+os.pathsep сначала файлы приложения (главный конфиг и наложения), последним —
+наложение стенда. Значения, которым не нужен живой сервис (примеры доменов,
+разбор шаблонов), в конфиг не ходят.
 
 Ошибки:
-StandError — BOBA_CONFIG_PATH не задана, конфиг не загружается или в секции
-    [stand] нет ключа стенда.
+StandError — переменная файлов конфига не задана, в ней нет наложения стенда,
+    конфиг не загружается или в секции [stand] нет ключа стенда.
 """
 
 from __future__ import annotations
 
 import os
+from enum import StrEnum
 from pathlib import Path
 from typing import ClassVar
 
@@ -23,27 +26,47 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from boba.config import ConfigError, ConfigLoader, bind
 from boba.identity.directory import SimpleBind
 
-__all__ = ["Stand", "StandConfigPaths", "StandError"]
+__all__ = ["Stand", "StandConfigEnv", "StandConfigPaths", "StandError"]
 
 
 class StandError(Exception):
     """Конфиг стенда недоступен или неполон."""
 
 
-class StandConfigPaths:
-    """Файлы конфига прогона: BOBA_CONFIG_PATH — главный конфиг и наложения
-    через os.pathsep. Приложения получают файлы аргументами --config; эта
-    переменная — граница конфига тестов, у которых аргументов нет (фикстуры,
-    Stand)."""
+class StandConfigEnv(StrEnum):
+    """Переменные прогона с файлами конфига приложений стенда: через
+    os.pathsep файлы приложения (главный конфиг, затем наложения), последним —
+    наложение стенда stand.toml."""
 
-    ENV: ClassVar[str] = "BOBA_CONFIG_PATH"
+    RUN = "BOBA_CONFIG_PATH"
+    """Чат boba-aid: конфиг прогона фикстур и стенда чата."""
+    SERVICE = "BOBA_MCP_CONFIG_PATH"
+    """Сервис boba-mcp, который исполняет инструменты."""
+
+
+class StandConfigPaths:
+    """Файлы конфига приложения стенда из переменной прогона env.
+
+    Приложения получают файлы аргументами --config; переменная — граница
+    конфига тестов, у которых аргументов нет (фикстуры, Stand). Все файлы
+    (paths) читают тесты; процессу приложения стенд отдаёт файлы без
+    наложения стенда (app_paths), главный файл (main) называет каталог
+    conf/ экземпляра, где лежит krb/.
+    """
+
+    LEAST: ClassVar[int] = 2
+    """Файл приложения и наложение стенда."""
+
+    def __init__(self, env: StandConfigEnv) -> None:
+        self._env = env
 
     def paths(self) -> tuple[Path, ...]:
-        value = os.environ.get(self.ENV)
+        value = os.environ.get(self._env.value)
         if not value:
             msg = (
-                f"stand: {self.ENV} is required in the environment: the config.toml "
-                "of the run and its overlays separated by os.pathsep, got nothing"
+                f"stand: {self._env.value} is required in the environment: the "
+                "config files of the app and the stand overlay last, separated "
+                "by os.pathsep, got nothing"
             )
             raise StandError(msg)
 
@@ -54,14 +77,30 @@ class StandConfigPaths:
 
             paths.append(Path(part))
 
+        if len(paths) < self.LEAST:
+            msg = (
+                f"stand: {self._env.value} must name the config of the app and "
+                f"the stand overlay stand.toml last, got {len(paths)} file(s): "
+                f"{value}"
+            )
+            raise StandError(msg)
+
         return tuple(paths)
+
+    def app_paths(self) -> tuple[Path, ...]:
+        """Файлы приложения без наложения стенда: их получает процесс."""
+        return self.paths()[:-1]
+
+    def main(self) -> Path:
+        """Главный файл приложения: рядом с ним conf/krb экземпляра."""
+        return self.paths()[0]
 
     def load(self) -> DictConfig:
         paths = self.paths()
         try:
             return ConfigLoader(paths).load()
         except ConfigError as exc:
-            msg = f"stand: loading the config of the run {self.ENV}: {exc}"
+            msg = f"stand: loading the config files of {self._env.value}: {exc}"
             raise StandError(msg) from exc
 
 
@@ -147,7 +186,7 @@ class Stand(BaseModel):
     @classmethod
     def load(cls) -> Stand:
         """Стенд из конфига прогона: секция [stand] файлов BOBA_CONFIG_PATH."""
-        config = StandConfigPaths()
+        config = StandConfigPaths(StandConfigEnv.RUN)
         raw = config.load()
         try:
             return bind(raw, cls.SECTION, cls)

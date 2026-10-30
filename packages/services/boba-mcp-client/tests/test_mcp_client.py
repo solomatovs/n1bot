@@ -65,7 +65,7 @@ from boba.mcp_client.client import (
 from boba.runtime.config import ProgramRoots
 from boba.stand.apps_slot import AppServer, AppsSlot
 from boba.stand.service_signin import ServiceSignIn
-from boba.stand.ui.stand import REPO_ROOT
+from boba.stand.ui.stand import StandApp
 from boba.stand.ui.toml_text import TomlText
 from boba.stand.zygote import RUNTIME
 from boba.toolkit.calls import CallViews
@@ -1773,11 +1773,11 @@ class DeclaredClient(BaseModel):
 
 
 class BobaMcpService:
-    """Настоящий процесс сервиса на конфиге дерева отладки debug/mcp и
-    наложении теста в рабочем каталоге: `python -m boba.mcp_server --config
-    debug/mcp/conf/config.toml --config <каталог>/overlay.toml`, данные
-    процесса — в debug/mcp/data. Наложение меняет только тестовую базу набора,
-    порт, префикс, публичный адрес и способ запуска; вход — proxy, ключ
+    """Настоящий процесс сервиса на конфиге отладки boba-mcp и наложении теста
+    в рабочем каталоге: `python -m boba.mcp_server serve --config <файлы
+    сервиса из BOBA_MCP_CONFIG_PATH> --config <каталог>/overlay.toml`, данные
+    процесса — в каталоге данных отладки. Наложение меняет только тестовую базу
+    набора, порт, префикс, публичный адрес и способ запуска; вход — proxy, ключ
     утверждений и клиент берутся из [auth.proxy] и [mcp.clients] того же
     конфига."""
 
@@ -1789,15 +1789,14 @@ class BobaMcpService:
     PROFILE: str = "all"
     CLIENT: str = "boba-chat"
     RUNTIME: Path = RUNTIME.program.root
-    CONFIG: Path = REPO_ROOT / "debug" / "mcp" / "conf" / "config.toml"
-    """Конфиг сервиса в дереве отладки разработчика."""
 
     def __init__(self, workdir: Path, database: str) -> None:
         with socket.socket() as probe:
             probe.bind((self.HOST, 0))
             self.port = int(probe.getsockname()[1])
 
-        raw = ConfigLoader([self.CONFIG]).load()
+        self._files = StandApp.MCP.app_paths()
+        raw = ConfigLoader(self._files).load()
         self._proxy = bind(raw, "auth.proxy", ProxyAuthConfig)
         self._client = bind(raw, f"mcp.clients.{self.CLIENT}", DeclaredClient)
 
@@ -1820,11 +1819,7 @@ class BobaMcpService:
                 sys.executable,
                 "-m",
                 "boba.mcp_server",
-                "serve",
-                "--config",
-                str(self.CONFIG),
-                "--config",
-                str(overlay),
+                *self._arguments(overlay),
             ],
             env={
                 "PATH": "/usr/local/bin:/usr/bin:/bin",
@@ -1833,6 +1828,14 @@ class BobaMcpService:
             stdout=self._log,
             stderr=subprocess.STDOUT,
         )
+
+    def _arguments(self, overlay: Path) -> list[str]:
+        """Подкоманда serve и файлы конфига сервиса, последним — наложение."""
+        arguments = ["serve"]
+        for path in (*self._files, overlay):
+            arguments.extend(("--config", str(path)))
+
+        return arguments
 
     def endpoint(self) -> HttpEndpoint:
         service = HttpLocation(
@@ -1863,10 +1866,13 @@ class TestBobaMcpService:
 
     @pytest.fixture
     def process(self, tmp_path: Path, test_database: str) -> Iterator[BobaMcpService]:
-        if not BobaMcpService.CONFIG.is_file():
+        for path in StandApp.MCP.app_paths():
+            if path.is_file():
+                continue
+
             pytest.fail(
-                f"the service config {BobaMcpService.CONFIG} is not placed: the "
-                "debug tree of boba-mcp expects its config.toml"
+                f"the service config file {path} named by "
+                f"{StandApp.MCP.traits().config.value} does not exist"
             )
 
         process = BobaMcpService(tmp_path, test_database)
