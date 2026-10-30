@@ -12,7 +12,8 @@ PluginManifest (ManifestBuilder) и отдаёт его серверу JSON-ом
 ManifestError — объявление плагина не укладывается в спецификацию:
     injected-параметр не модель, соединение без вида, профиль соединения
     внутри списка или словаря конфига, два профиля разного вида по одному
-    пути; секция плагина не подходит модели его хранилища.
+    пути, секрет или профиль соединения в модели конфига прогрева; секция
+    плагина не подходит модели его хранилища.
 pydantic.ValidationError — манифест не проходит модель PluginManifest,
     в том числе чужой номер спецификации.
 """
@@ -38,7 +39,18 @@ from typing import (
     get_origin,
 )
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    AliasChoices,
+    AliasPath,
+    BaseModel,
+    ConfigDict,
+    Field,
+    Secret,
+    SecretBytes,
+    SecretStr,
+    ValidationError,
+    model_validator,
+)
 from pydantic.fields import FieldInfo
 
 from boba.core.validation import ValidationText
@@ -60,7 +72,9 @@ __all__ = [
     "PluginStorage",
     "ToolDecl",
     "ToolPlugin",
+    "WarmupConfigs",
     "WarmupDecl",
+    "WarmupSection",
 ]
 
 CfgT = TypeVar("CfgT", bound=BaseModel)
@@ -230,12 +244,19 @@ class ConfigConnection(BaseModel):
 
 
 class WarmupDecl(BaseModel):
-    """Прогрев зиготы в манифесте: модуль и имя хука."""
+    """Прогрев зиготы в манифесте: модуль, имя хука и ключи верхнего уровня
+    секции [tool.<id>], которые читает модель его конфига.
+
+    Хост отдаёт зиготе только эти ключи (WarmupSection). Строит объявление
+    WarmupConfigs: он же отказывает модели с секретом или профилем
+    соединения, так что ключи прогрева секретов не несут.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     module: str = Field(min_length=1)
     hook: str = Field(min_length=1)
+    keys: tuple[str, ...]
 
 
 class PluginManifest(BaseModel):
@@ -276,11 +297,190 @@ class PluginManifest(BaseModel):
 
         return raw
 
+    def warmup_keys(self) -> frozenset[str]:
+        """Ключи секции, которые читают прогревы плагина: объединение по всем."""
+        keys: set[str] = set()
+        for decl in self.warmups:
+            keys.update(decl.keys)
+
+        return frozenset(keys)
+
     def digest(self) -> str:
         """sha256 канонического JSON манифеста."""
         canonical = self.model_dump_json().encode("utf-8")
 
         return hashlib.sha256(canonical).hexdigest()
+
+
+class WarmupConfigs:
+    """Модель конфига прогрева → объявление прогрева в манифесте.
+
+    Секцию для прогревов хост отдаёт долгоживущей зиготе, и её память
+    наследует каждый вызов. Поэтому в объявление идут только ключи верхнего
+    уровня, которые читает модель (имена полей с учётом alias), а секрет
+    (SecretStr, SecretBytes, Secret) или профиль соединения
+    (ConnectionProfile) на любой глубине модели — отказ ManifestError с
+    путём поля. Держит его построитель манифеста (ManifestBuilder).
+    """
+
+    SECRETS: ClassVar[tuple[type, ...]] = (SecretStr, SecretBytes, Secret)
+
+    def decl(self, plugin: str, hook: WarmupHook) -> WarmupDecl:
+        """Объявление прогрева hook плагина plugin.
+
+        Ошибки:
+        ManifestError — в модели конфига прогрева секрет или профиль соединения.
+        """
+        model = hook.config_model
+        where = (
+            f"plugin {plugin!r}: warmup {hook.module}.{hook.name} config "
+            f"{model.__name__}"
+        )
+        self._refuse_fields(where, model, (), ())
+
+        keys = tuple(dict.fromkeys(self._keys(model)))
+
+        return WarmupDecl(module=hook.module, hook=hook.name, keys=keys)
+
+    def _keys(self, model: type[BaseModel]) -> Iterator[str]:
+        """Ключи секции, под которыми модель читает свои поля."""
+        config = model.model_config
+        by_name = bool(config.get("validate_by_name"))
+        if config.get("populate_by_name"):
+            by_name = True
+
+        for name, field in model.model_fields.items():
+            aliases = tuple(self._aliases(field))
+            yield from aliases
+
+            if not aliases:
+                yield name
+                continue
+
+            if by_name:
+                yield name
+
+    def _aliases(self, field: FieldInfo) -> Iterator[str]:
+        alias = field.validation_alias
+        if alias is None:
+            alias = field.alias
+
+        match alias:
+            case str():
+                yield alias
+            case AliasPath():
+                yield from self._path_head(alias)
+            case AliasChoices():
+                for choice in alias.choices:
+                    if isinstance(choice, AliasPath):
+                        yield from self._path_head(choice)
+                        continue
+
+                    yield choice
+            case None:
+                return
+
+    def _path_head(self, path: AliasPath) -> Iterator[str]:
+        """Ключ верхнего уровня пути alias: первый его шаг-строка."""
+        head = path.path[0]
+        if isinstance(head, str):
+            yield head
+
+    def _refuse_fields(
+        self,
+        where: str,
+        model: type[BaseModel],
+        path: tuple[str, ...],
+        seen: tuple[type[BaseModel], ...],
+    ) -> None:
+        if model in seen:
+            return
+
+        for name, field in model.model_fields.items():
+            self._refuse(where, field.annotation, (*path, name), (*seen, model))
+
+    def _refuse(
+        self,
+        where: str,
+        annotation: object,
+        path: tuple[str, ...],
+        seen: tuple[type[BaseModel], ...],
+    ) -> None:
+        """Секрет или профиль под аннотацией поля: в союзе, контейнере,
+        Annotated и вложенной модели."""
+        origin = get_origin(annotation)
+        if origin is Annotated:
+            self._refuse(where, get_args(annotation)[0], path, seen)
+            return
+
+        if origin is not None:
+            self._refuse_type(where, origin, path)
+            for member in get_args(annotation):
+                self._refuse(where, member, path, seen)
+            return
+
+        if not isinstance(annotation, type):
+            return
+
+        self._refuse_type(where, annotation, path)
+
+        if issubclass(annotation, BaseModel):
+            self._refuse_fields(where, annotation, path, seen)
+
+    def _refuse_type(self, where: str, kind: object, path: Sequence[str]) -> None:
+        if not isinstance(kind, type):
+            return
+
+        what = self._forbidden(kind)
+        if not what:
+            return
+
+        pointer = ConfigConnection.SEPARATOR + ConfigConnection.SEPARATOR.join(path)
+        msg = (
+            f"{where} holds a {what} at {pointer}: the warmup section is handed "
+            "to the long-lived zygote, whose memory every call inherits, so "
+            "secrets and connection profiles are not allowed in a warmup config; "
+            "read them in the tool body from its injected config instead"
+        )
+        raise ManifestError(msg)
+
+    def _forbidden(self, kind: type) -> str:
+        """Чем тип запрещён в конфиге прогрева; пусто — разрешён."""
+        if issubclass(kind, ConnectionProfile):
+            return f"connection profile {kind.__name__}"
+
+        if issubclass(kind, self.SECRETS):
+            return f"secret {kind.__name__}"
+
+        return ""
+
+
+class WarmupSection:
+    """Часть секции [tool.<id>], которую хост отдаёт зиготе плагина.
+
+    Зиготе уходят только ключи, объявленные прогревами манифеста
+    (PluginManifest.warmup_keys) — список разрешённого, а не вырезание
+    запрещённого: ключ, которого не читает ни одна модель прогрева, в
+    зиготу не попадает. Плагин без прогревов получает пустую секцию. Тело
+    вызова секцию получает целиком своим injected-параметром. Держат его
+    способ запуска в песочнице (ZygoteLaunchers) и стенд зигот.
+    """
+
+    def of(
+        self, manifest: PluginManifest, section: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        allowed = self._allowed(manifest.warmup_keys(), section)
+
+        return dict(allowed)
+
+    def _allowed(
+        self, keys: frozenset[str], section: Mapping[str, Any]
+    ) -> Iterator[tuple[str, Any]]:
+        for key, value in section.items():
+            if key not in keys:
+                continue
+
+            yield key, value
 
 
 class ManifestReader:
@@ -319,6 +519,7 @@ class ManifestBuilder:
     def __init__(self) -> None:
         self._schemas = CallSchema()
         self._views = CallViews()
+        self._warmups = WarmupConfigs()
 
     def manifest(self, plugin: ToolPlugin, version: str) -> PluginManifest:
         tools: list[ToolDecl] = []
@@ -327,7 +528,7 @@ class ManifestBuilder:
 
         warmups: list[WarmupDecl] = []
         for hook in plugin.warmups:
-            warmups.append(WarmupDecl(module=hook.module, hook=hook.name))
+            warmups.append(self._warmups.decl(plugin.id, hook))
 
         return PluginManifest(
             spec=PluginManifest.SPEC,

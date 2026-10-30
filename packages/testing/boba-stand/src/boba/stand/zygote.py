@@ -8,11 +8,13 @@
 from __future__ import annotations
 
 import gzip
+import logging
 import os
+import re
 import shutil
 import subprocess
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
@@ -31,7 +33,7 @@ from boba.sandbox.zygote import (
 from boba.stand.shell import ShellRun
 from boba.stand.ui.stand import StandRuntime
 from boba.toolkit.chain import CallAmbient
-from boba.toolkit.manifest import ManifestBuilder
+from boba.toolkit.manifest import ManifestBuilder, WarmupSection
 
 REPO = Path(__file__).resolve().parents[6]
 RUNTIME = StandRuntime()
@@ -587,6 +589,7 @@ class ZygoteStand:
         self._zygotes = ZygoteRegistry(RUNTIME.program.interpreter)
         self._entry = PluginEntry()
         self._builder = ManifestBuilder()
+        self._warmups = WarmupSection()
 
     def registry(self) -> ZygoteRegistry:
         """Реестр зигот стенда для тестов, которым нужен сам супервизор."""
@@ -600,8 +603,9 @@ class ZygoteStand:
         warmup: Mapping[str, Any] = NO_WARMUP,
     ) -> ZygoteSection:
         """Секция зиготы над объявлениями plugins (`модуль:имя`) и bash-тулом:
-        shell-команды стенда идут через него. warmup — секция конфига для
-        прогревов."""
+        shell-команды стенда идут через него. warmup — секция конфига
+        плагина: зигота, как в приложении, получает из неё только ключи
+        прогревов манифеста."""
         refs = [ShellRun.PLUGIN]
         for ref in plugins:
             if ref == ShellRun.PLUGIN:
@@ -618,7 +622,7 @@ class ZygoteStand:
             profile=SandboxStand.with_shell(profile),
             program=(*program, PluginCommand.ZYGOTE.value),
             policy=self.POLICY,
-            warmup=warmup,
+            warmup=self._warmups.of(manifest, warmup),
             manifest=manifest.digest(),
         )
 
@@ -664,3 +668,59 @@ class ZygoteStand:
 
     def stop(self) -> None:
         self._zygotes.stop_all()
+
+
+class WarmupTrace:
+    """Прогрев зиготы её же словами: ключи секции, с которыми она
+    прогревалась, и прогретые хуки.
+
+    Зигота пишет их кадрами лога, хост переносит кадры в свой журнал
+    (SandboxLogRelay) записями `tool[<секция>] <логер>: …`; тест собирает
+    записи caplog'ом и разбирает здесь только их — хвост stderr в записи об
+    остановке зиготы те же строки повторяет.
+    Так проверяется, что дошло до самой зиготы, а не что хост собирался ей
+    отдать.
+    """
+
+    KEYS: ClassVar[re.Pattern[str]] = re.compile(
+        r"tool\[[^\]]*\] \S+: zygote: plugin \S+ warms up with section keys "
+        r"\[(?P<keys>[^\]]*)\]$"
+    )
+    WARMED: ClassVar[re.Pattern[str]] = re.compile(
+        r"tool\[[^\]]*\] \S+: zygote: (?P<hook>\S+) warmed up in \d+ms$"
+    )
+
+    def keys(self, records: Iterable[logging.LogRecord]) -> tuple[str, ...]:
+        """Ключи секции прогрева единственной зиготы, поднятой за тест; ни
+        одной записи или несколько — отказ теста."""
+        reported: list[re.Match[str]] = list(self._matches(records, self.KEYS))
+        if len(reported) != 1:
+            msg = (
+                "expected one zygote to report its warmup section keys, got "
+                f"{len(reported)} reports"
+            )
+            raise AssertionError(msg)
+
+        listed = reported[0]["keys"]
+        if not listed:
+            return ()
+
+        return tuple(listed.split(", "))
+
+    def warmed(self, records: Iterable[logging.LogRecord]) -> tuple[str, ...]:
+        """Хуки `модуль.имя`, которые зигота прогрела."""
+        hooks: list[str] = []
+        for match in self._matches(records, self.WARMED):
+            hooks.append(match["hook"])
+
+        return tuple(hooks)
+
+    def _matches(
+        self, records: Iterable[logging.LogRecord], pattern: re.Pattern[str]
+    ) -> Iterator[re.Match[str]]:
+        for record in records:
+            match = pattern.match(record.getMessage())
+            if match is None:
+                continue
+
+            yield match
