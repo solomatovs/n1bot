@@ -14,6 +14,15 @@
     "python.analysis.diagnosticMode": "workspace",
     "vectorExplorer.pythonPath": "${workspaceFolder}/.venv/bin/python",
     "git.ignoreLimitWarning": true,
+    "files.watcherExclude": {
+        "**/.claude/worktrees/**": true,
+        "**/.venv/**": true,
+        "**/node_modules/**": true,
+        "**/__pycache__/**": true,
+        "**/build/src/**": true,
+        "**/release/**": true,
+        "**/runtime/**": true
+    },
     "cSpell.enabled": false,
     "cSpell.enabledFileTypes": {
         "*": false
