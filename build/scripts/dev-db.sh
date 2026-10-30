@@ -149,7 +149,7 @@ while IFS= read -r name; do
 done
 
 echo ">>> environment of $developer is ready: chat and service database $aid, working databases $playground"
-echo "    debug/conf/site.toml of the developer: developer = \"$developer\", pg_database = \"aid_\${site.developer}\""
+echo "    debug/<app>/conf/config.toml of the developer: postgres.dbname = \"$aid\""
 echo "    password connections reach $playground once pg_hba.conf of the server lets the role in, before the gss rules:"
 pg -d "$aid" -At -v schema="$schema" <<'SQL' |
 select distinct data -> 'auth' ->> 'user' from :"schema".connections

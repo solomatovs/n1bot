@@ -28,10 +28,9 @@ services:
       - boba.mcp_server
       - --config
       - /app/boba/conf/config.toml
-      - --site
-      - /app/boba/conf/site.toml
     volumes:
-      - ./conf/site.toml:/app/boba/conf/site.toml:ro
+      - ./conf/config.toml:/app/boba/conf/config.toml:ro
+      - ./conf/prompts:/app/boba/conf/prompts:ro
       - ./conf/krb:/app/boba/conf/krb:ro
       - ./conf/krb/krb5.conf:/etc/krb5.conf:ro
       - ./data:/app/boba/data:rw

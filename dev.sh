@@ -84,4 +84,4 @@ else
 fi
 
 # BOBA_* сюда не тянем: цели launch.json называют файлы конфигурации аргументами
-# --config и --site, тесты — переменными BOBA_CONFIG_PATH и BOBA_SITE_PATH
+# --config, тесты — переменной BOBA_CONFIG_PATH

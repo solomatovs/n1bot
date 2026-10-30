@@ -510,14 +510,15 @@ RUN chmod -R go-w ${BOBA_DIR}/third/bin ${BOBA_DIR}/sandbox \
 
 # образ сервиса: модели, образы корней плагинов и шаблон workspace внутри (снаружи приложению
 # нужны только конфиг и данные, и пересборка плагинов не меняет файлы под живым
-# контейнером), общий конфиг внутри, site.toml и данные приходят деревом compose/mcp
+# контейнером), файлы плагинов внутри, config.toml экземпляра, промпты и данные приходят
+# деревом compose/mcp
 FROM ${SANDBOX_IMAGE} AS runtime-mcp
 
 ARG BOBA_DIR=/app/boba
 ARG BOBA_UID=1000
 ARG BOBA_GID=1000
 
-COPY packages/apps/boba-mcp/conf/  ${BOBA_DIR}/conf/
+COPY packages/apps/boba-mcp/conf/plugins/  ${BOBA_DIR}/conf/plugins/
 
 COPY --from=app-site /opt/app-site          ${BOBA_DIR}/app/
 COPY --from=app-site /opt/app-packages.txt  ${BOBA_DIR}/app/packages.txt
@@ -526,7 +527,7 @@ RUN sed -i "1s|^#!.*python3.*|#!${BOBA_DIR}/third/bin/python3|" ${BOBA_DIR}/app/
 
 EXPOSE 8650
 USER ${BOBA_UID}:${BOBA_GID}
-CMD ["-m", "boba.mcp_server", "--config", "/app/boba/conf/config.toml", "--site", "/app/boba/conf/site.toml"]
+CMD ["-m", "boba.mcp_server", "--config", "/app/boba/conf/config.toml"]
 
 
 # --- агент как служба: boba serve --------------------------------------------------
@@ -535,14 +536,13 @@ CMD ["-m", "boba.mcp_server", "--config", "/app/boba/conf/config.toml", "--site"
 # (`boba serve`), сессии всех подключений — потоки одного процесса. app-site — тот же
 # boba-cli модулем: им проверяется образ и работает установка без Docker. Песочницы и
 # моделей нет: агент ходит к модели по сети, инструменты ему дают клиенты по
-# MCP-over-ACP. Общий конфиг внутри, site.toml и данные приходят деревом compose/boba
+# MCP-over-ACP. config.toml экземпляра и данные приходят деревом compose/boba
 FROM runtime-os AS runtime-boba
 
 ARG BOBA_DIR=/app/boba
 ARG BOBA_UID=1000
 ARG BOBA_GID=1000
 
-COPY packages/apps/boba-cli/conf/  ${BOBA_DIR}/conf/
 COPY --from=boba-bin /out/         ${BOBA_DIR}/bin/
 
 COPY --from=app-site /opt/app-site          ${BOBA_DIR}/app/
@@ -553,7 +553,7 @@ RUN sed -i "1s|^#!.*python3.*|#!${BOBA_DIR}/third/bin/python3|" ${BOBA_DIR}/app/
 EXPOSE 8660
 USER ${BOBA_UID}:${BOBA_GID}
 ENTRYPOINT ["/app/boba/bin/boba.dist/boba.bin"]
-CMD ["serve", "--config", "/app/boba/conf/config.toml", "--site", "/app/boba/conf/site.toml"]
+CMD ["serve", "--config", "/app/boba/conf/config.toml"]
 
 
 # --- boba-aid: чат -------------------------------------------------------------------
@@ -622,8 +622,6 @@ COPY --chown=${BOBA_UID}:${BOBA_GID} build/src/webassets/                       
 RUN chown ${BOBA_UID}:${BOBA_GID} ${BOBA_DIR}/app_root \
        ${BOBA_DIR}/app_root/.chainlit ${BOBA_DIR}/app_root/public
 
-COPY packages/apps/boba-aid/conf/  ${BOBA_DIR}/conf/
-
 COPY --from=app-site /opt/app-site          ${BOBA_DIR}/app/
 COPY --from=app-site /opt/app-packages.txt  ${BOBA_DIR}/app/packages.txt
 # шебанги стадии сборки ведут на /usr/local/bin/python3, которого здесь нет
@@ -631,4 +629,4 @@ RUN sed -i "1s|^#!.*python3.*|#!${BOBA_DIR}/third/bin/python3|" ${BOBA_DIR}/app/
 
 EXPOSE 8501
 USER ${BOBA_UID}:${BOBA_GID}
-CMD ["-m", "boba.aid.main", "--config", "/app/boba/conf/config.toml", "--site", "/app/boba/conf/site.toml"]
+CMD ["-m", "boba.aid.main", "--config", "/app/boba/conf/config.toml"]

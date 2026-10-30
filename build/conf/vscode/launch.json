@@ -16,14 +16,13 @@
             "jinja": true,
             "args": [
                 "--config",
-                "${workspaceFolder}/packages/apps/boba-aid/conf/config.toml",
-                "--site",
-                "${workspaceFolder}/debug/aid/conf/site.toml"
+                "${workspaceFolder}/debug/aid/conf/config.toml",
+                "--config",
+                "${workspaceFolder}/debug/aid/conf/agent_mode-${input:agentMode}.toml"
             ],
             "env": {
                 "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/runtime/third/bin:${env:PATH}",
-                "LD_LIBRARY_PATH": "${workspaceFolder}/runtime/third/lib",
-                "BOBA_AGENT_MODE": "${input:agentMode}"
+                "LD_LIBRARY_PATH": "${workspaceFolder}/runtime/third/lib"
             }
         },
         {
@@ -39,14 +38,13 @@
             "module": "boba.mcp_server",
             "args": [
                 "--config",
-                "${workspaceFolder}/packages/apps/boba-mcp/conf/config.toml",
-                "--site",
-                "${workspaceFolder}/debug/mcp/conf/site.toml"
+                "${workspaceFolder}/debug/mcp/conf/config.toml",
+                "--config",
+                "${workspaceFolder}/debug/mcp/conf/tool_launcher-${input:toolLauncher}.toml"
             ],
             "env": {
                 "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/runtime/third/bin:${env:PATH}",
-                "LD_LIBRARY_PATH": "${workspaceFolder}/runtime/third/lib",
-                "BOBA_TOOL_LAUNCHER": "${input:toolLauncher}"
+                "LD_LIBRARY_PATH": "${workspaceFolder}/runtime/third/lib"
             }
         },
         {
@@ -63,9 +61,7 @@
             "args": [
                 "serve",
                 "--config",
-                "${workspaceFolder}/packages/apps/boba-cli/conf/config.toml",
-                "--site",
-                "${workspaceFolder}/debug/boba/conf/site.toml"
+                "${workspaceFolder}/debug/boba/conf/config.toml"
             ],
             "env": {
                 "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/runtime/third/bin:${env:PATH}",
@@ -82,7 +78,7 @@
             "justMyCode": false,
             "stopOnEntry": false,
             "module": "boba.runtime.toolcli",
-            "args": "${input:toolCall} --config ${workspaceFolder}/packages/apps/boba-mcp/conf/config.toml --site ${workspaceFolder}/debug/mcp/conf/site.toml --args ${workspaceFolder}/.vscode/injected/${input:toolInjected}.json",
+            "args": "${input:toolCall} --config ${workspaceFolder}/debug/mcp/conf/config.toml --args ${workspaceFolder}/.vscode/injected/${input:toolInjected}.json",
             "env": {
                 "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/runtime/third/bin:${env:PATH}",
                 "LD_LIBRARY_PATH": "${workspaceFolder}/runtime/third/lib",
@@ -184,8 +180,7 @@
             "env": {
                 "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/runtime/third/bin:${env:PATH}",
                 "LD_LIBRARY_PATH": "${workspaceFolder}/runtime/third/lib",
-                "BOBA_CONFIG_PATH": "${workspaceFolder}/packages/apps/boba-aid/conf/config.toml",
-                "BOBA_SITE_PATH": "${workspaceFolder}/debug/aid/conf/site.toml",
+                "BOBA_CONFIG_PATH": "${workspaceFolder}/debug/aid/conf/config.toml:${workspaceFolder}/debug/aid/conf/stand.toml",
                 "BOBA_CGROUP_BASE": "@DEBUG_CGROUP@"
             },
             "justMyCode": false,
@@ -207,8 +202,7 @@
             "env": {
                 "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/runtime/third/bin:${env:PATH}",
                 "LD_LIBRARY_PATH": "${workspaceFolder}/runtime/third/lib",
-                "BOBA_CONFIG_PATH": "${workspaceFolder}/packages/apps/boba-aid/conf/config.toml",
-                "BOBA_SITE_PATH": "${workspaceFolder}/debug/aid/conf/site.toml",
+                "BOBA_CONFIG_PATH": "${workspaceFolder}/debug/aid/conf/config.toml:${workspaceFolder}/debug/aid/conf/stand.toml",
                 "BOBA_CGROUP_BASE": "@DEBUG_CGROUP@"
             },
             "justMyCode": false,
@@ -233,8 +227,7 @@
             "env": {
                 "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/runtime/third/bin:${env:PATH}",
                 "LD_LIBRARY_PATH": "${workspaceFolder}/runtime/third/lib",
-                "BOBA_CONFIG_PATH": "${workspaceFolder}/packages/apps/boba-aid/conf/config.toml",
-                "BOBA_SITE_PATH": "${workspaceFolder}/debug/aid/conf/site.toml",
+                "BOBA_CONFIG_PATH": "${workspaceFolder}/debug/aid/conf/config.toml:${workspaceFolder}/debug/aid/conf/stand.toml",
                 "BOBA_CGROUP_BASE": "@DEBUG_CGROUP@"
             },
             "justMyCode": false,
@@ -254,8 +247,7 @@
             "env": {
                 "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/runtime/third/bin:${env:PATH}",
                 "LD_LIBRARY_PATH": "${workspaceFolder}/runtime/third/lib",
-                "BOBA_CONFIG_PATH": "${workspaceFolder}/packages/apps/boba-aid/conf/config.toml",
-                "BOBA_SITE_PATH": "${workspaceFolder}/debug/aid/conf/site.toml",
+                "BOBA_CONFIG_PATH": "${workspaceFolder}/debug/aid/conf/config.toml:${workspaceFolder}/debug/aid/conf/stand.toml",
                 "BOBA_CGROUP_BASE": "@DEBUG_CGROUP@"
             },
             "justMyCode": false,

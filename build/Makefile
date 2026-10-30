@@ -30,7 +30,7 @@ THIRD_DIR       := $(RUNTIME_DIR)/third
 SANDBOX_DIR     := $(RUNTIME_DIR)/sandbox
 RELEASE_DIR     := $(SRC_DIR)/release
 
-# приложения сборки; цели build, test, dev, debug, release, install и site-keys работают
+# приложения сборки; цели build, test, dev, debug, release и install работают
 # по одному приложению (APP=<имя> либо <цель>-<имя>), без APP — по всем
 APPS            := aid mcp boba
 APP             ?=
@@ -77,7 +77,6 @@ PACKAGES_boba     = boba-cli
 NAME_boba        := boba
 IMPORTS_boba     := boba.cli.serve
 MODULE_boba      := boba.cli.app serve
-CONF_boba        := boba-cli
 STAGE_boba       := runtime-boba
 HEALTH_boba      := /health
 PORT_boba        := 8660
@@ -103,9 +102,6 @@ APP_PREFIX        = $(PREFIX_$(APP))
 APP_SANDBOX       = $(SANDBOX_$(APP))
 APP_MODELS        = $(MODELS_$(APP))
 APP_BUILD_ARGS    = $(BUILD_ARGS_$(APP))
-# общий конфиг приложения и его плагины: в пакете приложения, в git; CONF_<app> —
-# пакет, если он назван не по приложению
-APP_CONF          = $(SRC_DIR)/packages/apps/$(or $(CONF_$(APP)),boba-$(APP))/conf
 
 ifneq ($(APP),)
 ifeq ($(filter $(APP),$(APPS)),)
@@ -329,7 +325,7 @@ SANDBOX_TOOLS   := $(SANDBOX_DIR)/tools/mke2fs $(SANDBOX_DIR)/tools/mke2fs.conf
 RELEASE_SANDBOX := sandbox/plugins sandbox/workspace.ext4 third/bin/bwrap third/bin/fuse2fs
 RELEASE_PARTS    = $(if $(APP_SANDBOX),$(RELEASE_SANDBOX)) \
                    third/bin/python3 third/lib/libstdc++.so.6 third/lib/libgcc_s.so.1 \
-                   app/bin conf/config.toml $(PARTS_$(APP)) $(APP_MODELS:%=models/%) \
+                   app/bin $(PARTS_$(APP)) $(APP_MODELS:%=models/%) \
                    $(APP_MODEL_IMAGES:%=models/%.ext4)
 
 # каталоги krb dev-деревьев: точки монтирования в образе корня плагина
@@ -612,14 +608,13 @@ fi
 echo "    .env проверен: $(OUT)/.env"
 endef
 
-# site.toml случая запуска пишет администратор: в нём адреса и секреты машины. Цель
-# его не порождает, а говорит, откуда взять перечень ключей. $(1) — каталог conf
-define site-hint
-if [ -e "$(1)/site.toml" ]; then
-    echo "    site.toml на месте: $(1)/site.toml"
+# config.toml экземпляра пишет администратор: в нём устройство приложения, адреса и
+# секреты машины. Цель его не порождает. $(1) — каталог conf
+define config-hint
+if [ -e "$(1)/config.toml" ]; then
+    echo "    config.toml на месте: $(1)/config.toml"
 else
-    echo "    нет $(1)/site.toml — напиши его по перечню ключей: make site-keys APP=$(APP)"
-    echo "    (docs/admin-guide.md, раздел «Конфигурация»)"
+    echo "    нет $(1)/config.toml — напиши его (docs/admin-guide.md, раздел «Конфигурация»)"
 fi
 endef
 
@@ -690,7 +685,6 @@ define HELP
 Деревья запуска (тоже по APP):
   dev                   compose/<приложение>: boba.env, data, .env, юнит песочницы (mcp), владельцы
   debug                 debug/<приложение> и .vscode из образцов; для aid собирает фронт (web)
-  site-keys             ключи site.toml, на которые ссылается общий конфиг
   dev-db                базы разработчика: DEVELOPER=<логин> SOURCE=<база стенда> TEMPLATE=<шаблон>
                         CH_CLUSTER=<кластер>; aid_<логин>, playground_<логин> в postgres и ClickHouse,
                         соединения стенда на них. Postgres — PGHOST/PGUSER…, ClickHouse — CH_URL,
@@ -1092,10 +1086,10 @@ boba-bin: version-check
 # --- по приложению: образ, проверка, деревья ---------------------------------------
 
 # <цель>-<приложение> — то же, что <цель> APP=<приложение>
-build-% test-% dev-% debug-% release-% install-% site-keys-%:
+build-% test-% dev-% debug-% release-% install-%:
 	@$(MAKE) -f "$(MAKEFILE)" $(patsubst %-$*,%,$@) APP=$*
 
-.PHONY: build test dev debug release install site-keys
+.PHONY: build test dev debug release install
 
 ifeq ($(APP),)
 
@@ -1105,7 +1099,6 @@ dev: $(APPS:%=dev-%)
 debug: $(APPS:%=debug-%)
 release: $(APPS:%=release-%)
 install: $(APPS:%=install-%)
-site-keys: $(APPS:%=site-keys-%)
 
 else
 
@@ -1191,8 +1184,8 @@ release:
 
 # установка дерева релиза в INSTALL_DIR и пользовательских юнитов systemd: приложение
 # работает без Docker от того пользователя, который запустил цель. Части релиза (код,
-# интерпретатор, агент, статика, модели, образы песочницы) и общий конфиг с плагинами
-# заменяются целиком; conf/site.toml, conf/boba.env, conf/krb и data остаются.
+# интерпретатор, агент, статика, модели, образы песочницы) и файлы плагинов заменяются
+# целиком; conf/config.toml, conf/prompts, conf/boba.env, conf/krb и data остаются.
 # Работающий экземпляр цель не трогает — его сначала останавливают
 install:
 	@$(call check,$(OUT)/app $(OUT)/third $(OUT)/boba-$(INSTANCE).service,запусти: make release APP=$(APP))
@@ -1222,15 +1215,11 @@ install:
 	else
 	    install -m 0644 "$(OUT)/conf/boba.env" "$(INSTALL_DIR)/conf/boba.env"
 	fi
-	rm -rf "$(INSTALL_DIR)/conf/plugins" "$(INSTALL_DIR)/conf/prompts"
-	cp -a "$(OUT)/conf/config.toml" "$(INSTALL_DIR)/conf/config.toml"
+	rm -rf "$(INSTALL_DIR)/conf/plugins"
 	if [ -d "$(OUT)/conf/plugins" ]; then
 	    cp -a "$(OUT)/conf/plugins" "$(INSTALL_DIR)/conf/plugins"
 	fi
-	if [ -d "$(OUT)/conf/prompts" ]; then
-	    cp -a "$(OUT)/conf/prompts" "$(INSTALL_DIR)/conf/prompts"
-	fi
-	$(call site-hint,$(INSTALL_DIR)/conf)
+	$(call config-hint,$(INSTALL_DIR)/conf)
 	mkdir -p "$(USER_UNITS)"
 	install -m 0644 "$(OUT)/boba-$(INSTANCE).service" "$(USER_UNITS)/boba-$(INSTANCE).service"
 	systemctl --user daemon-reload
@@ -1243,10 +1232,10 @@ install:
 	echo "    журнал:  journalctl --user -u boba-$(INSTANCE).service -f"
 
 # рабочее дерево приложения для docker compose: conf, data и .env;
-# docker-compose*.yml лежат в нём же и трекаются git'ом. Общий конфиг, модели и образы
-# песочницы лежат в образе. В conf дерева — только
-# специфика машины: site.toml (пишет администратор), keytab и krb5.conf. Готовые
-# .env и site.toml цель не трогает
+# docker-compose*.yml лежат в нём же и трекаются git'ом. Файлы плагинов, модели и образы
+# песочницы лежат в образе. В conf дерева — config.toml экземпляра (пишет
+# администратор), промпты mcp, keytab и krb5.conf. Готовые .env и config.toml цель
+# не трогает
 dev: OUT = $(SRC_DIR)/compose/$(APP)
 dev:
 	@echo "== дерево compose $(APP) в $(OUT) =="
@@ -1257,7 +1246,7 @@ dev:
 	fi
 	( umask 027; mkdir -p "$(OUT)/conf/krb" )
 	$(call app-env,$(DEST_DIR),$(DEST_DIR)/data) > "$(OUT)/conf/boba.env"
-	$(call site-hint,$(OUT)/conf)
+	$(call config-hint,$(OUT)/conf)
 	if [ -e "$(OUT)/.env" ]; then
 	    echo "    .env уже есть, не трогаю: $(OUT)/.env"
 	else
@@ -1279,11 +1268,11 @@ dev:
 	echo "    compose: cd $(OUT) && docker compose up -d $(APP)"
 	echo "    debug:   make debug APP=$(APP)"
 
-# дерево отладки и тестов на хосте: свои данные и свой site.toml, чтобы процесс на хосте
-# и контейнер compose не писали в одни каталоги. Общий конфиг отладка читает прямо из
-# пакета приложения, модели, third и образы песочницы — из runtime/, статику — из
-# ассетов пакета (её собирает цель из WEB_<приложение>). site.toml отладки пишет
-# администратор; цель его не порождает
+# дерево отладки и тестов на хосте: свои данные и свой config.toml, чтобы процесс на
+# хосте и контейнер compose не писали в одни каталоги. Файлы плагинов отладка читает
+# прямо из пакета mcp, модели, third и образы песочницы — из runtime/, статику — из
+# ассетов пакета (её собирает цель из WEB_<приложение>). config.toml отладки пишет
+# разработчик; цель его не порождает
 debug: OUT = $(SRC_DIR)/debug/$(APP)
 debug: $(WEB_$(APP)) vscode
 	@$(call check,$(RUNTIME_LIBS),запусти: make sandbox)
@@ -1298,15 +1287,10 @@ debug: $(WEB_$(APP)) vscode
 	fi
 	( umask 077; mkdir -p "$(OUT)/conf" )
 	$(call data-dirs,$(OUT)/data)
-	$(call site-hint,$(OUT)/conf)
+	$(call config-hint,$(OUT)/conf)
 	echo ">>> дерево отладки готово: $(OUT)"
-	echo "    debug:   python -m $(APP_MODULE) --config $(APP_CONF)/config.toml --site $(OUT)/conf/site.toml"
-	echo "    cgroup песочницы отладки для site.toml: $(call sandbox-cgroup,debug)"
-
-# перечень ключей site.toml приложения: всё, на что общий конфиг и плагины ссылаются
-# как ${env.*} и ${site.*}
-site-keys:
-	@$(PYTHON) "$(SCRIPTS_DIR)/site_keys.py" "$(APP_CONF)"
+	echo "    debug:   python -m $(APP_MODULE) --config $(OUT)/conf/config.toml"
+	echo "    cgroup песочницы отладки для config.toml: $(call sandbox-cgroup,debug)"
 
 endif
 

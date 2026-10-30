@@ -9,7 +9,7 @@ Slice=boba-@INSTANCE@.slice
 WorkingDirectory=@INSTALL_DIR@
 EnvironmentFile=@INSTALL_DIR@/conf/boba.env
 Environment=BOBA_CGROUP_BASE=/sys/fs/cgroup/user.slice/user-%U.slice/user@%U.service/boba.slice/boba-@INSTANCE@.slice/boba-sandbox@@INSTANCE@.service/sandbox
-ExecStart=@INSTALL_DIR@/third/bin/python3 -m @MODULE@ --config @INSTALL_DIR@/conf/config.toml --site @INSTALL_DIR@/conf/site.toml
+ExecStart=@INSTALL_DIR@/third/bin/python3 -m @MODULE@ --config @INSTALL_DIR@/conf/config.toml
 Restart=always
 RestartSec=5
 TimeoutStopSec=30
