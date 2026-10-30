@@ -20,7 +20,7 @@ from typing import Any, ClassVar
 
 import psycopg
 import pytest
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 from psycopg import sql
 
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
@@ -30,6 +30,7 @@ from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.runtime.plugins import PluginKits
 from boba.stand.names import StandNames
+from boba.stand.overlay import ConfigOverlay
 from boba.stand.refs import StandRefs
 from boba.stand.toolsetup import ToolSetup
 from boba.stand.ui.stand import REPO_ROOT, ServiceStand, StandApp, StandPorts
@@ -45,7 +46,7 @@ class BareDatabase:
     """Пустая база стенда из template0 для одного теста: без vector, pg_trgm,
     unaccent и btree_gin.
 
-    Сервис ходит в неё ролью из site.toml стенда, а создаёт и удаляет её роль
+    Сервис ходит в неё ролью из конфига стенда, а создаёт и удаляет её роль
     stand_postgres, которой чужие сессии не завершить. Поэтому drop ждёт, пока
     сессии вышедшего процесса закроются; если они не закрылись в срок, drop
     падает и называет их pid, роль и application_name.
@@ -132,10 +133,7 @@ async def test_service_without_vector_exits_naming_the_extensions(
         sys.executable,
         "-m",
         StandApp.MCP.module,
-        "--config",
-        str(config.files.config),
-        "--site",
-        str(config.files.site),
+        *config.files.arguments(StandApp.MCP),
     ]
 
     with log_path.open("wb") as log:
@@ -164,15 +162,6 @@ async def test_service_without_vector_exits_naming_the_extensions(
     assert "vector, pg_trgm, unaccent, btree_gin must exist" in output, tail
 
 
-def _replaced(raw: DictConfig, path: str, key: str, value: str) -> None:
-    """Значение key в таблице path, заданной интерполяцией: таблица ложится
-    развёрнутой копией, иначе правка затёрла бы интерполяцию целиком."""
-    table = OmegaConf.to_container(OmegaConf.select(raw, path), resolve=True)
-    assert isinstance(table, dict)
-    table[key] = value
-    OmegaConf.update(raw, path, table, merge=False)
-
-
 def _credentials() -> KerberosCredentialSource:
     return KerberosCredentialSource(None, NoRefresh())
 
@@ -186,13 +175,17 @@ async def test_setup_in_the_sandbox_creates_the_kb_tables(
 ) -> None:
     """kb объявил setup: на старте его программа в песочнице создаёт таблицы
     в своей схеме, keytab-профиль уехал туда билетом вызова."""
-    raw = ToolSetup.sandbox_raw(raw_config)
+    sandboxed = ToolSetup.sandbox_raw(raw_config)
     schema = StandNames().of_tree("kb_setup")
-    for plugin_id in raw["tool"]:
-        OmegaConf.update(raw, f"tool.{plugin_id}.enable", plugin_id == "kb")
+    # таблицы, заданные ссылкой, наложение сливает с развёрнутой копией
+    changes: dict[str, object] = {
+        "tool.kb.connection.dbname": test_database,
+        "tool.kb.tables.pg_schema": schema,
+    }
+    for plugin_id in sandboxed["tool"]:
+        changes[f"tool.{plugin_id}.enable"] = plugin_id == "kb"
 
-    _replaced(raw, "tool.kb.connection", "dbname", test_database)
-    _replaced(raw, "tool.kb.tables", "pg_schema", schema)
+    raw = ConfigOverlay(sandboxed).merged(changes)
     arming = SectionTickets(ServiceTickets(_credentials), ConnectionTypes.discover)
 
     async with await AsyncPostgresPool.dedicated(test_postgres) as conn:

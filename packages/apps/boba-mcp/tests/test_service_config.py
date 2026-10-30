@@ -9,21 +9,20 @@
 
 from __future__ import annotations
 
-import copy
 from dataclasses import replace
 from typing import Any, ClassVar
 
 import pytest
 from omegaconf import DictConfig, OmegaConf
-from pydantic import ValidationError
 
-from boba.config import bind
+from boba.config import ConfigError, bind
 from boba.connection_broker.sealed import SealedConnectionParams, ServerConnection
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.sealed import SealKeys
 from boba.mcp_server.app import McpAppConfig
 from boba.runtime.plugins import PluginKit, PluginMeta, ToolLoader
 from boba.runtime.refs import ExecRefs
+from boba.stand.overlay import ConfigOverlay
 from boba.stand.refs import StandRefs
 from boba.stand.sandbox import plugin_launch, section_profile
 from boba.stand_core.context import CallStand
@@ -88,10 +87,9 @@ class TestConnectionConfigRefusesStart:
     def test_connection_name_with_a_dot_is_refused(
         self, raw_config: DictConfig
     ) -> None:
-        raw = copy.deepcopy(raw_config)
-        raw.connections = {"site.ro": self.WEB}
+        raw = ConfigOverlay(raw_config).merged({"connections": {"site.ro": self.WEB}})
 
-        with pytest.raises(ValidationError, match=r"site\.ro"):
+        with pytest.raises(ConfigError, match=r"site\.ro"):
             bind(raw, path="app", model=McpAppConfig)
 
     @pytest.mark.parametrize(
@@ -102,17 +100,25 @@ class TestConnectionConfigRefusesStart:
     def test_unknown_source_or_client_of_a_rule_is_refused(
         self, raw_config: DictConfig, key: str, value: object
     ) -> None:
-        raw = copy.deepcopy(raw_config)
-        raw.mcp.endpoints.all.connections[0][key] = value
+        path = "mcp.endpoints.all.connections"
+        rules = OmegaConf.to_container(
+            OmegaConf.select(raw_config, path), resolve=False
+        )
+        assert isinstance(rules, list)
+        rule = rules[0]
+        assert isinstance(rule, dict)
+        rule[key] = value
+        raw = ConfigOverlay(raw_config).merged({path: rules})
 
-        with pytest.raises(ValidationError, match=key):
+        with pytest.raises(ConfigError, match=key):
             bind(raw, path="app", model=McpAppConfig)
 
     def test_unknown_name_in_a_tool_list_is_refused(
         self, raw_config: DictConfig, runtime_stand: StandRefs
     ) -> None:
-        raw = copy.deepcopy(raw_config)
-        raw.tool.pg.connections = {"pg_query": ["ghost"]}
+        raw = ConfigOverlay(raw_config).merged(
+            {"tool.pg.connections": {"pg_query": ["ghost"]}}
+        )
         loader = self._loader(raw, runtime_stand, runtime_stand.none().execution())
 
         with pytest.raises(ToolConfigError, match=r"'ghost'.*not among"):
@@ -121,8 +127,9 @@ class TestConnectionConfigRefusesStart:
     def test_connection_of_another_kind_in_a_tool_list_is_refused(
         self, raw_config: DictConfig, runtime_stand: StandRefs, call_stand: CallStand
     ) -> None:
-        raw = copy.deepcopy(raw_config)
-        raw.tool.pg.connections = {"pg_query": ["site"]}
+        raw = ConfigOverlay(raw_config).merged(
+            {"tool.pg.connections": {"pg_query": ["site"]}}
+        )
         params = SealedConnectionParams(
             SealKeys(),
             ConnectionTypes.discover,

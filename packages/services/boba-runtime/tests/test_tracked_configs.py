@@ -1,6 +1,6 @@
-"""Общие конфиги приложений лежат в git: секрет или адрес этой машины попасть в них
-не должен. Значение поля, похожего на секрет или адрес, — только ссылка на site-файл
-либо на секцию окружения; литерал допустим лишь из явного списка исключений."""
+"""Файлы плагинов сервиса лежат в git: секрет или адрес машины попасть в них не
+должен. Значение поля, похожего на секрет или адрес, — только ссылка на секцию
+конфига экземпляра; литерал допустим лишь из явного списка исключений."""
 
 from __future__ import annotations
 
@@ -11,8 +11,6 @@ from pathlib import Path
 from typing import ClassVar
 
 import pytest
-
-from boba.runtime.config import AppLayers
 
 
 class TrackedConfigs:
@@ -27,9 +25,9 @@ class TrackedConfigs:
     REFERENCE: ClassVar[re.Pattern[str]] = re.compile(r"^\$\{[a-z_][\w.${}-]*\}$")
     ALLOWED: ClassVar[Mapping[str, str]] = {}
     """Поля с литералом по делу: путь поля -> почему это не секрет и не адрес."""
-    PARTIAL_REFERENCE: ClassVar[re.Pattern[str]] = re.compile(r"\$\{(site|env)\.")
-    """Строка, собранная из ссылок (FILE:${site.x}, ${env.krb}/file), литералом
-    машины не является: машинная часть приходит из site-файла."""
+    PARTIAL_REFERENCE: ClassVar[re.Pattern[str]] = re.compile(r"\$\{[a-z_][\w.]*\}")
+    """Строка, собранная из ссылок (FILE:${krb.x}, ${env.krb}/file), литералом
+    машины не является: машинная часть приходит из конфига экземпляра."""
 
     def files(self) -> list[Path]:
         return sorted(self.APPS.glob("boba-*/conf/**/*.toml"))
@@ -79,11 +77,12 @@ class TrackedConfigs:
 
 class TestTrackedConfigs:
     def test_configs_are_found(self) -> None:
-        names = {path.parent.parent.name for path in TrackedConfigs().files()}
-        names |= {path.parent.name for path in TrackedConfigs().files()}
+        names: set[str] = set()
+        for path in TrackedConfigs().files():
+            names.add(path.relative_to(TrackedConfigs.APPS).parts[0])
 
-        if not {"boba-aid", "boba-mcp"} <= names:
-            raise AssertionError(f"common configs of the two apps exist: {names}")
+        if "boba-mcp" not in names:
+            raise AssertionError(f"plugin files of boba-mcp exist: {names}")
 
     @pytest.mark.parametrize(
         "path", TrackedConfigs().files(), ids=lambda path: str(path)[-48:]
@@ -94,19 +93,6 @@ class TestTrackedConfigs:
         if found:
             raise AssertionError(
                 "literal in a field that looks like a secret or an address; move "
-                "the value to site.toml and refer to it as ${site.*}:\n"
+                "the value to the instance config.toml and refer to its section:\n"
                 + "\n".join(found)
             )
-
-    @pytest.mark.parametrize(
-        "path",
-        sorted(TrackedConfigs.APPS.glob("boba-*/conf/config.toml")),
-        ids=lambda path: path.parent.parent.name,
-    )
-    def test_common_config_has_no_site_sections(self, path: Path) -> None:
-        with path.open("rb") as body:
-            sections = tomllib.load(body)
-
-        misplaced = AppLayers.SITE_SECTIONS & set(sections)
-        if misplaced:
-            raise AssertionError(f"{path}: sections {misplaced} belong to site.toml")

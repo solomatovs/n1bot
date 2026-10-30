@@ -1,5 +1,5 @@
 """Стенд чтения документов: каталог моделей OCR и шрифт с кириллицей для
-образцов картинок и сканов берутся из секции [doc_stand] в stand.toml.
+образцов картинок и сканов берутся из секции [doc_stand] наложения стенда.
 
 Ошибки:
 DocStandError — секция [doc_stand] отсутствует или неполна.
@@ -10,11 +10,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import ClassVar, Self
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict
 
-from boba.config import bind
-from boba.runtime.config import ConfigLocator
-from boba.stand.site import StandLayers
+from boba.config import ConfigError, bind
+from boba.stand.site import StandConfigPaths, StandError
 
 __all__ = ["DocStand", "DocStandError"]
 
@@ -35,19 +34,14 @@ class DocStand(BaseModel):
 
     @classmethod
     def load(cls) -> Self:
-        files = ConfigLocator.files()
-        stand_path = StandLayers.path(files)
-        if not stand_path.is_file():
-            raise DocStandError(f"doc stand: {stand_path} not found")
-
-        raw = StandLayers.compose(files)
-
+        config = StandConfigPaths()
         try:
-            return bind(raw, path=cls.SECTION, model=cls)
-        except ValidationError as exc:
-            raise DocStandError(
-                f"doc stand: [{cls.SECTION}] in {stand_path}: {exc}"
-            ) from exc
+            return bind(config.load(), path=cls.SECTION, model=cls)
+        except (StandError, ConfigError) as exc:
+            msg = (
+                f"doc stand: [{cls.SECTION}] of the run config {config.paths()}: {exc}"
+            )
+            raise DocStandError(msg) from exc
 
     @classmethod
     def required(cls) -> Self:

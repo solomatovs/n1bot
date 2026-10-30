@@ -20,7 +20,7 @@ from omegaconf import OmegaConf
 from psycopg import sql
 from psycopg.errors import InsufficientPrivilege
 
-from boba.config import bind
+from boba.config import ConfigLoader, bind
 from boba.connection_broker.store import ConnectionStore
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.secrets import SecretCipher
@@ -40,7 +40,6 @@ from boba.runtime.config import RuntimeConfig
 from boba.stand.database import TestDatabase
 from boba.stand.edm import EdmDataset, EdmSource, EdmSources
 from boba.stand.ix_index import IxPage, IxPages, SharedIndexers, StandIxStack
-from boba.stand.site import StandLayers
 from boba.stand.stream_sinks import SinkSources, StreamSinks
 from boba.stand.ui.stand import StandApp, StandConfig, StandError, StandUrl
 from boba.transport.http.connection import HttpConnection, UrlScheme
@@ -143,8 +142,8 @@ class StandDatabase:
 
     def __init__(self, app: StandApp, name: str) -> None:
         self._name = name
-        self._built = StandLayers.compose(app.files())
-        self._tools = StandLayers.compose(app.tools_app().files())
+        self._built = ConfigLoader(app.paths()).load()
+        self._tools = ConfigLoader(app.tools_app().paths()).load()
         """Конфиг процесса, исполняющего инструменты: секции [tool.*]."""
         postgres = bind(self._built, path="postgres", model=PostgresConfig)
         pool = postgres.pool.model_copy(update=self.POOL_OVERRIDE)

@@ -221,9 +221,13 @@ def _call(call_id: str, name: str, **args: Any) -> DagNode:
 def flow_raw(service_raw_config: DictConfig, test_database: str) -> DictConfig:
     """Конфиг хода: сервисный postgres смотрит в тестовую базу, чтобы и таблицы
     describer, и описываемые таблицы жили там же."""
-    raw = service_raw_config.copy()
-    OmegaConf.update(raw, "postgres.dbname", test_database)
-    OmegaConf.update(raw, "tool.describer.db_schema", DESCRIBER_SCHEMA)
+    overlay = {
+        "postgres": {"dbname": test_database},
+        "tool": {"describer": {"db_schema": DESCRIBER_SCHEMA}},
+    }
+    raw = OmegaConf.merge(service_raw_config, overlay)
+    assert isinstance(raw, DictConfig)
+
     return raw
 
 

@@ -41,7 +41,7 @@ from boba.aid.rendering.chat_view import (
 )
 from boba.canvas.canvas import CanvasElement, CanvasErrorKind
 from boba.canvas.diagram import DiagramPrompt
-from boba.config import bind
+from boba.config import ConfigLoader, bind
 from boba.confluence.html import MarkdownRender, SectionsRender
 from boba.confluence.models import (
     ConfluenceSpaceItem,
@@ -59,9 +59,8 @@ from boba.db.postgres.connection import PostgresConfig
 from boba.doc.config import DocConfig
 from boba.doc.document import DisabledOcr, DocumentHint, PageWindow
 from boba.doc.router import DocumentRouter
-from boba.runtime.config import AppLayers
 from boba.stand.edm import Asset, EdmSources
-from boba.stand.site import Stand, StandLayers
+from boba.stand.site import Stand
 from boba.stand.stream_sinks import SinkSources, StreamSinks
 from boba.stand.ui.chat_page import ChatPage, StepKind
 from boba.stand.ui.database import StandDatabase, StandOracle
@@ -824,7 +823,7 @@ class ConfluenceSite:
 
     @classmethod
     def load(cls) -> ConfluenceSite:
-        built = AppLayers.compose(StandApp.AID.tools_app().files())
+        built = StandApp.AID.tools_app().raw()
         config = bind(built, path=ConfluenceSection.SECTION, model=ConfluenceSection)
         ingest = bind(built, path=IngestSection.SECTION, model=IngestSection)
         return cls(config, ingest.table_shape)
@@ -1246,7 +1245,7 @@ class TablePattern:
 def _connection_catalog(stand_database: str, llm_port: int) -> TableResult:
     """Выдача connection_list: все строки стенда, по виду и имени; url каждой
     строит пакет её типа по тому же профилю, что посеял стенд."""
-    built = StandLayers.compose(StandApp.AID.files())
+    built = ConfigLoader(StandApp.AID.paths()).load()
     stand_postgres = bind(built, path="postgres", model=PostgresConfig)
     postgres = stand_postgres.model_copy(update={"dbname": stand_database})
     clickhouse = bind(built, path="clickhouse", model=ClickHouseConfig)
@@ -2181,7 +2180,7 @@ class TestAddressTools:
         feed.call(call, expect)
 
     def test_ora_address(self, feed: ToolFeed) -> None:
-        oracle = StandOracle(StandLayers.compose(StandApp.AID.files()))
+        oracle = StandOracle(ConfigLoader(StandApp.AID.paths()).load())
         url = re.escape(f"oracle://{oracle.host}:{oracle.port}/{oracle.service}")
         call = ToolCall(tool="ora_address", arguments={"connection": "main"})
         feed.call(call, self._expect("main", url))

@@ -23,7 +23,6 @@ from typing import Any, ClassVar, Self
 import pytest
 
 from boba.canvas.storage import OpenedStream
-from boba.runtime.config import AppLayers
 from boba.runtime.storage import ImageStorageClient, LocalStorageConfig, StorageFactory
 from boba.stand.storage import StorageSeed
 from boba.workspace.launcher import LayerPath, ReadWindow
@@ -221,7 +220,6 @@ def storage(
             "copy_chunk_bytes": 1 << 20,
         },
         "binaries": {"dirs": _bin_dirs()},
-        "interpreter": AppLayers.interpreter(),
     }
     client = StorageFactory.create(LocalStorageConfig.model_validate(fields))
     if not (isinstance(client, ImageStorageClient)):
@@ -321,7 +319,6 @@ class TestStreamingReads:
                 "copy_chunk_bytes": 1 << 20,
             },
             "binaries": {"dirs": _bin_dirs()},
-            "interpreter": AppLayers.interpreter(),
         }
         client = StorageFactory.create(LocalStorageConfig.model_validate(fields))
 
@@ -521,7 +518,6 @@ class TestStreamingReads:
                 "copy_chunk_bytes": 1 << 20,
             },
             "binaries": {"dirs": _bin_dirs()},
-            "interpreter": AppLayers.interpreter(),
         }
         client = StorageFactory.create(LocalStorageConfig.model_validate(fields))
 

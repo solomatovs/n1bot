@@ -13,13 +13,13 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from collections.abc import AsyncGenerator, Mapping, Sequence
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import ClassVar
 
 import uvicorn
-from pydantic import SecretStr
+from pydantic import BaseModel, ConfigDict, SecretStr
 
 from boba.access import RoleConfig, ToolAccess
 from boba.auth import SignIns
@@ -36,6 +36,7 @@ from boba.auth.proxy import HmacProxySignIn, ProxyAssertions
 from boba.auth.roles import HeaderRoles, LocalRoles, RoleProviders
 from boba.auth.signin import CompositeSignIn, LocalSignIn
 from boba.canvas.keys import WorkspaceMount
+from boba.config import ConfigLoader, bind
 from boba.connection_broker.sealed import SealedConnectionParams, ServerConnection
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.sealed import OfferedSource, SealKeys
@@ -43,7 +44,7 @@ from boba.identity.admission import RoleMappingConfig
 from boba.identity.context import CallContexts
 from boba.identity.run import Runs
 from boba.mcp_server.auth import ServiceMark
-from boba.mcp_server.prompts import FilePrompt, PromptFiles
+from boba.mcp_server.prompts import PromptFile
 from boba.mcp_server.server import (
     ConnectionOfferRule,
     EndpointCatalog,
@@ -60,7 +61,6 @@ from boba.oauth.server import (
     ServiceTokens,
     TrustedClient,
 )
-from boba.runtime.config import AppLayers
 from boba.runtime.journal import DirVault, StreamJournal
 from boba.runtime.storage import LocalStorageConfig
 from boba.stand import fake_connection
@@ -99,6 +99,14 @@ ROLELESS_PASSWORD = "ghost-pw"
 
 TOKEN_TTL_SEC = 300
 """Срок токена доступа стенда, пока тест не назвал свой."""
+
+
+class EndpointPrompts(BaseModel):
+    """Промпты секции endpoint'а стенда: ключ prompts конфига сервиса."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    prompts: dict[str, PromptFile]
 
 
 class ServiceStand:
@@ -239,12 +247,23 @@ class ServiceStand:
             roles=["*"], client=OfferClient.PLAIN, offer=[OfferedSource.SERVER]
         )
         granted = {
-            PROFILE: McpEndpoint(tools=["*"], roles=["*"], connections=[self.SEALING]),
+            PROFILE: McpEndpoint(
+                tools=["*"],
+                roles=["*"],
+                connections=[self.SEALING],
+                prompts=self._prompts(workdir),
+            ),
             NARROW: McpEndpoint(
-                tools=["fake_echo"], roles=["dev"], connections=[self.SEALING]
+                tools=["fake_echo"],
+                roles=["dev"],
+                connections=[self.SEALING],
+                prompts={},
             ),
             self.OFFERS: McpEndpoint(
-                tools=["*"], roles=["*"], connections=[both, self.SEALING, plain]
+                tools=["*"],
+                roles=["*"],
+                connections=[both, self.SEALING, plain],
+                prompts={},
             ),
         }
         access = ToolAccess(
@@ -328,7 +347,6 @@ class ServiceStand:
         self._sign_in = ServiceSignIn(
             public_url, CLIENT_ID, CLIENT_SECRET, PROXY_SECRET
         )
-        prompts = self._prompts(workdir, granted)
         self.endpoints = McpEndpoints(
             self.registry,
             runs,
@@ -348,22 +366,23 @@ class ServiceStand:
                 ),
                 mount_dir=str(workdir),
                 binaries=TrustedBinaries(dirs=("/usr/bin", "/bin")),
-                interpreter=AppLayers.interpreter(),
             ),
-            prompts,
         )
 
-    def _prompts(
-        self, workdir: Path, granted: Mapping[str, McpEndpoint]
-    ) -> Mapping[str, Sequence[FilePrompt]]:
-        """Промпты стенда тем же читателем, что у сервиса: файл PROMPT в
-        каталоге endpoint'а PROFILE."""
-        root = workdir / "prompts"
-        folder = root / PROFILE
+    def _prompts(self, workdir: Path) -> dict[str, PromptFile]:
+        """Промпты endpoint'а PROFILE тем же путём, что у сервиса: файл PROMPT
+        в каталоге prompts/<endpoint> подключает конфиг ключом
+        ${toml_dir:prompts/<endpoint>}."""
+        folder = workdir / "prompts" / PROFILE
         folder.mkdir(parents=True, exist_ok=True)
         (folder / f"{self.PROMPT}.toml").write_text(self.PROMPT_FILE, encoding="utf-8")
+        config = workdir / "prompts.toml"
+        config.write_text(
+            f'[endpoint]\nprompts = "${{toml_dir:prompts/{PROFILE}}}"\n',
+            encoding="utf-8",
+        )
 
-        return PromptFiles().read(root, granted)
+        return bind(ConfigLoader([config]).load(), "endpoint", EndpointPrompts).prompts
 
     def url(self, profile: str) -> str:
         return f"{self.public_url}/{profile}"

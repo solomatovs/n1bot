@@ -2,10 +2,13 @@
 процессом тем же входом, что и в проде; провайдер модели, база, хранилище и журнал
 уводятся на тестовые.
 
+Конфиг стенда — config.toml дерева отладки приложения и поверх него один файл-
+наложение в рабочем каталоге стенда, где лежат только изменённые ключи; процесс
+получает оба файла повторным --config.
+
 Ошибки:
-StandError — стенд не поднялся, не ответил в отведённое время, site.toml
-    отладки не читается вместе с подключённым файлом среды или не называет
-    каталоги сборки runtime.
+StandError — стенд не поднялся, не ответил в отведённое время, конфиг отладки
+    не загружается или не называет каталоги сборки runtime.
 """
 
 from __future__ import annotations
@@ -19,9 +22,8 @@ import subprocess
 import sys
 import tempfile
 import time
-import tomllib
 from abc import abstractmethod
-from collections.abc import Mapping, MutableMapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from http import HTTPStatus
@@ -29,12 +31,11 @@ from pathlib import Path
 from typing import Any, ClassVar, Generic, Protocol
 
 import httpx
-from pydantic import ValidationError
+from omegaconf import DictConfig, OmegaConf
 from typing_extensions import TypeVar
 
-from boba.config import ConfigError, TomlFile, bind
+from boba.config import ConfigError, ConfigLoader, bind
 from boba.core.mcp_names import McpToolNames
-from boba.runtime.config import AppLayers, ConfigFiles
 from boba.runtime.launchers import EnvPaths
 from boba.stand.ui.toml_text import TomlText
 
@@ -43,6 +44,8 @@ __all__ = [
     "StandApp",
     "StandConfig",
     "StandError",
+    "StandFiles",
+    "StandOverlay",
     "StandPaths",
     "StandPorts",
     "StandProcess",
@@ -60,14 +63,15 @@ class StandError(Exception):
 
 class StandPaths(StrEnum):
     """Пути репозитория, которые стенд подставляет вместо рантайма релиза:
-    общие конфиги приложений — в их пакетах, базы и site.toml — деревья отладки
-    debug/<приложение>. Каталоги сборки runtime называет конфиг (StandRuntime)."""
+    деревья отладки debug/<приложение> с config.toml экземпляра и наложением
+    stand.toml в conf/. Каталоги сборки runtime называет конфиг (StandRuntime)."""
 
-    AID_CONF = "packages/apps/boba-aid/conf"
-    MCP_CONF = "packages/apps/boba-mcp/conf"
     AID_BASE = "debug/aid"
     MCP_BASE = "debug/mcp"
     PACKAGES = "packages"
+    CONF = "conf"
+    CONFIG = "config.toml"
+    STAND = "stand.toml"
 
     def under(self, root: Path) -> Path:
         return root / self.value
@@ -222,8 +226,6 @@ class StandAppTraits:
 
     module: str
     base: StandPaths
-    conf: StandPaths
-    """Каталог общего конфига приложения и его плагинов в пакете."""
     ready_path: str
 
 
@@ -238,13 +240,11 @@ class StandApp(StrEnum):
             StandApp.AID: StandAppTraits(
                 module="boba.aid.main",
                 base=StandPaths.AID_BASE,
-                conf=StandPaths.AID_CONF,
                 ready_path="/",
             ),
             StandApp.MCP: StandAppTraits(
                 module="boba.mcp_server",
                 base=StandPaths.MCP_BASE,
-                conf=StandPaths.MCP_CONF,
                 ready_path="/health",
             ),
         }
@@ -259,15 +259,21 @@ class StandApp(StrEnum):
     def base(self) -> StandPaths:
         return self.traits().base
 
-    def files(self) -> ConfigFiles:
-        """Файлы конфигурации приложения на стенде: общий конфиг пакета и
-        site.toml дерева отладки."""
-        conf = self.traits().conf.under(REPO_ROOT)
-        base = self.traits().base.under(REPO_ROOT)
+    def config_path(self) -> Path:
+        """config.toml экземпляра отладки приложения: главный файл процессов
+        стенда."""
+        conf = self.traits().base.under(REPO_ROOT) / StandPaths.CONF.value
+        return conf / StandPaths.CONFIG.value
 
-        return ConfigFiles(
-            config=conf / "config.toml", site=base / "conf" / "site.toml"
-        )
+    def paths(self) -> tuple[Path, ...]:
+        """Конфиг отладки глазами тестов: config.toml и наложение stand.toml
+        рядом с ним, если оно есть (адреса живых сервисов, секция [stand])."""
+        config = self.config_path()
+        stand = config.with_name(StandPaths.STAND.value)
+        if not stand.is_file():
+            return (config,)
+
+        return (config, stand)
 
     def tools_app(self) -> StandApp:
         """Приложение, которое исполняет инструменты этого: у чата — сервис
@@ -277,24 +283,35 @@ class StandApp(StrEnum):
 
         return self
 
-    def document(self) -> dict[str, Any]:
-        """Общий конфиг и site.toml приложения одной таблицей: стенд правит её
-        и раскладывает обратно на два файла (StandFiles.write). Файл среды,
-        который site.toml подключает ключом include, входит в таблицу: в
-        каталоге стенда site.toml лежит без него."""
-        files = self.files()
-        with files.config.open("rb") as handle:
-            doc: dict[str, Any] = tomllib.load(handle)
-
+    def raw(self) -> DictConfig:
+        """Загруженный config.toml отладки без наложения стенда: из него стенд
+        берёт таблицы, которые переписывает в наложении целиком."""
+        config = self.config_path()
         try:
-            site = TomlFile(files.site).sections()
+            return ConfigLoader([config]).load()
         except ConfigError as exc:
-            msg = f"stand: reading the site file of {self.value}: {exc}"
+            msg = f"stand: loading the debug config of {self.value}: {exc}"
             raise StandError(msg) from exc
 
-        doc.update(site)
+    def table(self, path: str) -> dict[str, Any]:
+        """Таблица конфига отладки как есть, со ссылками; нет — пустая."""
+        node = OmegaConf.select(self.raw(), path)
+        if not isinstance(node, DictConfig):
+            return {}
 
-        return doc
+        table: dict[str, Any] = {}
+        container = OmegaConf.to_container(node, resolve=False)
+        if not isinstance(container, dict):
+            return table
+
+        for key, value in container.items():
+            table[str(key)] = value
+
+        return table
+
+    def plugins(self) -> tuple[str, ...]:
+        """Плагины конфига отладки: ключи секции [tool]."""
+        return tuple(sorted(self.table("tool")))
 
     @property
     def ready_path(self) -> str:
@@ -317,7 +334,7 @@ class StandRuntime:
     """Каталоги сборки runtime на стенде: образы песочницы, бинарники third и
     модели плагинов.
 
-    Их называет секция [env] site.toml отладки сервиса (debug/mcp/conf) — те же
+    Их называет секция [env] конфига отладки сервиса (debug/mcp/conf) — те же
     ключи sandbox, third и models, по которым сервис собирает профили
     песочницы, поэтому от положения дерева исходников они не зависят. Создают
     стенды песочницы и зигот (boba.stand.zygote); тесты берут готовый объект
@@ -325,13 +342,12 @@ class StandRuntime:
     """
 
     def __init__(self) -> None:
-        files = StandApp.MCP.files()
-        raw = AppLayers.compose(files)
+        config = StandApp.MCP.config_path()
         try:
-            self._paths = bind(raw, path="env", model=EnvPaths)
-        except ValidationError as exc:
+            self._paths = bind(StandApp.MCP.raw(), path="env", model=EnvPaths)
+        except ConfigError as exc:
             msg = (
-                f"stand runtime: [env] of {files.site} expects the sandbox, "
+                f"stand runtime: [env] of {config} expects the sandbox, "
                 f"third and models directories of the build, got: {exc}"
             )
             raise StandError(msg) from exc
@@ -392,8 +408,8 @@ class StandService(Protocol):
     @property
     @abstractmethod
     def files(self) -> StandFiles:
-        """Файлы конфигурации стенда: уходят приложению аргументами --config и
-        --site."""
+        """Файлы конфигурации стенда: конфиг отладки и наложение уходят
+        приложению повторным аргументом --config."""
 
     @abstractmethod
     def write(self) -> None:
@@ -408,61 +424,94 @@ class StandService(Protocol):
         """Приложение, которое поднимается раньше этого; None — его нет."""
 
 
+class StandOverlay:
+    """Изменённые стендом ключи конфига отладки: таблица наложения.
+
+    set кладёт значение ключа поверх конфига обычным слиянием omegaconf
+    (таблица сливается, список и скаляр заменяют прежние). replace заменяет
+    таблицу целиком: слияние не умеет удалять ключи, поэтому новая таблица
+    ложится в секцию REPLACED, а ключ становится ссылкой на неё. Создают конфиги
+    стенда на запись, пишет StandFiles.
+    """
+
+    REPLACED: ClassVar[str] = "stand_replaced"
+    SEPARATOR: ClassVar[str] = "__"
+
+    def __init__(self) -> None:
+        self._values: dict[str, Any] = {}
+        self._replaced: dict[str, Any] = {}
+
+    def set(self, path: Sequence[str], value: object) -> None:
+        *parents, leaf = path
+        node = self._values
+        for key in parents:
+            node = node.setdefault(key, {})
+
+        node[leaf] = value
+
+    def replace(self, path: Sequence[str], value: Mapping[str, Any]) -> None:
+        name = self.SEPARATOR.join(path)
+        self._replaced[name] = dict(value)
+        self.set(path, f"${{{self.REPLACED}.{name}}}")
+
+    def replaced(self, path: Sequence[str]) -> dict[str, Any]:
+        """Таблица, уже положенная replace: стенд дописывает её по шагам."""
+        name = self.SEPARATOR.join(path)
+        return self._replaced[name]
+
+    def document(self) -> dict[str, Any]:
+        document = dict(self._values)
+        if self._replaced:
+            document[self.REPLACED] = dict(self._replaced)
+
+        return document
+
+
 @dataclass(frozen=True)
 class StandFiles:
-    """Файлы конфигурации приложения стенда в его рабочем каталоге: общий конфиг
-    с правками стенда, плагины рядом с ним и site-файл.
+    """Файл-наложение приложения стенда в его рабочем каталоге.
 
-    Правки стенда делаются над одной таблицей (StandApp.document); на запись
-    секции [env] и [site] уходят в site-файл, остальные — в общий конфиг: так
-    их и ждёт загрузчик.
+    Процесс стенда получает два файла: config.toml отладки приложения и
+    наложение с изменёнными стендом ключами (StandOverlay). Плагины не
+    копируются: выключенный стендом плагин — ключ tool.<id>.enable в
+    наложении.
     """
 
     workdir: Path
 
-    SITE_SECTIONS: ClassVar[tuple[str, ...]] = ("env", "site")
+    OVERLAY: ClassVar[str] = "overlay.toml"
 
     @property
-    def config(self) -> Path:
-        return self.workdir / "config.toml"
+    def overlay(self) -> Path:
+        return self.workdir / self.OVERLAY
 
-    @property
-    def site(self) -> Path:
-        return self.workdir / "site.toml"
+    def paths(self, app: StandApp) -> tuple[Path, Path]:
+        """Файлы процесса по порядку: конфиг отладки, затем наложение."""
+        return (app.config_path(), self.overlay)
 
-    @property
-    def plugins(self) -> Path:
-        return self.workdir / "plugins"
+    def arguments(self, app: StandApp) -> list[str]:
+        """Аргументы --config процесса приложения."""
+        arguments: list[str] = []
+        for path in self.paths(app):
+            arguments.extend(("--config", str(path)))
 
-    def write(self, doc: Mapping[str, Any]) -> None:
-        site: dict[str, Any] = {}
-        common: dict[str, Any] = {}
-        for section, body in doc.items():
-            if section in self.SITE_SECTIONS:
-                site[section] = body
-            else:
-                common[section] = body
+        return arguments
 
-        self.config.write_text(TomlText.dumps(common), encoding="utf-8")
-        self.site.write_text(TomlText.dumps(site), encoding="utf-8")
-
-    def write_debug(self, app: StandApp, database: str) -> ConfigFiles:
-        """Конфиг, site.toml и плагины отладки приложения app в этом каталоге,
-        но с базой database: процесс на конфиге отладки не пишет в её базу.
-
-        Пути site.toml считаются от base отладки, поэтому процессу нужен
-        BOBA_BASE со значением app.files().base().
-        """
-        doc = app.document()
-        doc["postgres"]["dbname"] = database
-        if "postgres_history" in doc:
-            doc["postgres_history"]["dbname"] = database
-
+    def write(self, overlay: StandOverlay) -> None:
         self.workdir.mkdir(parents=True, exist_ok=True)
-        self.write(doc)
-        StandPlugins(app, StandPlugins.SANDBOXED).copy_to(self.plugins)
+        self.overlay.write_text(TomlText.dumps(overlay.document()), encoding="utf-8")
 
-        return ConfigFiles(config=self.config, site=self.site)
+    def write_debug(self, app: StandApp, database: str) -> tuple[Path, Path]:
+        """Наложение на конфиг отладки приложения app с базой database:
+        процесс на конфиге отладки не пишет в её базу. Отдаёт файлы процесса."""
+        overlay = StandOverlay()
+        overlay.set(("postgres", "dbname"), database)
+        if app.table("postgres_history"):
+            overlay.set(("postgres_history", "dbname"), database)
+
+        self.write(overlay)
+
+        return self.paths(app)
 
 
 @dataclass
@@ -501,7 +550,7 @@ class ServiceStand(StandService):
     """Ключ утверждений входа proxy: его знают сервис и чат стенда."""
 
     SESSION_SECRET: ClassVar[str] = "stand-service-session-secret"  # noqa: S105 — ключ стенда
-    """auth_secret сервиса: свой, не равный auth_secret чата из site.toml
+    """auth_secret сервиса: свой, не равный auth_secret чата из конфига
     отладки, — так весь путь чат → сервис стенда идёт с разными секретами."""
 
     LOCAL_LOGIN: ClassVar[str] = "carol"
@@ -597,23 +646,20 @@ class ServiceStand(StandService):
         return entries[self.agent_auth]
 
     def write(self) -> None:
-        self.workdir.mkdir(parents=True, exist_ok=True)
-        doc = self.app.document()
-
-        doc["postgres"]["dbname"] = self.db_name
-        pool = doc["postgres"]["pool"]
-        pool["min_size"] = 1
-        pool["max_size"] = 6
+        overlay = StandOverlay()
+        overlay.set(("postgres", "dbname"), self.db_name)
+        overlay.set(("postgres", "pool", "min_size"), 1)
+        overlay.set(("postgres", "pool", "max_size"), 6)
 
         journal_dir = self.workdir / "tool-logs"
         journal_dir.mkdir(parents=True, exist_ok=True)
-        doc["stream_journal"]["dir"] = str(journal_dir)
+        overlay.set(("stream_journal", "dir"), str(journal_dir))
 
         if not self.sandbox:
             files_dir = self.workdir / "files"
             files_dir.mkdir(parents=True, exist_ok=True)
-            doc["storage"]["kind"] = "local"
-            doc["storage"]["files_dir"] = str(files_dir)
+            overlay.set(("storage", "kind"), "local")
+            overlay.set(("storage", "files_dir"), str(files_dir))
 
         endpoints: dict[str, Any] = {}
         for name, tools in self.ENDPOINTS.items():
@@ -621,65 +667,61 @@ class ServiceStand(StandService):
                 "roles": ["*"],
                 "tools": list(tools),
                 "connections": [dict(self.SEALING)],
+                "prompts": {},
             }
 
-        doc["mcp"]["endpoints"] = endpoints
-        doc["mcp"]["public_url"] = f"http://127.0.0.1:{self.app_port}"
-        doc["mcp"]["url_prefix"] = ""
-        doc["mcp"]["clients"] = {self.CLIENT_ID: {"secret": self.CLIENT_SECRET}}
-        doc["auth"]["proxy"] = {
-            "type": "proxy",
-            "path": "/auth/proxy",
-            "secret": self.PROXY_SECRET,
-            "max_skew_sec": 60,
-            "allowed_clients": ["0.0.0.0/0"],
-            "require_roles": True,
-            "headers": dict(self.HEADERS),
-            "roles": {"header": {"name": self.ROLES_HEADER}},
-        }
-        doc["auth"]["local"] = {
-            "type": "local",
-            "users": {
-                self.LOCAL_LOGIN: self.LOCAL_PASSWORD,
-                self.AGENT_LOGIN: self.AGENT_PASSWORD,
+        overlay.replace(("mcp", "endpoints"), endpoints)
+        overlay.set(("mcp", "public_url"), f"http://127.0.0.1:{self.app_port}")
+        overlay.set(("mcp", "url_prefix"), "")
+        overlay.replace(
+            ("mcp", "clients"), {self.CLIENT_ID: {"secret": self.CLIENT_SECRET}}
+        )
+        overlay.replace(
+            ("auth", "proxy"),
+            {
+                "type": "proxy",
+                "path": "/auth/proxy",
+                "secret": self.PROXY_SECRET,
+                "max_skew_sec": 60,
+                "allowed_clients": ["0.0.0.0/0"],
+                "require_roles": True,
+                "headers": dict(self.HEADERS),
+                "roles": {"header": {"name": self.ROLES_HEADER}},
             },
-            "require_roles": True,
-            "roles": {
-                "local": {
-                    "mapping": {
-                        self.LOCAL_LOGIN: ["ADM"],
-                        self.AGENT_LOGIN: ["ADM"],
+        )
+        overlay.replace(
+            ("auth", "local"),
+            {
+                "type": "local",
+                "users": {
+                    self.LOCAL_LOGIN: self.LOCAL_PASSWORD,
+                    self.AGENT_LOGIN: self.AGENT_PASSWORD,
+                },
+                "require_roles": True,
+                "roles": {
+                    "local": {
+                        "mapping": {
+                            self.LOCAL_LOGIN: ["ADM"],
+                            self.AGENT_LOGIN: ["ADM"],
+                        }
                     }
-                }
+                },
             },
-        }
-        doc["app"]["auth"] = ["${auth.local}", "${auth.proxy}"]
-        doc["site"]["auth_secret"] = self.SESSION_SECRET
-        doc["session"]["generation"] = self.generation
-        doc["session"]["session_ttl_sec"] = self.session_ttl_sec
+        )
+        overlay.set(("app", "auth"), ["${auth.local}", "${auth.proxy}"])
+        overlay.set(("keys", "session"), self.SESSION_SECRET)
+        overlay.set(("session", "generation"), self.generation)
+        overlay.set(("session", "session_ttl_sec"), self.session_ttl_sec)
+        StandPlugins(self.app, self.plugins).disable(overlay)
+        StandEnv(self.app, self.data_dir).put(overlay, self.app_port, self.sandbox)
 
-        self.files.write(doc)
-        StandPlugins(self.app, self.plugins).copy_to(self.files.plugins)
+        self.files.write(overlay)
 
     def env(self) -> dict[str, str]:
-        data_dir = self.data_dir
-        for name in ("workspace", "tool-logs", "dump", "krb"):
-            (data_dir / name).mkdir(parents=True, exist_ok=True)
-
         env = dict(os.environ)
-        env["BOBA_BASE"] = str(self.app.base.under(REPO_ROOT))
-        env["BOBA_DATA"] = str(data_dir)
         # BOBA_CGROUP_BASE наследуется от прогона: поддерево делегирует user-юнит
-        env["BOBA_PORT"] = str(self.app_port)
-        env["BOBA_INSTANCE_ID"] = f"stand{self.app_port}"
         env["PGGSSENCMODE"] = "disable"
-        if self.sandbox:
-            env["BOBA_TOOL_LAUNCHER"] = "sandbox"
-        else:
-            env["BOBA_TOOL_LAUNCHER"] = "process"
-
         env["PYTHONUNBUFFERED"] = "1"
-        env.pop("BOBA_URL_PREFIX", None)
         env.pop("BOBA_CONFIG_PATH", None)
         env.pop("KRB5_CLIENT_KTNAME", None)
         env.pop("KRB5CCNAME", None)
@@ -687,11 +729,39 @@ class ServiceStand(StandService):
         return env
 
 
-class StandPlugins:
-    """Файлы conf/plugins приложения стенда рядом с его конфигом: загрузчик
-    требует файл на каждый установленный плагин.
+class StandEnv:
+    """Секция [env] наложения приложения стенда: корень отладки, свой каталог
+    данных, порт, имя инстанса и способ запуска инструментов. Создают конфиги
+    стенда на запись; каталоги данных, которые приложение ждёт готовыми,
+    заводит put."""
 
-    Создаётся конфигом приложения на запись. У чата файлов плагинов нет:
+    DATA_DIRS: ClassVar[tuple[str, ...]] = ("workspace", "tool-logs", "dump", "krb")
+
+    def __init__(self, app: StandApp, data_dir: Path) -> None:
+        self._app = app
+        self._data_dir = data_dir
+
+    def put(self, overlay: StandOverlay, port: int, sandbox: bool) -> None:
+        for name in self.DATA_DIRS:
+            (self._data_dir / name).mkdir(parents=True, exist_ok=True)
+
+        # способ запуска tools фиксируется стендом, а не конфигом отладки
+        launcher = "process"
+        if sandbox:
+            launcher = "sandbox"
+
+        overlay.set(("env", "base"), str(self._app.base.under(REPO_ROOT)))
+        overlay.set(("env", "data"), str(self._data_dir))
+        overlay.set(("env", "port"), port)
+        overlay.set(("env", "instance_id"), f"stand{port}")
+        overlay.set(("env", "tool_launcher"), launcher)
+
+
+class StandPlugins:
+    """Плагины приложения стенда: те из SANDBOXED, которые стенд не включил,
+    выключаются ключом tool.<id>.enable наложения.
+
+    Создаётся конфигом приложения на запись. У чата плагинов нет:
     инструменты исполняет сервис boba-mcp. Из SANDBOXED у сервиса включены
     только названные стендом: остальным нужны песочница или внешние
     сервисы, а в песочнице каждая секция — своя зигота.
@@ -716,17 +786,12 @@ class StandPlugins:
         self._app = app
         self._enabled_plugins = frozenset(enabled)
 
-    def copy_to(self, target: Path) -> None:
-        source = self._app.files().plugins_dir()
-        target.mkdir(parents=True, exist_ok=True)
-        for path in sorted(source.glob("*.toml")):
-            with path.open("rb") as handle:
-                doc: dict[str, Any] = tomllib.load(handle)
+    def disable(self, overlay: StandOverlay) -> None:
+        for plugin in self._app.plugins():
+            if self._enabled(plugin):
+                continue
 
-            if not self._enabled(path.stem):
-                doc["enable"] = False
-
-            (target / path.name).write_text(TomlText.dumps(doc), encoding="utf-8")
+            overlay.set(("tool", plugin, "enable"), False)
 
     def _enabled(self, plugin: str) -> bool:
         if plugin in self._enabled_plugins:
@@ -886,37 +951,34 @@ class StandConfig(StandService):
         return found
 
     def write(self) -> None:
-        """Кладёт файлы конфигурации приложения с правками стенда в рабочий
-        каталог."""
-        self.workdir.mkdir(parents=True, exist_ok=True)
-        doc = self.app.document()
+        """Кладёт наложение с правками стенда в рабочий каталог."""
+        overlay = StandOverlay()
 
-        self._use_fake_llm(doc)
-        self._use_test_profiles(doc)
-        self._use_test_database(doc)
-        self._use_local_storage(doc)
-        self._without_mcp_servers(doc)
-        self._use_local_auth(doc)
-        self._use_agent(doc)
-        self._shrink_pools(doc)
-        doc["session"]["generation"] = self.generation
+        self._use_fake_llm(overlay)
+        self._use_test_profiles(overlay)
+        self._use_test_database(overlay)
+        self._use_local_storage(overlay)
+        self._without_mcp_servers(overlay)
+        self._use_local_auth(overlay)
+        self._use_agent(overlay)
+        self._shrink_pools(overlay)
+        self._use_env(overlay)
+        overlay.set(("session", "generation"), self.generation)
+        StandPlugins(self.app, ()).disable(overlay)
 
-        self.files.write(doc)
-        StandPlugins(self.app, ()).copy_to(self.files.plugins)
+        self.files.write(overlay)
 
-    def _use_agent(self, doc: MutableMapping[str, Any]) -> None:
+    def _use_agent(self, overlay: StandOverlay) -> None:
         """Агент ACP стенда чата: процесс и история по полям стенда,
         приватные каталоги в рабочем каталоге стенда; инструменты «всегда
         загружать» и пределы хода — как в конфиге приложения."""
-        if "agent" not in doc:
+        agent = self.app.table("agent")
+        if not agent:
             return
-
-        tools = doc["agent"]["tools"]
-        limits = doc["agent"]["limits"]
 
         private_dir = self.workdir / "agents"
         private_dir.mkdir(parents=True, exist_ok=True)
-        doc["postgres_history"]["dbname"] = self.db_name
+        overlay.set(("postgres_history", "dbname"), self.db_name)
         start_sec, request_sec = self.agent_timeouts_sec
         process: dict[str, Any] = {
             "command": self.agent_process["command"],
@@ -934,83 +996,77 @@ class StandConfig(StandService):
                 "silence_timeout_sec": 60,
             }
 
-        doc["agent"] = {
-            "public_url": self.base_url,
-            "seal_ttl_sec": 600,
-            "question_timeout_sec": 600,
-            "process": process,
-            "history": dict(self.agent_history),
-            "tools": tools,
-            "limits": limits,
-        }
+        overlay.replace(
+            ("agent",),
+            {
+                "public_url": self.base_url,
+                "seal_ttl_sec": 600,
+                "question_timeout_sec": 600,
+                "process": process,
+                "history": dict(self.agent_history),
+                "tools": agent["tools"],
+                "limits": agent["limits"],
+            },
+        )
 
     @staticmethod
-    def _shrink_pools(doc: MutableMapping[str, Any]) -> None:
+    def _shrink_pools(overlay: StandOverlay) -> None:
         """Стенды живут по нескольку сразу: малые пулы не исчерпывают слоты Postgres."""
-        pool = doc["postgres"]["pool"]
-        pool["min_size"] = 1
-        pool["max_size"] = 6
+        overlay.set(("postgres", "pool", "min_size"), 1)
+        overlay.set(("postgres", "pool", "max_size"), 6)
+
+    def _use_env(self, overlay: StandOverlay) -> None:
+        """Секция [env] стенда: каталог данных, порт, имя инстанса, префикс,
+        шина и корень chainlit, если стенд их задал."""
+        StandEnv(self.app, self.data_dir).put(overlay, self.app_port, self.sandbox)
+        overlay.set(("env", "url_prefix"), self.url_prefix)
+        if self.messaging:
+            overlay.set(("env", "messaging_provider"), self.messaging)
+
+        if self.app_root:
+            overlay.set(("env", "app_root"), self.app_root)
 
     def env(self) -> dict[str, str]:
-        """Окружение процесса приложения: BOBA_-переопределения поверх файлов
-        конфигурации, которые уходят аргументами --config и --site.
-
-        BOBA_BASE обязателен: site-файл стенда пишется в рабочий каталог, и base,
-        вычисленный из его расположения, указывал бы мимо дерева отладки.
-        """
-        data_dir = self.data_dir
-        for name in ("workspace", "tool-logs", "dump", "krb"):
-            (data_dir / name).mkdir(parents=True, exist_ok=True)
-
+        """Окружение процесса приложения: конфиг целиком в файлах --config,
+        окружение несёт только то, что читают библиотеки."""
         env = dict(os.environ)
-        env["BOBA_BASE"] = str(self.app.base.under(REPO_ROOT))
-        env["BOBA_DATA"] = str(data_dir)
         # BOBA_CGROUP_BASE наследуется от прогона: поддерево делегирует user-юнит
-        env["BOBA_PORT"] = str(self.app_port)
-        env["BOBA_INSTANCE_ID"] = f"stand{self.app_port}"
-        env["BOBA_URL_PREFIX"] = self.url_prefix
-        if self.messaging:
-            env["BOBA_MESSAGING"] = self.messaging
-        if self.app_root:
-            env["BOBA_APP_ROOT"] = self.app_root
         env["PGGSSENCMODE"] = "disable"
-        # способ запуска tools фиксируется стендом, а не окружением прогона
-        if self.sandbox:
-            env["BOBA_TOOL_LAUNCHER"] = "sandbox"
-        else:
-            env["BOBA_TOOL_LAUNCHER"] = "process"
         # лог стенда читает упавший тест: буфер до kill не доживёт
         env["PYTHONUNBUFFERED"] = "1"
         env.pop("KRB5_CLIENT_KTNAME", None)
         env.pop("KRB5CCNAME", None)
         return env
 
-    def _use_fake_llm(self, doc: MutableMapping[str, Any]) -> None:
-        """Провайдер стенда: fake llm процесса тестов вместо секций [llm] конфига."""
-        doc["agent_http"] = {"dump": {"enable": False}}
-        doc["model_limits"] = {
-            "fake": {
+    def _use_fake_llm(self, overlay: StandOverlay) -> None:
+        """Провайдер стенда: fake llm процесса тестов рядом с секциями [llm]
+        конфига; профили стенда ссылаются только на него."""
+        overlay.set(("agent_http", "dump", "enable"), False)
+        overlay.set(
+            ("model_limits", "fake"),
+            {
                 "context_window": 200000,
                 "max_output_tokens": 4096,
                 "reasoning_return": "turn",
-            }
-        }
-        doc["llm"] = {
-            "fake": {
+            },
+        )
+        overlay.set(
+            ("llm", "fake"),
+            {
                 "kind": "openai",
                 "transport": "${agent_http}",
                 "connection": {
                     "scheme": "http",
-                    "host": StandUrl.HOST,
+                    "host": StandUrl.HOST.value,
                     "port": self.llm_port,
                     "path": "/v1",
                     "ssl_verify": False,
                     "auth": {"method": "bearer", "token": "none"},
                 },
-            }
-        }
+            },
+        )
 
-    def _use_test_profiles(self, doc: MutableMapping[str, Any]) -> None:
+    def _use_test_profiles(self, overlay: StandOverlay) -> None:
         """Профили и роли стенда: фиксированные, тесты знают их наизусть.
 
         general — все инструменты, search — узкий набор; DEV-роль покрывает
@@ -1023,13 +1079,16 @@ class StandConfig(StandService):
         if self.app is not StandApp.AID:
             own = ["diagram_save", "send_file", *self.CHAT_TOOLS]
 
-        doc["roles"] = {
-            "ADM": {"tools": ["*"]},
-            "DEV": {"tools": own},
-            "GST": {"tools": []},
-        }
+        overlay.replace(
+            ("roles",),
+            {
+                "ADM": {"tools": ["*"]},
+                "DEV": {"tools": own},
+                "GST": {"tools": []},
+            },
+        )
 
-        doc["profiles"] = {
+        profiles: dict[str, Any] = {
             "general": {
                 "display_name": "Общий",
                 "description": "Профиль стенда со всеми инструментами",
@@ -1064,7 +1123,9 @@ class StandConfig(StandService):
         }
 
         if self.single_profile:
-            doc["profiles"] = {"general": doc["profiles"]["general"]}
+            profiles = {"general": profiles["general"]}
+
+        overlay.replace(("profiles",), profiles)
 
     def _search_tools(self) -> list[str]:
         """Свои инструменты профиля search: у чата узкий набор отдаёт endpoint
@@ -1074,29 +1135,28 @@ class StandConfig(StandService):
 
         return ["diagram_save", "canvas_open"]
 
-    def _use_test_database(self, doc: MutableMapping[str, Any]) -> None:
+    def _use_test_database(self, overlay: StandOverlay) -> None:
         """Сервер и учётка — из конфига приложения; стенду — отдельная база.
 
         Таблица соединений живёт там же: стенд сеет её после старта.
         """
-        doc["postgres"]["dbname"] = self.db_name
+        overlay.set(("postgres", "dbname"), self.db_name)
 
-    def _use_local_storage(self, doc: MutableMapping[str, Any]) -> None:
+    def _use_local_storage(self, overlay: StandOverlay) -> None:
         """Файлы стенда: без песочницы — каталог на диске; с песочницей — образы
         workspace, как в бою: тела пишут в образ, и хост обязан читать его же."""
         files_dir = self.workdir / "files"
         files_dir.mkdir(parents=True, exist_ok=True)
-        if "storage" in doc and not self.sandbox:
-            storage = doc["storage"]
-            storage["kind"] = "local"
-            storage["files_dir"] = str(files_dir)
+        if self.app.table("storage") and not self.sandbox:
+            overlay.set(("storage", "kind"), "local")
+            overlay.set(("storage", "files_dir"), str(files_dir))
 
-        if journal := doc.get("stream_journal"):
+        if self.app.table("stream_journal"):
             journal_dir = self.workdir / "tool-logs"
             journal_dir.mkdir(parents=True, exist_ok=True)
-            journal["dir"] = str(journal_dir)
+            overlay.set(("stream_journal", "dir"), str(journal_dir))
 
-    def _without_mcp_servers(self, doc: MutableMapping[str, Any]) -> None:
+    def _without_mcp_servers(self, overlay: StandOverlay) -> None:
         """Внешние MCP-серверы рабочего конфига стенду не нужны: набор
         инструментов сессии не должен зависеть от сети. Остаются только
         серверы, заданные самим стендом: их называет каждый профиль стенда.
@@ -1113,8 +1173,8 @@ class StandConfig(StandService):
         for name, section in self.mcp_servers.items():
             servers[name] = self._embedded(section)
 
-        doc["mcp"] = {"servers": servers}
-        for name, profile in doc["profiles"].items():
+        overlay.replace(("mcp",), {"servers": servers})
+        for name, profile in overlay.replaced(("profiles",)).items():
             named: list[str] = []
             if name in own:
                 named.append(own[name])
@@ -1130,42 +1190,35 @@ class StandConfig(StandService):
 
         return embedded
 
-    def _use_local_auth(self, doc: MutableMapping[str, Any]) -> None:
+    def _use_local_auth(self, overlay: StandOverlay) -> None:
         """Учётки и роли стенда: рабочий [auth.local] не трогаем и не наследуем."""
         providers: list[str] = []
 
         if self.auth.sso:
-            # keytab и SPN из рабочего конфига; маппинг ролей через LDAP стенду не нужен
+            # keytab, SPN и делегирование — из рабочего конфига; маппинг ролей
+            # через LDAP стенду не нужен
             providers.append("${auth.kerberos}")
-            doc["auth"]["kerberos"] = {
-                "type": "kerberos",
-                "principal_format": "{username}@${site.krb_realm}",
-                "accept": {
-                    "service_name": "HTTP/${site.krb_domain}@${site.krb_realm}",
-                    "keytab": "${site.krb_http_keytab}",
-                },
-                "delegation": {
-                    "mode": "constrained",
-                    "service_ccache": "FILE:${site.krb_ccache_http}",
-                    "krb5_config": "${site.krb_config}",
-                },
-            }
+            kerberos = self.app.table("auth.kerberos")
+            kerberos.pop("roles", None)
             if self.sso_roles:
-                doc["auth"]["kerberos"]["roles"] = {
-                    "principal": {"principal": dict(self.sso_roles)}
-                }
+                kerberos["roles"] = {"principal": {"principal": dict(self.sso_roles)}}
+
+            overlay.replace(("auth", "kerberos"), kerberos)
 
         if self.auth.local:
             providers.append("${auth.local}")
             mapping = {login: list(roles) for login, roles in self.STAND_ROLES.items()}
-            doc["auth"]["local"] = {
-                "type": "local",
-                "users": dict(self.STAND_USERS),
-                "roles": {"local": {"mapping": mapping}},
-                "require_roles": True,
-            }
+            overlay.replace(
+                ("auth", "local"),
+                {
+                    "type": "local",
+                    "users": dict(self.STAND_USERS),
+                    "roles": {"local": {"mapping": mapping}},
+                    "require_roles": True,
+                },
+            )
 
-        doc["app"]["auth"] = providers
+        overlay.set(("app", "auth"), providers)
 
 
 ConfigT = TypeVar("ConfigT", bound=StandService, default=StandConfig)
@@ -1221,10 +1274,7 @@ class StandProcess(Generic[ConfigT]):
                 sys.executable,
                 "-m",
                 self.config.app.module,
-                "--config",
-                str(self.config.files.config),
-                "--site",
-                str(self.config.files.site),
+                *self.config.files.arguments(self.config.app),
             ],
             env=self.config.env(),
             cwd=str(REPO_ROOT),

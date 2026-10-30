@@ -13,7 +13,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 import pytest
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
 from psycopg import sql
 
 from boba.config import bind
@@ -55,8 +55,8 @@ class Body:
 def kb_cfg(raw_config) -> KbToolConfig:
     """Конфиг с процессным запуском: кэш моделей эмбеддинга берётся с хоста,
     живой индекс ix — из базы приложения."""
-    copied = raw_config.copy()
-    OmegaConf.update(copied, "env.tool_launcher", "process")
+    copied = OmegaConf.merge(raw_config, {"env": {"tool_launcher": "process"}})
+    assert isinstance(copied, DictConfig)
 
     return bind(copied, path="tool.kb", model=KbToolConfig)
 

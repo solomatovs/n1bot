@@ -7,11 +7,12 @@ import os
 import time
 
 import pytest
+from omegaconf import DictConfig
 
 from boba.aid.infra.entry import AppEntry, ChainlitEnv
 from boba.kerberos import DelegationMode, SignInTicket
 from boba.krb.seal import TicketSealer
-from boba.runtime.config import ConfigLocator, RuntimeConfig
+from boba.runtime.config import RuntimeConfig
 
 
 @pytest.fixture(autouse=True)
@@ -22,19 +23,25 @@ def chainlit_context() -> None:
 @pytest.mark.integration
 class TestSharedAuthSecret:
     def test_env_secret_equals_session_secret(
-        self, runtime_config: RuntimeConfig, monkeypatch: pytest.MonkeyPatch
+        self,
+        raw_config: DictConfig,
+        runtime_config: RuntimeConfig,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.delenv(ChainlitEnv.AUTH_SECRET, raising=False)
 
-        AppEntry().export_env(ConfigLocator.files())
+        AppEntry().export_env(raw_config)
 
         assert os.environ[ChainlitEnv.AUTH_SECRET] == runtime_config.session.auth_secret
 
     def test_ticket_sealed_by_chainlit_opens_in_runtime(
-        self, runtime_config: RuntimeConfig, monkeypatch: pytest.MonkeyPatch
+        self,
+        raw_config: DictConfig,
+        runtime_config: RuntimeConfig,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.delenv(ChainlitEnv.AUTH_SECRET, raising=False)
-        AppEntry().export_env(ConfigLocator.files())
+        AppEntry().export_env(raw_config)
 
         tickets = runtime_config.sso_tickets()
         assert tickets is not None, "[auth] kerberos is not configured on the stand"

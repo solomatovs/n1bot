@@ -41,7 +41,7 @@ from standard_server import StandardServer
 from boba.auth.config import ProxyAuthConfig
 from boba.canvas.keys import ObjectKey, ScopeDir, WorkspaceMount
 from boba.canvas.storage import StorageNotFoundError
-from boba.config import bind
+from boba.config import ConfigLoader, bind
 from boba.connections.sealed import ConnectionSeal, SealedConnection, SealFeature
 from boba.core.secrets import SecretReveal
 from boba.db.postgres.connection import PostgresConfig
@@ -62,10 +62,10 @@ from boba.mcp_client.client import (
     ProxyAuth,
     StdioCommand,
 )
-from boba.runtime.config import AppLayers, ConfigLayoutError, EnvOverride
 from boba.stand.apps_slot import AppServer, AppsSlot
 from boba.stand.service_signin import ServiceSignIn
-from boba.stand.ui.stand import StandApp, StandFiles
+from boba.stand.ui.stand import REPO_ROOT
+from boba.stand.ui.toml_text import TomlText
 from boba.stand.zygote import RUNTIME
 from boba.toolkit.calls import CallViews
 from boba.toolkit.channels import ToolChannel
@@ -1772,11 +1772,11 @@ class DeclaredClient(BaseModel):
 
 
 class BobaMcpService:
-    """Настоящий процесс сервиса на его общем конфиге и site.toml дерева отладки,
-    переписанных в рабочий каталог теста с тестовой базой набора: `python -m
-    boba.mcp_server --config <каталог>/conf/config.toml --site
-    <каталог>/conf/site.toml`, данные процесса — в debug/mcp/data. Порт и способ
-    запуска стенд задаёт переопределениями [env]; вход — proxy, ключ
+    """Настоящий процесс сервиса на конфиге дерева отладки debug/mcp и
+    наложении теста в рабочем каталоге: `python -m boba.mcp_server --config
+    debug/mcp/conf/config.toml --config <каталог>/overlay.toml`, данные
+    процесса — в debug/mcp/data. Наложение меняет только тестовую базу набора,
+    порт, префикс, публичный адрес и способ запуска; вход — proxy, ключ
     утверждений и клиент берутся из [auth.proxy] и [mcp.clients] того же
     конфига."""
 
@@ -1788,18 +1788,30 @@ class BobaMcpService:
     PROFILE: str = "general"
     CLIENT: str = "boba-chat"
     THIRD: Path = RUNTIME.third
+    CONFIG: Path = REPO_ROOT / "debug" / "mcp" / "conf" / "config.toml"
+    """Конфиг сервиса в дереве отладки разработчика."""
 
     def __init__(self, workdir: Path, database: str) -> None:
         with socket.socket() as probe:
             probe.bind((self.HOST, 0))
             self.port = int(probe.getsockname()[1])
 
-        debug = StandApp.MCP.files()
-        raw = AppLayers.compose(debug)
+        raw = ConfigLoader([self.CONFIG]).load()
         self._proxy = bind(raw, "auth.proxy", ProxyAuthConfig)
         self._client = bind(raw, f"mcp.clients.{self.CLIENT}", DeclaredClient)
 
-        files = StandFiles(workdir / "conf").write_debug(StandApp.MCP, database)
+        overlay = workdir / "overlay.toml"
+        public_url = f"http://{self.HOST}:{self.port}{self.PREFIX}"
+        changed = {
+            "env": {
+                "port": self.port,
+                "url_prefix": self.PREFIX,
+                "public_url": public_url,
+                "tool_launcher": "process",
+            },
+            "postgres": {"dbname": database},
+        }
+        overlay.write_text(TomlText.dumps(changed), encoding="utf-8")
 
         self._log = (workdir / "mcp.log").open("wb")
         self._process = subprocess.Popen(
@@ -1808,16 +1820,11 @@ class BobaMcpService:
                 "-m",
                 "boba.mcp_server",
                 "--config",
-                str(files.config),
-                "--site",
-                str(files.site),
+                str(self.CONFIG),
+                "--config",
+                str(overlay),
             ],
             env={
-                EnvOverride.BASE.var: str(debug.base()),
-                EnvOverride.PORT.var: str(self.port),
-                EnvOverride.URL_PREFIX.var: self.PREFIX,
-                EnvOverride.PUBLIC_URL.var: f"http://{self.HOST}:{self.port}{self.PREFIX}",
-                EnvOverride.TOOL_LAUNCHER.var: "process",
                 "PATH": f"{self.THIRD / 'bin'}:/usr/local/bin:/usr/bin:/bin",
                 "LD_LIBRARY_PATH": str(self.THIRD / "lib"),
             },
@@ -1854,10 +1861,11 @@ class TestBobaMcpService:
 
     @pytest.fixture
     def process(self, tmp_path: Path, test_database: str) -> Iterator[BobaMcpService]:
-        try:
-            StandApp.MCP.files()
-        except ConfigLayoutError as exc:
-            pytest.fail(f"the service config files are not placed: {exc}")
+        if not BobaMcpService.CONFIG.is_file():
+            pytest.fail(
+                f"the service config {BobaMcpService.CONFIG} is not placed: the "
+                "debug tree of boba-mcp expects its config.toml"
+            )
 
         process = BobaMcpService(tmp_path, test_database)
         try:

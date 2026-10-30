@@ -22,9 +22,9 @@ from typing import Any, ClassVar, Self
 
 import psycopg
 from psycopg import sql
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict
 
-from boba.config import bind
+from boba.config import ConfigError, bind
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.query import PgQueryBuilder
@@ -33,9 +33,8 @@ from boba.ix_core.registry import IxRegistry
 from boba.ix_core.scrape import PackageDir
 from boba.ix_core.upgrade import SchemaUpgrade
 from boba.krb import KerberosWorkspaceConfig
-from boba.runtime.config import ConfigLocator
 from boba.stand.names import StandNames
-from boba.stand.site import StandLayers
+from boba.stand.site import StandConfigPaths, StandError
 
 __all__ = ["IxSchemas", "IxStand", "IxStandDatabase", "IxStandError"]
 
@@ -59,17 +58,13 @@ class IxStand(BaseModel):
     @classmethod
     def load(cls) -> Self:
         section = "ix_stand"
-        files = ConfigLocator.files()
-        stand_path = StandLayers.path(files)
-        if not stand_path.is_file():
-            raise IxStandError(f"ix stand: {stand_path} not found")
-
-        raw = StandLayers.compose(files)
-
+        config = StandConfigPaths()
         try:
+            raw = config.load()
             stand = bind(raw, path=section, model=cls)
-        except ValidationError as exc:
-            raise IxStandError(f"ix stand: [{section}] in {stand_path}: {exc}") from exc
+        except (StandError, ConfigError) as exc:
+            msg = f"ix stand: [{section}] of the run config {config.paths()}: {exc}"
+            raise IxStandError(msg) from exc
 
         stand.krb.apply()
 

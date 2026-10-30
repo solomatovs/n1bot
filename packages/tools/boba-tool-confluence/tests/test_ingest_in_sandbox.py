@@ -26,8 +26,7 @@ INGEST = "boba.tool.confluence.plugin:INGEST"
 def _section(raw_config: DictConfig) -> dict[str, Any]:
     """Секция [tool.ingest] значениями JSON, как её отдаёт сервер."""
     # тело живёт в песочнице: режимные развилки конфига — sandbox-веткой
-    sandboxed = raw_config.copy()
-    OmegaConf.update(sandboxed, "env.tool_launcher", "sandbox")
+    sandboxed = OmegaConf.merge(raw_config, {"env": {"tool_launcher": "sandbox"}})
     node = OmegaConf.select(sandboxed, "tool.ingest")
     container = OmegaConf.to_container(node, resolve=True)
 

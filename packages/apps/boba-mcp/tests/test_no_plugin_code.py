@@ -42,10 +42,7 @@ class ProbedService:
         command = [
             sys.executable,
             str(PROBE),
-            "--config",
-            str(self._config.files.config),
-            "--site",
-            str(self._config.files.site),
+            *self._config.files.arguments(self._config.app),
         ]
         with self._log_path.open("wb") as log:
             process = subprocess.Popen(

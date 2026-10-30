@@ -21,7 +21,6 @@ from boba.canvas.canvas import (
 )
 from boba.canvas.diagram import DiagramEntry, DiagramSpecError, MermaidSpec
 from boba.canvas.keys import ScopeDir, WorkspaceKey
-from boba.runtime.config import AppLayers
 from boba.runtime.storage import LocalStorageClient, LocalStorageConfig
 from boba.toolkit.result import ContentMime
 from boba.workspace.binaries import TrustedBinaries
@@ -130,7 +129,6 @@ def files(
         ),
         mount_dir="/tmp",  # noqa: S108
         binaries=TrustedBinaries(dirs=("/usr/bin", "/bin")),
-        interpreter=AppLayers.interpreter(),
     )
     storage = LocalStorageClient(config)
     layer = _StorageOnlyLayer(storage)

@@ -292,7 +292,6 @@ class ServeFiles(StrEnum):
     """Файлы процесса службы стенда в его рабочем каталоге."""
 
     CONFIG = "config.toml"
-    SITE = "conf/site.toml"
     LOG = "serve.log"
 
     def under(self, workdir: Path) -> Path:
@@ -300,7 +299,7 @@ class ServeFiles(StrEnum):
 
 
 class AgentServiceProcess:
-    """Служба агента отдельным процессом `<command> serve --config --site`:
+    """Служба агента отдельным процессом `<command> serve --config <файл>`:
     модуль venv или собранный бинарник. Конфиг — ServeStandConfig, записанный
     в рабочий каталог; вывод процесса — в файл serve.log там же. Нужна тестам,
     которые останавливают службу сигналом и смотрят код выхода и журнал.
@@ -334,14 +333,11 @@ class AgentServiceProcess:
         AgentServiceProcessError — процесс вышел или не ответил за WAIT_SEC.
         """
         config = ServeFiles.CONFIG.under(self._workdir)
-        site = ServeFiles.SITE.under(self._workdir)
-        site.parent.mkdir(parents=True, exist_ok=True)
+        config.parent.mkdir(parents=True, exist_ok=True)
         document = TomlText.dumps({"app": self._config.document()})
         config.write_text(document, encoding="utf-8")
 
-        empty_site = TomlText.dumps({"env": {}})
-        site.write_text(empty_site, encoding="utf-8")
-        argv = [*self._command, "serve", "--config", str(config), "--site", str(site)]
+        argv = [*self._command, "serve", "--config", str(config)]
         with ServeFiles.LOG.under(self._workdir).open("wb") as log:
             self._process = subprocess.Popen(  # noqa: S603 — стенд теста
                 argv, stdout=log, stderr=subprocess.STDOUT, cwd=self._workdir

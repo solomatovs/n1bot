@@ -49,6 +49,7 @@ from service_stand import (
 from boba.auth import SignIns
 from boba.auth.proxy import ProxyAssertions
 from boba.canvas.journal import StreamSlice
+from boba.config import ConfigError, ConfigLoader, bind
 from boba.connections.sealed import (
     ConnectionOffer,
     ConnectionSeal,
@@ -59,9 +60,9 @@ from boba.connections.sealed import (
 from boba.mcp_adapter import JournalUris
 from boba.mcp_server.auth import ServiceMark
 from boba.mcp_server.files import JournalRoutes
-from boba.mcp_server.prompts import PromptFileError, PromptFiles
 from boba.mcp_server.server import (
     FileUploadTool,
+    McpEndpoint,
     RunLimits,
 )
 from boba.oauth.server import (
@@ -70,6 +71,7 @@ from boba.oauth.server import (
     SealedValues,
     ServiceTokens,
 )
+from boba.stand.ui.stand import StandApp
 from boba.toolkit.calls import CallViews, SchemaMark
 from boba.toolkit.channels import JournalChannels, ToolChannel
 from boba.toolkit.dag import (
@@ -216,42 +218,51 @@ class TestPrompts:
         assert self._texts(full)[0] == ("user", "Review select 2 in {dialect}: oracle.")
 
     MESSAGE: ClassVar[str] = '[[messages]]\nrole = "{role}"\ntext = "{text}"\n'
+    ENDPOINT: ClassVar[str] = (
+        "[mcp.endpoints.all]\n"
+        'roles = ["*"]\n'
+        'tools = ["*"]\n'
+        "connections = []\n"
+        'prompts = "${toml_dir:prompts/all}"\n'
+    )
 
     @pytest.mark.parametrize(
         ("folder", "text", "refusal"),
         [
             ("all", MESSAGE.format(role="user", text="{x}"), "names {x}"),
             ("all", MESSAGE.format(role="system", text="t"), "role"),
-            ("all", "= \n", "expected TOML"),
-            ("nowhere", MESSAGE.format(role="user", text="t"), "nowhere"),
+            ("all", "= \n", "reading a toml file failed"),
+            ("nowhere", MESSAGE.format(role="user", text="t"), "expected a directory"),
         ],
-        ids=["unknown argument", "role", "not toml", "unknown endpoint"],
+        ids=["unknown argument", "role", "not toml", "no folder of the endpoint"],
     )
     def test_prompt_file_off_the_format_is_refused_by_its_path(
         self, tmp_path: Path, folder: str, text: str, refusal: str
     ) -> None:
-        """Каталог или файл промпта не по формату — отказ на старте с путём и
-        причиной."""
-        place = tmp_path / folder
-        place.mkdir()
+        """Каталог или файл промпта не по формату — отказ на старте с путём или
+        ключом и причиной: файлы подключает конфиг ключом prompts endpoint'а."""
+        place = tmp_path / "prompts" / folder
+        place.mkdir(parents=True)
         described = f'description = "d"\n{text}'
         (place / "broken.toml").write_text(described, encoding="utf-8")
+        config = tmp_path / "config.toml"
+        config.write_text(self.ENDPOINT, encoding="utf-8")
 
-        with pytest.raises(PromptFileError, match=refusal) as refused:
-            PromptFiles().read(tmp_path, ["all", "chat"])
+        with pytest.raises(ConfigError, match=refusal) as refused:
+            self._endpoint(config)
 
-        assert str(tmp_path) in str(refused.value)
+        assert "prompts" in str(refused.value)
 
-    def test_shipped_prompts_are_read(self) -> None:
-        """Промпты поставки читаются под endpoint'ами общего конфига."""
-        conf = Path(__file__).parents[1] / "conf"
-        prompts = PromptFiles().read(conf / "prompts", ["chat", "all", "search"])
+    @staticmethod
+    def _endpoint(config: Path) -> McpEndpoint:
+        return bind(ConfigLoader([config]).load(), "mcp.endpoints.all", McpEndpoint)
 
-        names: list[str] = []
-        for prompt in prompts["all"]:
-            names.append(prompt.name)
+    def test_debug_prompts_are_read(self) -> None:
+        """Промпты экземпляра отладки читаются под endpoint'ами его конфига."""
+        raw = StandApp.MCP.raw()
+        endpoint = bind(raw, "mcp.endpoints.all", McpEndpoint)
 
-        assert names == ["sql_review"]
+        assert "sql_review" in endpoint.prompts
 
     @staticmethod
     def _texts(result: mt.GetPromptResult) -> list[tuple[str, str]]:

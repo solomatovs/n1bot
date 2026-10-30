@@ -1,6 +1,5 @@
-"""Общий конфиг службы агента `boba serve` (conf/config.toml пакета)
-разбирается её моделями поверх site-файла со всеми ключами, на которые он
-ссылается: провайдер модели и пределы — одними объектами для всех профилей,
+"""Конфиг экземпляра службы агента `boba serve` разбирается её моделями:
+провайдер модели и пределы — одними объектами для всех профилей,
 история — своим подключением с пулом; слой настроек агента с историей,
 профилями моделей или профилем по умолчанию — отказ на разборе."""
 
@@ -14,86 +13,179 @@ from omegaconf import DictConfig, OmegaConf
 from pydantic import ValidationError
 
 from boba.cli.serve import ServeConfig, ServeSection
-from boba.config import bind
-from boba.runtime.config import AppLayers, ConfigFiles
+from boba.config import ConfigLoader, bind
 
-CONFIG = Path(__file__).resolve().parents[1] / "conf" / "config.toml"
-
-SITE = """
+INSTANCE = """
 [env]
     listen_host = "0.0.0.0"
     port        = 8660
     public_url  = "https://boba.example.com/boba"
     url_prefix  = "/boba"
     data        = "${env.base}/data"
+    base        = "/srv/boba"
 
-[site]
-    krb_config          = "${env.base}/conf/krb/krb5.conf"
-    auth_secret         = "site-auth-secret-of-the-stand"
-    agent_proxy_secret  = "site-agent-proxy-secret-of-the-stand"
-    ldap_url            = "ldaps://dc.example.com:3269"
-    ldap_base_dn        = "DC=example,DC=com"
-    ldap_auth_method    = "simple"
-    ldap_netbios        = "EXAMPLE"
-    pg_host             = "pg.example.com"
-    pg_addr             = "10.0.0.5"
-    pg_port             = 5432
-    pg_database         = "aid"
-    pg_sslmode          = "disable"
-    pg_history_auth_method = "password"
-    llm_auth_method     = "bearer"
-    llm_base_url        = "https://llm.example.com/v1"
-    llm_ssl_verify      = true
-    [site.agent_client]
-        secret = "agent-client-secret-of-the-stand"
-    [site.models]
-        general = "general-model"
-        search  = "search-model"
-    [site.model_limits.general]
-        context_window    = 128000
-        max_output_tokens = 8192
-    [site.model_limits.search]
-        context_window    = 128000
-        max_output_tokens = 8192
-    [site.llm_auth.bearer]
-        method = "bearer"
-        token  = "llm-token-of-the-stand"
-    [site.profiles.general]
-        system_prompt = "general prompt of the stand"
-    [site.profiles.search]
-        system_prompt = "search prompt of the stand"
-    [site.pg_history_auth.password]
-        method   = "password"
-        user     = "boba_history"
-        password = "history-password"
-    [site.ldap_auth.simple]
+[krb]
+    config     = "${env.base}/conf/krb/krb5.conf"
+    ccache_dir = "${env.data}/krb/cache"
+
+[app]
+    schema  = "agent"
+    krb     = "${krb}"
+    session = "${session}"
+    agent   = "${agent}"
+    auth    = "${oc.dict.values:auth}"
+
+[keys]
+    session      = "site-auth-secret-of-the-stand"
+    agent_proxy  = "site-agent-proxy-secret-of-the-stand"
+    agent_client = "agent-client-secret-of-the-stand"
+
+[ldap]
+    server  = "ldaps://dc.example.com:3269"
+    base_dn = "DC=example,DC=com"
+    [ldap.auth]
         method   = "simple"
         user     = "reader@example.com"
         password = "reader-password"
-    [site.ldap_roles.memberof]
-        "CN=boba,DC=example,DC=com" = ["read"]
-    [site.ldap_roles.dn]
-    [site.local_auth.users]
-        "admin" = "admin-password"
-    [site.local_auth.roles]
-        "admin" = ["read"]
+    [ldap.mapping]
+        dn = {}
+        [ldap.mapping.member_of]
+            "CN=boba,DC=example,DC=com" = ["read"]
+
+[postgres_history]
+    host             = "pg.example.com"
+    hostaddr         = "10.0.0.5"
+    port             = 5432
+    dbname           = "aid"
+    sslmode          = "disable"
+    application_name = "boba-agent"
+    connect_timeout  = 10
+    [postgres_history.auth]
+        method   = "password"
+        user     = "boba_history"
+        password = "history-password"
+    [postgres_history.pool]
+        min_size = 2
+        max_size = 16
+        timeout  = 30
+
+[llm]
+    [llm.main]
+        kind            = "openai"
+        baseUrl         = "https://llm.example.com/v1"
+        sslVerify       = true
+        timeoutSec      = 600
+        retryAttempts   = 3
+        retryBackoffSec = 1.0
+        [llm.main.auth]
+            method = "bearer"
+            token  = "llm-token-of-the-stand"
+        [llm.main.retryStatuses]
+            429 = 5
+
+[model_limits]
+    [model_limits.main]
+        reasoningReturn = "turn"
+
+[agent]
+    host                 = "${env.listen_host}"
+    port                 = "${env.port}"
+    path                 = "/acp"
+    public_url           = "${env.public_url}"
+    url_prefix           = "${env.url_prefix}"
+    shutdown_timeout_sec = 10
+    idle_sec             = 1800
+    [agent.history]
+        schema   = "boba"
+        postgres = "${postgres_history}"
+    [agent.settings]
+        [agent.settings.permissions]
+            defaultMode = "bypassPermissions"
+            allowBypass = true
+        [agent.settings.mcp]
+            callTimeoutSec = 86400
+        [agent.settings.tools]
+            alwaysLoad = []
+        [agent.settings.sessions]
+            maxOpen = 256
+        [agent.settings.limits]
+            toolResultWindowShare = 0.25
+    [agent.profiles]
+        [agent.profiles.general]
+            roles = ["*"]
+            [agent.profiles.general.model]
+                provider        = "${llm.main}"
+                model           = "general-model"
+                systemPrompt    = "general prompt of the stand"
+                contextWindow   = 128000
+                maxOutputTokens = 8192
+                reasoningReturn = "${model_limits.main.reasoningReturn}"
+                [agent.profiles.general.model.sampling]
+                    temperature      = 1.0
+                    top_p            = 0.95
+                    presence_penalty = 0.0
+                    max_tokens       = 16000
+                    reasoning_effort = "low"
+        [agent.profiles.search]
+            roles = ["*"]
+            [agent.profiles.search.model]
+                provider        = "${llm.main}"
+                model           = "search-model"
+                systemPrompt    = "search prompt of the stand"
+                contextWindow   = 128000
+                maxOutputTokens = 8192
+                reasoningReturn = "${model_limits.main.reasoningReturn}"
+    [agent.clients]
+        [agent.clients.boba-chat]
+            secret = "${keys.agent_client}"
+
+[auth]
+    [auth.ldap]
+        type             = "ldap"
+        server           = "${ldap.server}"
+        base_dn          = "${ldap.base_dn}"
+        user_filter      = "(sAMAccountName={username})"
+        bind_dn_template = "EXAMPLE\\\\{username}"
+        [auth.ldap.roles]
+            directory = "${ldap.mapping}"
+    [auth.local]
+        type          = "local"
+        require_roles = true
+        [auth.local.users]
+            admin = "admin-password"
+        [auth.local.roles]
+            [auth.local.roles.local]
+                [auth.local.roles.local.mapping]
+                    admin = ["read"]
+    [auth.proxy]
+        type          = "proxy"
+        secret        = "${keys.agent_proxy}"
+        max_skew_sec  = 60
+        require_roles = true
+        [auth.proxy.roles]
+            [auth.proxy.roles.header]
+                name = "X-Remote-Roles"
+
+[session]
+    auth_secret     = "${keys.session}"
+    session_ttl_sec = 3600
+    session_max_sec = 28800
+    generation      = ""
 """
 
 
 @pytest.fixture
 def raw(tmp_path: Path) -> DictConfig:
-    conf = tmp_path / "conf"
-    conf.mkdir()
-    site = conf / "site.toml"
-    site.write_text(SITE, encoding="utf-8")
+    config = tmp_path / "config.toml"
+    config.write_text(INSTANCE, encoding="utf-8")
 
-    return AppLayers.compose(ConfigFiles(config=CONFIG, site=site))
+    return ConfigLoader([config]).load()
 
 
 class TestConfig:
     PROFILES: ClassVar[list[str]] = ["general", "search"]
 
-    def test_the_package_config_binds(self, raw: DictConfig) -> None:
+    def test_the_instance_config_binds(self, raw: DictConfig) -> None:
         config = bind(raw, path=ServeConfig.SECTION, model=ServeConfig)
 
         agent = config.agent

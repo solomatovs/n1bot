@@ -37,7 +37,7 @@ class AidGroup(StrEnum):
 class AidGroups:
     """Группа xdist теста aid: модуль целиком, чтобы модульные фикстуры
     поднимались один раз. e2e-модули запускают настоящее приложение с общим
-    BOBA_INSTANCE_ID и портом BOBA_E2E_PORT и идут одним процессом по очереди."""
+    именем инстанса и портом BOBA_E2E_PORT и идут одним процессом по очереди."""
 
     E2E_MODULES: ClassVar[frozenset[str]] = frozenset({"test_canvas_e2e.py"})
     SEPARATOR: ClassVar[str] = "::"

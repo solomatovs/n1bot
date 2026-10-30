@@ -26,15 +26,14 @@ class TestToolCli:
 
     @staticmethod
     def write_toml(tmp_path: Path, max_output_bytes: int = 65536) -> list[str]:
-        """Аргументы файлов конфигурации: секция [tool.bash] и пустой site."""
+        """Аргументы файлов конфигурации: конфиг с секцией [tool.bash] и
+        наложение, которое дописывает в неё срок вызова."""
         config = tmp_path / "config.toml"
-        config.write_text(
-            f"[tool.bash]\nmax_output_bytes = {max_output_bytes}\ntimeout_sec = 30\n"
-        )
-        site = tmp_path / "site.toml"
-        site.write_text("")
+        config.write_text(f"[tool.bash]\nmax_output_bytes = {max_output_bytes}\n")
+        overlay = tmp_path / "overlay.toml"
+        overlay.write_text("[tool.bash]\ntimeout_sec = 30\n")
 
-        return ["--config", str(config), "--site", str(site)]
+        return ["--config", str(config), "--config", str(overlay)]
 
     @staticmethod
     def write_args(tmp_path: Path, args: dict[str, object]) -> list[str]:

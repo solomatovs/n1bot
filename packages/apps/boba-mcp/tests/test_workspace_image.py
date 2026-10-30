@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 from boba.canvas.storage import StorageError, StorageNotFoundError
-from boba.runtime.config import AppLayers
+from boba.runtime.config import ProcessInterpreter
 from boba.runtime.storage import (
     ImageStorageClient,
     LocalStorageClient,
@@ -89,7 +89,6 @@ def _storage_cfg(**kw: Any) -> LocalStorageConfig:
         },
         "mount_dir": "/tmp",  # noqa: S108
         "binaries": {"dirs": _bin_dirs()},
-        "interpreter": AppLayers.interpreter(),
     }
     fields.update(kw)
     return LocalStorageConfig.model_validate(fields)
@@ -362,7 +361,9 @@ class TestRelativePaths:
 
 
 def _chain() -> LauncherChain:
-    return LauncherChain(AppLayers.interpreter(), _trusted(), _launcher_options())
+    return LauncherChain(
+        ProcessInterpreter().snapshot(), _trusted(), _launcher_options()
+    )
 
 
 def _binds(argv: list[str], flag: str) -> list[str]:

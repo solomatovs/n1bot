@@ -23,7 +23,6 @@ from uuid import uuid4
 import pytest
 from launcher_layer import ResolvedLayout, ResolvedProbe
 
-from boba.runtime.config import AppLayers
 from boba.runtime.storage import ImageStorageClient, LocalStorageConfig
 from boba.sandbox import WorkspaceSpec
 from boba.sandbox.argv import ZygoteArgv
@@ -406,7 +405,6 @@ class TestStorageLayer:
                 copy_chunk_bytes=1 << 16,
             ),
             binaries=TrustedBinaries(dirs=tuple(SandboxStand.bin_dirs())),
-            interpreter=AppLayers.interpreter(),
         )
 
 

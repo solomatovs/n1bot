@@ -31,7 +31,7 @@ from fx_zygote import FxZygote
 from pydantic import SecretStr
 
 from boba.cancellation import ToolStopped, run_cancellation
-from boba.runtime.config import AppLayers
+from boba.runtime.config import ProcessInterpreter
 from boba.sandbox import SandboxProfile
 from boba.sandbox.program import PluginCommand, ProgramExit
 from boba.sandbox.zygote import (
@@ -217,7 +217,7 @@ def zygote(call_ambient: CallAmbient) -> Any:
 
     def make(profile: SandboxProfile) -> ZygoteToolCaller:
         spawner = ZygoteSpawner(
-            profile, FX.program("python3"), FAST, AppLayers.interpreter()
+            profile, FX.program("python3"), FAST, ProcessInterpreter().snapshot()
         )
         supervisor = ZygoteSupervisor(
             "fx",
@@ -343,7 +343,7 @@ class TestSpawner:
         )
 
         spawner = ZygoteSpawner(
-            profile, FX.program("python3"), FAST, AppLayers.interpreter()
+            profile, FX.program("python3"), FAST, ProcessInterpreter().snapshot()
         )
 
         if spawner.root_label() != f"image {ROOTFS_IMAGE}":

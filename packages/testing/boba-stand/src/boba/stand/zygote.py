@@ -19,7 +19,7 @@ from typing import Any, ClassVar
 
 import pytest
 
-from boba.runtime.config import AppLayers, EnvOverride
+from boba.runtime.config import ProcessInterpreter
 from boba.sandbox import BindSpec, SandboxProfile
 from boba.sandbox.program import PluginCommand, PluginEntry
 from boba.sandbox.zygote import (
@@ -35,7 +35,7 @@ from boba.toolkit.manifest import ManifestBuilder
 
 REPO = Path(__file__).resolve().parents[6]
 RUNTIME = StandRuntime()
-"""Каталоги сборки runtime: их называет [env] site.toml отладки сервиса."""
+"""Каталоги сборки runtime: их называет [env] конфига отладки сервиса."""
 ROOTFS_IMAGE = RUNTIME.shell_rootfs
 
 
@@ -53,8 +53,8 @@ class SandboxCgroup:
     """Делегированное поддерево cgroup v2, в котором тесты и стенды заводят
     leaf'ы песочницы.
 
-    Базу называет окружение прогона переменной BOBA_CGROUP_BASE — той же,
-    которой приложение переопределяет [env].cgroup_base. На хосте разработки
+    Базу называет окружение прогона переменной BOBA_CGROUP_BASE (в конфиге
+    отладки то же значение лежит в [env].cgroup_base). На хосте разработки
     это каталог sandbox user-юнита boba-sandbox@debug.service, а сам прогон
     стартует внутри слайса юнита (.vscode/python-debug-slice.sh): ядро
     переносит процесс в leaf только под общим предком, доступным на запись.
@@ -62,8 +62,10 @@ class SandboxCgroup:
     переменной тесты с групповыми лимитами падают с причиной.
     """
 
+    ENV: ClassVar[str] = "BOBA_CGROUP_BASE"
+
     def __init__(self) -> None:
-        self._var = EnvOverride.CGROUP_BASE.var
+        self._var = self.ENV
         self._base = os.environ.get(self._var, "")
 
     @property
@@ -548,8 +550,8 @@ class ZygoteStand:
 
     Объект один на прогон тестов (фикстура zygote_stand), как способ
     запуска в приложении один на процесс: зиготы секций живут в его реестре,
-    а интерпретатор цепочки лаунчера снимает та же граница конфига, что у
-    приложения (AppLayers). Гасит зиготы сам тест — stop(); остаток гасит
+    а интерпретатор цепочки лаунчера снимается с процесса так же, как у
+    приложения (ProcessInterpreter). Гасит зиготы сам тест — stop(); остаток гасит
     конец прогона.
     """
 
@@ -568,7 +570,7 @@ class ZygoteStand:
     NO_WARMUP: ClassVar[Mapping[str, Any]] = MappingProxyType({})
 
     def __init__(self) -> None:
-        self._zygotes = ZygoteRegistry(AppLayers.interpreter())
+        self._zygotes = ZygoteRegistry(ProcessInterpreter().snapshot())
         self._entry = PluginEntry()
         self._builder = ManifestBuilder()
 

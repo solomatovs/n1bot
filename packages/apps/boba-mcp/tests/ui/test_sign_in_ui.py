@@ -42,7 +42,6 @@ from boba.stand.ui.database import run_blocking
 from boba.stand.ui.stand import (
     REPO_ROOT,
     ServiceStand,
-    StandApp,
     StandPorts,
     StandProcess,
 )
@@ -555,10 +554,10 @@ class TestLastingSession:
 class DeployedService:
     """Развёрнутый за nginx сервис и вход в него клиента чата.
 
-    Собирает фикстура deployed из site.toml контейнера compose и общего
-    конфига пакета: публичный адрес с префиксом, адрес endpoint'а, ключи
-    клиента чата ([mcp.clients] сервиса и [auth.proxy].secret) и
-    пользователь из сопоставления ролей чата, от имени которого чат входит.
+    Собирает фикстура deployed из config.toml контейнеров compose сервиса и
+    чата: публичный адрес с префиксом, адрес endpoint'а, ключи клиента чата
+    ([mcp.clients] сервиса и [keys] входа proxy) и пользователь из
+    сопоставления ролей чата, от имени которого чат входит.
     """
 
     public: str
@@ -581,14 +580,19 @@ class DeployedService:
 
 @pytest.fixture
 def deployed() -> DeployedService:
-    site_path = REPO_ROOT / "compose" / "mcp" / "conf" / "site.toml"
-    with site_path.open("rb") as handle:
-        site = tomllib.load(handle)
+    """Развёрнутый стенд compose: адрес, клиент и ключи сервиса из его
+    config.toml, пользователь с ролями — из входа proxy конфига чата. Файлы
+    читаются как TOML без разрешения ссылок: окружение и каталоги контейнера
+    у теста другие."""
+    service_path = REPO_ROOT / "compose" / "mcp" / "conf" / "config.toml"
+    chat_path = REPO_ROOT / "compose" / "aid" / "conf" / "config.toml"
+    with service_path.open("rb") as handle:
+        service = tomllib.load(handle)
 
-    with StandApp.MCP.files().config.open("rb") as handle:
-        common = tomllib.load(handle)
+    with chat_path.open("rb") as handle:
+        chat = tomllib.load(handle)
 
-    public = str(site["env"]["public_url"]).rstrip("/")
+    public = str(service["env"]["public_url"]).rstrip("/")
     try:
         health = httpx.get(f"{public}/health", timeout=10.0)
     except httpx.HTTPError as exc:
@@ -597,13 +601,13 @@ def deployed() -> DeployedService:
     if health.status_code != httpx.codes.OK:
         pytest.fail(f"the deployed service at {public} answers {health.status_code}")
 
-    clients = list(common["mcp"]["clients"])
+    clients = list(service["mcp"]["clients"])
     if len(clients) != 1:
         pytest.fail(f"[mcp.clients] of the service names one chat client: {clients}")
 
     login = ""
     roles: list[str] = []
-    for name, granted in site["site"]["proxy"]["local_roles"].items():
+    for name, granted in chat["auth"]["proxy"]["roles"]["local"]["mapping"].items():
         if granted:
             login = name
             roles = list(granted)
@@ -611,16 +615,16 @@ def deployed() -> DeployedService:
 
     if not login:
         pytest.fail(
-            f"{site_path}: [site.proxy.local_roles] of the deployed config names "
-            "no user with roles"
+            f"{chat_path}: [auth.proxy.roles.local.mapping] of the deployed chat "
+            "names no user with roles"
         )
 
     return DeployedService(
         public=public,
         endpoint=f"{public}/{ENDPOINT}",
         client_id=clients[0],
-        client_secret=str(site["site"]["mcp_client"]["secret"]),
-        proxy_secret=str(site["site"]["mcp_proxy_secret"]),
+        client_secret=str(service["keys"]["mcp_client"]),
+        proxy_secret=str(service["keys"]["mcp_proxy"]),
         login=login,
         roles=",".join(roles),
     )

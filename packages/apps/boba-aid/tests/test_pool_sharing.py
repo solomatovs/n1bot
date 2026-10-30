@@ -7,12 +7,11 @@
 
 from __future__ import annotations
 
-import copy
 from collections.abc import AsyncIterator
 
 import pytest
 from aid_stand import StandTokens
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 
 from boba.aid.data.data_layer import PostgresDataLayer
 from boba.aid.infra import providers
@@ -25,6 +24,7 @@ from boba.identity.context import CallContexts
 from boba.runtime import providers as runtime
 from boba.runtime.config import AppName
 from boba.runtime.di import Container
+from boba.stand.overlay import ConfigOverlay
 
 pytestmark = pytest.mark.anyio
 
@@ -40,10 +40,7 @@ async def no_pools() -> AsyncIterator[None]:
 @pytest.fixture
 def stand_raw(raw_config: DictConfig, test_database: str) -> DictConfig:
     """Конфиг стенда, у которого общий [postgres] смотрит в тестовую базу."""
-    raw = copy.deepcopy(raw_config)
-    OmegaConf.update(raw, "postgres.dbname", test_database)
-
-    return raw
+    return ConfigOverlay(raw_config).merged({"postgres.dbname": test_database})
 
 
 @pytest.fixture

@@ -30,7 +30,6 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 from boba.cancellation import RunCancellation, ToolStopped, run_cancellation
-from boba.runtime.config import AppLayers
 from boba.runtime.storage import ImageStorageClient, LocalStorageConfig, StorageFactory
 from boba.sandbox import SandboxProfile
 from boba.sandbox.cgroup import CgroupManager
@@ -661,7 +660,6 @@ class LoadStand:
                     "copy_chunk_bytes": 1 << 20,
                 },
                 "binaries": {"dirs": self._bin_dirs()},
-                "interpreter": AppLayers.interpreter(),
             }
         )
         client = StorageFactory.create(cfg)

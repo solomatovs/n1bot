@@ -9,8 +9,9 @@
 from __future__ import annotations
 
 import pytest
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 
+from boba.stand.overlay import ConfigOverlay
 from boba.stand.refs import StandRefs
 from boba.stand_core.context import CallStand
 from boba.toolkit.calls import ToolIntent
@@ -23,12 +24,11 @@ pytestmark = pytest.mark.anyio
 def reload_config(raw_config: DictConfig) -> DictConfig:
     """Конфиг с процессным запуском и одним pg: тест про обвязки, не про
     песочницу и хранилища."""
-    copied = raw_config.copy()
-    OmegaConf.update(copied, "env.tool_launcher", "process")
-    for plugin_id in copied["tool"]:
-        OmegaConf.update(copied, f"tool.{plugin_id}.enable", plugin_id == "pg")
+    changes: dict[str, object] = {"env.tool_launcher": "process"}
+    for plugin_id in raw_config["tool"]:
+        changes[f"tool.{plugin_id}.enable"] = plugin_id == "pg"
 
-    return copied
+    return ConfigOverlay(raw_config).merged(changes)
 
 
 async def test_repeated_load_builds_the_same_tools(

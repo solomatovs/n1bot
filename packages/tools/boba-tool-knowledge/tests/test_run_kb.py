@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import ClassVar
 
 import pytest
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
 
 from boba.config import bind
 from boba.tool.kb.tools import (
@@ -38,8 +38,8 @@ class RunArgs:
 @pytest.fixture(scope="module")
 def kb_cfg(raw_config) -> KbToolConfig:
     """Конфиг с процессным запуском: кэш моделей эмбеддинга берётся с хоста."""
-    copied = raw_config.copy()
-    OmegaConf.update(copied, "env.tool_launcher", "process")
+    copied = OmegaConf.merge(raw_config, {"env": {"tool_launcher": "process"}})
+    assert isinstance(copied, DictConfig)
 
     return bind(copied, path="tool.kb", model=KbToolConfig)
 

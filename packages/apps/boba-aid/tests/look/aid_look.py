@@ -24,7 +24,7 @@ import json
 import os
 import shutil
 import subprocess
-from collections.abc import Iterator, Mapping, MutableMapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from importlib.metadata import version
@@ -39,6 +39,7 @@ from boba.stand.ui.stand import (
     StandApp,
     StandAuth,
     StandConfig,
+    StandOverlay,
     StandPorts,
     StandProcess,
 )
@@ -1277,9 +1278,9 @@ class WindowStandConfig(StandConfig):
 
     context_window: int
 
-    def _use_fake_llm(self, doc: MutableMapping[str, Any]) -> None:
-        super()._use_fake_llm(doc)
-        doc["model_limits"]["fake"]["context_window"] = self.context_window
+    def _use_fake_llm(self, overlay: StandOverlay) -> None:
+        super()._use_fake_llm(overlay)
+        overlay.set(("model_limits", "fake", "context_window"), self.context_window)
 
 
 class LookStand:

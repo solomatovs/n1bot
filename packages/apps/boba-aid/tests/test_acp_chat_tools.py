@@ -21,8 +21,7 @@ import asyncio
 import json
 import multiprocessing
 import time
-import tomllib
-from collections.abc import AsyncIterator, Iterable, Iterator, Mapping
+from collections.abc import AsyncIterator, Iterable, Iterator, Mapping, Sequence
 from http import HTTPStatus
 from pathlib import Path
 from typing import Any, ClassVar
@@ -39,10 +38,11 @@ import boba.aid.agent
 from boba.aid.agent.client import AgentProcess
 from boba.aid.rendering.chat_view import StepStatus
 from boba.canvas.canvas import CanvasAction, CanvasElement, CanvasKind
+from boba.config import ConfigLoader, bind
 from boba.core.mcp_names import McpToolNames
 from boba.db.postgres.connection import PostgresConfig
 from boba.mcp_client.client import McpServerConfig, McpServersConfig
-from boba.runtime.config import RuntimeConfig
+from boba.runtime.config import RuntimeConfig, TokenConfig
 from boba.runtime.http import RequestTokens
 from boba.stand.names import StandNames
 from boba.stand.site import Stand
@@ -513,8 +513,8 @@ class TestSeparateSessionSecrets:
         companion = app.companion
         assert companion is not None
 
-        chat_site = SiteSecrets(app.config.files.site)
-        service_site = SiteSecrets(companion.config.files.site)
+        chat_site = SiteSecrets(app.config.files.paths(app.config.app))
+        service_site = SiteSecrets(companion.config.files.paths(companion.config.app))
         assert chat_site.auth_secret() != service_site.auth_secret(), (
             "the stand gives the chat and the service the same auth_secret"
         )
@@ -550,14 +550,13 @@ class TestSeparateSessionSecrets:
 
 
 class SiteSecrets:
-    """Секреты [site] site-файла приложения стенда."""
+    """Секреты конфига приложения стенда: config.toml отладки с наложением."""
 
-    def __init__(self, site: Path) -> None:
-        with site.open("rb") as handle:
-            self._site: Mapping[str, Any] = tomllib.load(handle)["site"]
+    def __init__(self, paths: Sequence[Path]) -> None:
+        self._session = bind(ConfigLoader(paths).load(), "session", TokenConfig)
 
     def auth_secret(self) -> str:
-        return str(self._site["auth_secret"])
+        return self._session.auth_secret
 
 
 class JournalButtons:

@@ -17,8 +17,7 @@ from pydantic import ValidationError
 
 from boba.aid.infra.bootstrap import SandboxCors
 from boba.aid.infra.config import AppConfig
-from boba.config import bind
-from boba.config.section import ConfigError
+from boba.config import ConfigError, bind
 from boba.stand.signin import SignInStand
 
 

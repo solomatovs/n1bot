@@ -40,7 +40,7 @@ class TestModes:
         assert done.stdout == ""
         assert "the interactive mode is not available yet" in done.stderr
         assert "boba --stdio" in done.stderr
-        assert "boba serve --config FILE --site FILE" in done.stderr
+        assert "boba serve --config FILE [--config FILE]" in done.stderr
 
     def test_stdio_does_not_combine_with_a_command(self, tmp_path: Path) -> None:
         done = BobaRun(tmp_path).run("--stdio", "settings-schema")

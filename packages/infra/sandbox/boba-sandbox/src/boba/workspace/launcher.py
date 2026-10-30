@@ -199,14 +199,12 @@ class LauncherInterpreter(BaseModel):
 
     Лаунчер — тот же python, что и процесс приложения, но во внешнем слое
     цепочки он видит только явный список путей (LauncherView) и приносит в
-    него свои. Снимает его с процесса граница конфига (AppLayers) и кладёт
-    секцией [interpreter]; построитель цепочки LauncherChain получает его
-    оттуда через способ запуска песочницы и секцию [storage].
+    него свои. Это факт процесса, а не конфиг: снимок делает ProcessInterpreter
+    (boba.runtime.config), его получают построитель цепочки LauncherChain
+    хранилища образов и реестр зигот способа запуска песочницы.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
-
-    SECTION: ClassVar[str] = "interpreter"
 
     executable: str = Field(
         min_length=1,
@@ -231,7 +229,7 @@ class LauncherInterpreter(BaseModel):
     @classmethod
     def _absolute_executable(cls, value: str) -> str:
         if not os.path.isabs(value):
-            msg = f"[interpreter]: executable expects an absolute path, got {value!r}"
+            msg = f"launcher interpreter: executable expects an absolute path, got {value!r}"
             raise ValueError(msg)
 
         return value
@@ -244,7 +242,7 @@ class LauncherInterpreter(BaseModel):
                 continue
 
             msg = (
-                f"[interpreter]: roots expect absolute paths, got {root!r} "
+                f"launcher interpreter: roots expect absolute paths, got {root!r} "
                 f"among {list(value)}"
             )
             raise ValueError(msg)

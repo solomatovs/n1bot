@@ -9,6 +9,7 @@ import pytest
 from omegaconf import DictConfig, OmegaConf
 
 from boba.runtime.plugins import PluginKits
+from boba.stand.overlay import ConfigOverlay
 from boba.stand.refs import StandRefs
 from boba.stand.toolsetup import ToolSetup
 from boba.stand_core.context import CallStand
@@ -24,13 +25,12 @@ ENABLED = ("bash", "canvas", "ch", "doc", "pg")
 def _enabled_only(raw: DictConfig, enabled: Iterable[str], launcher: str) -> DictConfig:
     """Конфиг сервиса, где включены только плагины enabled, способ запуска —
     launcher."""
-    copied = raw.copy()
-    OmegaConf.update(copied, "env.tool_launcher", launcher)
     kept = frozenset(enabled)
-    for plugin_id in copied["tool"]:
-        OmegaConf.update(copied, f"tool.{plugin_id}.enable", plugin_id in kept)
+    changes: dict[str, object] = {"env.tool_launcher": launcher}
+    for plugin_id in raw["tool"]:
+        changes[f"tool.{plugin_id}.enable"] = plugin_id in kept
 
-    return copied
+    return ConfigOverlay(raw).merged(changes)
 
 
 @pytest.mark.parametrize("launcher", ["process", "sandbox"])
@@ -61,8 +61,8 @@ async def test_manifests_come_from_the_plugin_programs(
 async def test_config_without_image_refuses_start(
     runtime_stand: StandRefs, call_stand: CallStand, raw_config: DictConfig
 ) -> None:
-    raw = _enabled_only(raw_config, ("pg",), "sandbox")
-    OmegaConf.update(raw, "tool.nope", {"enable": False})
+    enabled = _enabled_only(raw_config, ("pg",), "sandbox")
+    raw = ConfigOverlay(enabled).merged({"tool.nope": {"enable": False}})
 
     loading = PluginKits(raw, runtime_stand.launchers(raw), StaticSection())
 
@@ -73,8 +73,13 @@ async def test_config_without_image_refuses_start(
 async def test_image_without_config_refuses_start(
     runtime_stand: StandRefs, call_stand: CallStand, raw_config: DictConfig
 ) -> None:
-    raw = _enabled_only(raw_config, ("pg",), "sandbox")
-    del raw["tool"]["mail"]
+    enabled = _enabled_only(raw_config, ("pg",), "sandbox")
+    plugins = OmegaConf.to_container(enabled["tool"], resolve=False)
+    assert isinstance(plugins, dict)
+    plugins.pop("mail")
+    raw = ConfigOverlay(enabled).replaced(
+        "tool", {str(k): v for k, v in plugins.items()}
+    )
 
     loading = PluginKits(raw, runtime_stand.launchers(raw), StaticSection())
 
@@ -85,8 +90,8 @@ async def test_image_without_config_refuses_start(
 async def test_tool_the_plugin_does_not_declare_refuses_start(
     runtime_stand: StandRefs, call_stand: CallStand, raw_config: DictConfig
 ) -> None:
-    raw = _enabled_only(raw_config, ("pg",), "process")
-    OmegaConf.update(raw, "tool.pg.tools", ["pg_query", "pg_nope"])
+    enabled = _enabled_only(raw_config, ("pg",), "process")
+    raw = ConfigOverlay(enabled).merged({"tool.pg.tools": ["pg_query", "pg_nope"]})
 
     with pytest.raises(RuntimeError, match=r"\[tool\.pg\] tools names \['pg_nope'\]"):
         await runtime_stand.registry(
@@ -99,8 +104,8 @@ async def test_plugin_section_is_checked_by_the_plugin(
 ) -> None:
     """Ключи секции сверх ключей фреймворка проверяет сам плагин: сервер их
     не знает, а непригодную секцию отвергает программа плагина."""
-    raw = _enabled_only(ToolSetup.sandbox_raw(raw_config), ("pg",), "sandbox")
-    OmegaConf.update(raw, "tool.pg.max_rows", 0)
+    enabled = _enabled_only(ToolSetup.sandbox_raw(raw_config), ("pg",), "sandbox")
+    raw = ConfigOverlay(enabled).merged({"tool.pg.max_rows": 0})
 
     loading = PluginKits(raw, runtime_stand.launchers(raw), StaticSection())
 

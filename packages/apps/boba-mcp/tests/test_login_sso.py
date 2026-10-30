@@ -30,7 +30,7 @@ from boba.access import ProfileGrant
 from boba.auth import SignIns
 from boba.auth.config import KerberosAuthConfig
 from boba.auth.sso import SpnegoGate
-from boba.config import bind
+from boba.config import ConfigLoader, bind
 from boba.krb import KerberosEnv
 from boba.ldap import Ldap3Directory
 from boba.mcp_server.auth import ServiceMark
@@ -43,7 +43,7 @@ from boba.oauth.server import (
     ServiceTokens,
 )
 from boba.runtime.signin import SignInAssembly
-from boba.stand.site import Stand, StandLayers
+from boba.stand.site import Stand
 from boba.stand.ui.stand import StandApp
 
 STAND = Stand.required()
@@ -75,14 +75,8 @@ def krb5_env() -> Iterator[None]:
 
 @pytest.fixture
 def chat_config() -> DictConfig:
-    """Конфиг чата со стендовым слоем: в нём живёт секция [auth.kerberos]."""
-    raw = StandLayers.compose(StandApp.AID.files())
-    if not isinstance(raw, DictConfig):
-        got = type(raw).__name__
-        msg = f"chat config: expected to compose into a table, got {got}"
-        raise TypeError(msg)
-
-    return raw
+    """Конфиг чата с наложением стенда: в нём живёт секция [auth.kerberos]."""
+    return ConfigLoader(StandApp.AID.paths()).load()
 
 
 @pytest.fixture

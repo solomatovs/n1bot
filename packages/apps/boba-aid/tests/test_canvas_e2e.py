@@ -5,7 +5,7 @@ workspace открытого треда и просит панель показ�
 DOM: картинка загрузилась, диаграмма отрисована в svg, текст виден,
 неподдерживаемый формат объяснён.
 
-Запуск: BOBA_CONFIG_PATH=... BOBA_SITE_PATH=... pytest -m integration
+Запуск: BOBA_CONFIG_PATH=... pytest -m integration
 packages/apps/boba-aid/tests/test_canvas_e2e.py
 Стенд — два собственных процесса на конфигах деревьев отладки: сервис boba-mcp
 (debug/mcp) и чат (файлы стенда), который ходит к этому сервису. Порты,
@@ -37,10 +37,16 @@ from playwright.async_api import Locator, Page, async_playwright
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 
 from boba.aid.canvas.panel import CanvasNote
-from boba.runtime.config import ConfigFiles, ConfigLayoutError, EnvOverride
+from boba.config import ConfigError
 from boba.stand.names import StandNames
 from boba.stand.ui.database import StandDatabase
-from boba.stand.ui.stand import StandApp, StandFiles, StandPorts
+from boba.stand.ui.stand import (
+    StandApp,
+    StandError,
+    StandFiles,
+    StandOverlay,
+    StandPorts,
+)
 from boba.toolkit.result import ContentMime
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -65,10 +71,10 @@ class E2eStand:
     """Адреса, каталоги и база стенда e2e поверх конфигов отладки.
 
     Конфиги отладки называют порты, данные и базу интерактивной отладки; стенд
-    переписывает их в debug/e2e/<приложение>/conf со своей базой и
-    переопределяет окружением порты, префиксы, каталоги данных и адрес сервиса
-    (отладка ходит в сервис через nginx), чтобы прогон шёл рядом с запущенной
-    отладкой. Чат и сервис делят одну базу стенда.
+    кладёт поверх них наложение в debug/e2e/<приложение>/conf со своей базой,
+    портами, префиксами, каталогами данных и адресом сервиса (отладка ходит в
+    сервис через nginx), чтобы прогон шёл рядом с запущенной отладкой. Чат и
+    сервис делят одну базу стенда.
     """
 
     ROOT: ClassVar[Path] = REPO / "debug" / "e2e"
@@ -93,45 +99,48 @@ class E2eStand:
         database = StandDatabase(StandApp.AID, StandNames().tree_database(self.DB_NAME))
         name = database.prepare()
 
-        for app in (StandApp.AID, StandApp.MCP):
-            self._files(app).write_debug(app, name)
+        self._files(StandApp.MCP).write(self._service_overlay(name))
+        self._files(StandApp.AID).write(self._app_overlay(name))
 
-    def files(self, app: StandApp) -> ConfigFiles:
-        """Файлы конфигурации приложения стенда, записанные prepare."""
-        files = self._files(app)
+    def arguments(self, app: StandApp) -> list[str]:
+        """Аргументы --config приложения стенда: конфиг отладки и наложение,
+        записанное prepare."""
+        return self._files(app).arguments(app)
 
-        return ConfigFiles(config=files.config, site=files.site)
+    def paths(self, app: StandApp) -> tuple[Path, ...]:
+        return self._files(app).paths(app)
 
     def _files(self, app: StandApp) -> StandFiles:
         return StandFiles(self.ROOT / app.value / self.CONF)
 
-    def service_env(self) -> dict[str, str]:
+    def _service_overlay(self, database: str) -> StandOverlay:
         origin = f"{self.SERVICE_SCHEME}://{self.SERVICE_HOST}:{self.SERVICE_PORT}"
-        public = f"{origin}{self.SERVICE_PREFIX}"
+        overlay = StandOverlay()
+        overlay.set(("postgres", "dbname"), database)
+        overlay.set(("env", "port"), self.SERVICE_PORT)
+        overlay.set(("env", "url_prefix"), self.SERVICE_PREFIX)
+        overlay.set(("env", "public_url"), f"{origin}{self.SERVICE_PREFIX}")
+        overlay.set(("env", "data"), str(self.SERVICE_DATA))
+        # тесты называют файлы путями тела инструмента (/workspace/...):
+        # так их видит только сервис с песочницей
+        overlay.set(("env", "tool_launcher"), self.SERVICE_LAUNCHER)
 
-        return {
-            EnvOverride.BASE.var: str(StandApp.MCP.files().base()),
-            EnvOverride.PORT.var: str(self.SERVICE_PORT),
-            EnvOverride.URL_PREFIX.var: self.SERVICE_PREFIX,
-            EnvOverride.PUBLIC_URL.var: public,
-            EnvOverride.DATA.var: str(self.SERVICE_DATA),
-            # тесты называют файлы путями тела инструмента (/workspace/...):
-            # так их видит только сервис с песочницей
-            EnvOverride.TOOL_LAUNCHER.var: self.SERVICE_LAUNCHER,
-        }
+        return overlay
 
-    def app_env(self) -> dict[str, str]:
-        return {
-            EnvOverride.BASE.var: str(StandApp.AID.files().base()),
-            EnvOverride.PORT.var: str(PORT),
-            EnvOverride.URL_PREFIX.var: self.APP_PREFIX,
-            EnvOverride.INSTANCE_ID.var: self.INSTANCE,
-            EnvOverride.DATA.var: str(self.APP_DATA),
-            EnvOverride.MCP_SCHEME.var: self.SERVICE_SCHEME,
-            EnvOverride.MCP_HOST.var: self.SERVICE_HOST,
-            EnvOverride.MCP_PORT.var: str(self.SERVICE_PORT),
-            EnvOverride.MCP_PREFIX.var: self.SERVICE_PREFIX,
-        }
+    def _app_overlay(self, database: str) -> StandOverlay:
+        overlay = StandOverlay()
+        overlay.set(("postgres", "dbname"), database)
+        overlay.set(("postgres_history", "dbname"), database)
+        overlay.set(("env", "port"), PORT)
+        overlay.set(("env", "url_prefix"), self.APP_PREFIX)
+        overlay.set(("env", "instance_id"), self.INSTANCE)
+        overlay.set(("env", "data"), str(self.APP_DATA))
+        overlay.set(("env", "mcp_scheme"), self.SERVICE_SCHEME)
+        overlay.set(("env", "mcp_host"), self.SERVICE_HOST)
+        overlay.set(("env", "mcp_port"), self.SERVICE_PORT)
+        overlay.set(("env", "mcp_prefix"), self.SERVICE_PREFIX)
+
+        return overlay
 
 
 PORT = int(os.environ.get("BOBA_E2E_PORT") or StandPorts().free())
@@ -323,12 +332,10 @@ class E2eApp:
     def __init__(
         self,
         command: Sequence[str],
-        overrides: Mapping[str, str],
         ready_url: str,
         log: Path,
     ) -> None:
         self._command = command
-        self._overrides = overrides
         self._ready_url = ready_url
         self._log = log
         self._process: subprocess.Popen[bytes] | None = None
@@ -338,7 +345,7 @@ class E2eApp:
             # тест запускает собственный лончер конфигом стенда
             # nosemgrep: dangerous-subprocess-use-tainted-env-args
             [str(LAUNCHER), *self._command],
-            env={**os.environ, **self._overrides},
+            env=dict(os.environ),
             stdout=self._log.open("ab"),
             stderr=subprocess.STDOUT,
         )
@@ -415,11 +422,8 @@ def app_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[E2eProcesse
     stand = E2eStand()
     try:
         stand.prepare()
-    except ConfigLayoutError as exc:
+    except (ConfigError, StandError) as exc:
         pytest.fail(f"файлы конфигурации стенда недоступны: {exc}")
-
-    chat = stand.files(StandApp.AID)
-    service_files = stand.files(StandApp.MCP)
 
     # чужой процесс на порту молча увёл бы тесты на другой код
     for port in (PORT, stand.SERVICE_PORT):
@@ -435,36 +439,22 @@ def app_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[E2eProcesse
     # логи — в каталоге прогона pytest: общий путь в /tmp делят пользователи
     logs = tmp_path_factory.mktemp("boba-e2e")
     service = E2eApp(
-        [
-            "-m",
-            MCP_MODULE,
-            "--config",
-            str(service_files.config),
-            "--site",
-            str(service_files.site),
-        ],
-        stand.service_env(),
+        ["-m", MCP_MODULE, *stand.arguments(StandApp.MCP)],
         FakeUrl.loopback(stand.SERVICE_PORT, f"{stand.SERVICE_PREFIX}/health"),
         logs / f"mcp-{stand.SERVICE_PORT}.log",
     )
     app = E2eApp(
-        [str(ENTRY), "--config", str(chat.config), "--site", str(chat.site)],
-        stand.app_env(),
+        [str(ENTRY), *stand.arguments(StandApp.AID)],
         BASE + "/login",
         logs / f"app-{PORT}.log",
     )
-    # тест ходит к сервису тем же конфигом, что и чат: переопределения — и ему
-    with pytest.MonkeyPatch.context() as environ:
-        for name, value in stand.app_env().items():
-            environ.setenv(name, value)
-
-        try:
-            service.start()
-            app.start()
-            yield E2eProcesses(app=app, service=service)
-        finally:
-            app.stop()
-            service.stop()
+    try:
+        service.start()
+        app.start()
+        yield E2eProcesses(app=app, service=service)
+    finally:
+        app.stop()
+        service.stop()
 
 
 async def _cookie_header(context: Any) -> str:
@@ -478,10 +468,9 @@ async def _cookie_header(context: Any) -> str:
 
 def _app_config() -> Any:
     from boba.aid.infra.config import AppConfig
-    from boba.config import bind
-    from boba.runtime.config import AppLayers
+    from boba.config import ConfigLoader, bind
 
-    raw = AppLayers.compose(E2eStand().files(StandApp.AID))
+    raw = ConfigLoader(E2eStand().paths(StandApp.AID)).load()
     return bind(raw, path="app", model=AppConfig)
 
 

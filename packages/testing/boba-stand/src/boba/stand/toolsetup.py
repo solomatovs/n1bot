@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from typing import Any
 
-from omegaconf import OmegaConf
+from omegaconf import DictConfig
 
 from boba.config import bind
 from boba.db.postgres.connection import PostgresConfig
@@ -20,6 +20,7 @@ from boba.krb import KeytabCredentials, ServiceTicketIssuer
 from boba.runtime.launchers import ZygoteLaunchers
 from boba.sandbox.program import PluginEntry
 from boba.sandbox.zygote import ZygotePolicy, ZygoteToolCaller
+from boba.stand.overlay import ConfigOverlay
 from boba.stand.refs import StandRefs
 from boba.stand.sandbox import plugin_launch
 from boba.stand.toolstand import ToolStand
@@ -95,11 +96,9 @@ class ToolSetup:
         return bind(raw, path="tool.ingest.confluence", model=HttpConnection)
 
     @staticmethod
-    def sandbox_raw(raw: Any) -> Any:
+    def sandbox_raw(raw: DictConfig) -> DictConfig:
         """Зиготы тестов живут в песочнице: режимные развилки конфига — sandbox."""
-        copied = raw.copy()
-        OmegaConf.update(copied, "env.tool_launcher", "sandbox")
-        return copied
+        return ConfigOverlay(raw).merged({"env.tool_launcher": "sandbox"})
 
     @staticmethod
     def caller(zygote_stand: ZygoteStand, raw: Any, section: str) -> ZygoteToolCaller:

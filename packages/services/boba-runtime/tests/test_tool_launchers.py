@@ -7,9 +7,8 @@ from pathlib import Path
 
 import pytest
 from omegaconf import OmegaConf
-from pydantic import ValidationError
 
-from boba.runtime.config import AppLayers
+from boba.config import ConfigError
 from boba.runtime.launchers import (
     NoLaunchers,
     PluginLaunch,
@@ -22,7 +21,6 @@ from boba.stand_core.fake_toolmod import PLUGIN
 from boba.toolkit.chain import CallAmbient
 from boba.toolkit.manifest import ManifestBuilder
 from boba.toolrun.process import ProcessToolCaller
-from boba.workspace.launcher import LauncherInterpreter
 
 FAKE_LAUNCH = PluginLaunch(manifest=ManifestBuilder().manifest(PLUGIN, "0"), section={})
 """Запуск фейкового плагина: манифест его объявления и пустая секция."""
@@ -66,13 +64,8 @@ def test_process_without_the_section_launches_no_tool_sections(
 
 
 def _sandbox_section() -> dict[str, object]:
-    """Способ запуска песочницей и интерпретатор процесса, как их кладёт AppLayers."""
-    interpreter = AppLayers.interpreter().model_dump(mode="json")
-
-    return {
-        "tool_launcher": {"provider": "sandbox"},
-        LauncherInterpreter.SECTION: interpreter,
-    }
+    """Способ запуска песочницей; интерпретатор лаунчер снимает с процесса сам."""
+    return {"tool_launcher": {"provider": "sandbox"}}
 
 
 def test_sandbox_provider_builds_zygote_launchers() -> None:
@@ -89,7 +82,7 @@ def test_sandbox_probe_requires_env_paths() -> None:
     launchers = ToolLaunchers(raw).build()
 
     # конвенции песочницы стоят на путях [env]: без них probe отказывает
-    with pytest.raises(ValidationError):
+    with pytest.raises(ConfigError, match=r"section \[env\] is missing"):
         launchers.probe()
 
 

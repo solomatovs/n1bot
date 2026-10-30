@@ -56,15 +56,21 @@ class SilentDatabaseStand(StandConfig):
 
     postgres: SilentPostgres
 
+    SECTIONS: ClassVar[tuple[str, ...]] = ("postgres", "postgres_history")
+    """Подключения приложения к серверу площадки: оба уводятся на молчащий."""
+
     def write(self) -> None:
         super().write()
-        site = self.files.site
-        with site.open("rb") as handle:
+        overlay = self.files.overlay
+        with overlay.open("rb") as handle:
             doc: dict[str, Any] = tomllib.load(handle)
 
-        doc["site"]["pg_addr"] = self.postgres.HOST
-        doc["site"]["pg_port"] = self.postgres.port
-        site.write_text(TomlText.dumps(doc), encoding="utf-8")
+        for section in self.SECTIONS:
+            table = doc.setdefault(section, {})
+            table["hostaddr"] = self.postgres.HOST
+            table["port"] = self.postgres.port
+
+        overlay.write_text(TomlText.dumps(doc), encoding="utf-8")
 
 
 @pytest.fixture
@@ -94,10 +100,7 @@ def test_startup_without_postgres_exits_with_a_failure(
         sys.executable,
         "-m",
         app.module,
-        "--config",
-        str(config.files.config),
-        "--site",
-        str(config.files.site),
+        *config.files.arguments(app),
     ]
 
     with log_path.open("wb") as log:

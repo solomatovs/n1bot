@@ -1,29 +1,24 @@
 """Плагин pytest общего стенда: конфиг приложения, тестовая база и пул, kerberos.
 
-Файлы конфигурации называет окружение: BOBA_CONFIG_PATH и BOBA_SITE_PATH.
+Файлы конфигурации называет окружение: BOBA_CONFIG_PATH — главный конфиг и
+наложения через os.pathsep (StandConfigPaths).
 """
 
 from collections.abc import AsyncIterator, Iterator
-from copy import deepcopy
 from enum import StrEnum
 
 import pytest
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 
-from boba.config import bind
+from boba.config import ConfigLoader, bind
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
-from boba.runtime.config import (
-    ConfigLocator,
-    EnvOverride,
-    ProcessConfig,
-    RawConfig,
-    RuntimeConfig,
-)
+from boba.runtime.config import ProcessConfig, RawConfig, RuntimeConfig
 from boba.stand.apps_slot import AppsDocker, AppsSlot
 from boba.stand.database import TestDatabase
+from boba.stand.overlay import ConfigOverlay
 from boba.stand.refs import StandRefs
-from boba.stand.site import StandLayers
+from boba.stand.site import StandConfigPaths
 from boba.stand.ui.stand import REPO_ROOT, StandApp, StandPaths
 from boba.stand.zygote import ZygoteStand
 from boba.stand_core.context import CallStand, call_stand
@@ -102,43 +97,32 @@ class ServiceData(StrEnum):
 
 @pytest.fixture(scope="session")
 def raw_config() -> DictConfig:
-    """Конфиг приложения со стендовым слоем conf/stand.toml поверх."""
-    files = ConfigLocator.files()
-    RawConfig.load(files)
-
-    raw = StandLayers.compose(files)
-    if not isinstance(raw, DictConfig):
-        got = type(raw).__name__
-        msg = f"stand config {files}: expected to compose into a table, got {got}"
-        raise TypeError(msg)
-
-    return raw
+    """Конфиг прогона: файлы BOBA_CONFIG_PATH — конфиг приложения и наложение
+    стенда stand.toml поверх; он же — дерево процесса (RawConfig)."""
+    return RawConfig.load(StandConfigPaths().paths())
 
 
 @pytest.fixture(scope="session")
 def service_raw_config(tmp_path_factory: pytest.TempPathFactory) -> DictConfig:
-    """Конфиг сервиса boba-mcp со стендовым слоем его conf/stand.toml: секции
+    """Конфиг сервиса boba-mcp с наложением его stand.toml: секции
     инструментов и их плагины живут у сервиса, который инструменты исполняет.
 
     Корень — дерево сервиса, каким бы приложением ни был запущен прогон:
     модели плагинов лежат там. Каталог данных — временный: образы workspace,
     журналы и выгрузки тестов не должны ложиться в данные развёрнутого
     приложения."""
-    files = StandApp.MCP.files()
-    raw = StandLayers.compose(files)
-    if not isinstance(raw, DictConfig):
-        got = type(raw).__name__
-        msg = f"service config {files}: expected to compose into a table, got {got}"
-        raise TypeError(msg)
+    raw = ConfigLoader(StandApp.MCP.paths()).load()
 
     data = tmp_path_factory.mktemp("service-data")
     for name in ServiceData:
         (data / name.value).mkdir()
 
-    OmegaConf.update(raw, "env.base", str(StandPaths.MCP_BASE.under(REPO_ROOT)))
-    OmegaConf.update(raw, "env.data", str(data))
+    changes = {
+        "env.base": str(StandPaths.MCP_BASE.under(REPO_ROOT)),
+        "env.data": str(data),
+    }
 
-    return raw
+    return ConfigOverlay(raw).merged(changes)
 
 
 @pytest.fixture(scope="session")
@@ -150,10 +134,9 @@ def runtime_config(raw_config: DictConfig) -> RuntimeConfig:
 @pytest.fixture(scope="session")
 def bus_config(raw_config: DictConfig) -> RuntimeConfig:
     """Конфиг рантайма с шиной на Postgres для тестов самой шины: отладка
-    выбирает в site.toml provider = local, а шину на Postgres тесты поднимают
+    выбирает в конфиге provider = local, а шину на Postgres тесты поднимают
     сами в тестовой базе."""
-    raw = deepcopy(raw_config)
-    OmegaConf.update(raw, f"env.{EnvOverride.MESSAGING.value}", "postgres")
+    raw = ConfigOverlay(raw_config).merged({"env.messaging_provider": "postgres"})
 
     return bind(raw, path=RuntimeConfig.SECTION, model=RuntimeConfig)
 
