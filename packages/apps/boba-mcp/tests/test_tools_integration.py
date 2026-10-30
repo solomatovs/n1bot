@@ -102,15 +102,15 @@ def stop_zygotes(zygote_stand: ZygoteStand):
 
 
 @pytest.fixture(scope="module")
-def bash_tool(zygote_stand: ZygoteStand, raw_config):
+def bash_tool(zygote_stand: ZygoteStand, raw_config, sandbox_raw_config):
     cfg = ToolSetup.config(raw_config, "tool.bash", BashToolConfig)
-    launcher = ToolSetup.caller(zygote_stand, raw_config, "bash")
+    launcher = ToolSetup.caller(zygote_stand, sandbox_raw_config, "bash")
 
     return ShellRun.tool(launcher, cfg)
 
 
 @pytest.fixture(scope="module")
-def doc_tools(zygote_stand: ZygoteStand, raw_config):
+def doc_tools(zygote_stand: ZygoteStand, raw_config, sandbox_raw_config):
     """doc-функции новой модели: обёртка запуска + конфиг, как в загрузчике."""
     from importlib import reload
 
@@ -118,16 +118,16 @@ def doc_tools(zygote_stand: ZygoteStand, raw_config):
 
     module = reload(doc_module)
 
-    launcher = ToolSetup.caller(zygote_stand, raw_config, "doc")
+    launcher = ToolSetup.caller(zygote_stand, sandbox_raw_config, "doc")
     config = InjectedConfig(StaticSection())
 
     return ToolSetup.launched(
-        module.TOOLS, launcher, (config,), _section(raw_config, "doc")
+        module.TOOLS, launcher, (config,), _section(sandbox_raw_config, "doc")
     )
 
 
 @pytest.fixture(scope="module")
-def chart_tool(zygote_stand: ZygoteStand, raw_config):
+def chart_tool(zygote_stand: ZygoteStand, raw_config, sandbox_raw_config):
     """visualize новой модели: обёртка запуска на профиле секции."""
     from importlib import reload
 
@@ -135,13 +135,13 @@ def chart_tool(zygote_stand: ZygoteStand, raw_config):
 
     module = reload(chart_module)
 
-    launcher = ToolSetup.caller(zygote_stand, raw_config, "chart")
+    launcher = ToolSetup.caller(zygote_stand, sandbox_raw_config, "chart")
 
     return ToolSetup.launched([module.visualize], launcher, ())[module.visualize.name]
 
 
 @pytest.fixture(scope="module")
-def web_tools(zygote_stand: ZygoteStand, raw_config):
+def web_tools(zygote_stand: ZygoteStand, raw_config, sandbox_raw_config):
     """web-функции новой модели: обёртка запуска + конфиг, как в загрузчике."""
     from importlib import reload
 
@@ -149,11 +149,11 @@ def web_tools(zygote_stand: ZygoteStand, raw_config):
 
     module = reload(web_module)
 
-    launcher = ToolSetup.caller(zygote_stand, raw_config, "web")
+    launcher = ToolSetup.caller(zygote_stand, sandbox_raw_config, "web")
     sources = (GivenConnections(), InjectedConfig(StaticSection()))
 
     return ToolSetup.launched(
-        module.TOOLS, launcher, sources, _section(raw_config, "web")
+        module.TOOLS, launcher, sources, _section(sandbox_raw_config, "web")
     )
 
 
@@ -192,7 +192,7 @@ def covered_url(raw_config) -> str:
 
 
 @pytest.fixture(scope="module")
-def confluence_tools(zygote_stand: ZygoteStand, raw_config):
+def confluence_tools(zygote_stand: ZygoteStand, raw_config, sandbox_raw_config):
     """confluence-функции новой модели: обёртка запуска + конфиг."""
     from importlib import reload
 
@@ -200,11 +200,11 @@ def confluence_tools(zygote_stand: ZygoteStand, raw_config):
 
     module = reload(confluence_module)
 
-    launcher = ToolSetup.caller(zygote_stand, raw_config, "confluence")
+    launcher = ToolSetup.caller(zygote_stand, sandbox_raw_config, "confluence")
     config = InjectedConfig(StaticSection())
 
     return ToolSetup.launched(
-        module.TOOLS, launcher, (config,), _section(raw_config, "confluence")
+        module.TOOLS, launcher, (config,), _section(sandbox_raw_config, "confluence")
     )
 
 
@@ -215,7 +215,7 @@ def pg_connection(raw_config) -> PostgresConfig:
 
 
 @pytest.fixture(scope="module")
-def pg_tools(zygote_stand: ZygoteStand, raw_config):
+def pg_tools(zygote_stand: ZygoteStand, raw_config, sandbox_raw_config):
     """pg-функции новой модели: обёртка запуска + конфиг, как в загрузчике."""
     from importlib import reload
 
@@ -223,11 +223,11 @@ def pg_tools(zygote_stand: ZygoteStand, raw_config):
 
     module = reload(pg_module)
 
-    launcher = ToolSetup.caller(zygote_stand, raw_config, "pg")
+    launcher = ToolSetup.caller(zygote_stand, sandbox_raw_config, "pg")
     sources = (GivenConnections(), InjectedConfig(StaticSection()))
 
     return ToolSetup.launched(
-        module.TOOLS, launcher, sources, _section(raw_config, "pg")
+        module.TOOLS, launcher, sources, _section(sandbox_raw_config, "pg")
     )
 
 
@@ -327,6 +327,7 @@ def ingest_tools(
     raw_config,
     kb_collection: str,
     kb_store: ConfluenceIngestConfig,
+    sandbox_raw_config,
 ):
     """ingest-функции новой модели: обёртка запуска + конфиг прогона с
     хранилищем в тестовой базе."""
@@ -336,8 +337,8 @@ def ingest_tools(
 
     module = reload(ingest_module)
 
-    launcher = ToolSetup.caller(zygote_stand, raw_config, "ingest")
-    section = _section(raw_config, "ingest", kb_collection, kb_store)
+    launcher = ToolSetup.caller(zygote_stand, sandbox_raw_config, "ingest")
+    section = _section(sandbox_raw_config, "ingest", kb_collection, kb_store)
 
     return ToolSetup.launched(module.TOOLS, launcher, (_ticketed(),), section)
 
@@ -361,7 +362,7 @@ def _section(
 ) -> PluginSection:
     """Секция плагина сырыми значениями конфига, как её читает сервис; у
     хранилища базы знаний — тестовая коллекция и база набора."""
-    launch = plugin_launch(ToolSetup.sandbox_raw(raw_config), plugin_id)
+    launch = plugin_launch(raw_config, plugin_id)
     values = dict(launch.section)
     if store is not None:
         connection = dict(values["connection"])
@@ -380,6 +381,7 @@ def kb_tools(
     raw_config,
     kb_collection: str,
     kb_store: ConfluenceIngestConfig,
+    sandbox_raw_config,
 ):
     """kb-функции новой модели: обёртка запуска + конфиг, как в загрузчике;
     поиск по чанкам ходит в тестовую базу, куда пишет ingest, поиск по схеме
@@ -390,21 +392,21 @@ def kb_tools(
 
     module = reload(kb_module)
 
-    launcher = ToolSetup.caller(zygote_stand, raw_config, "kb")
-    section = _section(raw_config, "kb", kb_collection, kb_store)
+    launcher = ToolSetup.caller(zygote_stand, sandbox_raw_config, "kb")
+    section = _section(sandbox_raw_config, "kb", kb_collection, kb_store)
 
     return ToolSetup.launched(module.TOOLS, launcher, (_ticketed(),), section)
 
 
 @pytest.fixture(scope="module")
-def kb_ix_tools(zygote_stand: ZygoteStand, raw_config):
+def kb_ix_tools(zygote_stand: ZygoteStand, raw_config, sandbox_raw_config):
     """kb-функции поиска по схеме ix: секция как в бою, индексы базы приложения."""
     import boba.tool.kb.tools as kb_module
 
-    launcher = ToolSetup.caller(zygote_stand, raw_config, "kb")
+    launcher = ToolSetup.caller(zygote_stand, sandbox_raw_config, "kb")
 
     return ToolSetup.launched(
-        kb_module.TOOLS, launcher, (_ticketed(),), _section(raw_config, "kb")
+        kb_module.TOOLS, launcher, (_ticketed(),), _section(sandbox_raw_config, "kb")
     )
 
 

@@ -23,11 +23,10 @@ INGEST = "boba.tool.confluence.plugin:INGEST"
 """Объявление плагина ingest: прогрев эмбеддера объявлен в нём."""
 
 
-def _section(raw_config: DictConfig) -> dict[str, Any]:
-    """Секция [tool.ingest] значениями JSON, как её отдаёт сервер."""
-    # тело живёт в песочнице: режимные развилки конфига — sandbox-веткой
-    sandboxed = OmegaConf.merge(raw_config, {"env": {"tool_launcher": "sandbox"}})
-    node = OmegaConf.select(sandboxed, "tool.ingest")
+def _section(sandbox_raw_config: DictConfig) -> dict[str, Any]:
+    """Секция [tool.ingest] значениями JSON, как её отдаёт сервер; тело живёт
+    в песочнице, поэтому конфиг — в режиме sandbox."""
+    node = OmegaConf.select(sandbox_raw_config, "tool.ingest")
     container = OmegaConf.to_container(node, resolve=True)
 
     section: dict[str, Any] = {}
@@ -38,10 +37,10 @@ def _section(raw_config: DictConfig) -> dict[str, Any]:
     return section
 
 
-def _caller(zygote_stand: ZygoteStand, raw_config: DictConfig) -> ZygoteToolCaller:
+def _caller(zygote_stand: ZygoteStand, sandbox_raw_config: DictConfig) -> ZygoteToolCaller:
     """Зигота ingest: прогрев объявлен плагином, секцию ему даёт вызывающий."""
     sandbox = SandboxToolConfig.model_validate({"profile": sandbox_profile("ingest")})
-    section = _section(raw_config)
+    section = _section(sandbox_raw_config)
 
     return zygote_stand.caller("ingest-test", sandbox.profile, [INGEST], warmup=section)
 
@@ -49,17 +48,17 @@ def _caller(zygote_stand: ZygoteStand, raw_config: DictConfig) -> ZygoteToolCall
 @needs_sandbox
 @needs_userns
 def test_module_loads_and_validates_config(
-    zygote_stand: ZygoteStand, raw_config: DictConfig
+    zygote_stand: ZygoteStand, sandbox_raw_config: DictConfig
 ) -> None:
     """Секция без page_workers: важно, что ответ — про поле конфига, а не
     про импорт."""
-    cfg = _section(raw_config)
+    cfg = _section(sandbox_raw_config)
     cfg.pop("page_workers")
     args = json.dumps({"page_id": "1", "cfg": cfg}).encode("utf-8")
     command = ToolCommand(argv=("confluence_index_page",), args=args)
 
     try:
-        outcome = CollectedCall.of(_caller(zygote_stand, raw_config), command)
+        outcome = CollectedCall.of(_caller(zygote_stand, sandbox_raw_config), command)
     finally:
         zygote_stand.stop()
 

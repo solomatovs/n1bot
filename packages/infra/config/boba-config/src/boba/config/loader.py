@@ -37,10 +37,6 @@ class ConfigResolver(StrEnum):
     TOML = "toml"
     TOML_DIR = "toml_dir"
 
-    def called_by(self, value: str) -> bool:
-        """Значение ключа — вызов этого резолвера целиком."""
-        return value.startswith(f"${{{self.value}:")
-
 
 class TomlFiles:
     """Чтение TOML-файла или каталога TOML-файлов в таблицу; ошибка чтения —
@@ -72,15 +68,15 @@ class TomlFiles:
 class ConfigLoader:
     """Загрузчик конфига процесса: главный файл, поверх него наложения.
 
-    Создают его вход программы (по путям --config) и стенды тестов (по своему
-    наложению). Резолверы ${toml:…}/${toml_dir:…} регистрируются на время
-    загрузки и возвращают узлы с родителем в дереве, поэтому ссылки внутри
-    подключённых файлов разрешаются от корня конфига. Подключённые файлы
-    читаются один раз при загрузке и ложатся в дерево таблицами: следующая
-    загрузка другого конфига в том же процессе их не перечитает. Всё дерево
-    разрешается сразу: неразрешимая ссылка или переменная окружения роняет
-    старт, а не первый bind. Готовое дерево — только для чтения, ссылки между
-    секциями в нём остаются ссылками.
+    Создают его вход программы (по путям --config) и стенды тестов. Файлы
+    сливаются OmegaConf.merge, резолверы ${toml:…}/${toml_dir:…}
+    регистрируются на время загрузки, и всё дерево один раз разрешается
+    OmegaConf.to_container(resolve=True): ссылки, переменные окружения и
+    подключённые файлы читаются здесь, неразрешимое роняет старт. Программа
+    получает разрешённое дерево только для чтения, ссылок в нём больше нет.
+    Наложение в памяти (load_over) нужно стендам тестов: оно ложится
+    последним слоем до разрешения, поэтому ссылки на изменённые ключи
+    следуют за ними.
     """
 
     def __init__(self, paths: Sequence[Path]) -> None:
@@ -93,59 +89,41 @@ class ConfigLoader:
         self._files = TomlFiles()
 
     def load(self) -> DictConfig:
+        return self._resolved(list(self._layers()))
+
+    def load_over(self, overlay: DictConfig) -> DictConfig:
+        """Файлы и поверх них наложение в памяти, затем разрешение."""
+        layers = list(self._layers())
+        layers.append(overlay)
+
+        return self._resolved(layers)
+
+    def _resolved(self, layers: Sequence[DictConfig]) -> DictConfig:
         OmegaConf.register_new_resolver(ConfigResolver.TOML.value, self._toml, replace=True)
         OmegaConf.register_new_resolver(
             ConfigResolver.TOML_DIR.value, self._toml_dir, replace=True
         )
-        layers = list(self._layers())
 
         try:
             merged = OmegaConf.merge(*layers)
-        except OmegaConfBaseException as exc:
-            msg = f"config {self._named()}: merging the files failed: {exc}"
-            raise ConfigError(msg) from exc
-
-        if not isinstance(merged, DictConfig):
-            got = type(merged).__name__
-            msg = f"config {self._named()}: expected the files to merge into a table, got {got}"
-            raise ConfigError(msg)
-
-        try:
-            self._include(merged)
-            OmegaConf.to_container(merged, resolve=True)
+            resolved = OmegaConf.to_container(merged, resolve=True)
+            tree = OmegaConf.create(resolved)
         except OmegaConfBaseException as exc:
             msg = f"config {self._named()}: resolving the config failed: {exc}"
             raise ConfigError(msg) from exc
 
-        OmegaConf.set_readonly(merged, True)
+        if not isinstance(tree, DictConfig):
+            got = type(tree).__name__
+            msg = f"config {self._named()}: expected the files to merge into a table, got {got}"
+            raise ConfigError(msg)
 
-        return merged
+        OmegaConf.set_readonly(tree, True)
+
+        return tree
 
     def _layers(self) -> Iterator[DictConfig]:
         for path in self._paths:
             yield OmegaConf.create(self._files.read(path))
-
-    def _include(self, node: DictConfig) -> None:
-        """Ключи-вызовы резолверов файлов заменяются прочитанными таблицами."""
-        for key, value in list(node.items_ex(resolve=False)):
-            if not isinstance(value, str):
-                continue
-
-            if not self._reads_file(value):
-                continue
-
-            node[key] = node[key]
-
-        for _, value in node.items_ex(resolve=False):
-            if isinstance(value, DictConfig):
-                self._include(value)
-
-    def _reads_file(self, value: str) -> bool:
-        for resolver in ConfigResolver:
-            if resolver.called_by(value):
-                return True
-
-        return False
 
     def _toml(self, path: str, _parent_: BaseContainer) -> DictConfig:
         return OmegaConf.create(self._files.read(self._base / path), parent=_parent_)

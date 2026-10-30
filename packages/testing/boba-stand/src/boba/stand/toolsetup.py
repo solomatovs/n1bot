@@ -10,8 +10,6 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from typing import Any
 
-from omegaconf import DictConfig
-
 from boba.config import bind
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.context import CallContexts
@@ -20,7 +18,6 @@ from boba.krb import KeytabCredentials, ServiceTicketIssuer
 from boba.runtime.launchers import ZygoteLaunchers
 from boba.sandbox.program import PluginEntry
 from boba.sandbox.zygote import ZygotePolicy, ZygoteToolCaller
-from boba.stand.overlay import ConfigOverlay
 from boba.stand.refs import StandRefs
 from boba.stand.sandbox import plugin_launch
 from boba.stand.toolstand import ToolStand
@@ -96,15 +93,15 @@ class ToolSetup:
         return bind(raw, path="tool.ingest.confluence", model=HttpConnection)
 
     @staticmethod
-    def sandbox_raw(raw: DictConfig) -> DictConfig:
+    def sandbox_changes() -> dict[str, object]:
         """Зиготы тестов живут в песочнице: режимные развилки конфига — sandbox."""
-        return ConfigOverlay(raw).merged({"env.tool_launcher": "sandbox"})
+        return {"env.tool_launcher": "sandbox"}
 
     @staticmethod
     def caller(zygote_stand: ZygoteStand, raw: Any, section: str) -> ZygoteToolCaller:
         """Зигота плагина section из конфига: профиль и прогрев — как в
-        приложении, тело — объявление плагина рядом с bash-тулом стенда."""
-        raw = ToolSetup.sandbox_raw(raw)
+        приложении, тело — объявление плагина рядом с bash-тулом стенда. raw —
+        конфиг в режиме песочницы (фикстура sandbox_raw_config)."""
         launch = plugin_launch(raw, section)
         profile = ZygoteLaunchers(raw).profile_of(launch)
         refs = [PluginEntry().ref(section)]

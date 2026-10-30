@@ -21,7 +21,7 @@ from typing import Any, ClassVar
 from uuid import UUID
 
 import pytest
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 from psycopg import sql
 
 from boba.config import bind
@@ -42,6 +42,7 @@ from boba.db.postgres.address import (
 )
 from boba.db.postgres.connection import PostgresConfig
 from boba.stand.connections import StandUserConnections
+from boba.stand.overlay import ConfigOverlay
 from boba.stand.refs import StandRefs
 from boba.stand.sealing import SealingStand
 from boba.stand.site import Stand
@@ -218,17 +219,15 @@ def _call(call_id: str, name: str, **args: Any) -> DagNode:
 
 
 @pytest.fixture(scope="module")
-def flow_raw(service_raw_config: DictConfig, test_database: str) -> DictConfig:
+def flow_raw(service_overlay: ConfigOverlay, test_database: str) -> DictConfig:
     """Конфиг хода: сервисный postgres смотрит в тестовую базу, чтобы и таблицы
     describer, и описываемые таблицы жили там же."""
-    overlay = {
-        "postgres": {"dbname": test_database},
-        "tool": {"describer": {"db_schema": DESCRIBER_SCHEMA}},
-    }
-    raw = OmegaConf.merge(service_raw_config, overlay)
-    assert isinstance(raw, DictConfig)
-
-    return raw
+    return service_overlay.tree(
+        {
+            "postgres.dbname": test_database,
+            "tool.describer.db_schema": DESCRIBER_SCHEMA,
+        }
+    )
 
 
 @pytest.fixture(scope="module")

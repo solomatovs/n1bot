@@ -170,22 +170,20 @@ async def test_setup_in_the_sandbox_creates_the_kb_tables(
     runtime_stand: StandRefs,
     call_stand: CallStand,
     raw_config: DictConfig,
+    config_overlay: ConfigOverlay,
     test_database: str,
     test_postgres: PostgresConfig,
 ) -> None:
     """kb объявил setup: на старте его программа в песочнице создаёт таблицы
     в своей схеме, keytab-профиль уехал туда билетом вызова."""
-    sandboxed = ToolSetup.sandbox_raw(raw_config)
     schema = StandNames().of_tree("kb_setup")
-    # таблицы, заданные ссылкой, наложение сливает с развёрнутой копией
-    changes: dict[str, object] = {
-        "tool.kb.connection.dbname": test_database,
-        "tool.kb.tables.pg_schema": schema,
-    }
-    for plugin_id in sandboxed["tool"]:
+    changes = ToolSetup.sandbox_changes()
+    changes["tool.kb.connection.dbname"] = test_database
+    changes["tool.kb.tables.pg_schema"] = schema
+    for plugin_id in raw_config["tool"]:
         changes[f"tool.{plugin_id}.enable"] = plugin_id == "kb"
 
-    raw = ConfigOverlay(sandboxed).merged(changes)
+    raw = config_overlay.tree(changes)
     arming = SectionTickets(ServiceTickets(_credentials), ConnectionTypes.discover)
 
     async with await AsyncPostgresPool.dedicated(test_postgres) as conn:

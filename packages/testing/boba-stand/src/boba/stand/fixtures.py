@@ -19,6 +19,7 @@ from boba.stand.database import TestDatabase
 from boba.stand.overlay import ConfigOverlay
 from boba.stand.refs import StandRefs
 from boba.stand.site import StandConfigPaths
+from boba.stand.toolsetup import ToolSetup
 from boba.stand.ui.stand import StandApp
 from boba.stand.zygote import ZygoteStand
 from boba.stand_core.context import CallStand, call_stand
@@ -103,7 +104,20 @@ def raw_config() -> DictConfig:
 
 
 @pytest.fixture(scope="session")
-def service_raw_config(tmp_path_factory: pytest.TempPathFactory) -> DictConfig:
+def config_overlay() -> ConfigOverlay:
+    """Файлы прогона BOBA_CONFIG_PATH для тестов, которым нужны свои ключи
+    поверх конфига: дерево с изменениями собирает config_overlay.tree."""
+    return ConfigOverlay(ConfigLoader(StandConfigPaths().paths()), {})
+
+
+@pytest.fixture(scope="session")
+def sandbox_raw_config(config_overlay: ConfigOverlay) -> DictConfig:
+    """Конфиг прогона в режиме песочницы: зиготы тестов живут в ней."""
+    return config_overlay.tree(ToolSetup.sandbox_changes())
+
+
+@pytest.fixture(scope="session")
+def service_overlay(tmp_path_factory: pytest.TempPathFactory) -> ConfigOverlay:
     """Конфиг сервиса boba-mcp с наложением его stand.toml: секции
     инструментов и их плагины живут у сервиса, который инструменты исполняет.
 
@@ -111,15 +125,19 @@ def service_raw_config(tmp_path_factory: pytest.TempPathFactory) -> DictConfig:
     модели плагинов лежат там. Каталог данных — временный: образы workspace,
     журналы и выгрузки тестов не должны ложиться в данные развёрнутого
     приложения."""
-    raw = ConfigLoader(StandApp.MCP.paths()).load()
-
     data = tmp_path_factory.mktemp("service-data")
     for name in ServiceData:
         (data / name.value).mkdir()
 
-    changes = {"instance.data_dir": str(data)}
+    base = {"instance.data_dir": str(data)}
 
-    return ConfigOverlay(raw).merged(changes)
+    return ConfigOverlay(ConfigLoader(StandApp.MCP.paths()), base)
+
+
+@pytest.fixture(scope="session")
+def service_raw_config(service_overlay: ConfigOverlay) -> DictConfig:
+    """Дерево конфига сервиса со стендовыми каталогами (service_overlay)."""
+    return service_overlay.tree({})
 
 
 @pytest.fixture(scope="session")
@@ -129,11 +147,11 @@ def runtime_config(raw_config: DictConfig) -> RuntimeConfig:
 
 
 @pytest.fixture(scope="session")
-def bus_config(raw_config: DictConfig) -> RuntimeConfig:
+def bus_config(config_overlay: ConfigOverlay) -> RuntimeConfig:
     """Конфиг рантайма с шиной на Postgres для тестов самой шины: отладка
     выбирает в конфиге provider = local, а шину на Postgres тесты поднимают
     сами в тестовой базе."""
-    raw = ConfigOverlay(raw_config).merged({"env.messaging_provider": "postgres"})
+    raw = config_overlay.tree({"env.messaging_provider": "postgres"})
 
     return bind(raw, path=RuntimeConfig.SECTION, model=RuntimeConfig)
 
