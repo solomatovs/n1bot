@@ -9,6 +9,7 @@ import pytest
 from omegaconf import OmegaConf
 
 from boba.config import ConfigError
+from boba.runtime.config import ProgramRoots
 from boba.runtime.launchers import (
     NoLaunchers,
     PluginLaunch,
@@ -34,16 +35,23 @@ PG_SECTION: dict[str, object] = {
 """Секция плагина pg, как её даёт conf/plugins/pg.toml."""
 
 
-def _process_section(workdir: Path) -> dict[str, object]:
+def _instance(data_dir: Path) -> dict[str, object]:
+    return {"data_dir": str(data_dir), "ca_file": "/etc/ssl/certs/ca-certificates.crt"}
+
+
+def _process_section(data_dir: Path) -> dict[str, object]:
+    """Способ запуска процессом; workdir — workspace/ каталога данных."""
+    (data_dir / "workspace").mkdir(parents=True, exist_ok=True)
+
     return {
+        "instance": _instance(data_dir),
         "tool_launcher": {
             "provider": "process",
-            "workdir": str(workdir),
             "timeout_sec": 60,
             "channel_limit_bytes": 1_000_000,
             "stderr_tail_bytes": 4096,
             "kill_grace_sec": 1.0,
-        }
+        },
     }
 
 
@@ -63,27 +71,50 @@ def test_process_without_the_section_launches_no_tool_sections(
         launchers.launcher_of(FAKE_LAUNCH, call_stand.contexts, CallAmbient())
 
 
-def _sandbox_section() -> dict[str, object]:
-    """Способ запуска песочницей; интерпретатор лаунчер снимает с процесса сам."""
-    return {"tool_launcher": {"provider": "sandbox"}}
+def _sandbox_section(data_dir: Path) -> dict[str, object]:
+    """Способ запуска песочницей; образы плагинов — в каталоге программы."""
+    return {
+        "instance": _instance(data_dir),
+        "tool_launcher": {"provider": "sandbox", "cgroup_base": str(data_dir)},
+    }
 
 
-def test_sandbox_provider_builds_zygote_launchers() -> None:
-    raw = OmegaConf.create(_sandbox_section())
+@pytest.fixture
+def program(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Каталог программы теста (BOBA_RUNTIME): образов плагинов пока нет."""
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    monkeypatch.setenv(ProgramRoots.RUNTIME_ENV, str(runtime))
+
+    return runtime
+
+
+def test_sandbox_provider_builds_zygote_launchers(
+    program: Path, tmp_path: Path
+) -> None:
+    raw = OmegaConf.create(_sandbox_section(tmp_path))
 
     launchers = ToolLaunchers(raw).build()
 
     assert isinstance(launchers, ZygoteLaunchers)
 
 
-def test_sandbox_probe_requires_env_paths() -> None:
-    raw = OmegaConf.create(_sandbox_section())
+def test_sandbox_probe_requires_plugin_images(program: Path, tmp_path: Path) -> None:
+    raw = OmegaConf.create(_sandbox_section(tmp_path))
 
     launchers = ToolLaunchers(raw).build()
 
-    # конвенции песочницы стоят на путях [env]: без них probe отказывает
-    with pytest.raises(ConfigError, match=r"section \[env\] is missing"):
+    with pytest.raises(RuntimeError, match=r"no plugin images directory"):
         launchers.probe()
+
+
+def test_sandbox_without_cgroup_base_is_refused(program: Path, tmp_path: Path) -> None:
+    raw = OmegaConf.create(
+        {"instance": _instance(tmp_path), "tool_launcher": {"provider": "sandbox"}}
+    )
+
+    with pytest.raises(ConfigError, match="cgroup_base"):
+        ToolLaunchers(raw).build()
 
 
 def test_process_provider_builds_process_launchers(
@@ -102,11 +133,13 @@ def test_process_provider_builds_process_launchers(
 
 
 def test_process_probe_requires_existing_workdir(tmp_path: Path) -> None:
-    raw = OmegaConf.create(_process_section(tmp_path / "absent"))
+    section = _process_section(tmp_path)
+    section["instance"] = _instance(tmp_path / "absent")
+    raw = OmegaConf.create(section)
 
     launchers = ToolLaunchers(raw).build()
 
-    with pytest.raises(RuntimeError, match="workdir"):
+    with pytest.raises(RuntimeError, match="workspace directory"):
         launchers.probe()
 
 
@@ -149,29 +182,20 @@ def test_no_launchers_refuse_the_manifest() -> None:
         launchers.manifest_of("pg", PG_SECTION)
 
 
-def _env_section(sandbox: Path) -> dict[str, object]:
-    """[env] песочницы: каталог образов плагинов sandbox, остальное — пустышки."""
-    paths: dict[str, object] = {}
-    for key in ("base", "data", "third", "models", "krb", "cgroup_base"):
-        paths[key] = str(sandbox / key)
-
-    return {**_sandbox_section(), "env": {**paths, "sandbox": str(sandbox)}}
-
-
-def test_sandbox_config_without_image_is_refused(tmp_path: Path) -> None:
-    (tmp_path / "plugins").mkdir()
-    launchers = ToolLaunchers(OmegaConf.create(_env_section(tmp_path))).build()
+def test_sandbox_config_without_image_is_refused(program: Path, tmp_path: Path) -> None:
+    (program / "sandbox" / "plugins").mkdir(parents=True)
+    launchers = ToolLaunchers(OmegaConf.create(_sandbox_section(tmp_path))).build()
 
     with pytest.raises(RuntimeError, match=r"conf/plugins/pg.toml.*pg\.ext4"):
         launchers.check_kits(["pg"])
 
 
-def test_sandbox_image_without_config_is_refused(tmp_path: Path) -> None:
-    images = tmp_path / "plugins"
-    images.mkdir()
+def test_sandbox_image_without_config_is_refused(program: Path, tmp_path: Path) -> None:
+    images = program / "sandbox" / "plugins"
+    images.mkdir(parents=True)
     (images / "pg.ext4").write_bytes(b"")
     (images / "mail.ext4").write_bytes(b"")
-    launchers = ToolLaunchers(OmegaConf.create(_env_section(tmp_path))).build()
+    launchers = ToolLaunchers(OmegaConf.create(_sandbox_section(tmp_path))).build()
 
     with pytest.raises(RuntimeError, match=r"mail\.ext4 has no config"):
         launchers.check_kits(["pg"])

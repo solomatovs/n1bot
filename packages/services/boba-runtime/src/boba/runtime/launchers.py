@@ -158,16 +158,14 @@ class PluginOutput:
         return json.dumps(dict(section), ensure_ascii=False).encode("utf-8")
 
 
-class SandboxLauncherConfig(BaseModel):
-    """Секция [tool_launcher] provider = sandbox: запуск в песочнице bwrap.
-
-    Лишние ключи игнорируются: секция общая для всех провайдеров, provider
-    выбирается ссылкой из конфига экземпляра.
-    """
+class SandboxCgroupConfig(BaseModel):
+    """Ключ [tool_launcher], на котором стоят профили песочницы: каталог cgroup
+    песочниц экземпляра. Профиль плагина собирается и тогда, когда процесс
+    выбрал другой способ (стенды тестов), поэтому ключ читается отдельно от
+    provider."""
 
     model_config = ConfigDict(extra="ignore")
 
-    provider: Literal["sandbox"]
     cgroup_base: str = Field(
         min_length=1,
         description=(
@@ -175,6 +173,16 @@ class SandboxLauncherConfig(BaseModel):
             "boba-sandbox@<экземпляр>.service; его вписывает make."
         ),
     )
+
+
+class SandboxLauncherConfig(SandboxCgroupConfig):
+    """Секция [tool_launcher] provider = sandbox: запуск в песочнице bwrap.
+
+    Лишние ключи игнорируются: секция общая для всех провайдеров, provider
+    выбирается ссылкой из конфига экземпляра.
+    """
+
+    provider: Literal["sandbox"]
 
 
 ToolLauncherConfig = Annotated[
@@ -497,7 +505,7 @@ class ZygoteLaunchers(SectionLaunchers):
     def __init__(self, raw: DictConfig) -> None:
         self._raw = raw
         self._program = ProgramRoots().locate()
-        section = bind(raw, ToolLaunchers.SECTION, SandboxLauncherConfig)
+        section = bind(raw, ToolLaunchers.SECTION, SandboxCgroupConfig)
         instance = bind(raw, InstanceConfig.SECTION, InstanceConfig)
         self._defaults = SandboxDefaults(self._program, instance, section.cgroup_base)
         self._zygotes = ZygoteRegistry(self._program.interpreter)

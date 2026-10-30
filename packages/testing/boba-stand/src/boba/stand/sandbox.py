@@ -18,7 +18,6 @@ from boba.runtime.launchers import PluginLaunch, ZygoteLaunchers
 from boba.runtime.plugins import PluginSections
 from boba.sandbox import SandboxProfile
 from boba.sandbox.program import PluginEntry
-from boba.stand.overlay import ConfigOverlay
 from boba.stand.zygote import ROOTFS_IMAGE, RUNTIME, SandboxCgroup
 
 REPO = Path(__file__).resolve().parents[6]
@@ -221,9 +220,6 @@ def section_profile(raw: DictConfig, plugin_id: str) -> SandboxProfile:
     """Профиль плагина той же сборкой, что у приложения: base + манифест.
 
     Образы, workspace и libexec берутся из каталога программы прогона
-    (BOBA_RUNTIME), способ запуска — песочница, какой бы ни выбрал конфиг
-    отладки.
+    (BOBA_RUNTIME), каталог данных — из [instance] конфига.
     """
-    sandboxed = ConfigOverlay(raw).merged({"env.tool_launcher": "sandbox"})
-
-    return ZygoteLaunchers(sandboxed).profile_of(plugin_launch(sandboxed, plugin_id))
+    return ZygoteLaunchers(raw).profile_of(plugin_launch(raw, plugin_id))
