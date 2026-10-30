@@ -501,6 +501,8 @@ class CallerTokens:
         try:
             claims = TokenClaims.model_validate(token.claims)
         except ValidationError as exc:
+            # в журнал идёт причина отказа, а не сам токен
+            # nosemgrep: python-logger-credential-disclosure
             logger.warning(
                 "token of client %r carries no login and roles: %s",
                 token.client_id,

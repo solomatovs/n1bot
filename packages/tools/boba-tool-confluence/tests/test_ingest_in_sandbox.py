@@ -37,7 +37,9 @@ def _section(sandbox_raw_config: DictConfig) -> dict[str, Any]:
     return section
 
 
-def _caller(zygote_stand: ZygoteStand, sandbox_raw_config: DictConfig) -> ZygoteToolCaller:
+def _caller(
+    zygote_stand: ZygoteStand, sandbox_raw_config: DictConfig
+) -> ZygoteToolCaller:
     """Зигота ingest: прогрев объявлен плагином, секцию ему даёт вызывающий."""
     sandbox = SandboxToolConfig.model_validate({"profile": sandbox_profile("ingest")})
     section = _section(sandbox_raw_config)

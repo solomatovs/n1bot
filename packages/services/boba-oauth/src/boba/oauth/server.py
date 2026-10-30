@@ -337,6 +337,8 @@ class ServiceTokens:
         try:
             claims = self._issuer.verify_token(token)
         except JoseError as exc:
+            # в журнал идёт причина отказа, а не сам токен
+            # nosemgrep: python-logger-credential-disclosure
             logger.info("access token is rejected: %s", exc)
             return None
 
@@ -409,6 +411,8 @@ class ServiceTokens:
             claims = self._issuer.verify_token(token, self.REFRESH)
             held = RefreshClaims.model_validate(claims.get("upstream_claims"))
         except (JoseError, ValidationError) as exc:
+            # в журнал идёт причина отказа, а не сам токен
+            # nosemgrep: python-logger-credential-disclosure
             logger.info("refresh token is rejected: %s", exc)
             return None
 

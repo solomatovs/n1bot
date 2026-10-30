@@ -205,6 +205,8 @@ def http_port(request: pytest.FixtureRequest) -> Iterator[int]:
         port = probe.getsockname()[1]
 
     extra: tuple[str, ...] = getattr(request, "param", ())
+    # тест запускает свой сервер на свободном порту
+    # nosemgrep: subprocess-injection
     process = subprocess.Popen(
         [sys.executable, str(SERVER), "streamable-http", str(port), *extra]
     )
