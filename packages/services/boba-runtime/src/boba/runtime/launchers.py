@@ -47,7 +47,7 @@ from boba.runtime.config import (
 )
 from boba.sandbox import (
     BindSpec,
-    CgroupManager,
+    CgroupProbe,
     SandboxProfile,
     WorkspaceSpec,
     has_bwrap,
@@ -509,6 +509,7 @@ class ZygoteLaunchers(SectionLaunchers):
         instance = bind(raw, InstanceConfig.SECTION, InstanceConfig)
         self._defaults = SandboxDefaults(self._program, instance, section.cgroup_base)
         self._zygotes = ZygoteRegistry(self._program.interpreter)
+        self._cgroups = CgroupProbe(self._program.interpreter.probe)
         self._output = PluginOutput()
 
     def settle(self) -> None:
@@ -651,7 +652,7 @@ class ZygoteLaunchers(SectionLaunchers):
             raise RuntimeError(msg)
 
         # групповые лимиты плагина проверяются при сборке: отказ виден на старте
-        CgroupManager.probe_profiles({plugin_id: profile})
+        self._cgroups.profiles({plugin_id: profile})
         return profile
 
     def _composed(self, plugin_id: str, needs: PluginSandbox) -> dict[str, Any]:
@@ -678,6 +679,7 @@ class ProcessLaunchers(SectionLaunchers):
 
     Программа плагина — `python -m boba.sandbox.program <id>` интерпретатором
     приложения: плагин стоит в окружении исходников, режим — только отладка.
+    Собранная программа (без python) этот способ отвергает на старте.
     """
 
     def __init__(self, cfg: ProcessLauncherConfig, workdir: Path) -> None:
@@ -685,8 +687,18 @@ class ProcessLaunchers(SectionLaunchers):
         self._workdir = workdir
         self._output = PluginOutput()
         self._entry = PluginEntry()
+        self._programs = ProgramRoots()
 
     def probe(self) -> None:
+        if self._programs.compiled():
+            msg = (
+                "[tool_launcher] provider = process runs tool plugins with the python "
+                f"of the sources environment, but this program is compiled and has "
+                f"no python ({sys.executable}); set provider = \"sandbox\" or run "
+                "the service from the sources with BOBA_RUNTIME"
+            )
+            raise RuntimeError(msg)
+
         if not self._workdir.is_dir():
             msg = (
                 "[tool_launcher] provider = process: the workspace directory of "

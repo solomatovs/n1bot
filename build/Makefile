@@ -55,17 +55,19 @@ BUILD_ARGS_aid    =
 WEB_aid          := web
 
 # boba-mcp — MCP-сервер с инструментами boba; фронта у него нет, модели, образы корней
-# плагинов и шаблон workspace лежат внутри образа
-PACKAGES_mcp      = boba-mcp $(PLUGIN_PACKAGES) boba-llm-fastembed
+# плагинов и шаблон workspace лежат внутри образа. Программа — бинарник Nuitka без python:
+# код плагинов в него не входит, входят виды соединений, которые сервер знает
+PACKAGES_mcp      = boba-mcp boba-db-postgres boba-db-oracle boba-db-clickhouse boba-transport-http
 NAME_mcp         := boba-mcp
 IMPORTS_mcp      := boba.mcp_server.app fastmcp
 MODULE_mcp       := boba.mcp_server
-PROGRAM_mcp      := bin/boba-mcp
+PROGRAM_mcp      := bin/boba-mcp.dist/boba-mcp.bin
+ENTRY_mcp        := boba/mcp_server/program.py
 STAGE_mcp        := runtime-mcp
 SANDBOX_mcp      := yes
 MODELS_mcp       := fastembed rapidocr
 PARTS_mcp        :=
-BUILD_ARGS_mcp    =
+BUILD_ARGS_mcp    = $(PROGRAM_TOOL_ARGS)
 WEB_mcp          :=
 
 # агент как служба — `boba serve` пакета boba-cli: агент сам слушает ACP по сети,
@@ -92,6 +94,8 @@ APP_PACKAGES      = $(PACKAGES_$(APP))
 APP_IMPORTS       = $(IMPORTS_$(APP))
 APP_MODULE        = $(MODULE_$(APP))
 APP_PROGRAM       = $(PROGRAM_$(APP))
+# файл входа программы на Nuitka в дереве колёс; пусто — программа на python
+APP_ENTRY         = $(ENTRY_$(APP))
 APP_STAGE         = $(STAGE_$(APP))
 APP_SANDBOX       = $(SANDBOX_$(APP))
 APP_MODELS        = $(MODELS_$(APP))
@@ -160,6 +164,8 @@ DEST_DIR        := /app/boba
 IMAGE            = $(NAME_$(APP)):$(BOBA_TAG)
 # основа образа приложения с песочницей: runtime-sandbox и образы корней плагинов
 SANDBOX_IMAGE    = boba-$(APP)-sandbox:$(BOBA_TAG)
+# основа с бинарником программы на Nuitka поверх SANDBOX_IMAGE
+PROGRAM_IMAGE    = boba-$(APP)-program:$(BOBA_TAG)
 OUT              = $(RELEASE_DIR)/$(VERSION)/$(INSTANCE)
 
 # режим sec.sh: all, full, sast, sca или rules
@@ -193,6 +199,12 @@ BIN_TOOL_ARGS       = --build-arg NUITKA_VERSION=$(NUITKA_VERSION)           \
     --build-arg PATCHELF_VERSION=$(PATCHELF_VERSION)                     \
     --build-arg ORDERED_SET_VERSION=$(ORDERED_SET_VERSION)
 BIN_ARGS            = $(BIN_TOOL_ARGS) --build-arg BIN_ONNX=$(BIN_ONNX)
+# компилятор программы приложения на Nuitka (стадия program-tools) и том его кэша:
+# ccache и кэш Nuitka живут между сборками, повторная сборка не компилирует общий код
+PROGRAM_TOOL_ARGS   = --build-arg PROGRAM_NUITKA=$(NUITKA_VERSION)                  \
+    --build-arg PATCHELF_VERSION=$(PATCHELF_VERSION)                     \
+    --build-arg ORDERED_SET_VERSION=$(ORDERED_SET_VERSION)
+NUITKA_CACHE       ?= $(DEPS_DIR)/nuitka-cache
 
 # --- что скачивает fetch -------------------------------------------------------
 
@@ -314,9 +326,10 @@ SANDBOX_APPS    := $(strip $(foreach app,$(APPS),$(if $(SANDBOX_$(app)),$(app)))
 SANDBOX_TOOLS   := $(LIBEXEC_DIR)/mke2fs $(LIBEXEC_DIR)/mke2fs.conf
 
 RELEASE_SANDBOX := sandbox/plugins sandbox/workspace.ext4 libexec/bwrap libexec/fuse2fs
+# интерпретатор и код — только у программы на python; программа на Nuitka — один каталог bin/
+RELEASE_PYTHON  := third/bin/python3 third/lib/libstdc++.so.6 third/lib/libgcc_s.so.1 app/bin
 RELEASE_PARTS    = $(if $(APP_SANDBOX),$(RELEASE_SANDBOX)) $(APP_PROGRAM) \
-                   third/bin/python3 third/lib/libstdc++.so.6 third/lib/libgcc_s.so.1 \
-                   app/bin $(PARTS_$(APP)) $(APP_MODELS:%=models/%) \
+                   $(if $(APP_ENTRY),,$(RELEASE_PYTHON)) $(PARTS_$(APP)) $(APP_MODELS:%=models/%) \
                    $(APP_MODEL_IMAGES:%=models/%.ext4)
 
 # каталоги krb dev-деревьев: точки монтирования в образе корня плагина
@@ -433,6 +446,28 @@ else
     $(DOCKER_BUILD) -f "$(BASE_DIR)/sandbox.Dockerfile" $(NO_CACHE_OPT) --build-arg RUNTIME_SANDBOX="$$base" \
         --build-arg BOBA_DIR="$(DEST_DIR)" --label boba.sandbox="$$stamp" --tag "$(SANDBOX_IMAGE)" "$(RUNTIME_DIR)"
 fi
+endef
+
+# программа приложения на Nuitka: образ компилятора program-tools (файл с ID — $(1)) идёт
+# docker run'ом с томом кэша NUITKA_CACHE без сети; каталог <программа>.dist заменяет
+# прежний в runtime/bin целиком
+define nuitka-program
+mkdir -p "$(NUITKA_CACHE)" "$(RUNTIME_DIR)/bin"
+stage=$$(mktemp -d "$(STAGE_TEMPLATE)")
+docker run --rm --network none -u "$(RUN_OWNER)" -v "$(NUITKA_CACHE):/cache" \
+    -v "$(SCRIPTS_DIR):/scripts:ro" -v "$$stage:/out" --entrypoint sh "$$(cat "$(1)")" \
+    /scripts/nuitka.sh "$(APP_ENTRY)" "$(NAME_$(APP))" /out < /dev/null
+rm -rf "$(RUNTIME_DIR)/bin/$(NAME_$(APP)).dist"
+mv "$$stage/$(NAME_$(APP)).dist" "$(RUNTIME_DIR)/bin/"
+rm -rf "$$stage"
+endef
+
+# слой бинарника программы поверх основы с песочницей: сборка build/program.Dockerfile в
+# контексте runtime/bin, из которого .dockerignore пускает только эту программу
+define program-image
+printf '%s\n' '*' '!$(NAME_$(APP)).dist' > "$(RUNTIME_DIR)/bin/.dockerignore"
+$(DOCKER_BUILD) -f "$(BASE_DIR)/program.Dockerfile" $(NO_CACHE_OPT) --build-arg BASE_IMAGE="$(SANDBOX_IMAGE)" \
+    --build-arg BOBA_DIR="$(DEST_DIR)" --build-arg PROGRAM="$(NAME_$(APP))" --tag "$(PROGRAM_IMAGE)" "$(RUNTIME_DIR)/bin"
 endef
 
 # mke2fs из runtime/libexec в контейнере glibc: $(1) — скрипт, $(2) — каталог результата,
@@ -659,10 +694,11 @@ define HELP
 
 Образы — APP=$(subst $(space),|,$(APPS)) либо <цель>-<приложение>, без APP — оба:
   build                 образ приложения (boba-aid, boba-mcp, boba):$(BOBA_TAG)$(if $(LATEST_TAG), и :$(LATEST_TAG)); в boba — агент bin/boba.dist (Nuitka),
-                        в mcp — модели, образы корней плагинов и workspace из runtime/; недостающие
-                        или устаревшие (новее исходники пакетов плагина) собирает сам
-  test                  build, затем проверка в образе без сети: пакеты, точки входа, у mcp —
-                        образы плагинов и модели, у boba — ход агента; итог — RESULT: ALL OK
+                        в mcp — программа Nuitka без python (компиляция в runtime/bin, кэш
+                        NUITKA_CACHE), модели, образы корней плагинов и workspace из runtime/;
+                        недостающие или устаревшие (новее исходники пакетов плагина) собирает сам
+  test                  build, затем проверка в образе без сети: пакеты, точки входа, у boba —
+                        ход агента, итог — RESULT: ALL OK; у mcp — самопроверка бинарника
   boba-bin              агент каталогом -> release/$(VERSION)/bin/boba.dist; BIN_ONNX=1 —
                         bin/boba-onnx.dist с рантаймом onnxruntime-genai (вторая компиляция Nuitka)
 
@@ -702,6 +738,7 @@ define HELP
 GLIBC_IMAGE, GCC_IMAGE, PYTHON_IMAGE, NODE_IMAGE, TESTAPPS_NODE_IMAGE. Версии и состав
 входов: UV_VERSION, BWRAP_VERSION, LIBFUSE_VERSION, E2FSPROGS_VERSION, CHAINLIT (файл
 UPSTREAM), KATEX_VERSION, INTER_VERSION, MERMAID_VERSION, ORACLEDB_VERSION, NUITKA_VERSION,
+NUITKA_CACHE (ccache и кэш Nuitka программ между сборками),
 RAPIDOCR_LANGS, EMBED_MODELS, ONNX_MODELS, SANDBOX_WS_SIZE (размер workspace), PNPM_STORE
 (store pnpm цели chainlit-ui между сборками). PYTHON — python хоста для скриптов сборки
 (.venv). Значения для машины — в conf/local.mk.
@@ -1098,6 +1135,13 @@ build: version-check $(if $(APP_SANDBOX),$(SANDBOX_DIR)/workspace.ext4 $(PLUGIN_
 	tmp=
 	trap 'rm -rf "$$tmp"' EXIT
 	tmp=$$(mktemp -d)
+	if [ -n "$(APP_ENTRY)" ]; then
+	    echo "== программа $(NAME_$(APP)): Nuitka $(NUITKA_VERSION), JOBS=$(JOBS), кэш $(NUITKA_CACHE) =="
+	    $(call docker-image,program-tools,$$tmp/program-tools.iid,$(APP_ARGS))
+	    started=$$(date +%s)
+	    $(call nuitka-program,$$tmp/program-tools.iid)
+	    echo ">>> программа: $(RUNTIME_DIR)/$(APP_PROGRAM) ($$(du -sh "$(RUNTIME_DIR)/bin/$(NAME_$(APP)).dist" | cut -f1), $$(( $$(date +%s) - started )) с)"
+	fi
 	if [ -n "$(APP_SANDBOX)" ]; then
 	    # в образ уезжает каталог целиком: образ плагина, которого больше нет, там лишний
 	    for entry in "$(SANDBOX_DIR)/plugins"/*; do
@@ -1112,15 +1156,25 @@ build: version-check $(if $(APP_SANDBOX),$(SANDBOX_DIR)/workspace.ext4 $(PLUGIN_
 	    $(call docker-image,runtime-sandbox,$$tmp/runtime-sandbox.iid,$(APP_ARGS))
 	    $(call sandbox-image,$$tmp/runtime-sandbox.iid)
 	fi
+	if [ -n "$(APP_ENTRY)" ]; then
+	    echo "== основа $(PROGRAM_IMAGE): $(SANDBOX_IMAGE) и $(APP_PROGRAM) =="
+	    $(program-image)
+	fi
 	echo "== образ $(IMAGE), релиз внутри него лежит в $(DEST_DIR) =="
-	$(call docker-stage,$(APP_STAGE),$(IMAGE),$(if $(LATEST_TAG),--tag $(NAME_$(APP)):$(LATEST_TAG)) $(APP_ARGS) $(if $(APP_SANDBOX),--build-arg SANDBOX_IMAGE=$(SANDBOX_IMAGE)))
+	$(call docker-stage,$(APP_STAGE),$(IMAGE),$(if $(LATEST_TAG),--tag $(NAME_$(APP)):$(LATEST_TAG)) $(APP_ARGS) $(if $(APP_SANDBOX),--build-arg SANDBOX_IMAGE=$(if $(APP_ENTRY),$(PROGRAM_IMAGE),$(SANDBOX_IMAGE))))
 	echo ">>> образ готов: $(IMAGE); проверка: make test APP=$(APP)"
 
 # проверка образа интерпретатором программы над её кодом (third/ и app/ каталога
-# программы), модели — в самом образе. Сети у контейнера нет: модель хода агента
-# живёт в нём же
+# программы), модели — в самом образе; у программы на Nuitka — её самопроверка. Сети у
+# контейнера нет: модель хода агента живёт в нём же
 test: build
 	@echo "== проверка образа $(IMAGE) =="
+	if [ -n "$(APP_ENTRY)" ]; then
+	    # у программы на Nuitka интерпретатора нет: данные пакетов и entry points проверяет
+	    # её самопроверка в образе
+	    docker run --rm --network none --entrypoint "$(DEST_DIR)/$(APP_PROGRAM)" $(IMAGE) self-check
+	    exit 0
+	fi
 	docker run --rm -i --network none --tmpfs "$(DEST_DIR)/data:uid=1000,gid=1000" \
 	    -e PYTHONHOME="$(DEST_DIR)/third" -e PYTHONPATH="$(DEST_DIR)/app" -e PYTHONNOUSERSITE=1 \
 	    -e LD_LIBRARY_PATH="$(DEST_DIR)/third/lib" -e PYTHONUTF8=1 -e BOBA_RUNTIME="$(DEST_DIR)" \
@@ -1138,16 +1192,20 @@ release:
 	rm -rf "$(OUT)"
 	mkdir -p "$(OUT)/conf" "$(OUT)/models"
 	$(call image-copy,$(IMAGE),$(DEST_DIR)/.,$(OUT)/)
-	# системные библиотеки образа (libssl1.1, libffi6, krb5 ...) в third/lib: нужны там,
-	# где система не та, на которой собран образ, и этих версий в ней нет
-	if [ -n "$(BUNDLE_OS_LIBS)" ]; then
-	    docker run --rm --network none -v "$(SCRIPTS_DIR):/scripts:ro" --entrypoint sh "$(IMAGE)" \
-	        /scripts/oslibs.sh "$(DEST_DIR)" | tar -C "$(OUT)/third/lib" -xf -
-	    echo "    системные библиотеки образа добавлены в $(OUT)/third/lib"
+	# программа на python: системные библиотеки образа (libssl1.1, libffi6, krb5 ...) в
+	# third/lib нужны там, где система не та, на которой собран образ, и этих версий в ней
+	# нет; шебанги ведут на интерпретатор каталога установки. Программа на Nuitka несёт свои
+	# библиотеки в bin/<программа>.dist
+	if [ -z "$(APP_ENTRY)" ]; then
+	    if [ -n "$(BUNDLE_OS_LIBS)" ]; then
+	        docker run --rm --network none -v "$(SCRIPTS_DIR):/scripts:ro" --entrypoint sh "$(IMAGE)" \
+	            /scripts/oslibs.sh "$(DEST_DIR)" | tar -C "$(OUT)/third/lib" -xf -
+	        echo "    системные библиотеки образа добавлены в $(OUT)/third/lib"
+	    fi
+	    sed -i "1s|^#!.*python3.*|#!$(INSTALL_DIR)/third/bin/python3|" "$(OUT)/app/bin"/*
+	    chmod -R go-w "$(OUT)/third"
 	fi
-	sed -i "1s|^#!.*python3.*|#!$(INSTALL_DIR)/third/bin/python3|" "$(OUT)/app/bin"/*
 	chmod go-w "$(OUT)"
-	chmod -R go-w "$(OUT)/third"
 	if [ -n "$(APP_SANDBOX)" ]; then
 	    install -m 0644 "$(CONF_DIR)/boba-sandbox@.service" "$(OUT)/boba-sandbox@.service"
 	    chmod -R go-w "$(OUT)/sandbox"
@@ -1169,7 +1227,7 @@ release:
 # целиком; conf/config.toml, conf/prompts, conf/krb и data остаются.
 # Работающий экземпляр цель не трогает — его сначала останавливают
 install:
-	@$(call check,$(OUT)/app $(OUT)/third $(OUT)/boba-$(INSTANCE).service,запусти: make release APP=$(APP))
+	@$(call check,$(OUT)/$(APP_PROGRAM) $(OUT)/boba-$(INSTANCE).service,запусти: make release APP=$(APP))
 	$(user-bus)
 	echo "== установка $(APP) ($(INSTANCE)) в $(INSTALL_DIR) =="
 	$(call host-check,systemd)

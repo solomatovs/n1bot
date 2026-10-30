@@ -1,10 +1,10 @@
-"""Опись данных пакетов и самопроверка по ней без сборки бинарника: дерево
-установки собирается из исходников пакетов boba-cli, boba-agent и
-boba-history-postgres так, как его раскладывает установщик колёс (каталоги
-пакетов и dist-info с RECORD); вход модуля boba.cli.package_data пишет опись
-и флаги Nuitka, `boba self-check` над тем же деревом находит все файлы описи
-и называет пропавший. Из дерева исходников описи нет, и самопроверка это
-говорит."""
+"""Опись сборки и самопроверка по ней без сборки бинарника: дерево
+установки собирается из исходников пакетов boba-cli, boba-runtime, boba-agent
+и boba-history-postgres так, как его раскладывает установщик колёс (каталоги
+пакетов и dist-info с RECORD и entry_points.txt); вход модуля
+boba.runtime.program пишет опись и флаги Nuitka, `boba self-check` над тем же
+деревом находит все файлы и entry points описи и называет пропавший. Из
+дерева исходников описи нет, и самопроверка это говорит."""
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ from typing import ClassVar
 import boba.agent
 import boba.cli
 import boba.history.postgres
+import boba.runtime
 
 
 class InstalledTree:
@@ -34,7 +35,7 @@ class InstalledTree:
         self.site = site
         self._home = home
 
-    def install(self, name: str, package: ModuleType) -> None:
+    def install(self, name: str, package: ModuleType, entry_points: str = "") -> None:
         source = Path(str(package.__file__)).parent
         target = self.site.joinpath(*package.__name__.split("."))
         shutil.copytree(source, target, ignore=shutil.ignore_patterns("__pycache__"))
@@ -43,6 +44,8 @@ class InstalledTree:
         info.mkdir()
         metadata = f"Metadata-Version: 2.1\nName: {name}\nVersion: 0\n"
         (info / "METADATA").write_text(metadata, encoding="utf-8")
+        if entry_points:
+            (info / "entry_points.txt").write_text(entry_points, encoding="utf-8")
 
         rows: list[str] = []
         for row in self._recorded(target, info):
@@ -74,12 +77,19 @@ class InstalledTree:
 
             yield path.relative_to(self.site).as_posix()
 
-        yield (info / "METADATA").relative_to(self.site).as_posix()
+        for path in sorted(info.iterdir()):
+            yield path.relative_to(self.site).as_posix()
+
         yield (info / "RECORD").relative_to(self.site).as_posix()
 
 
 class TestPackageData:
     SCHEMA: ClassVar[str] = "schema/10_history.sql"
+    ENTRY_POINTS: ClassVar[str] = (
+        "[boba.history]\nstore = boba.history.postgres:PostgresHistoryStore\n\n"
+        "[console_scripts]\nboba-history = boba.history.postgres:main\n"
+    )
+    """Своя группа boba.* идёт в опись, console_scripts — нет."""
 
     def test_survey_names_the_data_and_self_check_finds_it(
         self, tmp_path: Path
@@ -88,11 +98,12 @@ class TestPackageData:
         (tmp_path / "home").mkdir()
         tree = InstalledTree(site, tmp_path / "home")
         tree.install("boba-cli", boba.cli)
+        tree.install("boba-runtime", boba.runtime)
         tree.install("boba-agent", boba.agent)
-        tree.install("boba-history-postgres", boba.history.postgres)
-        manifest = tmp_path / "package_data.json"
+        tree.install("boba-history-postgres", boba.history.postgres, self.ENTRY_POINTS)
+        manifest = tmp_path / "program.json"
 
-        surveyed = tree.run("boba.cli.package_data", str(site), str(manifest))
+        surveyed = tree.run("boba.runtime.program", str(site), str(manifest))
 
         assert surveyed.returncode == 0, surveyed.stderr[-2000:]
         assert surveyed.stdout.splitlines() == [
@@ -100,19 +111,25 @@ class TestPackageData:
             "--include-package-data=boba.agent",
             "--include-module=boba.history.postgres",
             "--include-package-data=boba.history.postgres",
-            f"--include-data-files={manifest}=boba/cli/package_data.json",
+            "--include-module=boba.runtime",
+            "--include-package-data=boba.runtime",
+            "--include-distribution-metadata=boba-history-postgres",
+            "--include-module=boba.history.postgres",
+            f"--include-data-files={manifest}=boba/runtime/program.json",
         ]
         named = self._named(manifest)
         assert f"boba.history.postgres:{self.SCHEMA}" in named
         assert "boba.agent:template/attachments/date.txt" in named
+        assert "boba.runtime:schema/10_users.sql" in named
 
-        shutil.copy(manifest, site / "boba" / "cli" / "package_data.json")
+        shutil.copy(manifest, site / "boba" / "runtime" / "program.json")
         checked = tree.run("boba.cli.app", "self-check")
 
         assert checked.returncode == 0, checked.stderr[-2000:]
         assert checked.stdout == (
             f"self-check: {len(named)} package data files present "
-            "(boba.agent, boba.history.postgres)\n"
+            "(boba.agent, boba.history.postgres, boba.runtime); "
+            "1 entry points load (boba.history)\n"
         )
 
         (site / "boba" / "history" / "postgres" / self.SCHEMA).unlink()
@@ -121,6 +138,34 @@ class TestPackageData:
         assert broken.returncode == 1
         assert f"1 of {len(named)} package data files" in broken.stderr
         assert f"boba.history.postgres:{self.SCHEMA} (no file under" in broken.stderr
+
+    def test_self_check_names_an_entry_point_that_does_not_load(
+        self, tmp_path: Path
+    ) -> None:
+        site = tmp_path / "site"
+        (tmp_path / "home").mkdir()
+        tree = InstalledTree(site, tmp_path / "home")
+        tree.install("boba-cli", boba.cli)
+        tree.install("boba-runtime", boba.runtime)
+        tree.install(
+            "boba-history-postgres",
+            boba.history.postgres,
+            "[boba.history]\nstore = boba.history.postgres:NoSuchStore\n",
+        )
+        manifest = tmp_path / "program.json"
+        surveyed = tree.run("boba.runtime.program", str(site), str(manifest))
+        assert surveyed.returncode == 0, surveyed.stderr[-2000:]
+        shutil.copy(manifest, site / "boba" / "runtime" / "program.json")
+
+        checked = tree.run("boba.cli.app", "self-check")
+
+        assert checked.returncode == 1
+        assert "1 of 1 entry points named by the build manifest do not load" in (
+            checked.stderr
+        )
+        assert "boba.history:store = boba.history.postgres:NoSuchStore" in (
+            checked.stderr
+        )
 
     def test_self_check_in_the_source_tree_reports_no_manifest(
         self, tmp_path: Path
@@ -135,14 +180,14 @@ class TestPackageData:
         )
 
         assert checked.returncode == 1
-        assert "the package data manifest" in checked.stderr
+        assert "the build manifest" in checked.stderr
         assert "is missing" in checked.stderr
 
     def test_survey_of_a_tree_without_boba_wheels_fails(self, tmp_path: Path) -> None:
         tree = InstalledTree(tmp_path, tmp_path)
 
         surveyed = tree.run(
-            "boba.cli.package_data", str(tmp_path), str(tmp_path / "out.json")
+            "boba.runtime.program", str(tmp_path), str(tmp_path / "out.json")
         )
 
         assert surveyed.returncode == 1

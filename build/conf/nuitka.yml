@@ -1,0 +1,48 @@
+- module-name: 'fastmcp.utilities.logging'
+  anti-bloat:
+    - description: 'fastmcp logs exceptions as plain text: rich tracebacks need pygments'
+      replacements_plain:
+        '"rich_tracebacks": enable_rich_tracebacks,': '"rich_tracebacks": False,'
+
+- module-name: 'rich'
+  anti-bloat:
+    - description: 'the programs print no highlighted code'
+      no-follow:
+        'rich.traceback': 'fastmcp logs exceptions as plain text'
+        'rich.syntax': 'the programs print no highlighted code'
+        'pygments': 'the programs print no highlighted code'
+
+- module-name: 'httpx2'
+  anti-bloat:
+    - description: 'command line and websockets of httpx2 are not used by the programs'
+      no-follow:
+        'httpx2._main': 'command line of httpx2'
+        'httpx2.websockets': 'the programs serve websockets through uvicorn'
+
+- module-name: 'uvicorn'
+  anti-bloat:
+    - description: 'the services run uvicorn in their own asyncio loop with the h11 parser and without reload'
+      no-follow:
+        'uvloop': 'the server runs in the asyncio loop of the service'
+        'httptools': 'h11 parses HTTP'
+        'watchfiles': 'no reload in the services'
+
+- module-name: 'yaml'
+  anti-bloat:
+    - description: 'omegaconf loads with the pure python loader'
+      no-follow:
+        'yaml._yaml': 'libyaml loader is not used'
+
+- module-name: 'psycopg'
+  anti-bloat:
+    - description: 'psycopg runs on psycopg_binary'
+      no-follow:
+        'psycopg.pq.pq_ctypes': 'psycopg_binary is the libpq wrapper'
+        'psycopg.pq._pq_ctypes': 'psycopg_binary is the libpq wrapper'
+        'psycopg._py_transformer': 'psycopg_binary is the transformer'
+
+- module-name: 'pydantic'
+  anti-bloat:
+    - description: 'mypy plugin of pydantic'
+      no-follow:
+        'pydantic.mypy': 'mypy plugin'

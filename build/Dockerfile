@@ -3,15 +3,17 @@ ARG GLIBC_IMAGE=dmp/glibc:2.28
 ARG GCC_IMAGE=dmp/gcc:8.5.0
 ARG PYTHON_IMAGE=dmp/python:${PYTHON_VERSION}-dist
 ARG NODE_IMAGE=dmp/nodejs:20
-# основа образа mcp: runtime-sandbox с моделями, образами корней плагинов и workspace, их make
-# build кладёт отдельной сборкой build/sandbox.Dockerfile в контексте runtime/
+# основа образа mcp: runtime-sandbox с моделями, образами корней плагинов и workspace (их make
+# build кладёт отдельной сборкой build/sandbox.Dockerfile в контексте runtime/) и бинарником
+# программы (build/program.Dockerfile в контексте runtime/bin)
 ARG SANDBOX_IMAGE=runtime-sandbox
 
 # Собирает make классическим сборщиком (DOCKER_BUILDKIT=0): он проходит все стадии до
 # --target по порядку файла. Поэтому стадии идут по целям make — base, oracledb-wheel,
-# sandbox-out, plugin-site-out и plugin-root, boba-bin-out, runtime-sandbox и runtime-mcp,
-# runtime-aid, — а стадия, которой нужны аргументы одной цели, без них пуста
-# (plugin-site без PLUGIN, bin-site и boba-bin без NUITKA_VERSION).
+# sandbox-out, plugin-site-out и plugin-root, boba-bin-out, program-tools, runtime-sandbox и
+# runtime-mcp, runtime-aid, — а стадия, которой нужны аргументы одной цели, без них пуста
+# (plugin-site без PLUGIN, bin-site и boba-bin без NUITKA_VERSION, program-tools без
+# PROGRAM_NUITKA).
 # Синтаксис только классический: без RUN --mount, COPY --chmod/--link и heredoc
 
 FROM ${PYTHON_IMAGE} AS python-dist
@@ -373,10 +375,10 @@ RUN mkdir -p /opt/bin-site && { [ -z "${NUITKA_VERSION}" ] || { \
 # BIN_ONNX, рантайм onnxruntime-genai входят целиком; libpython линкуется статически.
 # Каталог, а не один файл: onefile на каждом запуске распаковывает себя (163 МБ) во
 # временный каталог, а в режиме кэша читает его целиком и сверяет CRC; каталогу не нужно
-# ни того ни другого, и ему не нужна запись — годится для корня только на чтение. Данные пакетов boba
-# называет опись boba.cli.package_data по RECORD дерева колёс: она же даёт флаги Nuitka
-# и едет в бинарник, а `boba self-check` в конце шага проверяет по ней, что все файлы
-# внутри, — пропущенный каталог данных роняет сборку. onnxruntime_genai
+# ни того ни другого, и ему не нужна запись — годится для корня только на чтение. Данные пакетов
+# и entry points boba называет опись boba.runtime.program по RECORD и entry points дерева
+# колёс: она же даёт флаги Nuitka и едет в бинарник, а `boba self-check` в конце шага
+# проверяет по ней, что всё внутри, — пропущенный каталог данных роняет сборку. onnxruntime_genai
 # находит onnxruntime через find_spec, не импортом, поэтому пакет onnxruntime с его
 # библиотеками включается явно. Локальные модели внутрь не попадают: веса лежат в
 # каталоге models/ релиза. Без NUITKA_VERSION стадия отдаёт пустой /out
@@ -392,7 +394,7 @@ RUN mkdir -p /out /opt/bin-tools && { [ -z "${NUITKA_VERSION}" ] || \
             "nuitka==${NUITKA_VERSION}" "patchelf==${PATCHELF_VERSION}" \
             "ordered-set==${ORDERED_SET_VERSION}"; }
 
-COPY build/conf/nuitka-boba.yml       /tmp/nuitka-boba.yml
+COPY build/conf/nuitka.yml build/conf/nuitka-boba.yml  /tmp/
 COPY --from=bin-site /opt/bin-site/   /opt/bin-site/
 
 ENV PYTHONPATH=/opt/bin-site:/opt/bin-tools PATH=/opt/bin-tools/bin:${PATH}
@@ -403,15 +405,16 @@ RUN [ -z "${NUITKA_VERSION}" ] || { onnx=""; \
         onnx="--include-package=onnxruntime_genai --include-package-data=onnxruntime_genai \
               --include-package=onnxruntime"; \
     fi; \
-    python3 -m boba.cli.package_data /opt/bin-site /tmp/package_data.json > /tmp/package_data.flags \
+    python3 -m boba.runtime.program /opt/bin-site /tmp/program.json > /tmp/program.flags \
     && python3 -m nuitka --standalone --static-libpython=yes --output-filename=boba.bin --update-check=never \
         --output-dir=/tmp/nuitka --jobs=${JOBS} \
+        --user-package-configuration-file=/tmp/nuitka.yml \
         --user-package-configuration-file=/tmp/nuitka-boba.yml \
         --include-package=gssapi --nofollow-import-to=gssapi.tests --include-distribution-metadata=boba-cli \
-        $(cat /tmp/package_data.flags) ${onnx} \
+        $(cat /tmp/program.flags) ${onnx} \
         /opt/bin-site/boba/cli/app.py \
     && mv /tmp/nuitka/app.dist /out/boba.dist \
-    && rm -rf /tmp/nuitka /tmp/package_data.json /tmp/package_data.flags \
+    && rm -rf /tmp/nuitka /tmp/program.json /tmp/program.flags \
     && /out/boba.dist/boba.bin --help > /dev/null \
     && /out/boba.dist/boba.bin self-check; }
 
@@ -442,6 +445,30 @@ RUN uv pip install --python "$(command -v python3)" --target /opt/app-site \
 ENV PYTHONPATH=/opt/app-site
 RUN for name in ${APP_IMPORTS}; do python3 -c "import $name; print('$name ok')"; done
 RUN pip3 list --path /opt/app-site --format=freeze | grep '^boba-' | cut -d= -f1 > /opt/app-packages.txt
+
+
+# компилятор программы приложения над деревом app-site: Nuitka и patchelf из индекса pypi
+# образа, ccache из apt. Компилирует не сборка образа, а make build: docker run этого образа
+# с томом кэша NUITKA_CACHE (ccache и кэш Nuitka) и скриптом scripts/nuitka.sh — классический
+# сборщик не умеет кэш-монтирований, а с томом повторная сборка не компилирует заново
+# общий код. Без PROGRAM_NUITKA (его задаёт только приложение на Nuitka) стадия пуста
+FROM app-site AS program-tools
+
+ARG CACHE_SCOPE
+ARG PROGRAM_NUITKA
+ARG PATCHELF_VERSION
+ARG ORDERED_SET_VERSION
+
+RUN [ -z "${PROGRAM_NUITKA}" ] || { apt-get update && apt-get install -y --no-install-recommends ccache \
+        && rm -rf /var/lib/apt/lists/*; }
+RUN mkdir -p /opt/bin-tools && { [ -z "${PROGRAM_NUITKA}" ] || \
+        uv pip install --python "$(command -v python3)" --target /opt/bin-tools \
+            "nuitka==${PROGRAM_NUITKA}" "patchelf==${PATCHELF_VERSION}" \
+            "ordered-set==${ORDERED_SET_VERSION}"; }
+
+COPY build/conf/nuitka.yml  /opt/nuitka/nuitka.yml
+
+ENV PYTHONPATH=/opt/app-site:/opt/bin-tools PATH=/opt/bin-tools/bin:${PATH}
 
 
 # общая основа образов приложений: python и библиотеки. Код приложения стадии образов
@@ -479,12 +506,17 @@ WORKDIR /app
 
 # --- boba-mcp: MCP-сервер с инструментами boba -------------------------------------
 
-# основа приложений, которые исполняют инструменты в песочнице (mcp): bwrap, fuse2fs
-# и каталог образов корней плагинов и workspace. Модели и образы кладёт поверх неё
-# build/sandbox.Dockerfile — это и есть SANDBOX_IMAGE стадии runtime-mcp
-FROM runtime-os AS runtime-sandbox
+# основа приложений, которые исполняют инструменты в песочнице (mcp): glibc без python,
+# bwrap, fuse2fs и каталог образов корней плагинов и workspace. Модели и образы кладёт
+# поверх неё build/sandbox.Dockerfile, бинарник программы — build/program.Dockerfile;
+# итог — SANDBOX_IMAGE стадии runtime-mcp
+FROM ${GLIBC_IMAGE} AS runtime-sandbox
 
 ARG BOBA_DIR=/app/boba
+
+COPY --from=site-conf /certs/               /
+
+RUN mkdir -p ${BOBA_DIR}/bin ${BOBA_DIR}/conf
 
 COPY --from=bwrap-build /out/bwrap          ${BOBA_DIR}/libexec/bwrap
 COPY --from=fuse2fs-build /out/fuse2fs      ${BOBA_DIR}/libexec/fuse2fs
@@ -499,11 +531,14 @@ RUN chmod -R go-w ${BOBA_DIR}/libexec ${BOBA_DIR}/sandbox \
     && ${BOBA_DIR}/libexec/bwrap --version \
     && ${BOBA_DIR}/libexec/fuse2fs -V
 
+WORKDIR /app
 
-# образ сервиса: модели, образы корней плагинов и шаблон workspace внутри (снаружи приложению
-# нужны только конфиг и данные, и пересборка плагинов не меняет файлы под живым
-# контейнером), файлы плагинов внутри, config.toml экземпляра, промпты и данные приходят
-# деревом compose/mcp
+
+# образ сервиса без python: каталог программы — бинарник Nuitka bin/boba-mcp.dist,
+# libexec, модели, образы корней плагинов и шаблон workspace (снаружи приложению нужны только
+# конфиг и данные, и пересборка плагинов не меняет файлы под живым контейнером), файлы
+# плагинов в conf/plugins; config.toml экземпляра, промпты и данные приходят деревом
+# compose/mcp. Внешний слой песочницы и проба cgroup — подкоманды того же бинарника
 FROM ${SANDBOX_IMAGE} AS runtime-mcp
 
 ARG BOBA_DIR=/app/boba
@@ -512,18 +547,11 @@ ARG BOBA_GID=1000
 
 COPY packages/apps/boba-mcp/conf/plugins/  ${BOBA_DIR}/conf/plugins/
 
-COPY --from=app-site /opt/app-site          ${BOBA_DIR}/app/
-COPY --from=app-site /opt/app-packages.txt  ${BOBA_DIR}/app/packages.txt
-# шебанги стадии сборки ведут на /usr/local/bin/python3, которого здесь нет
-RUN sed -i "1s|^#!.*python3.*|#!${BOBA_DIR}/third/bin/python3|" ${BOBA_DIR}/app/bin/* \
-    && sed "s|@MODULE@|boba.mcp_server|" /tmp/program.sh > ${BOBA_DIR}/bin/boba-mcp \
-    && chmod 0755 ${BOBA_DIR}/bin/boba-mcp && rm -f /tmp/program.sh
-
 EXPOSE 8650
 USER ${BOBA_UID}:${BOBA_GID}
 HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
-    CMD ["/app/boba/bin/boba-mcp", "health", "--config", "/app/boba/conf/config.toml"]
-ENTRYPOINT ["/app/boba/bin/boba-mcp"]
+    CMD ["/app/boba/bin/boba-mcp.dist/boba-mcp.bin", "health", "--config", "/app/boba/conf/config.toml"]
+ENTRYPOINT ["/app/boba/bin/boba-mcp.dist/boba-mcp.bin"]
 CMD ["serve", "--config", "/app/boba/conf/config.toml"]
 
 

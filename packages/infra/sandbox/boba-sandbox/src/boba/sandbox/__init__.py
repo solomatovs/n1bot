@@ -1,6 +1,6 @@
 """Компонент песочницы: профили, сборка argv и запуск команд."""
 
-from boba.sandbox.cgroup import CgroupError, CgroupManager, GroupLimits
+from boba.sandbox.cgroup import CgroupError, CgroupManager, CgroupProbe, GroupLimits
 from boba.sandbox.diagnostics import SandboxDiagnostics
 from boba.sandbox.profile import (
     BindSpec,
@@ -27,6 +27,7 @@ __all__ = [
     "BindSpec",
     "CgroupError",
     "CgroupManager",
+    "CgroupProbe",
     "GroupLimits",
     "SandboxConfig",
     "SandboxDiagnostics",

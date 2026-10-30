@@ -13,7 +13,7 @@ from uuid import uuid4
 
 import pytest
 
-from boba.sandbox.cgroup import CgroupError, CgroupManager, GroupLimits
+from boba.sandbox.cgroup import CgroupError, CgroupManager, CgroupProbe, GroupLimits
 from boba.sandbox.profile import LimitsSpec, SandboxProfile
 from boba.stand.zygote import ROOTFS_IMAGE, ProfileFields, SandboxCgroup
 from boba.workspace.launcher import ResourceLimits
@@ -304,4 +304,4 @@ class TestProbe:
         )
         CgroupManager._prepared.pop(Path("/sys/fs/cgroup/nonexistent/forbidden"), None)
         with pytest.raises(CgroupError, match="sandbox profile 'broken'"):
-            CgroupManager.probe_profiles({"broken": profile})
+            CgroupProbe((sys.executable, "-c", "")).profiles({"broken": profile})

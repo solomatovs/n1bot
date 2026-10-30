@@ -1,6 +1,6 @@
 """Вход процесса агента: ACP по стандартным потокам `boba --stdio --settings
 <файл>`, служба `boba serve` (boba.cli.serve), самопроверка собранного
-бинарника `boba self-check` (boba.cli.package_data) и публикация схемы файла
+бинарника `boba self-check` (boba.runtime.program) и публикация схемы файла
 настроек `boba settings-schema` (JSON Schema слоя на stdout). `boba` без
 режима — интерактивный режим для человека; его ещё нет, процесс говорит об
 этом и выходит с кодом 2.
@@ -18,8 +18,9 @@
 
 Ошибки:
 SystemExit — настройки, профиль модели, хранилище или скиллы не годятся
-    для запуска либо самопроверка не нашла данных пакетов в бинарнике; текст
-    называет причину, код выхода 1. Без режима — код выхода 2.
+    для запуска либо самопроверка не нашла в бинарнике данных пакетов или
+    entry points; текст называет причину, код выхода 1. Без режима — код
+    выхода 2.
 """
 
 from __future__ import annotations
@@ -80,7 +81,6 @@ from boba.cli.acp_server import (
     SessionRefusedError,
     SessionSummary,
 )
-from boba.cli.package_data import PackageDataCheck, PackageDataError
 from boba.cli.settings import (
     Arguments,
     EffectiveSettings,
@@ -100,6 +100,7 @@ from boba.llm.http.ollama import MANIFEST as OLLAMA
 from boba.llm.http.openai import MANIFEST as OPENAI
 from boba.llm.onnx.chat import MANIFEST as ONNX
 from boba.llm.providers import LlmProviders, LlmProvidersError, LlmProviderTypes
+from boba.runtime.program import ProgramCheck, ProgramManifestError
 from boba.transport.acp.protocol import AgentSide, BatchTransport
 
 logger = logging.getLogger(__name__)
@@ -1041,8 +1042,8 @@ async def main(argv: Sequence[str] | None = None) -> None:
 
     if invocation.command is Command.SELF_CHECK:
         try:
-            checked = PackageDataCheck().run()
-        except PackageDataError as exc:
+            checked = ProgramCheck().run()
+        except ProgramManifestError as exc:
             raise SystemExit(str(exc)) from exc
 
         sys.stdout.write(f"{checked}\n")

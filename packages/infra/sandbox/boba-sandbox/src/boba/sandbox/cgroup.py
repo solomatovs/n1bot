@@ -8,18 +8,17 @@ import errno
 import logging
 import os
 import subprocess
-import sys
 import threading
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
 
 from boba.sandbox.profile import SandboxProfile
 
-__all__ = ["CgroupError", "CgroupManager", "GroupLimits"]
+__all__ = ["CgroupError", "CgroupManager", "CgroupProbe", "GroupLimits"]
 
 logger = logging.getLogger(__name__)
 
@@ -232,56 +231,6 @@ class CgroupManager:
             time.sleep(self.RELEASE_POLL_SEC)
         logger.warning("cgroup: leaf %s is still busy and was not removed", leaf)
 
-    @classmethod
-    def probe_profiles(cls, profiles: Mapping[str, SandboxProfile]) -> None:
-        """Startup-проверка групповых лимитов; отказ называет профиль и параметр."""
-        for name, profile in profiles.items():
-            limits = GroupLimits.of_profile(profile)
-            if not limits.requested:
-                continue
-            manager = cls(profile.host.cgroup_base)
-            try:
-                leaf = manager.acquire(limits)
-                try:
-                    manager.probe_migration(leaf)
-                finally:
-                    manager.release(leaf)
-            except CgroupError as e:
-                msg = f"sandbox profile {name!r}: {e}"
-                raise CgroupError(msg) from e
-            logger.info(
-                "sandbox cgroup: profile %r ok in %s (%s)",
-                name,
-                profile.host.cgroup_base,
-                limits.describe(),
-            )
-
-    def probe_migration(self, leaf: Path) -> None:
-        """Пробный ребёнок входит в leaf: ловит правило общего предка сразу."""
-        procs = leaf / "cgroup.procs"
-
-        def enter() -> None:
-            fd = os.open(procs, os.O_WRONLY)
-            os.write(fd, b"0")
-            os.close(fd)
-
-        try:
-            subprocess.run(
-                [sys.executable, "-c", ""],
-                check=True,
-                capture_output=True,
-                preexec_fn=enter,
-            )
-        except (subprocess.SubprocessError, OSError) as e:
-            msg = (
-                f"cgroup: cannot move a child into {leaf}: {e}; the "
-                f"application itself must run inside the delegated subtree "
-                f"(host: systemd-run --user --scope; docker: cgroup: host "
-                f"plus cgroup_parent of the delegated slice), otherwise "
-                f"remove the cgroup_* limits"
-            )
-            raise CgroupError(msg) from e
-
     def _prepare(self, controllers: tuple[str, ...]) -> None:
         with self._lock:
             enabled = self._prepared.setdefault(self._base, set())
@@ -410,3 +359,68 @@ class CgroupManager:
     def _remove_quietly(leaf: Path) -> None:
         with contextlib.suppress(OSError):
             leaf.rmdir()
+
+
+class CgroupProbe:
+    """Проверка групповых лимитов профилей на старте: leaf под базой профиля
+    и вход в него пробного ребёнка.
+
+    Правило общего предка cgroup v2 ловится сразу, а не на первом вызове.
+    Создаёт её способ запуска песочницы (ZygoteLaunchers) с командой пустого
+    процесса своей программы (LauncherInterpreter.probe): у собранной
+    программы интерпретатора нет, и пробный ребёнок — её подкоманда probe.
+    """
+
+    def __init__(self, command: Sequence[str]) -> None:
+        self._command = tuple(command)
+
+    def profiles(self, profiles: Mapping[str, SandboxProfile]) -> None:
+        """Отказ называет профиль и параметр (CgroupError)."""
+        for name, profile in profiles.items():
+            limits = GroupLimits.of_profile(profile)
+            if not limits.requested:
+                continue
+
+            manager = CgroupManager(profile.host.cgroup_base)
+            try:
+                leaf = manager.acquire(limits)
+                try:
+                    self._migration(leaf)
+                finally:
+                    manager.release(leaf)
+            except CgroupError as e:
+                msg = f"sandbox profile {name!r}: {e}"
+                raise CgroupError(msg) from e
+
+            logger.info(
+                "sandbox cgroup: profile %r ok in %s (%s)",
+                name,
+                profile.host.cgroup_base,
+                limits.describe(),
+            )
+
+    def _migration(self, leaf: Path) -> None:
+        """Пробный ребёнок входит в leaf до exec."""
+        procs = leaf / "cgroup.procs"
+
+        def enter() -> None:
+            fd = os.open(procs, os.O_WRONLY)
+            os.write(fd, b"0")
+            os.close(fd)
+
+        try:
+            subprocess.run(  # noqa: S603 — команда пустого процесса своей программы
+                self._command,
+                check=True,
+                capture_output=True,
+                preexec_fn=enter,
+            )
+        except (subprocess.SubprocessError, OSError) as e:
+            msg = (
+                f"cgroup: cannot move a child {list(self._command)} into {leaf}: "
+                f"{e}; the application itself must run inside the delegated "
+                f"subtree (host: systemd-run --user --scope; docker: cgroup: host "
+                f"plus cgroup_parent of the delegated slice), otherwise remove "
+                f"the cgroup_* limits"
+            )
+            raise CgroupError(msg) from e
