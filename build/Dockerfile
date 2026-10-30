@@ -184,18 +184,14 @@ RUN ! ldd /out/fuse2fs | grep fuse && /out/fuse2fs -V
 RUN install -D -m 0755 misc/mke2fs /out/mke2fs && cp misc/mke2fs.conf /out/mke2fs.conf
 
 
-# артефакты песочницы для make sandbox: make забирает /third и /tools через docker cp
+# вспомогательные программы песочницы для make sandbox: make забирает /libexec через
+# docker cp в runtime/libexec — ту же раскладку, что у каталога программы mcp
 FROM scratch AS sandbox-out
 
-ARG LIBSTDCXX_VERSION=6.0.25
-
-COPY --from=bwrap-build   /out/bwrap        /third/bin/bwrap
-COPY --from=fuse2fs-build /out/fuse2fs      /third/bin/fuse2fs
-COPY --from=base /usr/lib/x86_64-linux-gnu/libstdc++.so.6                    /third/lib/
-COPY --from=base /usr/lib/x86_64-linux-gnu/libstdc++.so.${LIBSTDCXX_VERSION} /third/lib/
-COPY --from=base /usr/lib/x86_64-linux-gnu/libgcc_s.so.1                     /third/lib/
-COPY --from=fuse2fs-build /out/mke2fs       /tools/mke2fs
-COPY --from=fuse2fs-build /out/mke2fs.conf  /tools/mke2fs.conf
+COPY --from=bwrap-build   /out/bwrap        /libexec/bwrap
+COPY --from=fuse2fs-build /out/fuse2fs      /libexec/fuse2fs
+COPY --from=fuse2fs-build /out/mke2fs       /libexec/mke2fs
+COPY --from=fuse2fs-build /out/mke2fs.conf  /libexec/mke2fs.conf
 
 
 # колёса всех пакетов репозитория и constraints из uv.lock: обе стадии установки
@@ -449,14 +445,16 @@ RUN pip3 list --path /opt/app-site --format=freeze | grep '^boba-' | cut -d= -f1
 
 
 # общая основа образов приложений: python и библиотеки. Код приложения стадии образов
-# кладут последним слоем — его правка не трогает слои ниже
+# кладут последним слоем — его правка не трогает слои ниже. Каталог программы — BOBA_DIR:
+# bin/<программа> (на этапе python — скрипт запуска интерпретатора third/ над кодом
+# app/), libexec, share, models, sandbox; экземпляр — conf/ и data/ рядом, окружения
+# экземпляру не нужно
 FROM ${GLIBC_IMAGE} AS runtime-os
 
 ARG CACHE_SCOPE
 ARG PYTHON_VERSION=3.11
 ARG LIBSTDCXX_VERSION=6.0.25
 ARG BOBA_DIR=/app/boba
-ARG HEALTH_PATH=/
 
 COPY --from=site-conf /certs/                                                 /
 
@@ -470,21 +468,13 @@ COPY --from=python-slim /python/                                              ${
 COPY --from=base /usr/lib/x86_64-linux-gnu/libstdc++.so.6                     ${BOBA_DIR}/third/lib/
 COPY --from=base /usr/lib/x86_64-linux-gnu/libstdc++.so.${LIBSTDCXX_VERSION}  ${BOBA_DIR}/third/lib/
 COPY --from=base /usr/lib/x86_64-linux-gnu/libgcc_s.so.1                      ${BOBA_DIR}/third/lib/
-COPY build/scripts/healthcheck.py                                    ${BOBA_DIR}/app/healthcheck.py
+COPY build/conf/program.sh                                                    /tmp/program.sh
 
-RUN mkdir -p ${BOBA_DIR}/conf ${BOBA_DIR}/app_root/public
+RUN mkdir -p ${BOBA_DIR}/bin ${BOBA_DIR}/conf
 
 RUN chmod -R go-w ${BOBA_DIR}/third
 
 WORKDIR /app
-ENV BOBA_DIR=${BOBA_DIR} \
-    BOBA_HEALTH_PATH=${HEALTH_PATH}
-
-# порт, префикс и сам python приходят из boba.env: проба идёт тем же интерпретатором
-HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
-    CMD python3 "${BOBA_DIR}/app/healthcheck.py"
-
-ENTRYPOINT ["python3"]
 
 
 # --- boba-mcp: MCP-сервер с инструментами boba -------------------------------------
@@ -496,16 +486,18 @@ FROM runtime-os AS runtime-sandbox
 
 ARG BOBA_DIR=/app/boba
 
-COPY --from=bwrap-build /out/bwrap      ${BOBA_DIR}/third/bin/bwrap
-COPY --from=fuse2fs-build /out/fuse2fs  ${BOBA_DIR}/third/bin/fuse2fs
+COPY --from=bwrap-build /out/bwrap          ${BOBA_DIR}/libexec/bwrap
+COPY --from=fuse2fs-build /out/fuse2fs      ${BOBA_DIR}/libexec/fuse2fs
+COPY --from=fuse2fs-build /out/mke2fs       ${BOBA_DIR}/libexec/mke2fs
+COPY --from=fuse2fs-build /out/mke2fs.conf  ${BOBA_DIR}/libexec/mke2fs.conf
 
 RUN mkdir -p ${BOBA_DIR}/sandbox
 
-# TrustedBinaries не примет third/bin, доступный на запись посторонним
-RUN chmod -R go-w ${BOBA_DIR}/third/bin ${BOBA_DIR}/sandbox \
-    && test -z "$(find ${BOBA_DIR}/third/bin -maxdepth 1 -type f -perm /022)" \
-    && ${BOBA_DIR}/third/bin/bwrap --version \
-    && ${BOBA_DIR}/third/bin/fuse2fs -V
+# TrustedBinaries не примет libexec, доступный на запись посторонним
+RUN chmod -R go-w ${BOBA_DIR}/libexec ${BOBA_DIR}/sandbox \
+    && test -z "$(find ${BOBA_DIR}/libexec -maxdepth 1 -type f -perm /022)" \
+    && ${BOBA_DIR}/libexec/bwrap --version \
+    && ${BOBA_DIR}/libexec/fuse2fs -V
 
 
 # образ сервиса: модели, образы корней плагинов и шаблон workspace внутри (снаружи приложению
@@ -523,11 +515,16 @@ COPY packages/apps/boba-mcp/conf/plugins/  ${BOBA_DIR}/conf/plugins/
 COPY --from=app-site /opt/app-site          ${BOBA_DIR}/app/
 COPY --from=app-site /opt/app-packages.txt  ${BOBA_DIR}/app/packages.txt
 # шебанги стадии сборки ведут на /usr/local/bin/python3, которого здесь нет
-RUN sed -i "1s|^#!.*python3.*|#!${BOBA_DIR}/third/bin/python3|" ${BOBA_DIR}/app/bin/*
+RUN sed -i "1s|^#!.*python3.*|#!${BOBA_DIR}/third/bin/python3|" ${BOBA_DIR}/app/bin/* \
+    && sed "s|@MODULE@|boba.mcp_server|" /tmp/program.sh > ${BOBA_DIR}/bin/boba-mcp \
+    && chmod 0755 ${BOBA_DIR}/bin/boba-mcp && rm -f /tmp/program.sh
 
 EXPOSE 8650
 USER ${BOBA_UID}:${BOBA_GID}
-CMD ["-m", "boba.mcp_server", "--config", "/app/boba/conf/config.toml"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
+    CMD ["/app/boba/bin/boba-mcp", "health", "--config", "/app/boba/conf/config.toml"]
+ENTRYPOINT ["/app/boba/bin/boba-mcp"]
+CMD ["serve", "--config", "/app/boba/conf/config.toml"]
 
 
 # --- агент как служба: boba serve --------------------------------------------------
@@ -548,10 +545,13 @@ COPY --from=boba-bin /out/         ${BOBA_DIR}/bin/
 COPY --from=app-site /opt/app-site          ${BOBA_DIR}/app/
 COPY --from=app-site /opt/app-packages.txt  ${BOBA_DIR}/app/packages.txt
 # шебанги стадии сборки ведут на /usr/local/bin/python3, которого здесь нет
-RUN sed -i "1s|^#!.*python3.*|#!${BOBA_DIR}/third/bin/python3|" ${BOBA_DIR}/app/bin/*
+RUN sed -i "1s|^#!.*python3.*|#!${BOBA_DIR}/third/bin/python3|" ${BOBA_DIR}/app/bin/* \
+    && rm -f /tmp/program.sh
 
 EXPOSE 8660
 USER ${BOBA_UID}:${BOBA_GID}
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
+    CMD ["/app/boba/bin/boba.dist/boba.bin", "health", "--config", "/app/boba/conf/config.toml"]
 ENTRYPOINT ["/app/boba/bin/boba.dist/boba.bin"]
 CMD ["serve", "--config", "/app/boba/conf/config.toml"]
 
@@ -602,31 +602,36 @@ RUN npm ci --no-audit --no-fund && npm run check && npm run build
 # образ чата: общий конфиг, ассеты chainlit, vendor-шрифты и стили формул вместо CDN,
 # страница песочницы MCP Apps со шрифтом чата рядом (его берут приложения).
 # Агента в образе нет: чат ходит в службу агента (образ boba). Вложения сессий
-# приложение держит в данных ([aid].files_dir), app_root не пишется
+# приложение держит в files/ каталога данных, share/ программы не пишется
 FROM runtime-os AS runtime-aid
 
 ARG BOBA_DIR=/app/boba
 ARG BOBA_UID=1000
 ARG BOBA_GID=1000
 
-COPY --chown=${BOBA_UID}:${BOBA_GID} packages/apps/boba-aid/assets/.chainlit/config.toml   ${BOBA_DIR}/app_root/.chainlit/
-COPY --chown=${BOBA_UID}:${BOBA_GID} packages/apps/boba-aid/assets/.chainlit/translations/ ${BOBA_DIR}/app_root/.chainlit/translations/
-COPY --chown=${BOBA_UID}:${BOBA_GID} packages/apps/boba-aid/assets/chainlit.md             ${BOBA_DIR}/app_root/
-COPY --chown=${BOBA_UID}:${BOBA_GID} packages/apps/boba-aid/assets/public/                 ${BOBA_DIR}/app_root/public/
-COPY --chown=${BOBA_UID}:${BOBA_GID} packages/apps/boba-aid/assets/mcp-apps/               ${BOBA_DIR}/app_root/mcp-apps/
-COPY --chown=${BOBA_UID}:${BOBA_GID} --from=aid-page-build /src/assets/public/page.js                  ${BOBA_DIR}/app_root/public/page.js
-COPY --chown=${BOBA_UID}:${BOBA_GID} --from=chainlit-ui-build /out/ui/                            ${BOBA_DIR}/app_root/ui/
-COPY --chown=${BOBA_UID}:${BOBA_GID} build/src/webassets/                                ${BOBA_DIR}/app_root/public/vendor/
+COPY --chown=${BOBA_UID}:${BOBA_GID} packages/apps/boba-aid/assets/.chainlit/config.toml   ${BOBA_DIR}/share/.chainlit/
+COPY --chown=${BOBA_UID}:${BOBA_GID} packages/apps/boba-aid/assets/.chainlit/translations/ ${BOBA_DIR}/share/.chainlit/translations/
+COPY --chown=${BOBA_UID}:${BOBA_GID} packages/apps/boba-aid/assets/chainlit.md             ${BOBA_DIR}/share/
+COPY --chown=${BOBA_UID}:${BOBA_GID} packages/apps/boba-aid/assets/public/                 ${BOBA_DIR}/share/public/
+COPY --chown=${BOBA_UID}:${BOBA_GID} packages/apps/boba-aid/assets/mcp-apps/               ${BOBA_DIR}/share/mcp-apps/
+COPY --chown=${BOBA_UID}:${BOBA_GID} --from=aid-page-build /src/assets/public/page.js                  ${BOBA_DIR}/share/public/page.js
+COPY --chown=${BOBA_UID}:${BOBA_GID} --from=chainlit-ui-build /out/ui/                            ${BOBA_DIR}/share/ui/
+COPY --chown=${BOBA_UID}:${BOBA_GID} build/src/webassets/                                ${BOBA_DIR}/share/public/vendor/
 
 # файлы уже принадлежат пользователю, каталогам владелец ставится без рекурсии
-RUN chown ${BOBA_UID}:${BOBA_GID} ${BOBA_DIR}/app_root \
-       ${BOBA_DIR}/app_root/.chainlit ${BOBA_DIR}/app_root/public
+RUN chown ${BOBA_UID}:${BOBA_GID} ${BOBA_DIR}/share \
+       ${BOBA_DIR}/share/.chainlit ${BOBA_DIR}/share/public
 
 COPY --from=app-site /opt/app-site          ${BOBA_DIR}/app/
 COPY --from=app-site /opt/app-packages.txt  ${BOBA_DIR}/app/packages.txt
 # шебанги стадии сборки ведут на /usr/local/bin/python3, которого здесь нет
-RUN sed -i "1s|^#!.*python3.*|#!${BOBA_DIR}/third/bin/python3|" ${BOBA_DIR}/app/bin/*
+RUN sed -i "1s|^#!.*python3.*|#!${BOBA_DIR}/third/bin/python3|" ${BOBA_DIR}/app/bin/* \
+    && sed "s|@MODULE@|boba.aid.main|" /tmp/program.sh > ${BOBA_DIR}/bin/boba-aid \
+    && chmod 0755 ${BOBA_DIR}/bin/boba-aid && rm -f /tmp/program.sh
 
 EXPOSE 8501
 USER ${BOBA_UID}:${BOBA_GID}
-CMD ["-m", "boba.aid.main", "--config", "/app/boba/conf/config.toml"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
+    CMD ["/app/boba/bin/boba-aid", "health", "--config", "/app/boba/conf/config.toml"]
+ENTRYPOINT ["/app/boba/bin/boba-aid"]
+CMD ["serve", "--config", "/app/boba/conf/config.toml"]

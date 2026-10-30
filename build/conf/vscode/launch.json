@@ -15,14 +15,15 @@
             "program": "${workspaceFolder}/packages/apps/boba-aid/src/boba/aid/main.py",
             "jinja": true,
             "args": [
+                "serve",
                 "--config",
                 "${workspaceFolder}/debug/aid/conf/config.toml",
                 "--config",
                 "${workspaceFolder}/debug/aid/conf/agent_mode-${input:agentMode}.toml"
             ],
             "env": {
-                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/runtime/third/bin:${env:PATH}",
-                "LD_LIBRARY_PATH": "${workspaceFolder}/runtime/third/lib"
+                "PATH": "${workspaceFolder}/.venv/bin:${env:PATH}",
+                "BOBA_RUNTIME": "${workspaceFolder}/runtime"
             }
         },
         {
@@ -37,14 +38,15 @@
             "subProcess": true,
             "module": "boba.mcp_server",
             "args": [
+                "serve",
                 "--config",
                 "${workspaceFolder}/debug/mcp/conf/config.toml",
                 "--config",
                 "${workspaceFolder}/debug/mcp/conf/tool_launcher-${input:toolLauncher}.toml"
             ],
             "env": {
-                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/runtime/third/bin:${env:PATH}",
-                "LD_LIBRARY_PATH": "${workspaceFolder}/runtime/third/lib"
+                "PATH": "${workspaceFolder}/.venv/bin:${env:PATH}",
+                "BOBA_RUNTIME": "${workspaceFolder}/runtime"
             }
         },
         {
@@ -64,8 +66,8 @@
                 "${workspaceFolder}/debug/boba/conf/config.toml"
             ],
             "env": {
-                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/runtime/third/bin:${env:PATH}",
-                "LD_LIBRARY_PATH": "${workspaceFolder}/runtime/third/lib"
+                "PATH": "${workspaceFolder}/.venv/bin:${env:PATH}",
+                "BOBA_RUNTIME": "${workspaceFolder}/runtime"
             }
         },
         {
@@ -80,8 +82,8 @@
             "module": "boba.runtime.toolcli",
             "args": "${input:toolCall} --config ${workspaceFolder}/debug/mcp/conf/config.toml --args ${workspaceFolder}/.vscode/injected/${input:toolInjected}.json",
             "env": {
-                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/runtime/third/bin:${env:PATH}",
-                "LD_LIBRARY_PATH": "${workspaceFolder}/runtime/third/lib",
+                "PATH": "${workspaceFolder}/.venv/bin:${env:PATH}",
+                "BOBA_RUNTIME": "${workspaceFolder}/runtime",
                 "BOBA_LOG_LEVEL": "DEBUG"
             }
         },
@@ -178,8 +180,8 @@
             "cwd": "${workspaceFolder}/debug/aid",
             "python": "${workspaceFolder}/.vscode/python-debug-slice.sh",
             "env": {
-                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/runtime/third/bin:${env:PATH}",
-                "LD_LIBRARY_PATH": "${workspaceFolder}/runtime/third/lib",
+                "PATH": "${workspaceFolder}/.venv/bin:${env:PATH}",
+                "BOBA_RUNTIME": "${workspaceFolder}/runtime",
                 "BOBA_CONFIG_PATH": "${workspaceFolder}/debug/aid/conf/config.toml:${workspaceFolder}/debug/aid/conf/stand.toml",
                 "BOBA_CGROUP_BASE": "@DEBUG_CGROUP@"
             },
@@ -200,8 +202,8 @@
             "cwd": "${workspaceFolder}/debug/aid",
             "python": "${workspaceFolder}/.vscode/python-debug-slice.sh",
             "env": {
-                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/runtime/third/bin:${env:PATH}",
-                "LD_LIBRARY_PATH": "${workspaceFolder}/runtime/third/lib",
+                "PATH": "${workspaceFolder}/.venv/bin:${env:PATH}",
+                "BOBA_RUNTIME": "${workspaceFolder}/runtime",
                 "BOBA_CONFIG_PATH": "${workspaceFolder}/debug/aid/conf/config.toml:${workspaceFolder}/debug/aid/conf/stand.toml",
                 "BOBA_CGROUP_BASE": "@DEBUG_CGROUP@"
             },
@@ -225,8 +227,8 @@
             "cwd": "${workspaceFolder}/debug/aid",
             "python": "${workspaceFolder}/.vscode/python-debug-slice.sh",
             "env": {
-                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/runtime/third/bin:${env:PATH}",
-                "LD_LIBRARY_PATH": "${workspaceFolder}/runtime/third/lib",
+                "PATH": "${workspaceFolder}/.venv/bin:${env:PATH}",
+                "BOBA_RUNTIME": "${workspaceFolder}/runtime",
                 "BOBA_CONFIG_PATH": "${workspaceFolder}/debug/aid/conf/config.toml:${workspaceFolder}/debug/aid/conf/stand.toml",
                 "BOBA_CGROUP_BASE": "@DEBUG_CGROUP@"
             },
@@ -245,8 +247,8 @@
             "cwd": "${workspaceFolder}/debug/aid",
             "python": "${workspaceFolder}/.vscode/python-debug-slice.sh",
             "env": {
-                "PATH": "${workspaceFolder}/.venv/bin:${workspaceFolder}/runtime/third/bin:${env:PATH}",
-                "LD_LIBRARY_PATH": "${workspaceFolder}/runtime/third/lib",
+                "PATH": "${workspaceFolder}/.venv/bin:${env:PATH}",
+                "BOBA_RUNTIME": "${workspaceFolder}/runtime",
                 "BOBA_CONFIG_PATH": "${workspaceFolder}/debug/aid/conf/config.toml:${workspaceFolder}/debug/aid/conf/stand.toml",
                 "BOBA_CGROUP_BASE": "@DEBUG_CGROUP@"
             },

@@ -21,12 +21,14 @@ CONF_DIR        := $(BASE_DIR)/conf
 -include $(CONF_DIR)/local.mk
 # артефакты для сборки: tarball'ы, uv, webassets, колесо oracledb
 DEPS_DIR        ?= $(BASE_DIR)/src
-# runtime-зависимости приложений: модели, бинарники и библиотеки песочницы, её образы.
-# Экземпляр один на репозиторий: его монтирует compose, читает отладка, а образы корней
-# плагинов и workspace из него берёт сборка образа mcp
+# каталог программы для отладки и тестов из .venv (BOBA_RUNTIME): та же раскладка, что у
+# каталога программы в образе — libexec (bwrap, fuse2fs, mke2fs), share (статика чата),
+# models, sandbox (workspace.ext4, plugins/<id>.ext4). Один на репозиторий: образы
+# корней плагинов, модели и workspace из него берёт и сборка образа mcp
 RUNTIME_DIR     := $(SRC_DIR)/runtime
 MODELS_DIR      := $(RUNTIME_DIR)/models
-THIRD_DIR       := $(RUNTIME_DIR)/third
+LIBEXEC_DIR     := $(RUNTIME_DIR)/libexec
+SHARE_DIR       := $(RUNTIME_DIR)/share
 SANDBOX_DIR     := $(RUNTIME_DIR)/sandbox
 RELEASE_DIR     := $(SRC_DIR)/release
 
@@ -40,15 +42,13 @@ PACKAGES_aid      = boba-aid boba-llm-http
 NAME_aid         := boba-aid
 IMPORTS_aid      := boba.aid
 MODULE_aid       := boba.aid.main
+PROGRAM_aid      := bin/boba-aid
 STAGE_aid        := runtime-aid
-HEALTH_aid       := /
-PORT_aid         := 8501
-PREFIX_aid       := /aid
 SANDBOX_aid      :=
 MODELS_aid       :=
-PARTS_aid        := app_root/public app_root/public/page.js app_root/public/vendor \
-                    app_root/public/vendor/inter/files \
-                    app_root/ui/index.html app_root/ui/index.js app_root/mcp-apps/sandbox.html
+PARTS_aid        := share/public share/public/page.js share/public/vendor \
+                    share/public/vendor/inter/files \
+                    share/ui/index.html share/ui/index.js share/mcp-apps/sandbox.html
 # агента в образе чата нет: на выкатке чат ходит в службу агента (образ boba, boba serve)
 BUILD_ARGS_aid    =
 # фронт на хосте нужен только отладке чата: образ собирает его сам
@@ -60,10 +60,8 @@ PACKAGES_mcp      = boba-mcp $(PLUGIN_PACKAGES) boba-llm-fastembed
 NAME_mcp         := boba-mcp
 IMPORTS_mcp      := boba.mcp_server.app fastmcp
 MODULE_mcp       := boba.mcp_server
+PROGRAM_mcp      := bin/boba-mcp
 STAGE_mcp        := runtime-mcp
-HEALTH_mcp       := /health
-PORT_mcp         := 8650
-PREFIX_mcp       := /mcp
 SANDBOX_mcp      := yes
 MODELS_mcp       := fastembed rapidocr
 PARTS_mcp        :=
@@ -76,11 +74,9 @@ WEB_mcp          :=
 PACKAGES_boba     = boba-cli
 NAME_boba        := boba
 IMPORTS_boba     := boba.cli.serve
-MODULE_boba      := boba.cli.app serve
+MODULE_boba      := boba.cli.app
+PROGRAM_boba     := bin/boba.dist/boba.bin
 STAGE_boba       := runtime-boba
-HEALTH_boba      := /health
-PORT_boba        := 8660
-PREFIX_boba      := /boba
 SANDBOX_boba     :=
 MODELS_boba      :=
 PARTS_boba       := bin/boba.dist/boba.bin
@@ -95,10 +91,8 @@ UNIT_LIMITS_boba     := 8G 400% 1024
 APP_PACKAGES      = $(PACKAGES_$(APP))
 APP_IMPORTS       = $(IMPORTS_$(APP))
 APP_MODULE        = $(MODULE_$(APP))
+APP_PROGRAM       = $(PROGRAM_$(APP))
 APP_STAGE         = $(STAGE_$(APP))
-APP_HEALTH        = $(HEALTH_$(APP))
-APP_PORT          = $(PORT_$(APP))
-APP_PREFIX        = $(PREFIX_$(APP))
 APP_SANDBOX       = $(SANDBOX_$(APP))
 APP_MODELS        = $(MODELS_$(APP))
 APP_BUILD_ARGS    = $(BUILD_ARGS_$(APP))
@@ -311,19 +305,16 @@ PNPM_STORE      ?= $(DEPS_DIR)/pnpm-store
 
 # --- что кладут sandbox и release ------------------------------------------------
 
-# библиотеки времени исполнения колёс: нужны любому приложению
-RUNTIME_LIBS    := $(THIRD_DIR)/lib/libstdc++.so.6 $(THIRD_DIR)/lib/libgcc_s.so.1
-SANDBOX_PARTS   := $(THIRD_DIR)/bin/bwrap $(THIRD_DIR)/bin/fuse2fs $(RUNTIME_LIBS) \
-                   $(SANDBOX_DIR)/workspace.ext4
+SANDBOX_PARTS   := $(LIBEXEC_DIR)/bwrap $(LIBEXEC_DIR)/fuse2fs $(SANDBOX_DIR)/workspace.ext4
 # образы корней всех плагинов репозитория
 PLUGIN_IMAGES    = $(PLUGIN_IDS:%=$(SANDBOX_DIR)/plugins/%.ext4)
 # приложения, которые исполняют инструменты в песочнице
 SANDBOX_APPS    := $(strip $(foreach app,$(APPS),$(if $(SANDBOX_$(app)),$(app))))
 # mke2fs из сборки: им make делает workspace.ext4 и rootfs плагинов вне docker build
-SANDBOX_TOOLS   := $(SANDBOX_DIR)/tools/mke2fs $(SANDBOX_DIR)/tools/mke2fs.conf
+SANDBOX_TOOLS   := $(LIBEXEC_DIR)/mke2fs $(LIBEXEC_DIR)/mke2fs.conf
 
-RELEASE_SANDBOX := sandbox/plugins sandbox/workspace.ext4 third/bin/bwrap third/bin/fuse2fs
-RELEASE_PARTS    = $(if $(APP_SANDBOX),$(RELEASE_SANDBOX)) \
+RELEASE_SANDBOX := sandbox/plugins sandbox/workspace.ext4 libexec/bwrap libexec/fuse2fs
+RELEASE_PARTS    = $(if $(APP_SANDBOX),$(RELEASE_SANDBOX)) $(APP_PROGRAM) \
                    third/bin/python3 third/lib/libstdc++.so.6 third/lib/libgcc_s.so.1 \
                    app/bin $(PARTS_$(APP)) $(APP_MODELS:%=models/%) \
                    $(APP_MODEL_IMAGES:%=models/%.ext4)
@@ -407,7 +398,6 @@ DOCKER_ARGS      = --build-arg GLIBC_IMAGE=$(GLIBC_IMAGE)              \
 # аргументы стадий одного приложения
 APP_ARGS         = --build-arg APP_PACKAGES="$(APP_PACKAGES)"       \
     --build-arg APP_IMPORTS="$(APP_IMPORTS)"                        \
-    --build-arg HEALTH_PATH="$(APP_HEALTH)"                         \
     --build-arg BOBA_DIR="$(DEST_DIR)" $(APP_BUILD_ARGS)
 
 # аргументы стадий образа корня плагина: образ один на все приложения
@@ -445,12 +435,12 @@ else
 fi
 endef
 
-# mke2fs из runtime/sandbox/tools в контейнере glibc: $(1) — скрипт, $(2) — каталог результата,
+# mke2fs из runtime/libexec в контейнере glibc: $(1) — скрипт, $(2) — каталог результата,
 # $(3) — аргументы скрипта, $(4) — дополнительные тома docker (источник дерева образа).
 # root в контейнере нужен, чтобы сохранить владельцев из tar
 define mke2fs-run
 docker run --rm -i --network none -e MKE2FS_CONFIG=/tools/mke2fs.conf -e PATH=/tools:/usr/sbin:/usr/bin:/sbin:/bin \
-    -v "$(SANDBOX_DIR)/tools:/tools:ro" -v "$(SCRIPTS_DIR):/scripts:ro" -v "$(2):/out" $(4) \
+    -v "$(LIBEXEC_DIR):/tools:ro" -v "$(SCRIPTS_DIR):/scripts:ro" -v "$(2):/out" $(4) \
     --entrypoint sh $(GLIBC_IMAGE) /scripts/$(1) $(3) "$(RUN_OWNER)"
 endef
 
@@ -535,10 +525,11 @@ find "$(1)" ! -type d -printf '%P\n' | while IFS= read -r name; do
 done
 endef
 
-# каталоги данных $(1): дампы и билеты, у приложения с песочницей — ещё workspace
+# каталоги данных $(1) — фиксированная раскладка [instance].data_dir: дампы, билеты,
+# вложения и приватные каталоги агента, у приложения с песочницей — ещё workspace
 # пользователей и журналы вызовов
 define data-dirs
-mkdir -p "$(1)/dump" "$(1)/krb"
+mkdir -p "$(1)/dump" "$(1)/krb" "$(1)/files" "$(1)/agents"
 if [ -n "$(APP_SANDBOX)" ]; then
     mkdir -p "$(1)/workspace" "$(1)/tool-logs"
 fi
@@ -623,13 +614,6 @@ define host-check
 "$(SCRIPTS_DIR)/hostcheck.sh" $(1) $(if $(APP_SANDBOX),sandbox,plain)
 endef
 
-# конфиг окружения приложения из шаблона conf/boba.env: $(1) — корень установки,
-# $(2) — каталог данных
-define app-env
-export BOBA_BASE="$(1)" BOBA_DATA="$(2)" BOBA_PORT="$(APP_PORT)" BOBA_URL_PREFIX="$(APP_PREFIX)"
-envsubst '$${BOBA_BASE} $${BOBA_DATA} $${BOBA_PORT} $${BOBA_URL_PREFIX}' < "$(CONF_DIR)/boba.env"
-endef
-
 # --- справка --------------------------------------------------------------------
 
 define HELP
@@ -637,7 +621,7 @@ define HELP
 
 С нуля по порядку (каждый шаг кладёт то, что нужно следующему):
   fetch                 артефакты и модели из сети -> build/src, runtime/models
-  sandbox               bwrap, fuse2fs, mke2fs, шаблон workspace.ext4 -> runtime/third, runtime/sandbox
+  sandbox               bwrap, fuse2fs, mke2fs, шаблон workspace.ext4 -> runtime/libexec, runtime/sandbox
   models-image          образы данных из скачанных моделей -> runtime/models/<модель>.ext4
   plugin-rootfs-all     образы корней плагинов -> runtime/sandbox/plugins (уезжают в образ mcp)
   test                  собрать оба образа и проверить их: test = build + проверка в образе
@@ -683,7 +667,7 @@ define HELP
                         bin/boba-onnx.dist с рантаймом onnxruntime-genai (вторая компиляция Nuitka)
 
 Деревья запуска (тоже по APP):
-  dev                   compose/<приложение>: boba.env, data, .env, юнит песочницы (mcp), владельцы
+  dev                   compose/<приложение>: conf/krb, data, .env, юнит песочницы (mcp), владельцы
   debug                 debug/<приложение> и .vscode из образцов; для aid собирает фронт (web)
   dev-db                базы разработчика: DEVELOPER=<логин> SOURCE=<база стенда> TEMPLATE=<шаблон>
                         CH_CLUSTER=<кластер>; aid_<логин>, playground_<логин> в postgres и ClickHouse,
@@ -695,7 +679,8 @@ define HELP
   install               дерево релиза в INSTALL_ROOT/boba-<экземпляр> и юниты systemd пользователя
 
 Фронт чата на хосте (для debug; образ собирает его сам):
-  web                   page.js, UI chainlit (фронт + copilot) и vendor в assets пакета boba-aid
+  web                   page.js, UI chainlit (фронт + copilot) и vendor в assets пакета boba-aid,
+                        затем assets целиком -> runtime/share (статика чата отладки и тестов)
   chainlit-ui           UI chainlit заново
 
 Обслуживание:
@@ -706,8 +691,8 @@ define HELP
   prune                 старые теги образов, образы без тега, кэш BuildKit до PRUNE_KEEP=$(PRUNE_KEEP).
                         Образы без тега — кэш классического сборщика: после prune сборке
                         снова нужны apt-зеркало и реестры
-  clean                 release, артефакты fetch в build/src, собранный фронт, runtime/third и
-                        runtime/sandbox (песочница и образы плагинов); модели остаются
+  clean                 release, артефакты fetch в build/src, собранный фронт, runtime/libexec,
+                        runtime/share и runtime/sandbox (песочница и образы плагинов); модели остаются
   sec                   sec.sh, MODE=all|full|sast|sca|rules
 
 Переменные: JOBS=$(JOBS) — заданий на шаг сборки; входит в ключ кэша, другое значение
@@ -860,22 +845,20 @@ sandbox: version-check
 	tmp=$$(mktemp -d)
 	stage=$$(mktemp -d "$(STAGE_TEMPLATE)")
 	$(call docker-image,sandbox-out,$$tmp/sandbox.iid)
-	$(call image-copy,$$(cat "$$tmp/sandbox.iid"),/third,$$stage)
-	$(call image-copy,$$(cat "$$tmp/sandbox.iid"),/tools,$$stage)
-	chmod 0755 "$$stage/third/bin/bwrap" "$$stage/third/bin/fuse2fs" "$$stage/tools/mke2fs"
-	# mke2fs-run берёт mke2fs из runtime/sandbox/tools: инструменты ставятся первыми
-	$(call install-tree,$$stage/tools,$(SANDBOX_DIR)/tools)
+	$(call image-copy,$$(cat "$$tmp/sandbox.iid"),/libexec,$$stage)
+	chmod 0755 "$$stage/libexec/bwrap" "$$stage/libexec/fuse2fs" "$$stage/libexec/mke2fs"
+	# mke2fs-run берёт mke2fs из runtime/libexec: вспомогательные программы ставятся первыми
+	$(call install-tree,$$stage/libexec,$(LIBEXEC_DIR))
 	$(call mke2fs-run,mkworkspace.sh,$$stage,/out/workspace.ext4 $(SANDBOX_WS_SIZE)) < /dev/null
-	$(call install-tree,$$stage/third,$(THIRD_DIR))
 	# режим файла уезжает в образ mcp как есть: классический COPY не умеет --chmod
 	chmod 0644 "$$stage/workspace.ext4"
 	mv -f "$$stage/workspace.ext4" "$(SANDBOX_DIR)/workspace.ext4"
 	# TrustedBinaries отвергает каталог, открытый группе на запись
-	chmod -R go-w "$(THIRD_DIR)"
+	chmod -R go-w "$(LIBEXEC_DIR)"
 	chmod go-w "$(RUNTIME_DIR)"
 	# docker cp оставляет время файла из слоя образа: по нему make счёл бы результат старше входов
 	touch $(SANDBOX_PARTS) $(SANDBOX_TOOLS)
-	ls -lh $(THIRD_DIR)/bin $(SANDBOX_DIR)/workspace.ext4
+	ls -lh $(LIBEXEC_DIR) $(SANDBOX_DIR)/workspace.ext4
 
 # результаты sandbox для сборки образа: собираются, когда их нет или входы новее
 $(SANDBOX_PARTS) $(SANDBOX_TOOLS) &: $(SANDBOX_INPUTS) $(BASE_DIR)/Dockerfile $(SCRIPTS_DIR)/mkworkspace.sh \
@@ -1133,17 +1116,16 @@ build: version-check $(if $(APP_SANDBOX),$(SANDBOX_DIR)/workspace.ext4 $(PLUGIN_
 	$(call docker-stage,$(APP_STAGE),$(IMAGE),$(if $(LATEST_TAG),--tag $(NAME_$(APP)):$(LATEST_TAG)) $(APP_ARGS) $(if $(APP_SANDBOX),--build-arg SANDBOX_IMAGE=$(SANDBOX_IMAGE)))
 	echo ">>> образ готов: $(IMAGE); проверка: make test APP=$(APP)"
 
-# проверка образа тем же окружением, что уедет в compose и systemd: шаблон conf/boba.env
-# с путями образа, модели — в самом образе. Сети у контейнера нет: модель хода агента
+# проверка образа интерпретатором программы над её кодом (third/ и app/ каталога
+# программы), модели — в самом образе. Сети у контейнера нет: модель хода агента
 # живёт в нём же
 test: build
 	@echo "== проверка образа $(IMAGE) =="
-	env_file=$$(mktemp)
-	trap 'rm -f "$$env_file"' EXIT
-	$(call app-env,$(DEST_DIR),$(DEST_DIR)/data) > "$$env_file"
-	docker run --rm -i --network none --env-file "$$env_file" --tmpfs "$(DEST_DIR)/data:uid=1000,gid=1000" \
-	    --entrypoint sh $(IMAGE) \
-	    -c '"$$PYTHONHOME/bin/python3" - --app $(APP) --base $(DEST_DIR) --names $(DEST_DIR)/app/packages.txt $(if $(APP_SANDBOX),--sandbox --ocr $(notdir $(RAPIDOCR_FILES)) --model-images $(APP_MODEL_IMAGES))' \
+	docker run --rm -i --network none --tmpfs "$(DEST_DIR)/data:uid=1000,gid=1000" \
+	    -e PYTHONHOME="$(DEST_DIR)/third" -e PYTHONPATH="$(DEST_DIR)/app" -e PYTHONNOUSERSITE=1 \
+	    -e LD_LIBRARY_PATH="$(DEST_DIR)/third/lib" -e PYTHONUTF8=1 -e BOBA_RUNTIME="$(DEST_DIR)" \
+	    --entrypoint "$(DEST_DIR)/third/bin/python3" $(IMAGE) \
+	    - --app $(APP) --base $(DEST_DIR) --names $(DEST_DIR)/app/packages.txt $(if $(APP_SANDBOX),--sandbox --ocr $(notdir $(RAPIDOCR_FILES)) --model-images $(APP_MODEL_IMAGES)) \
 	    < "$(TEST_DIR)/bobacheck.py"
 
 # дерево установки из готового образа: пути и шебанги переводятся с DEST_DIR на INSTALL_DIR
@@ -1164,7 +1146,6 @@ release:
 	    echo "    системные библиотеки образа добавлены в $(OUT)/third/lib"
 	fi
 	sed -i "1s|^#!.*python3.*|#!$(INSTALL_DIR)/third/bin/python3|" "$(OUT)/app/bin"/*
-	$(call app-env,$(INSTALL_DIR),$(DATA_DIR)) > "$(OUT)/conf/boba.env"
 	chmod go-w "$(OUT)"
 	chmod -R go-w "$(OUT)/third"
 	if [ -n "$(APP_SANDBOX)" ]; then
@@ -1172,7 +1153,7 @@ release:
 	    chmod -R go-w "$(OUT)/sandbox"
 	fi
 	sed -e 's|@APP@|$(APP)|g' -e 's|@INSTANCE@|$(INSTANCE)|g' -e 's|@INSTALL_DIR@|$(INSTALL_DIR)|g' \
-	    -e 's|@MODULE@|$(APP_MODULE)|g'                                                              \
+	    -e 's|@PROGRAM@|$(APP_PROGRAM)|g'                                                            \
 	    -e 's|@SANDBOX_UNIT@|$(if $(APP_SANDBOX),boba-sandbox@$(INSTANCE).service)|'                 \
 	    -e 's|@REQUIRES@|$(if $(APP_SANDBOX),Requires=boba-sandbox@$(INSTANCE).service)|'            \
 	    -e 's|@MEMORY_MAX@|$(word 1,$(UNIT_LIMITS_$(APP)))|' -e 's|@CPU_QUOTA@|$(word 2,$(UNIT_LIMITS_$(APP)))|' \
@@ -1185,7 +1166,7 @@ release:
 # установка дерева релиза в INSTALL_DIR и пользовательских юнитов systemd: приложение
 # работает без Docker от того пользователя, который запустил цель. Части релиза (код,
 # интерпретатор, агент, статика, модели, образы песочницы) и файлы плагинов заменяются
-# целиком; conf/config.toml, conf/prompts, conf/boba.env, conf/krb и data остаются.
+# целиком; conf/config.toml, conf/prompts, conf/krb и data остаются.
 # Работающий экземпляр цель не трогает — его сначала останавливают
 install:
 	@$(call check,$(OUT)/app $(OUT)/third $(OUT)/boba-$(INSTANCE).service,запусти: make release APP=$(APP))
@@ -1210,11 +1191,6 @@ install:
 	done
 	mkdir -p "$(INSTALL_DIR)/conf/krb"
 	$(call data-dirs,$(INSTALL_DIR)/data)
-	if [ -e "$(INSTALL_DIR)/conf/boba.env" ]; then
-	    echo "    окружение уже есть, не трогаю: $(INSTALL_DIR)/conf/boba.env"
-	else
-	    install -m 0644 "$(OUT)/conf/boba.env" "$(INSTALL_DIR)/conf/boba.env"
-	fi
 	rm -rf "$(INSTALL_DIR)/conf/plugins"
 	if [ -d "$(OUT)/conf/plugins" ]; then
 	    cp -a "$(OUT)/conf/plugins" "$(INSTALL_DIR)/conf/plugins"
@@ -1245,7 +1221,6 @@ dev:
 	    $(call sandbox-unit,$(APP))
 	fi
 	( umask 027; mkdir -p "$(OUT)/conf/krb" )
-	$(call app-env,$(DEST_DIR),$(DEST_DIR)/data) > "$(OUT)/conf/boba.env"
 	$(call config-hint,$(OUT)/conf)
 	if [ -e "$(OUT)/.env" ]; then
 	    echo "    .env уже есть, не трогаю: $(OUT)/.env"
@@ -1270,13 +1245,12 @@ dev:
 
 # дерево отладки и тестов на хосте: свои данные и свой config.toml, чтобы процесс на
 # хосте и контейнер compose не писали в одни каталоги. Файлы плагинов отладка читает
-# прямо из пакета mcp, модели, third и образы песочницы — из runtime/, статику — из
-# ассетов пакета (её собирает цель из WEB_<приложение>). config.toml отладки пишет
-# разработчик; цель его не порождает
+# прямо из пакета mcp, каталог программы — runtime/ (BOBA_RUNTIME): libexec, модели,
+# образы песочницы и статика share/ (её собирает цель из WEB_<приложение>). config.toml
+# отладки и conf/krb пишет разработчик; цель их не порождает
 debug: OUT = $(SRC_DIR)/debug/$(APP)
 debug: $(WEB_$(APP)) vscode
-	@$(call check,$(RUNTIME_LIBS),запусти: make sandbox)
-	if [ -n "$(APP_SANDBOX)" ]; then
+	@if [ -n "$(APP_SANDBOX)" ]; then
 	    $(call check,$(SANDBOX_PARTS),запусти: make sandbox)
 	fi
 	$(call check,$(APP_MODEL_FILES),запусти: make fetch)
@@ -1289,7 +1263,7 @@ debug: $(WEB_$(APP)) vscode
 	$(call data-dirs,$(OUT)/data)
 	$(call config-hint,$(OUT)/conf)
 	echo ">>> дерево отладки готово: $(OUT)"
-	echo "    debug:   python -m $(APP_MODULE) --config $(OUT)/conf/config.toml"
+	echo "    debug:   BOBA_RUNTIME=$(RUNTIME_DIR) python -m $(APP_MODULE) serve --config $(OUT)/conf/config.toml"
 	echo "    cgroup песочницы отладки для config.toml: $(call sandbox-cgroup,debug)"
 
 endif
@@ -1300,7 +1274,13 @@ endif
 web: $(PAGE_JS) $(UI_DIST)/index.html $(WEB_FILES)
 	@rm -rf "$(ASSETS_VENDOR)"
 	cp -a "$(WEBASSETS_DIR)" "$(ASSETS_VENDOR)"
-	echo ">>> фронт чата: $(PAGE_JS), $(UI_DIST), $(ASSETS_VENDOR)"
+	# share/ каталога программы отладки: копия ассетов, как в образе чата
+	stage=$$(mktemp -d "$(STAGE_TEMPLATE)")
+	cp -a "$(ASSETS_DIR)/." "$$stage/"
+	rm -rf "$(SHARE_DIR)"
+	mv "$$stage" "$(SHARE_DIR)"
+	chmod -R go-w "$(SHARE_DIR)"
+	echo ">>> фронт чата: $(PAGE_JS), $(UI_DIST), $(ASSETS_VENDOR) -> $(SHARE_DIR)"
 
 # скрипт страницы node'ом образа: на хосте node не нужен
 $(PAGE_JS): $(PAGE_SRCS)
@@ -1421,7 +1401,7 @@ prune:
 # качаются долго
 .PHONY: clean
 clean:
-	@echo "== чистка: release, артефакты fetch, собранный фронт, runtime/third и runtime/sandbox =="
+	@echo "== чистка: release, артефакты fetch, собранный фронт, runtime/libexec, runtime/share и runtime/sandbox =="
 	rm -rf $(RELEASE_DIR) $(DEPS_DIR)/uv $(WEBASSETS_DIR) $(ORACLEDB_DIR) $(FETCH_CONSTRAINTS) \
 	       $(DEPS_DIR)/*.tar.xz $(DEPS_DIR)/*.tar.gz $(PNPM_STORE) $(PAGE_JS) $(ASSETS_VENDOR) $(UI_DIST) \
-	       $(THIRD_DIR) $(SANDBOX_DIR)
+	       $(LIBEXEC_DIR) $(SHARE_DIR) $(SANDBOX_DIR)

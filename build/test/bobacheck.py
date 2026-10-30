@@ -82,7 +82,7 @@ class SandboxOnly(StrEnum):
 
 
 class ChainlitAsset(StrEnum):
-    """Поля [UI] .chainlit/config.toml, которые называют файл app_root: без файла
+    """Поля [UI] .chainlit/config.toml, которые называют файл share/ программы: без файла
     страница получает 404 вместо стиля или аватара."""
 
     CUSTOM_CSS = "custom_css"
@@ -486,7 +486,7 @@ class ImageCheck:
         self._turn = AgentTurn(options.agent)
         self._plugins_dir = options.base / "sandbox" / "plugins"
         self._models_dir = options.base / "models"
-        self._app_root = options.base / "app_root"
+        self._app_root = options.base / "share"
 
     def run(self) -> int:
         self._interpreter()

@@ -17,7 +17,6 @@ services:
     networks:
       default:
         ipv4_address: ${BOBA_ADDRESS}
-    env_file: ./conf/boba.env
     command:
       - serve
       - --config
@@ -25,7 +24,6 @@ services:
     volumes:
       - ./conf/config.toml:/app/boba/conf/config.toml:ro
       - ./conf/krb:/app/boba/conf/krb:ro
-      - ./conf/krb/krb5.conf:/etc/krb5.conf:ro
       - ./data:/app/boba/data:rw
     ports:
       - "8660"

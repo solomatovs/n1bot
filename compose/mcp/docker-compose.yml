@@ -22,17 +22,14 @@ services:
     networks:
       default:
         ipv4_address: ${BOBA_ADDRESS}
-    env_file: ./conf/boba.env
     command:
-      - -m
-      - boba.mcp_server
+      - serve
       - --config
       - /app/boba/conf/config.toml
     volumes:
       - ./conf/config.toml:/app/boba/conf/config.toml:ro
       - ./conf/prompts:/app/boba/conf/prompts:ro
       - ./conf/krb:/app/boba/conf/krb:ro
-      - ./conf/krb/krb5.conf:/etc/krb5.conf:ro
       - ./data:/app/boba/data:rw
       - ${BOBA_SANDBOX_CGROUP}:/cgroup/boba-sandbox-mcp:rw
     ports:
