@@ -57,3 +57,4 @@ packages/apps/boba-aid/web/page/*.tsbuildinfo
 packages/apps/boba-aid/assets/public/page.js
 packages/apps/boba-aid/assets/ui/
 /docs/catalog.md
+/packages/apps/boba-aid/tests/look/baseline/

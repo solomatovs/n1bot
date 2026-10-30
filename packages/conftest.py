@@ -45,10 +45,11 @@ ChainlitTestRoot().install()
 
 
 class LookOption(StrEnum):
-    """Опции тестов вида aid (packages/apps/boba-aid/tests/look): переснять
-    эталоны и каталог отчёта. Объявлены здесь, чтобы прогон любого корня
-    тестов их знал."""
+    """Опции тестов вида aid (packages/apps/boba-aid/tests/look): каталог
+    эталонов, переснять эталоны и каталог отчёта. Объявлены здесь, чтобы
+    прогон любого корня тестов их знал."""
 
+    BASELINE = "--look-baseline"
     UPDATE = "--look-update"
     OUT = "--look-out"
 
@@ -78,8 +79,15 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default="",
         help=(
             "переснять эталоны тестов вида, имя которых подходит под маску "
-            "(без маски — все); прогон всё равно падает, эталоны принимаются git"
+            "(без маски — все); прогон всё равно падает, новые эталоны принимаются "
+            "просмотром отчёта"
         ),
+    )
+    group.addoption(
+        LookOption.BASELINE.value,
+        dest=LookOption.BASELINE.dest,
+        default="",
+        help="каталог эталонов тестов вида вне git; без него тесты вида не идут",
     )
     group.addoption(
         LookOption.OUT.value,

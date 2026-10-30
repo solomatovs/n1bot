@@ -1,12 +1,13 @@
-"""Тесты вида aid: кадр области страницы против эталона из git, дерево
-доступности рядом с ним, ключевые вычисленные стили и отчёт о разнице.
+"""Тесты вида aid: кадр области страницы против эталона, дерево доступности
+рядом с ним, ключевые вычисленные стили и отчёт о разнице.
 
-Эталоны лежат в tests/look/baseline/<группа>/: <состояние>@<тема>-<ширина>.png
-и <состояние>@<ширина>.aria.yml, окружение снимков — в env.json. Сравнение —
+Эталоны лежат вне git, в каталоге --look-baseline:
+<группа>/<состояние>@<тема>-<ширина>.png и <группа>/<состояние>@<ширина>.aria.yml,
+окружение снимков — в env.json. Сравнение —
 Pillow: пиксель другой, если хоть один канал разошёлся больше порога; по
 умолчанию другим не может быть ни один. Переснять эталоны можно только
 опцией --look-update, и такой прогон всё равно красный: новые эталоны
-пользователь принимает через git. Отчёт — index.html в каталоге --look-out.
+пользователь принимает просмотром отчёта. Отчёт — index.html в каталоге --look-out.
 
 Ошибки:
 LookError — кадр, дерево или стиль не совпали с эталоном, эталона нет,
@@ -73,14 +74,12 @@ class LookError(AssertionError):
 
 
 class LookPaths:
-    """Каталоги и файлы, на которые опираются тесты вида: эталоны, сборка
-    фронта и её исходники в дереве репозитория."""
+    """Каталоги и файлы дерева репозитория, на которые опираются тесты вида:
+    сборка фронта и её исходники."""
 
     LOOK: ClassVar[Path] = Path(__file__).resolve().parent
     PACKAGE: ClassVar[Path] = LOOK.parents[1]
     REPO: ClassVar[Path] = PACKAGE.parents[2]
-    BASELINE: ClassVar[Path] = LOOK / "baseline"
-    ENV_FILE: ClassVar[Path] = BASELINE / "env.json"
     ASSETS: ClassVar[Path] = PACKAGE / "assets"
     UI_DIGEST: ClassVar[Path] = ASSETS / "ui" / ".source-digest"
     ELEMENTS: ClassVar[Path] = ASSETS / "public" / "elements"
@@ -246,15 +245,22 @@ class LookOutcome:
 
 
 class LookSettings(BaseModel):
-    """Опции прогона вида: маска тестов, чьи эталоны пересняты, и каталог
-    отчёта."""
+    """Опции прогона вида: маска тестов, чьи эталоны пересняты, каталог
+    отчёта и каталог эталонов вне git."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
+
+    ENV_FILE: ClassVar[str] = "env.json"
 
     update: str
     """Маска имён тестов (fnmatch) для переснятия; пусто — эталоны не трогаются."""
 
     out: Path
+
+    baseline: Path
+
+    def environment_file(self) -> Path:
+        return self.baseline / self.ENV_FILE
 
     def updates(self, test: str) -> bool:
         if not self.update:
@@ -310,7 +316,7 @@ class LookEnvironments:
         """Ошибки:
         LookError — эталоны сняты в другом окружении.
         """
-        path = LookPaths.ENV_FILE
+        path = settings.environment_file()
         if settings.update:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(current.model_dump_json(indent=2) + "\n", encoding="utf-8")
@@ -916,6 +922,7 @@ class LookCheck:
     def __init__(self, test: str, settings: LookSettings, report: LookReport) -> None:
         self._test = test
         self._update = settings.updates(test)
+        self._baseline = settings.baseline
         self._report = report
         self._shots = StableShot()
         self._pixels = PixelCompare()
@@ -1049,7 +1056,7 @@ class LookCheck:
     def _pixel_outcome(
         self, frame: LookFrame, actual: bytes, tolerance: int, files: dict[str, str]
     ) -> tuple[OutcomeKind, str]:
-        path = frame.png(LookPaths.BASELINE)
+        path = frame.png(self._baseline)
         if not path.is_file():
             return self._retake(
                 path, actual, OutcomeKind.MISSING, f"no baseline {path}"
@@ -1072,7 +1079,7 @@ class LookCheck:
     def _aria_outcome(
         self, frame: LookFrame, aria: str, files: dict[str, str]
     ) -> tuple[OutcomeKind, str]:
-        path = frame.aria(LookPaths.BASELINE)
+        path = frame.aria(self._baseline)
         text = f"{aria}\n"
         if not path.is_file():
             files["aria.diff"] = self._report.save(frame, "aria.diff", text.encode())

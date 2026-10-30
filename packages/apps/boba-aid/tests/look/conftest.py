@@ -36,6 +36,7 @@ from boba.stand.ui.stand import StandApp, StandPorts, StandUrl
 class LookOption(StrEnum):
     """Имена опций прогона вида (их объявляет packages/conftest.py)."""
 
+    BASELINE = "look_baseline"
     UPDATE = "look_update"
     OUT = "look_out"
 
@@ -52,8 +53,16 @@ def look_settings(request: pytest.FixtureRequest) -> LookSettings:
     if out:
         root = Path(out)
 
+    baseline = str(request.config.getoption(LookOption.BASELINE.value))
+    if not baseline:
+        msg = (
+            "look tests compare frames with baselines kept outside git: pass their "
+            "directory with --look-baseline <dir>"
+        )
+        raise pytest.UsageError(msg)
+
     update = str(request.config.getoption(LookOption.UPDATE.value))
-    return LookSettings(update=update, out=root)
+    return LookSettings(update=update, out=root, baseline=Path(baseline))
 
 
 @pytest.fixture(scope="session")
