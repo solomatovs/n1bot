@@ -51,7 +51,7 @@ from boba.identity.session import SessionSource
 from boba.mcp_client.client import McpServers
 from boba.messaging import MessageBus, PayloadStore
 from boba.runtime import providers as runtime
-from boba.runtime.config import RuntimeConfig
+from boba.runtime.config import InstanceData, RuntimeConfig
 from boba.runtime.di import Container, Depends
 from boba.runtime.elements import FeedbacksTable
 from boba.runtime.storage import StorageClient
@@ -147,7 +147,7 @@ def feed_text(
     if forced := chainlit_config.ui.language:
         language = forced
 
-    return UiText(Path(app_config.aid.root), language)
+    return UiText(Path(chainlit_config.root), language)
 
 
 def remote_journals() -> RemoteJournals:
@@ -283,7 +283,8 @@ def agent_launcher(  # noqa: PLR0913 — запуск собирается вс�
 ) -> AgentLauncher:
     """Запуск процессов агента: регистрации серверов профиля и чата, файл
     настроек по текущему профилю, рукопожатие; mcp/message процессов отвечает
-    ретранслятор. Профили конфига и строки users нужны удалению сессии треда."""
+    ретранслятор. Профили конфига и строки users нужны удалению сессии треда.
+    Приватные каталоги процессов агента — agents/ данных экземпляра."""
     return AgentLauncher(
         config,
         app_config.mcp,
@@ -292,6 +293,7 @@ def agent_launcher(  # noqa: PLR0913 — запуск собирается вс�
         registrations,
         relay,
         version("boba-aid"),
+        app_config.instance.data(InstanceData.AGENTS),
     )
 
 

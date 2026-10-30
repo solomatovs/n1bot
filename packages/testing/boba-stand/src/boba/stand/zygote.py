@@ -19,7 +19,6 @@ from typing import Any, ClassVar
 
 import pytest
 
-from boba.runtime.config import ProcessInterpreter
 from boba.sandbox import BindSpec, SandboxProfile
 from boba.sandbox.program import PluginCommand, PluginEntry
 from boba.sandbox.zygote import (
@@ -200,7 +199,7 @@ class SandboxStand:
     )
     """Пакеты, чей код нужен зиготе стенда: их src уезжает в PYTHONPATH."""
 
-    FUSE2FS: ClassVar[Path] = RUNTIME.third_bin / "fuse2fs"
+    FUSE2FS: ClassVar[Path] = RUNTIME.libexec / "fuse2fs"
     """fuse2fs развёртывания: статический, работает и в корне образа, и на хосте."""
 
     @classmethod
@@ -228,8 +227,8 @@ class SandboxStand:
         их же приносят бинды, а хостовые копии внутри корня образа не работают.
         """
         dirs: list[str] = []
-        if RUNTIME.third_bin.is_dir():
-            dirs.append(str(RUNTIME.third_bin))
+        if RUNTIME.libexec.is_dir():
+            dirs.append(str(RUNTIME.libexec))
 
         for entry in os.environ.get("PATH", "").split(os.pathsep):
             if entry.startswith("/"):
@@ -388,7 +387,7 @@ class PrivateImageMount:
     монтирует и снимает сама команда.
     """
 
-    BWRAP: ClassVar[Path] = RUNTIME.third_bin / "bwrap"
+    BWRAP: ClassVar[Path] = RUNTIME.libexec / "bwrap"
     MOUNT_THEN_EXEC: ClassVar[str] = (
         "fuse2fs=$1; image=$2; point=$3; shift 3; "
         '"$fuse2fs" -o ro "$image" "$point" && exec "$@"'
@@ -551,7 +550,7 @@ class ZygoteStand:
     Объект один на прогон тестов (фикстура zygote_stand), как способ
     запуска в приложении один на процесс: зиготы секций живут в его реестре,
     а интерпретатор цепочки лаунчера снимается с процесса так же, как у
-    приложения (ProcessInterpreter). Гасит зиготы сам тест — stop(); остаток гасит
+    приложения (ProgramRoot.interpreter). Гасит зиготы сам тест — stop(); остаток гасит
     конец прогона.
     """
 
@@ -570,7 +569,7 @@ class ZygoteStand:
     NO_WARMUP: ClassVar[Mapping[str, Any]] = MappingProxyType({})
 
     def __init__(self) -> None:
-        self._zygotes = ZygoteRegistry(ProcessInterpreter().snapshot())
+        self._zygotes = ZygoteRegistry(RUNTIME.program.interpreter)
         self._entry = PluginEntry()
         self._builder = ManifestBuilder()
 

@@ -50,8 +50,9 @@ class AgentHistoryKind(StrEnum):
 
 class AgentCommandConfig(BaseModel):
     """Как запускать агента: программа строкой оболочки, аргументы до
-    `--settings`, сроки и корень приватных каталогов. Всё, что агент знает о
-    работе, ему несёт файл настроек; окружение ребёнка — минимальный набор SDK."""
+    `--settings` и сроки. Приватные каталоги процессов лежат в agents/
+    каталога данных экземпляра. Всё, что агент знает о работе, ему несёт файл
+    настроек; окружение ребёнка — минимальный набор SDK."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -64,13 +65,6 @@ class AgentCommandConfig(BaseModel):
     )
     args: Sequence[str] = Field(
         description="Аргументы до `--settings <файл>`: подкомандa acp и её ключи."
-    )
-    private_dir: str = Field(
-        min_length=1,
-        description=(
-            "Корень приватных каталогов процессов: на запуск создаётся свой "
-            "каталог 0700 с файлом настроек 0600, удаляется с процессом."
-        ),
     )
     start_timeout_sec: float = Field(
         gt=0, description="Сколько ждать рукопожатия initialize после запуска."
@@ -241,7 +235,7 @@ class AgentConfig(BaseModel):
 
     process: AgentCommandConfig | AgentServiceConfig = Field(
         description=(
-            "Агент: свой процесс по команде (command, args, private_dir) либо "
+            "Агент: свой процесс по команде (command, args) либо "
             "служба агента по адресу (endpoint, auth)."
         )
     )

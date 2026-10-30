@@ -68,7 +68,6 @@ def _launcher(
 ) -> ProcessToolCaller:
     values: dict[str, object] = {
         "provider": "process",
-        "workdir": str(workdir),
         "timeout_sec": 60.0,
         "channel_limit_bytes": 1_000_000,
         "stderr_tail_bytes": 4096,
@@ -79,6 +78,7 @@ def _launcher(
     return ProcessToolCaller(
         "fake",
         ProcessLauncherConfig.model_validate(values),
+        str(workdir),
         CallContexts(),
         CallAmbient(),
         program,

@@ -15,7 +15,7 @@ from typing import ClassVar
 
 import pytest
 
-from boba.runtime.config import ProcessInterpreter
+from boba.runtime.config import ProgramRoots
 from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.images import (
     FuseMounter,
@@ -828,7 +828,7 @@ class TestChainOptions:
         options: LauncherOptions,
         limits: ResourceLimits,
     ) -> list[str]:
-        chain = LauncherChain(ProcessInterpreter().snapshot(), _trusted(), options)
+        chain = LauncherChain(ProgramRoots().locate().interpreter, _trusted(), options)
         return chain.argv(
             images=[("/ws/a.ext4", "/ws/a.ext4.mnt")],
             ro_images=(),

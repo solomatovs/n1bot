@@ -333,6 +333,7 @@ class TestRetiredServers:
             relays.registrations,
             relay,
             "0.0",
+            agent_stand.agents_dir(),
         )
         tab = TabSession()
         tab.password_sign_in(frozenset({"dev"}))
@@ -449,6 +450,7 @@ class TestForkCut:
             relays.registrations,
             relay,
             "0.0",
+            agent_stand.agents_dir(),
         )
         tab = TabSession()
         tab.password_sign_in(frozenset({"dev"}))
@@ -527,15 +529,16 @@ class ChatLaunch:
     ) -> ThreadAgent:
         servers = McpServers(relayed)
         self._servers.append(servers)
-        config = AgentStand(self._root / "agents", self._history.history()).config()
+        agent_stand = AgentStand(self._root / "agents", self._history.history())
         launcher = AgentLauncher(
-            config,
+            agent_stand.config(),
             filed,
             SignInStand.profiles(),
             self._users,
             self._relays.registrations,
             self._relays.relay(servers),
             "0.0",
+            agent_stand.agents_dir(),
         )
         tab = TabSession()
         tab.password_sign_in(frozenset({"dev"}))
@@ -849,7 +852,8 @@ class TestFailedLaunch:
         users: UsersTable,
     ) -> None:
         history = AgentHistoryStand(stand)
-        config = AgentStand(tmp_path / "agents", history.history()).config()
+        agent_stand = AgentStand(tmp_path / "agents", history.history())
+        config = agent_stand.config()
         missing = config.process.model_copy(
             update={"command": str(tmp_path / "no-such-agent")}
         )
@@ -864,6 +868,7 @@ class TestFailedLaunch:
             relays.registrations,
             relays.relay(servers),
             "0.0",
+            agent_stand.agents_dir(),
         )
         tab = TabSession()
         tab.password_sign_in(frozenset({"dev"}))
@@ -1011,7 +1016,8 @@ class DeletionStand:
         self, root: Path, stand: Stand, users: UsersTable, threads: ThreadsTable
     ) -> None:
         self.history = AgentHistoryStand(stand)
-        self._config = AgentStand(root / "agents", self.history.history()).config()
+        self._agent = AgentStand(root / "agents", self.history.history())
+        self._config = self._agent.config()
         self._users = users
         self._threads = threads
         credentials = KerberosCredentialSource(None, NoRefresh())
@@ -1046,6 +1052,7 @@ class DeletionStand:
             self._relays.registrations,
             self._relays.relay(self._servers),
             "0.0",
+            self._agent.agents_dir(),
         )
 
     async def opened(self, profile: ChatProfileConfig) -> tuple[str, str]:

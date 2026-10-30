@@ -46,7 +46,6 @@ from boba.canvas.keys import WorkspaceKey
 from boba.runtime.storage import LocalStorageClient, LocalStorageConfig
 from boba.stand_core.context import CallStand
 from boba.toolkit.result import ContentMime, VisualResult
-from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.launcher import MountingConfig
 
 THREAD = "11111111-1111-1111-1111-111111111111"
@@ -262,7 +261,6 @@ def storage(
             copy_chunk_bytes=65536,
         ),
         mount_dir="/tmp",  # noqa: S108
-        binaries=TrustedBinaries(dirs=("/usr/bin", "/bin")),
     )
     client = LocalStorageClient(config)
     layer = _StorageOnlyLayer(client)

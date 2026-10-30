@@ -120,7 +120,7 @@ class E2eStand:
         overlay.set(("env", "port"), self.SERVICE_PORT)
         overlay.set(("env", "url_prefix"), self.SERVICE_PREFIX)
         overlay.set(("env", "public_url"), f"{origin}{self.SERVICE_PREFIX}")
-        overlay.set(("env", "data"), str(self.SERVICE_DATA))
+        overlay.set(("instance", "data_dir"), str(self.SERVICE_DATA))
         # тесты называют файлы путями тела инструмента (/workspace/...):
         # так их видит только сервис с песочницей
         overlay.set(("env", "tool_launcher"), self.SERVICE_LAUNCHER)
@@ -134,7 +134,7 @@ class E2eStand:
         overlay.set(("env", "port"), PORT)
         overlay.set(("env", "url_prefix"), self.APP_PREFIX)
         overlay.set(("env", "instance_id"), self.INSTANCE)
-        overlay.set(("env", "data"), str(self.APP_DATA))
+        overlay.set(("instance", "data_dir"), str(self.APP_DATA))
         overlay.set(("env", "mcp_scheme"), self.SERVICE_SCHEME)
         overlay.set(("env", "mcp_host"), self.SERVICE_HOST)
         overlay.set(("env", "mcp_port"), self.SERVICE_PORT)

@@ -123,7 +123,7 @@ async def service(
     )
     port = StandPorts().free()
     served = AgentServiceStand(
-        process_config.krb,
+        process_config.instance,
         ServeHistory(schema=history.schema(), postgres=history.postgres()),
         layer,
         profiles,
@@ -172,7 +172,8 @@ class ServiceModeStand:
             request_timeout_sec=60.0,
             silence_timeout_sec=60.0,
         )
-        base = AgentStand(tmp_path / "agents", history.history()).config()
+        self._agents_dir = tmp_path / "agents"
+        base = AgentStand(self._agents_dir, history.history()).config()
         self.config: AgentConfig = base.model_copy(update={"process": mode})
         credentials = KerberosCredentialSource(None, NoRefresh())
         self._relays = RelayStand(
@@ -197,6 +198,7 @@ class ServiceModeStand:
             self._relays.registrations,
             self._relays.relay(self._servers),
             "0.0",
+            self._agents_dir,
         )
 
     async def identity(self, profile: str) -> ThreadIdentity:

@@ -590,7 +590,7 @@ class ServiceStand:
         listen = StandPorts().free()
         self.proxy = FaultProxy(listen)
         self._address = ServeAddress(listen=listen, public=self.proxy.port)
-        self._krb = process_config.krb
+        self._instance = process_config.instance
         history = AgentHistoryStand(stand)
         self._history = ServeHistory(
             schema=history.schema(), postgres=history.postgres()
@@ -607,7 +607,12 @@ class ServiceStand:
             "limits": {"toolResultWindowShare": 0.25},
         }
         return AgentServiceStand(
-            self._krb, self._history, settings, self._profiles, 600.0, self._address
+            self._instance,
+            self._history,
+            settings,
+            self._profiles,
+            600.0,
+            self._address,
         )
 
     def agent(self) -> dict[str, Any]:

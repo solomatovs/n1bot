@@ -16,22 +16,20 @@ from boba.cli.serve import ServeConfig, ServeSection
 from boba.config import ConfigLoader, bind
 
 INSTANCE = """
+[instance]
+    data_dir = "/srv/boba/data"
+    ca_file  = "/etc/ssl/certs/ca-certificates.crt"
+
 [env]
     listen_host = "0.0.0.0"
     port        = 8660
     public_url  = "https://boba.example.com/boba"
     url_prefix  = "/boba"
-    data        = "${env.base}/data"
-    base        = "/srv/boba"
-
-[krb]
-    config     = "${env.base}/conf/krb/krb5.conf"
-    ccache_dir = "${env.data}/krb/cache"
 
 [app]
-    schema  = "agent"
-    krb     = "${krb}"
-    session = "${session}"
+    schema   = "agent"
+    instance = "${instance}"
+    session  = "${session}"
     agent   = "${agent}"
     auth    = "${oc.dict.values:auth}"
 

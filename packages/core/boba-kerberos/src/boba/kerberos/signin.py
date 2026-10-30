@@ -13,9 +13,7 @@ from abc import abstractmethod
 from enum import StrEnum
 from typing import Annotated, ClassVar, Literal, Protocol, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
-
-from boba.kerberos.sections import CcacheKind
+from pydantic import BaseModel, ConfigDict, Field
 
 __all__ = [
     "AcceptConfig",
@@ -38,7 +36,10 @@ class AcceptConfig(BaseModel):
         description="SPN сервиса (HTTP/host@REALM).",
     )
     keytab: str = Field(
-        description="Путь к keytab с ключом SPN; обычно /etc/krb5.keytab.",
+        description=(
+            "Имя keytab с ключом SPN в каталоге krb5.conf приложения "
+            "(conf/krb экземпляра)."
+        ),
     )
 
 
@@ -54,18 +55,15 @@ class DelegationMode(StrEnum):
 
 
 class ForwardedDelegation(BaseModel):
-    """Неограниченное делегирование: форвардный TGT входа едет в билете входа."""
+    """Неограниченное делегирование: форвардный TGT входа едет в билете входа.
+
+    krb5.conf операций с делегированным тикетом — рабочий каталог kerberos
+    процесса (KerberosWorkspace), в конфиге его нет.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     mode: Literal["forwarded"] = "forwarded"
-
-    krb5_config: str = Field(
-        description=(
-            "krb5.conf для операций с делегированным тикетом и для билетов, "
-            "выпущенных из него."
-        ),
-    )
 
 
 class ConstrainedDelegation(BaseModel):
@@ -74,42 +72,13 @@ class ConstrainedDelegation(BaseModel):
     Сервису нужен собственный forwardable TGT (ключ учётки в keytab accept),
     KDC проверяет цель по msDS-AllowedToDelegateTo; у учётки не должно быть
     флага «sensitive» (NOT_DELEGATED). Форвардный TGT пользователя, если
-    браузер всё же прислал, не принимается.
+    браузер всё же прислал, не принимается. Кэш TGT сервиса и krb5.conf
+    берутся из рабочего каталога kerberos процесса (KerberosWorkspace).
     """
 
     model_config = ConfigDict(extra="forbid")
 
     mode: Literal["constrained"] = "constrained"
-
-    service_ccache: str = Field(
-        description=(
-            "FILE-ccache для собственного TGT сервиса, которым делается S4U2Proxy, "
-            "напр. FILE:/run/boba/krb5cc_http."
-        ),
-    )
-    krb5_config: str = Field(
-        description=(
-            "krb5.conf для операций с evidence-тикетом и для билетов, "
-            "выпущенных из него."
-        ),
-    )
-
-    @field_validator("service_ccache")
-    @classmethod
-    def _check_service_ccache(cls, value: str) -> str:
-        kind, sep, residual = value.partition(":")
-        if not sep or not residual:
-            msg = f"service_ccache: expected FILE:<path>, got {value!r}"
-            raise ValueError(msg)
-
-        if kind.upper() != CcacheKind.FILE:
-            msg = (
-                f"service_ccache: expected the {CcacheKind.FILE} ccache kind, "
-                f"got {kind!r} in {value!r}"
-            )
-            raise ValueError(msg)
-
-        return value
 
 
 Delegation: TypeAlias = Annotated[

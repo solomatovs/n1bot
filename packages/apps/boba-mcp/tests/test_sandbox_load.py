@@ -30,8 +30,9 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 from boba.cancellation import RunCancellation, ToolStopped, run_cancellation
-from boba.runtime.storage import ImageStorageClient, LocalStorageConfig, StorageFactory
-from boba.sandbox import SandboxProfile
+from boba.runtime.config import ProgramRoots
+from boba.runtime.storage import ImageStorageClient, LocalStorageConfig
+from boba.sandbox import SandboxProfile, WorkspaceSpec
 from boba.sandbox.cgroup import CgroupManager
 from boba.sandbox.profile import SandboxMount
 from boba.sandbox.program import PluginEntry
@@ -643,14 +644,16 @@ class LoadStand:
         )
 
     def storage(self) -> ImageStorageClient:
+        workspace = WorkspaceSpec.model_validate(
+            {
+                "template": str(self._template),
+                "mount": f"{self.images_dir}/{{user_id}}.ext4:{self.WORKSPACE}",
+            }
+        )
         cfg = LocalStorageConfig.model_validate(
             {
                 "kind": "image",
                 "mount_dir": "/tmp",  # noqa: S108
-                "workspace": {
-                    "template": str(self._template),
-                    "mount": f"{self.images_dir}/{{user_id}}.ext4:{self.WORKSPACE}",
-                },
                 "op_timeout_sec": 120,
                 "mounting": {
                     "mount_wait_sec": 30.0,
@@ -659,13 +662,10 @@ class LoadStand:
                     "lock_wait_sec": 60.0,
                     "copy_chunk_bytes": 1 << 20,
                 },
-                "binaries": {"dirs": self._bin_dirs()},
             }
         )
-        client = StorageFactory.create(cfg)
-        if not (isinstance(client, ImageStorageClient)):
-            raise AssertionError("isinstance(client, ImageStorageClient)")
-        return client
+
+        return ImageStorageClient(cfg, workspace, ProgramRoots().locate())
 
     def warm(self, **overrides: object) -> None:
         """Поднять зиготу секции до снимка ресурсов: она живёт между вызовами."""
@@ -1203,7 +1203,7 @@ class _ChildCall:
 import json
 import sys
 
-from boba.sandbox import SandboxProfile
+from boba.sandbox import SandboxProfile, WorkspaceSpec
 from boba.stand.shell import ShellRun
 from boba.stand.zygote import ZygoteStand
 

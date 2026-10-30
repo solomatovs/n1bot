@@ -163,7 +163,6 @@ class ToolStand:
         program = (*entry.declared_argv(sys.executable, plugins), PluginCommand.CALL)
         config = ProcessLauncherConfig(
             provider="process",
-            workdir=str(workdir),
             timeout_sec=timeout_sec,
             channel_limit_bytes=self.CHANNEL_LIMIT_BYTES,
             stderr_tail_bytes=self.STDERR_TAIL_BYTES,
@@ -171,7 +170,7 @@ class ToolStand:
         )
 
         return ProcessToolCaller(
-            section, config, self._contexts, self._ambient, program
+            section, config, str(workdir), self._contexts, self._ambient, program
         )
 
     def plugin_ref(self, plugin_id: str) -> str:

@@ -4,14 +4,20 @@
 SignalledServer — сервер uvicorn, остановку которого по сигналу ведёт
 ProcessStop.
 
+HealthProbe — проба готовности службы подкомандой `health`.
+
 Ошибки:
 ServerStartError — приложение сервера не поднялось, процессу пора выйти
     с ненулевым кодом.
+HealthCheckError — служба не ответила на пробу готовности успехом.
 """
 
 import html
 import logging
 import socket
+import urllib.error
+import urllib.parse
+import urllib.request
 from collections.abc import Mapping, Sequence
 from types import FrameType
 from typing import ClassVar
@@ -37,6 +43,8 @@ from boba.toolkit.closing import ProcessClosers
 
 __all__ = [
     "DomainErrorMiddleware",
+    "HealthCheckError",
+    "HealthProbe",
     "ProxyRequests",
     "RequestTokens",
     "ServerStartError",
@@ -46,6 +54,39 @@ __all__ = [
     "SsoResponses",
     "StaleSessionMiddleware",
 ]
+
+
+class HealthCheckError(Exception):
+    """Служба не ответила на пробу готовности успехом."""
+
+
+class HealthProbe:
+    """Проба готовности службы: GET на свой порт и префикс по loopback.
+
+    Её зовёт подкоманда `health` программы (HEALTHCHECK образа, проверка
+    юнита) над портом и префиксом из своей секции конфига; путь пробы —
+    маршрут готовности самой службы.
+    """
+
+    LOOPBACK: ClassVar[str] = "127.0.0.1"
+    SCHEME: ClassVar[str] = "http"
+    TIMEOUT_SEC: ClassVar[float] = 4.0
+
+    def __init__(self, port: int, url_prefix: str, path: str) -> None:
+        self._url = urllib.parse.urlunsplit(
+            (self.SCHEME, f"{self.LOOPBACK}:{port}", f"{url_prefix}{path}", "", "")
+        )
+
+    def check(self) -> str:
+        """Строка итога пробы; не 2xx или нет ответа — HealthCheckError."""
+        try:
+            with urllib.request.urlopen(self._url, timeout=self.TIMEOUT_SEC) as answer:  # noqa: S310 — схема http собрана здесь
+                status = answer.status
+        except (urllib.error.URLError, OSError) as exc:
+            msg = f"health probe GET {self._url}: expected a 2xx answer, got {exc}"
+            raise HealthCheckError(msg) from exc
+
+        return f"health probe GET {self._url}: {status}"
 
 
 class SessionCookie:

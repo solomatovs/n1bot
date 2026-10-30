@@ -106,7 +106,10 @@ class KeytabAuth(KerberosAuthBase):
     )
     keytab: str = Field(
         min_length=1,
-        description="Путь к keytab с ключом принципала; наружу не уезжает.",
+        description=(
+            "Имя keytab с ключом принципала в каталоге krb5.conf приложения "
+            "(conf/krb экземпляра); наружу не уезжает."
+        ),
     )
     renew_lifetime: int = Field(
         default=86400,

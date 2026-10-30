@@ -271,12 +271,15 @@ class AgentStand:
             stop_timeout_sec=10.0,
         )
 
+    def agents_dir(self) -> Path:
+        """Корень приватных каталогов процессов агента теста."""
+        return self._private_dir
+
     def config(self, public_url: str = "http://127.0.0.1:1/chat") -> AgentConfig:
         return AgentConfig(
             process=AgentCommandConfig(
                 command=shlex.join([sys.executable, "-m", AGENT_MODULE]),
                 args=["--stdio", "--setting-sources", ""],
-                private_dir=str(self._private_dir),
                 start_timeout_sec=60.0,
                 request_timeout_sec=60.0,
                 stop_timeout_sec=10.0,

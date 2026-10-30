@@ -113,7 +113,7 @@ from boba.mcp_server.prompts import (
     PromptFile,
 )
 from boba.oauth.server import ServiceAuth
-from boba.runtime.storage import LocalStorageConfig, StorageFactory
+from boba.runtime.storage import LocalStorageConfig, StorageClient
 from boba.toolkit.channels import JournalChannels, ToolChannel
 from boba.toolkit.dag import CallDag, DagNode, ToolServer
 from boba.toolkit.ports import ProgressReport
@@ -902,6 +902,7 @@ class McpServer(Middleware):
         params: SealedConnectionParams,
         limits: RunLimitMiddleware,
         storage: LocalStorageConfig,
+        files: StorageClient,
         path: str,
         published: str,
         prompts: Sequence[FilePrompt],
@@ -915,9 +916,7 @@ class McpServer(Middleware):
         callers = RouteCallers(self._subjects, profile)
         bus = CallerBus(self._subjects)
         listed = OpenJournals(bus)
-        self._files = FileRoutes(
-            StorageFactory.create(storage), journals, callers, path, published
-        )
+        self._files = FileRoutes(files, journals, callers, path, published)
         self._journal_files = JournalRoutes(
             journals, callers, self._subjects, storage, path, published, bus
         )
@@ -1125,6 +1124,7 @@ class McpEndpoints:
         params: SealedConnectionParams,
         limits: RunLimits,
         storage: LocalStorageConfig,
+        files: StorageClient,
     ) -> None:
         self._auth = auth
         self._prompts = EndpointPrompts()
@@ -1145,6 +1145,7 @@ class McpEndpoints:
                 params,
                 slots,
                 storage,
+                files,
                 path,
                 auth.published(),
                 self._prompts.prompts(endpoints[profile].prompts),

@@ -47,7 +47,12 @@ from boba.kerberos import (
     KeytabError,
     NegotiateToken,
 )
-from boba.krb import SpnegoAcceptor, SpnegoIdentity, TicketCapture
+from boba.krb import (
+    KerberosWorkspace,
+    SpnegoAcceptor,
+    SpnegoIdentity,
+    TicketCapture,
+)
 from boba.krb.seal import SsoTickets, TicketSealer
 from boba.toolkit.template import TemplateError
 
@@ -109,7 +114,6 @@ class SsoSignIn(SsoAdmission):
         self.acceptor = SpnegoAcceptor(config.accept, config.delegation)
         self.capture = TicketCapture(config.delegation)
         self.sealer = TicketSealer(secret)
-        self.krb5_config = config.delegation.krb5_config
         self._logger = logging.getLogger(SsoSignIn.__name__)
         self._roles = roles
         self._profiles = profiles
@@ -120,7 +124,9 @@ class SsoSignIn(SsoAdmission):
 
     def tickets(self) -> SsoTickets:
         """Открыватель билетов входа для обвязок инструментов."""
-        return SsoTickets(sealer=self.sealer, krb5_config=self.krb5_config)
+        return SsoTickets(
+            sealer=self.sealer, krb5_config=KerberosWorkspace.krb5_config()
+        )
 
     @staticmethod
     def facts_of(identity: SpnegoIdentity) -> PrincipalFacts:

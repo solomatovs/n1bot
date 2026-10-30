@@ -44,10 +44,14 @@ from boba.canvas.storage import (
     StorageOp,
     StorageUrl,
 )
-from boba.runtime.config import ProcessInterpreter
+from boba.runtime.config import (
+    InstanceConfig,
+    InstanceData,
+    ProgramRoot,
+    ProgramRoots,
+)
 from boba.sandbox import WorkspaceSpec
 from boba.toolkit.result import ContentMime
-from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.launcher import (
     ImageMountPoint,
     LauncherChain,
@@ -92,14 +96,6 @@ class LocalStorageConfig(BaseModel):
         default="/upload",
         description="URL-префикс serve-роута; из него собирается url элемента.",
     )
-    workspace: WorkspaceSpec | None = Field(
-        default=None,
-        description=(
-            "kind=image: рабочий каталог чата — та же запись, что у песочницы "
-            "(${sandbox.workspace}). Хранилище кладёт вложения в образ "
-            "пользователя, а инструмент видит их по точке монтирования."
-        ),
-    )
     op_timeout_sec: int = Field(
         default=60,
         ge=1,
@@ -119,12 +115,6 @@ class LocalStorageConfig(BaseModel):
             "не остаётся ни точки монтирования, ни пустых каталогов."
         ),
     )
-    binaries: TrustedBinaries = Field(
-        description=(
-            "kind=image: каталоги, откуда берутся bwrap и fuse2fs; "
-            "$PATH не используется."
-        ),
-    )
 
     @model_validator(mode="after")
     def _validate_kind(self) -> Self:
@@ -133,10 +123,6 @@ class LocalStorageConfig(BaseModel):
                 "section [storage] with kind=local expects files_dir as a "
                 f"non-empty path, got {self.files_dir!r}"
             )
-            raise ValueError(msg)
-
-        if self.kind == "image" and self.workspace is None:
-            msg = "section [storage] with kind=image expects the workspace record"
             raise ValueError(msg)
 
         return self
@@ -283,12 +269,22 @@ class StorageClient(ABC):
 
 
 class StorageFactory:
-    """Выбирает реализацию хранилища по конфигу."""
+    """Выбирает реализацию хранилища по конфигу.
 
-    @staticmethod
-    def create(config: LocalStorageConfig) -> StorageClient:
+    Создаёт его сервис boba-mcp над секцией [instance]: образы workspace
+    пользователей лежат в каталоге данных экземпляра, шаблон образа, bwrap и
+    fuse2fs — в каталоге программы (ProgramRoot).
+    """
+
+    def __init__(self, instance: InstanceConfig) -> None:
+        self._instance = instance
+
+    def create(self, config: LocalStorageConfig) -> StorageClient:
         if config.kind == "image":
-            return ImageStorageClient(config)
+            program = ProgramRoots().locate()
+            images = self._instance.data(InstanceData.WORKSPACE)
+
+            return ImageStorageClient(config, program.workspace(images), program)
 
         return LocalStorageClient(config)
 
@@ -410,11 +406,14 @@ class ImageStorageClient(ConfiguredStorageClient):
     WATCH_POLL_SEC: ClassVar[float] = 1.0
     """Период проверки простоя идущей операции."""
 
-    def __init__(self, config: LocalStorageConfig) -> None:
+    def __init__(
+        self, config: LocalStorageConfig, workspace: WorkspaceSpec, program: ProgramRoot
+    ) -> None:
         super().__init__(config)
+        self._workspace_spec = workspace
         self._chain = LauncherChain(
-            ProcessInterpreter().snapshot(),
-            config.binaries,
+            program.interpreter,
+            program.binaries(),
             config.mounting.to_options(),
         )
 
@@ -564,16 +563,7 @@ class ImageStorageClient(ConfiguredStorageClient):
         return tuple(names)
 
     def _workspace(self) -> WorkspaceSpec:
-        """Запись workspace конфига; её отсутствие отсекает валидация секции."""
-        workspace = self._config.workspace
-        if workspace is None:
-            msg = (
-                "storage: section [storage] has kind=image but no workspace "
-                "record, the image storage cannot locate user images"
-            )
-            raise StorageError(msg)
-
-        return workspace
+        return self._workspace_spec
 
     def _image_and_rel(self, object_key: str) -> tuple[str, str]:
         key = ObjectKey.parse(object_key)

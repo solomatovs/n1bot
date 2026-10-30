@@ -23,7 +23,6 @@ from boba.canvas.diagram import DiagramEntry, DiagramSpecError, MermaidSpec
 from boba.canvas.keys import ScopeDir, WorkspaceKey
 from boba.runtime.storage import LocalStorageClient, LocalStorageConfig
 from boba.toolkit.result import ContentMime
-from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.launcher import MountingConfig
 
 THREAD = "11111111-1111-1111-1111-111111111111"
@@ -128,7 +127,6 @@ def files(
             copy_chunk_bytes=65536,
         ),
         mount_dir="/tmp",  # noqa: S108
-        binaries=TrustedBinaries(dirs=("/usr/bin", "/bin")),
     )
     storage = LocalStorageClient(config)
     layer = _StorageOnlyLayer(storage)

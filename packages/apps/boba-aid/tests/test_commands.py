@@ -257,6 +257,7 @@ class CommandsTab:
             relays.registrations,
             relays.relay(self.servers),
             "0.0",
+            agent_stand.agents_dir(),
         )
         tab = TabSession()
         tab.password_sign_in(self.ROLES)

@@ -23,6 +23,7 @@ from uuid import uuid4
 import pytest
 from launcher_layer import ResolvedLayout, ResolvedProbe
 
+from boba.runtime.config import ProgramRoots
 from boba.runtime.storage import ImageStorageClient, LocalStorageConfig
 from boba.sandbox import WorkspaceSpec
 from boba.sandbox.argv import ZygoteArgv
@@ -36,7 +37,7 @@ from boba.stand.zygote import (
     SandboxStand,
     ZygoteStand,
 )
-from boba.workspace.binaries import SandboxBinary, TrustedBinaries
+from boba.workspace.binaries import SandboxBinary
 from boba.workspace.launcher import ImageMountPoint, LayerPath, MountingConfig
 
 needs_chain = pytest.mark.failif(
@@ -295,7 +296,11 @@ class TestStorageLayer:
         images = tmp_path / "ws"
         images.mkdir()
         template = SandboxStand.mkfs_template(tmp_path)
-        client = ImageStorageClient(self._config(images, template))
+        client = ImageStorageClient(
+            self._config(),
+            self._workspace(images, template),
+            ProgramRoots().locate(),
+        )
         image = images / "7.ext4"
 
         points, declared = asyncio.run(self._held_write(client, image))
@@ -389,13 +394,16 @@ class TestStorageLayer:
         msg = f"no bwrap ancestor of fuse2fs pid {pid}"
         raise AssertionError(msg)
 
-    def _config(self, images: Path, template: str) -> LocalStorageConfig:
+    @staticmethod
+    def _workspace(images: Path, template: str) -> WorkspaceSpec:
+        return WorkspaceSpec.model_validate(
+            {"template": template, "mount": f"{images}/{{user_id}}.ext4:/workspace"}
+        )
+
+    def _config(self) -> LocalStorageConfig:
         return LocalStorageConfig(
             kind="image",
             mount_dir=self.MOUNT_DIR,
-            workspace=WorkspaceSpec.model_validate(
-                {"template": template, "mount": f"{images}/{{user_id}}.ext4:/workspace"}
-            ),
             op_timeout_sec=60,
             mounting=MountingConfig(
                 mount_wait_sec=10.0,
@@ -404,7 +412,6 @@ class TestStorageLayer:
                 lock_wait_sec=10.0,
                 copy_chunk_bytes=1 << 16,
             ),
-            binaries=TrustedBinaries(dirs=tuple(SandboxStand.bin_dirs())),
         )
 
 

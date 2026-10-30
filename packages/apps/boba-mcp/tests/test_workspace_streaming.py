@@ -23,7 +23,9 @@ from typing import Any, ClassVar, Self
 import pytest
 
 from boba.canvas.storage import OpenedStream
-from boba.runtime.storage import ImageStorageClient, LocalStorageConfig, StorageFactory
+from boba.runtime.config import ProgramRoots
+from boba.runtime.storage import ImageStorageClient, LocalStorageConfig
+from boba.sandbox import WorkspaceSpec
 from boba.stand.storage import StorageSeed
 from boba.workspace.launcher import LayerPath, ReadWindow
 
@@ -36,19 +38,6 @@ needs_fuse = pytest.mark.failif(
 )
 
 KEY = "7/t1/upload/big.bin"
-
-
-def _bin_dirs() -> list[str]:
-    """В тестах каталоги берутся из PATH; в проде их задаёт конфиг."""
-    dirs: list[str] = []
-
-    for entry in os.environ.get("PATH", "").split(os.pathsep):
-        if not entry.startswith("/"):
-            continue
-
-        dirs.append(entry)
-
-    return dirs
 
 
 class PatternPayload:
@@ -219,12 +208,11 @@ def storage(
             "lock_wait_sec": 10.0,
             "copy_chunk_bytes": 1 << 20,
         },
-        "binaries": {"dirs": _bin_dirs()},
     }
-    client = StorageFactory.create(LocalStorageConfig.model_validate(fields))
-    if not (isinstance(client, ImageStorageClient)):
-        raise AssertionError("isinstance(client, ImageStorageClient)")
-
+    workspace = WorkspaceSpec.model_validate(fields.pop("workspace"))
+    client = ImageStorageClient(
+        LocalStorageConfig.model_validate(fields), workspace, ProgramRoots().locate()
+    )
     asyncio.run(client.upload_stream(KEY, payload.source()))
 
     return client
@@ -318,9 +306,10 @@ class TestStreamingReads:
                 "lock_wait_sec": 10.0,
                 "copy_chunk_bytes": 1 << 20,
             },
-            "binaries": {"dirs": _bin_dirs()},
         }
-        client = StorageFactory.create(LocalStorageConfig.model_validate(fields))
+        workspace = WorkspaceSpec.model_validate(fields.pop("workspace"))
+        config = LocalStorageConfig.model_validate(fields)
+        client = ImageStorageClient(config, workspace, ProgramRoots().locate())
 
         with MemoryProbe() as probe:
             asyncio.run(client.upload_stream(KEY, payload.source()))
@@ -517,9 +506,10 @@ class TestStreamingReads:
                 "lock_wait_sec": 10.0,
                 "copy_chunk_bytes": 1 << 20,
             },
-            "binaries": {"dirs": _bin_dirs()},
         }
-        client = StorageFactory.create(LocalStorageConfig.model_validate(fields))
+        workspace = WorkspaceSpec.model_validate(fields.pop("workspace"))
+        config = LocalStorageConfig.model_validate(fields)
+        client = ImageStorageClient(config, workspace, ProgramRoots().locate())
 
         async def abandon_then_write() -> int:
             await client.upload_stream(KEY, payload.source())

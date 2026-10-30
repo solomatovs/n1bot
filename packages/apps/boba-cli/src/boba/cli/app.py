@@ -120,11 +120,12 @@ LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
 
 class Command(StrEnum):
-    """Режимы `boba`: подкоманды serve, self-check, settings-schema, ключ
-    --stdio и интерактивный режим — `boba` без режима."""
+    """Режимы `boba`: подкоманды serve, health, self-check, settings-schema,
+    ключ --stdio и интерактивный режим — `boba` без режима."""
 
     STDIO = "--stdio"
     SERVE = "serve"
+    HEALTH = "health"
     SELF_CHECK = "self-check"
     SETTINGS_SCHEMA = "settings-schema"
     INTERACTIVE = "interactive"
@@ -154,8 +155,10 @@ class ServeFlag(StrEnum):
 
 @dataclass(frozen=True)
 class ServeInvocation:
-    """Командная строка `boba serve`: конфиг экземпляра службы, затем наложения."""
+    """Командная строка `boba serve` или `boba health`: конфиг экземпляра
+    службы, затем наложения."""
 
+    command: Command
     config: tuple[Path, ...]
 
 
@@ -168,7 +171,9 @@ class InteractiveMode:
         "boba: the interactive mode is not available yet.\n"
         "  boba --stdio [--settings FILE ...]     serve the Agent Client Protocol "
         "on stdin/stdout for a launcher\n"
-        "  boba serve --config FILE [--config FILE] run the agent as a network service\n"
+        "  boba serve --config FILE [--config FILE] run the agent as a network "
+        "service\n"
+        "  boba health --config FILE              probe the running service\n"
         "  boba --help                            all options"
     )
     EXIT_CODE: ClassVar[int] = 2
@@ -203,7 +208,7 @@ class Installed:
 
 
 class ArgumentParser:
-    """Командная строка `boba --stdio …`, `boba serve --config …`,
+    """Командная строка `boba --stdio …`, `boba serve|health --config …`,
     `boba self-check`, `boba settings-schema` или `boba` без режима →
     Invocation. Ключи запуска ACP (--settings, --model, …) действуют только
     с --stdio. Секретов в аргументах нет: ключи и строки подключения живут в
@@ -247,6 +252,21 @@ class ArgumentParser:
             type=Path,
             help="config.toml of this instance; repeat to lay an overlay file over it",
         )
+        health = commands.add_parser(
+            Command.HEALTH.value,
+            help="probe the running service on the port of its config, then exit",
+            description=(
+                "GET the readiness route of the service on 127.0.0.1 at the port "
+                "and prefix of [agent]; exit 1 names the failure."
+            ),
+        )
+        health.add_argument(
+            ServeFlag.CONFIG,
+            required=True,
+            action="append",
+            type=Path,
+            help="config.toml of this instance; repeat to lay an overlay file over it",
+        )
         commands.add_parser(
             Command.SELF_CHECK.value,
             help="check that the package data of this build is inside, then exit",
@@ -270,7 +290,10 @@ class ArgumentParser:
         space = self._parser.parse_args(list(argv))
         command = self._command(space)
         if command is Command.SERVE:
-            return ServeInvocation(config=tuple(space.config))
+            return ServeInvocation(command=command, config=tuple(space.config))
+
+        if command is Command.HEALTH:
+            return ServeInvocation(command=command, config=tuple(space.config))
 
         if not command.serves:
             return Invocation(command=command, arguments=Arguments())
@@ -1008,7 +1031,12 @@ async def main(argv: Sequence[str] | None = None) -> None:
         # сеть и вход грузит только служба: `boba --stdio` стартует без них
         from boba.cli.serve import ServeEntry  # noqa: PLC0415
 
-        await ServeEntry(invocation.config).run()
+        entry = ServeEntry(invocation.config)
+        if invocation.command is Command.HEALTH:
+            entry.health()
+            return
+
+        await entry.run()
         return
 
     if invocation.command is Command.SELF_CHECK:

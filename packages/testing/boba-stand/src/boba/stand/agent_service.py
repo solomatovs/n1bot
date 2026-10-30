@@ -9,6 +9,7 @@ AgentServiceProcessError — процесс службы не начал отв�
 from __future__ import annotations
 
 import asyncio
+import shutil
 import signal
 import subprocess
 import threading
@@ -25,7 +26,8 @@ import uvicorn
 from boba.cli.serve import ServeConfig, ServeHistory, ServeHost, ServeMark
 from boba.core.secrets import SecretReveal
 from boba.db.postgres.connection.auth import KeytabAuth
-from boba.krb import KerberosWorkspaceConfig
+from boba.krb import KerberosWorkspace
+from boba.runtime.config import InstanceConfig
 from boba.stand.service_signin import ServiceSignIn
 from boba.stand.ui.toml_text import TomlText
 
@@ -107,7 +109,7 @@ class ServeStandConfig:
 
     def __init__(  # noqa: PLR0913 — служба собирается всеми частями стенда
         self,
-        krb: KerberosWorkspaceConfig,
+        instance: InstanceConfig,
         history: ServeHistory,
         settings: Mapping[str, Any],
         profiles: ServiceProfiles,
@@ -117,7 +119,7 @@ class ServeStandConfig:
         self.port = address.listen
         self.public_port = address.public
         self.public_url = f"http://127.0.0.1:{address.public}{self.PREFIX}"
-        self._krb = krb
+        self._instance = instance
         self._history = history
         self._settings = dict(settings)
         self._profiles = profiles
@@ -144,7 +146,7 @@ class ServeStandConfig:
     def _app(self, history: object) -> dict[str, Any]:
         return {
             "schema": "agent_service_stand",
-            "krb": self._krb.model_dump(mode="json", exclude_none=True),
+            "instance": self._instance.model_dump(mode="json"),
             "auth": [
                 {
                     "type": "proxy",
@@ -210,7 +212,7 @@ class AgentServiceStand:
 
     def __init__(  # noqa: PLR0913 — служба собирается всеми частями стенда
         self,
-        krb: KerberosWorkspaceConfig,
+        instance: InstanceConfig,
         history: ServeHistory,
         settings: Mapping[str, Any],
         profiles: ServiceProfiles,
@@ -218,7 +220,7 @@ class AgentServiceStand:
         address: ServeAddress,
     ) -> None:
         self._config = ServeStandConfig(
-            krb, history, settings, profiles, idle_sec, address
+            instance, history, settings, profiles, idle_sec, address
         )
         self.port = self._config.port
         self.public_url = self._config.public_url
@@ -289,10 +291,13 @@ class AgentServiceStand:
 
 
 class ServeFiles(StrEnum):
-    """Файлы процесса службы стенда в его рабочем каталоге."""
+    """Файлы процесса службы стенда в его рабочем каталоге: он же каталог
+    conf/ экземпляра службы, krb — копия krb5.conf и keytab'ов процесса
+    тестов."""
 
     CONFIG = "config.toml"
     LOG = "serve.log"
+    KRB = "krb"
 
     def under(self, workdir: Path) -> Path:
         return workdir / self.value
@@ -301,7 +306,8 @@ class ServeFiles(StrEnum):
 class AgentServiceProcess:
     """Служба агента отдельным процессом `<command> serve --config <файл>`:
     модуль venv или собранный бинарник. Конфиг — ServeStandConfig, записанный
-    в рабочий каталог; вывод процесса — в файл serve.log там же. Нужна тестам,
+    в рабочий каталог, рядом — krb/ с krb5.conf и keytab'ами процесса тестов;
+    вывод процесса — в файл serve.log там же. Нужна тестам,
     которые останавливают службу сигналом и смотрят код выхода и журнал.
     """
 
@@ -334,6 +340,8 @@ class AgentServiceProcess:
         """
         config = ServeFiles.CONFIG.under(self._workdir)
         config.parent.mkdir(parents=True, exist_ok=True)
+        krb = Path(KerberosWorkspace.krb5_config()).parent
+        shutil.copytree(krb, ServeFiles.KRB.under(self._workdir), dirs_exist_ok=True)
         document = TomlText.dumps({"app": self._config.document()})
         config.write_text(document, encoding="utf-8")
 

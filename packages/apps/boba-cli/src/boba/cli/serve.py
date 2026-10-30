@@ -1,4 +1,5 @@
-"""Агент как служба: команда `boba serve --config <toml> [--config <наложение>]`.
+"""Агент как служба: команда `boba serve --config <toml> [--config <наложение>]`
+и проба её готовности `boba health --config <toml>`.
 
 Процесс агента сам слушает сеть: ACP по streamable HTTP и WebSocket
 (AcpServer и handle_websocket SDK) на адресе секции [agent], вход — сервер
@@ -15,8 +16,8 @@ SPNEGO). Адрес ACP принимает только токен службы,
 пределом sessions.maxOpen. Закрытие подключения закрывает его сессии.
 
 Ошибки:
-SystemExit — конфиг не прочитан либо служба не поднялась; текст называет
-    причину.
+SystemExit — конфиг не прочитан, служба не поднялась либо не ответила на
+    пробу готовности; текст называет причину.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ import json
 import logging
 import logging.config
 import os
+import sys
 import time
 from collections.abc import AsyncGenerator, Iterator, Mapping, Sequence
 from contextlib import aclosing, asynccontextmanager, suppress
@@ -84,7 +86,7 @@ from boba.cli.app import (
 )
 from boba.cli.settings import Arguments, EffectiveSettings, Settings, SettingsError
 from boba.cli.threads import LoopThread, SessionThreads, ThreadedHistoryStore
-from boba.config import ConfigError
+from boba.config import ConfigError, ConfigLoader, bind
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import LibpqConnection, PostgresConfig
 from boba.history.postgres import PostgresHistoryStore, SessionLocks
@@ -105,7 +107,7 @@ from boba.oauth.server import (
     TrustedClient,
 )
 from boba.runtime.config import ProcessConfig
-from boba.runtime.http import SignalledServer
+from boba.runtime.http import HealthCheckError, HealthProbe, SignalledServer
 from boba.runtime.signin import SignInAssembly
 from boba.transport.acp.protocol import AgentSide
 
@@ -902,7 +904,8 @@ class ServeHost:
 
 
 class ServeEntry:
-    """Вход команды `boba serve`: конфиг из файлов, журнал, служба."""
+    """Вход команд `boba serve` (конфиг из файлов, журнал, служба) и
+    `boba health` (проба готовности запущенной службы)."""
 
     def __init__(self, paths: Sequence[Path]) -> None:
         self._paths = tuple(paths)
@@ -925,3 +928,18 @@ class ServeEntry:
             raise SystemExit(f"boba serve: {exc}") from exc
 
         await host.serve()
+
+    def health(self) -> None:
+        """Проба готовности по [agent]: порт и префикс службы.
+
+        Ошибки:
+        SystemExit — конфиг не прочитан или служба не ответила успехом.
+        """
+        try:
+            section = bind(ConfigLoader(self._paths).load(), "agent", ServeSection)
+            probe = HealthProbe(section.port, section.url_prefix, ServeMark.HEALTH)
+            checked = probe.check()
+        except (ConfigError, HealthCheckError) as exc:
+            raise SystemExit(f"boba health: {exc}") from exc
+
+        sys.stdout.write(f"{checked}\n")

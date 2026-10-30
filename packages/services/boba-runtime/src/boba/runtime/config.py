@@ -13,6 +13,7 @@ import os
 import secrets
 import sys
 from collections.abc import Sequence
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any, ClassVar, Literal, Self
@@ -35,23 +36,34 @@ from boba.auth.config import (
     ProxyAuthConfig,
 )
 from boba.chat.profiles import ChatProfileConfig
-from boba.config import ConfigLoader, bind
+from boba.config import ConfigError, ConfigLoader, bind
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.token import CookieSpec, SessionRenewal
-from boba.krb import KerberosWorkspaceConfig
+from boba.krb import KerberosWorkspace, KerberosWorkspaceConfig
 from boba.krb.seal import SsoTickets, TicketSealer
+from boba.sandbox import WorkspaceSpec
+from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.launcher import LauncherEnv, LauncherInterpreter
 
 __all__ = [
     "AppName",
     "ClusterConfig",
     "ConfigArguments",
+    "InstanceConf",
+    "InstanceConfig",
+    "InstanceData",
+    "InstanceLayout",
     "LocalMessagingConfig",
     "MessagingConfig",
     "PostgresMessagingConfig",
     "ProcessConfig",
-    "ProcessInterpreter",
     "ProcessLogging",
+    "ProgramCall",
+    "ProgramCommand",
+    "ProgramDir",
+    "ProgramFile",
+    "ProgramRoot",
+    "ProgramRoots",
     "RawConfig",
     "RuntimeConfig",
     "SessionConfig",
@@ -61,45 +73,202 @@ __all__ = [
 ]
 
 
-class ConfigArguments:
-    """Аргументы запуска приложения: --config <файл> один или несколько раз.
+class ProgramCommand(StrEnum):
+    """Подкоманды программы-службы: служба и проба её готовности."""
 
-    Первый файл — конфиг экземпляра; следующие — наложения поверх него
-    (стенды и отладка). Значений по умолчанию и поиска «рядом» нет: какие
-    файлы читаются, видно из командной строки.
+    SERVE = "serve"
+    HEALTH = "health"
+
+
+@dataclass(frozen=True)
+class ProgramCall:
+    """Разобранный запуск программы: подкоманда и файлы конфига."""
+
+    command: ProgramCommand
+    paths: tuple[Path, ...]
+
+
+class ConfigArguments:
+    """Аргументы запуска службы: `<программа> serve|health --config <файл>`.
+
+    --config повторяется: первый файл — конфиг экземпляра, следующие —
+    наложения поверх него (стенды и отладка). Значений по умолчанию и поиска
+    «рядом» нет: какие файлы читаются, видно из командной строки.
     """
 
     CONFIG: ClassVar[str] = "--config"
+    HELP: ClassVar[dict[ProgramCommand, str]] = {
+        ProgramCommand.SERVE: "run the service",
+        ProgramCommand.HEALTH: "probe the running service on its configured port",
+    }
 
     def __init__(self, parser: argparse.ArgumentParser) -> None:
         self._parser = parser
 
-    def paths(self) -> tuple[Path, ...]:
-        self._parser.add_argument(
-            self.CONFIG,
-            required=True,
-            action="append",
-            type=Path,
-            help=(
-                "path to config.toml of this instance; repeat to lay an overlay "
-                "file over it"
-            ),
-        )
+    def call(self) -> ProgramCall:
+        commands = self._parser.add_subparsers(dest="command", required=True)
+        for command in ProgramCommand:
+            sub = commands.add_parser(command.value, help=self.HELP[command])
+            sub.add_argument(
+                self.CONFIG,
+                required=True,
+                action="append",
+                type=Path,
+                help=(
+                    "path to config.toml of this instance; repeat to lay an "
+                    "overlay file over it"
+                ),
+            )
+
         arguments = self._parser.parse_args()
 
-        return tuple(arguments.config)
+        return ProgramCall(
+            command=ProgramCommand(arguments.command), paths=tuple(arguments.config)
+        )
 
 
-class ProcessInterpreter:
-    """Интерпретатор процесса и его окружение для цепочки лаунчера песочницы.
+class ProgramDir(StrEnum):
+    """Части каталога программы: их программа находит сама, ключей-путей в
+    конфиге экземпляра для них нет."""
 
-    Это не конфиг, а факт самого процесса: им цепочка лаунчера (LauncherChain,
-    зиготы) запускает тот же python во внешнем слое. Снимок делают реестр
-    способов запуска инструментов и хранилище образов, когда создаются.
+    LIBEXEC = "libexec"
+    """Вспомогательные программы: bwrap, fuse2fs, mke2fs (mcp)."""
+    SHARE = "share"
+    """Статика: корень приложения chainlit (aid)."""
+    MODELS = "models"
+    """Образы данных моделей <имя>.ext4 (mcp)."""
+    SANDBOX = "sandbox"
+    """Шаблон workspace.ext4 и образы плагинов plugins/<id>.ext4 (mcp)."""
+
+
+class ProgramFile(StrEnum):
+    """Файлы каталога программы относительно его корня."""
+
+    WORKSPACE = "sandbox/workspace.ext4"
+    PLUGINS = "sandbox/plugins"
+    IMAGE_SUFFIX = ".ext4"
+
+
+@dataclass(frozen=True)
+class ProgramRoot:
+    """Каталог программы: только чтение, обновление — замена каталога.
+
+    Находит его ProgramRoots на границе конфига; пользуются им способ запуска
+    плагинов в песочнице (образы плагинов и моделей, bwrap), хранилище образов
+    workspace и вход чата (статика chainlit). interpreter — чем цепочка
+    лаунчера песочницы запускает ту же программу во внешнем слое.
     """
 
-    def snapshot(self) -> LauncherInterpreter:
-        """Текущий каталог и его предки в корни не идут: python -m кладёт cwd в
+    root: Path
+    interpreter: LauncherInterpreter
+    compiled: bool
+
+    SYSTEM_BINARIES: ClassVar[tuple[str, ...]] = (
+        "/usr/bin",
+        "/usr/sbin",
+        "/bin",
+        "/sbin",
+    )
+    """Системные каталоги после libexec: из них берутся fusermount."""
+
+    WORKSPACE_TARGET: ClassVar[str] = "/workspace"
+
+    def path(self, part: ProgramDir) -> Path:
+        return self.root / part.value
+
+    def plugin_images(self) -> Path:
+        return self.root / ProgramFile.PLUGINS.value
+
+    def plugin_image(self, plugin_id: str) -> Path:
+        return self.plugin_images() / f"{plugin_id}{ProgramFile.IMAGE_SUFFIX.value}"
+
+    def model_image(self, name: str) -> Path:
+        models = self.path(ProgramDir.MODELS)
+
+        return models / f"{name}{ProgramFile.IMAGE_SUFFIX.value}"
+
+    def binaries(self) -> TrustedBinaries:
+        """Доверенные каталоги bwrap и fuse2fs: libexec программы, затем
+        системные."""
+        dirs = (str(self.path(ProgramDir.LIBEXEC)), *self.SYSTEM_BINARIES)
+
+        return TrustedBinaries(dirs=dirs)
+
+    def workspace(self, images: Path) -> WorkspaceSpec:
+        """Workspace пользователя: шаблон программы, образ в каталоге images
+        экземпляра, точка /workspace внутри песочницы."""
+        mount = f"{images}/{WorkspaceSpec.USER_VAR}.ext4:{self.WORKSPACE_TARGET}"
+
+        return WorkspaceSpec.model_validate(
+            {"template": str(self.root / ProgramFile.WORKSPACE.value), "mount": mount}
+        )
+
+    def python_module(self, module: str) -> tuple[str, ...]:
+        """Команда модуля python интерпретатором программы; у собранной
+        программы интерпретатора нет — ConfigError."""
+        if self.compiled:
+            msg = (
+                f"running python module {module} needs the program from sources "
+                f"(BOBA_RUNTIME), got the compiled program in {self.root}"
+            )
+            raise ConfigError(msg)
+
+        return (self.interpreter.executable, "-m", module)
+
+
+class ProgramRoots:
+    """Поиск каталога программы на границе конфига.
+
+    Собранная программа (Nuitka, `__compiled__`) лежит в
+    <корень>/bin/<имя>.dist/<имя>.bin, и корень — третий предок бинарника.
+    Программа из исходников (.venv) находит корень одной переменной
+    BOBA_RUNTIME: она называет каталог runtime/, разложенный так же, как
+    каталог программы. Создают его компоненты, которым каталог программы
+    нужен: способ запуска плагинов, хранилище образов, вход чата.
+    """
+
+    RUNTIME_ENV: ClassVar[str] = "BOBA_RUNTIME"
+    BINARY_DEPTH: ClassVar[int] = 2
+
+    def locate(self) -> ProgramRoot:
+        if "__compiled__" in globals():
+            return self._compiled()
+
+        return self._sources()
+
+    def _compiled(self) -> ProgramRoot:
+        binary = Path(sys.executable).resolve()
+        root = binary.parents[self.BINARY_DEPTH]
+        interpreter = LauncherInterpreter(
+            executable=str(binary), env={}, roots=(str(root),)
+        )
+
+        return ProgramRoot(root=root, interpreter=interpreter, compiled=True)
+
+    def _sources(self) -> ProgramRoot:
+        runtime = os.environ.get(self.RUNTIME_ENV)
+        if not runtime:
+            msg = (
+                f"program directory: the program runs from sources, so "
+                f"{self.RUNTIME_ENV} must name the runtime/ directory laid out as "
+                "a program (libexec, share, models, sandbox); it is not set"
+            )
+            raise ConfigError(msg)
+
+        root = Path(runtime).resolve()
+        if not root.is_dir():
+            msg = (
+                f"program directory: {self.RUNTIME_ENV}={runtime} must name an "
+                "existing directory laid out as a program, it does not exist"
+            )
+            raise ConfigError(msg)
+
+        return ProgramRoot(root=root, interpreter=self._interpreter(), compiled=False)
+
+    def _interpreter(self) -> LauncherInterpreter:
+        """Интерпретатор исходников со своим окружением и корнями.
+
+        Текущий каталог и его предки в корни не идут: python -m кладёт cwd в
         sys.path, а cwd сервиса — дерево установки с конфигом и данными.
         """
         env: dict[LauncherEnv, str] = {}
@@ -149,6 +318,112 @@ class ProcessInterpreter:
         return path.startswith(root.rstrip("/") + "/")
 
 
+class InstanceData(StrEnum):
+    """Фиксированная раскладка каталога данных экземпляра ([instance].data_dir):
+    единственного места, куда пишет программа."""
+
+    KRB_CACHE = "krb/cache"
+    """Кэши билетов kerberos, в том числе TGT сервиса (krb5cc_http)."""
+    DUMP = "dump"
+    WORKSPACE = "workspace"
+    """Образы workspace пользователей (песочница) или их каталоги (process)."""
+    TOOL_LOGS = "tool-logs"
+    FILES = "files"
+    """Вложения сессий чата."""
+    AGENTS = "agents"
+    """Приватные каталоги процессов агента (режим process чата)."""
+
+
+class InstanceConf(StrEnum):
+    """Файлы каталога conf/ экземпляра — того, где лежит его config.toml."""
+
+    KRB5_CONF = "krb/krb5.conf"
+    """krb5.conf; keytab'ы лежат рядом и называются в конфиге именем файла."""
+
+
+class InstanceConfig(BaseModel):
+    """Секция [instance]: каталог данных экземпляра и CA-файл контура.
+
+    Раскладка внутри каталога данных фиксирована (InstanceData), а conf/krb
+    лежит рядом с config.toml (InstanceConf): других путей экземпляра в
+    конфиге нет. Читают её вход процесса (ProcessConfig.of) и компоненты,
+    которые пишут в данные: способ запуска плагинов, журналы вызовов,
+    хранилище workspace, чат.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    SECTION: ClassVar[str] = "instance"
+
+    CA_ENV: ClassVar[str] = "SSL_CERT_FILE"
+    """Переменная, из которой CA берут httpx (trust_env) и OpenSSL."""
+
+    data_dir: str = Field(
+        min_length=1,
+        description=(
+            "Каталог данных экземпляра: абсолютный путь, раскладка внутри фиксирована."
+        ),
+    )
+    ca_file: str = Field(
+        min_length=1,
+        description=(
+            "CA-файл контура (PEM): им проверяют TLS httpx и библиотеки процесса, "
+            "его же видят песочницы плагинов с сетью."
+        ),
+    )
+
+    @field_validator("data_dir", "ca_file")
+    @classmethod
+    def _absolute(cls, value: str) -> str:
+        if not os.path.isabs(value):
+            msg = f"[instance]: expected an absolute path, got {value!r}"
+            raise ValueError(msg)
+
+        return os.path.normpath(value)
+
+    def data(self, part: InstanceData) -> Path:
+        return Path(self.data_dir) / part.value
+
+    def layout(self, conf_dir: Path) -> InstanceLayout:
+        return InstanceLayout(conf_dir=conf_dir, instance=self)
+
+
+@dataclass(frozen=True)
+class InstanceLayout:
+    """Каталог экземпляра целиком: conf/ (где лежит config.toml) и данные.
+
+    Собирает его вход процесса из каталога главного файла конфига и секции
+    [instance]; apply() ставит процессу kerberos и CA из модели (CLAUDE.md
+    §17: в окружение пишет только вход).
+    """
+
+    conf_dir: Path
+    instance: InstanceConfig
+
+    def krb5_conf(self) -> Path:
+        return self.conf_dir / InstanceConf.KRB5_CONF.value
+
+    def kerberos(self) -> KerberosWorkspaceConfig:
+        return KerberosWorkspaceConfig(
+            config=str(self.krb5_conf()),
+            ccache_dir=str(self.instance.data(InstanceData.KRB_CACHE)),
+        )
+
+    def apply(self) -> None:
+        """Рабочий каталог kerberos и KRB5_CONFIG, CA-файл контура в
+        SSL_CERT_FILE; CA-файла нет — ConfigError."""
+        ca_file = Path(self.instance.ca_file)
+        if not ca_file.is_file():
+            msg = (
+                f"[instance]: ca_file must name the CA file of the network "
+                f"(PEM), {ca_file} is not a file"
+            )
+            raise ConfigError(msg)
+
+        self.kerberos().apply()
+        os.environ[InstanceConfig.CA_ENV] = str(ca_file)
+
+
 class RawConfig:
     """Загруженное дерево конфига: одно на процесс, провайдеры читают его секциями."""
 
@@ -174,8 +449,9 @@ class RawConfig:
 
 class StreamJournalConfig(BaseModel):
     """Секция [stream_journal]: журнал живого вывода инструментов, служебный
-    том на пользователя. Её читает провайдер журналов процесса, который
-    исполняет инструменты (boba-mcp); у чата журналов нет."""
+    том на пользователя в tool-logs каталога данных экземпляра. Её читает
+    провайдер журналов процесса, который исполняет инструменты (boba-mcp); у
+    чата журналов нет."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -186,14 +462,6 @@ class StreamJournalConfig(BaseModel):
         description="Писать вывод каждого вызова инструмента в журнал.",
     )
 
-    dir: str = Field(
-        default="",
-        description=(
-            "Корень журналов: каталог, том на пользователя внутри; "
-            "переполнение держит отдельная точка монтирования под корнем."
-        ),
-    )
-
     reserve_bytes: int = Field(
         default=64 * 1024 * 1024,
         ge=0,
@@ -202,20 +470,6 @@ class StreamJournalConfig(BaseModel):
             "пока свободного меньше; 0 выключает ротацию."
         ),
     )
-
-    @model_validator(mode="after")
-    def _validate_enabled(self) -> Self:
-        if not self.enable:
-            return self
-
-        if not self.dir:
-            msg = (
-                "[stream_journal]: dir is required when enable = true, "
-                "got an empty string"
-            )
-            raise ValueError(msg)
-
-        return self
 
 
 class AppName(StrEnum):
@@ -458,22 +712,25 @@ class ProcessConfig(BaseModel):
             "её ссылкой ${app.schema}."
         ),
     )
-    krb: KerberosWorkspaceConfig
+    instance: InstanceConfig = Field(
+        description="Секция [instance] ссылкой ${instance}: данные и CA экземпляра."
+    )
     auth: list[AuthConfig]
     logger: dict[str, Any] = Field(default_factory=ProcessLogging.default)
     session: TokenConfig
 
     @classmethod
     def load(cls, paths: Sequence[Path]) -> Self:
-        """Читает файлы конфигурации и раскладывает кэши kerberos."""
-        return cls.of(RawConfig.load(paths))
+        """Читает файлы конфигурации и ставит процессу kerberos и CA."""
+        return cls.of(RawConfig.load(paths), paths[0].resolve().parent)
 
     @classmethod
-    def of(cls, raw: DictConfig) -> Self:
-        """Секция [app] уже загруженного дерева; раскладывает кэши kerberos."""
+    def of(cls, raw: DictConfig, conf_dir: Path) -> Self:
+        """Секция [app] уже загруженного дерева; conf_dir — каталог главного
+        файла конфига, где лежит conf/krb. Ставит процессу kerberos и CA."""
         config = bind(raw, path=cls.SECTION, model=cls)
         # кэши билетов раскладывает приложение: строкам соединений пути не задают
-        config.krb.apply()
+        config.instance.layout(conf_dir).apply()
 
         return config
 
@@ -529,7 +786,7 @@ class ProcessConfig(BaseModel):
 
         return SsoTickets(
             sealer=TicketSealer(self.session.auth_secret),
-            krb5_config=kerberos.delegation.krb5_config,
+            krb5_config=KerberosWorkspace.krb5_config(),
         )
 
 

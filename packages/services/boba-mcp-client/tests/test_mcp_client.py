@@ -62,6 +62,7 @@ from boba.mcp_client.client import (
     ProxyAuth,
     StdioCommand,
 )
+from boba.runtime.config import ProgramRoots
 from boba.stand.apps_slot import AppServer, AppsSlot
 from boba.stand.service_signin import ServiceSignIn
 from boba.stand.ui.stand import REPO_ROOT
@@ -1787,7 +1788,7 @@ class BobaMcpService:
     """Префикс сервиса стенда: свой, а не префикс отладки разработчика."""
     PROFILE: str = "general"
     CLIENT: str = "boba-chat"
-    THIRD: Path = RUNTIME.third
+    RUNTIME: Path = RUNTIME.program.root
     CONFIG: Path = REPO_ROOT / "debug" / "mcp" / "conf" / "config.toml"
     """Конфиг сервиса в дереве отладки разработчика."""
 
@@ -1819,14 +1820,15 @@ class BobaMcpService:
                 sys.executable,
                 "-m",
                 "boba.mcp_server",
+                "serve",
                 "--config",
                 str(self.CONFIG),
                 "--config",
                 str(overlay),
             ],
             env={
-                "PATH": f"{self.THIRD / 'bin'}:/usr/local/bin:/usr/bin:/bin",
-                "LD_LIBRARY_PATH": str(self.THIRD / "lib"),
+                "PATH": "/usr/local/bin:/usr/bin:/bin",
+                ProgramRoots.RUNTIME_ENV: str(self.RUNTIME),
             },
             stdout=self._log,
             stderr=subprocess.STDOUT,

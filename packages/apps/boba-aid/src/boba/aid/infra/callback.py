@@ -107,7 +107,7 @@ class TabText(StrEnum):
     """Профиль треда больше не выдан: тред продолжается профилем по умолчанию."""
 
     def of(self, app_config: AppConfig, **values: object) -> str:
-        texts = UiText(Path(app_config.aid.root), current_session().language)
+        texts = UiText(Path(chainlit_config.root), current_session().language)
         return texts.text(self.value, **values)
 
 

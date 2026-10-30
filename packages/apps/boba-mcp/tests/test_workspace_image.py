@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 from boba.canvas.storage import StorageError, StorageNotFoundError
-from boba.runtime.config import ProcessInterpreter
+from boba.runtime.config import InstanceConfig, ProgramRoots
 from boba.runtime.storage import (
     ImageStorageClient,
     LocalStorageClient,
@@ -22,7 +22,7 @@ from boba.runtime.storage import (
     StorageClient,
     StorageFactory,
 )
-from boba.sandbox.profile import SandboxProfile
+from boba.sandbox.profile import SandboxProfile, WorkspaceSpec
 from boba.sandbox.runner import SandboxMountError
 from boba.stand.shell import ShellRun
 from boba.stand.storage import StorageSeed
@@ -63,6 +63,10 @@ def _bin_dirs() -> list[str]:
     return dirs
 
 
+def _instance(data_dir: Path) -> InstanceConfig:
+    return InstanceConfig(data_dir=str(data_dir), ca_file="/etc/ssl/certs/ca.pem")
+
+
 def _trusted() -> TrustedBinaries:
     return TrustedBinaries(dirs=tuple(_bin_dirs()))
 
@@ -88,10 +92,27 @@ def _storage_cfg(**kw: Any) -> LocalStorageConfig:
             "copy_chunk_bytes": 1 << 20,
         },
         "mount_dir": "/tmp",  # noqa: S108
-        "binaries": {"dirs": _bin_dirs()},
     }
     fields.update(kw)
     return LocalStorageConfig.model_validate(fields)
+
+
+def _workspace(template: str, images: str) -> WorkspaceSpec:
+    return WorkspaceSpec.model_validate(
+        {"template": template, "mount": f"{images}/{{user_id}}.ext4:/workspace"}
+    )
+
+
+def _image_client(
+    template: str, images: str, op_timeout_sec: int = 60
+) -> ImageStorageClient:
+    """Хранилище образов: шаблон и каталог образов теста, bwrap и fuse2fs —
+    из каталога программы прогона (BOBA_RUNTIME)."""
+    cfg = _storage_cfg(kind="image", op_timeout_sec=op_timeout_sec)
+
+    return ImageStorageClient(
+        cfg, _workspace(template, images), ProgramRoots().locate()
+    )
 
 
 needs_fuse = pytest.mark.failif(
@@ -220,18 +241,7 @@ def _invoke(caller, command: str) -> ShellResult:
 def _storage(
     tmp_path: Path, template: Path, op_timeout_sec: int = 60
 ) -> ImageStorageClient:
-    cfg = _storage_cfg(
-        kind="image",
-        workspace={
-            "template": str(template),
-            "mount": f"{tmp_path}/ws/{{user_id}}.ext4:/workspace",
-        },
-        op_timeout_sec=op_timeout_sec,
-    )
-    client = StorageFactory.create(cfg)
-    if not (isinstance(client, ImageStorageClient)):
-        raise AssertionError("isinstance(client, ImageStorageClient)")
-    return client
+    return _image_client(str(template), f"{tmp_path}/ws", op_timeout_sec)
 
 
 def _launcher_options() -> LauncherOptions:
@@ -246,10 +256,6 @@ def _launcher_options() -> LauncherOptions:
 
 
 class TestConfig:
-    def test_image_kind_requires_workspace(self) -> None:
-        with pytest.raises(ValueError, match="workspace record"):
-            _storage_cfg(kind="image")
-
     def test_local_kind_requires_files_dir(self) -> None:
         with pytest.raises(ValueError, match="expects files_dir"):
             _storage_cfg(kind="local")
@@ -258,39 +264,36 @@ class TestConfig:
         with pytest.raises(ValueError, match="'local' or 'image'"):
             _storage_cfg(kind="s3", files_dir="/srv")
 
-    def test_factory_picks_image_client(self) -> None:
-        cfg = _storage_cfg(
-            kind="image",
-            workspace={"template": "/t.ext4", "mount": "/ws/{user_id}.ext4:/workspace"},
-        )
-        if not (isinstance(StorageFactory.create(cfg), ImageStorageClient)):
-            raise AssertionError("isinstance(StorageFactory.create(cfg), ImageStorage…")
+    def test_factory_picks_image_client(self, tmp_path: Path) -> None:
+        """Образы пользователей — workspace/ каталога данных экземпляра,
+        шаблон — каталога программы."""
+        factory = StorageFactory(_instance(tmp_path))
+        client = factory.create(_storage_cfg(kind="image"))
+        if not (isinstance(client, ImageStorageClient)):
+            raise AssertionError(f"image storage expected, got {type(client)}")
 
-    def test_factory_picks_local_client(self) -> None:
+        image, _ = client._image_and_rel("7/t1/upload/x.txt")
+        if image != f"{tmp_path}/workspace/7.ext4":
+            raise AssertionError(f"image of user 7: {image}")
+
+    def test_factory_picks_local_client(self, tmp_path: Path) -> None:
         cfg = _storage_cfg(files_dir="/srv/files")
-        if type(StorageFactory.create(cfg)) is not LocalStorageClient:
-            raise AssertionError("type(StorageFactory.create(cfg)) is LocalStorageCli…")
+        client = StorageFactory(_instance(tmp_path)).create(cfg)
+        if type(client) is not LocalStorageClient:
+            raise AssertionError(f"local storage expected, got {type(client)}")
 
     def test_workspace_image_must_be_personal(self) -> None:
         """Без {user_id} все пользователи писали бы в один образ."""
         with pytest.raises(ValueError, match="user_id"):
-            _storage_cfg(
-                kind="image",
-                workspace={"template": "/t.ext4", "mount": "/ws/all.ext4:/workspace"},
+            WorkspaceSpec.model_validate(
+                {"template": "/t.ext4", "mount": "/ws/all.ext4:/workspace"}
             )
 
 
 class TestObjectKey:
     @staticmethod
     def _client() -> ImageStorageClient:
-        cfg = _storage_cfg(
-            kind="image",
-            workspace={"template": "/t.ext4", "mount": "/ws/{user_id}.ext4:/workspace"},
-        )
-        client = StorageFactory.create(cfg)
-        if not (isinstance(client, ImageStorageClient)):
-            raise AssertionError("isinstance(client, ImageStorageClient)")
-        return client
+        return _image_client("/t.ext4", "/ws")
 
     def test_key_splits_into_image_and_rel(self) -> None:
         """Образ на пользователя, scope_id остаётся частью пути внутри."""
@@ -320,18 +323,10 @@ class TestRelativePaths:
     """bwrap на read-only корне не создаст точку монтирования по относительному пути."""
 
     def test_workspace_image_path_is_built_from_user_id(self) -> None:
-        cfg = _storage_cfg(
-            kind="image",
-            workspace={
-                "template": "/data/tpl.ext4",
-                "mount": "/data/ws/{user_id}.ext4:/workspace",
-            },
-        )
-        if cfg.workspace is None:
-            raise AssertionError("workspace record is required for kind=image")
+        workspace = _workspace("/data/tpl.ext4", "/data/ws")
 
-        if cfg.workspace.image_of("7") != "/data/ws/7.ext4":
-            raise AssertionError(f"путь образа: {cfg.workspace.image_of('7')}")
+        if workspace.image_of("7") != "/data/ws/7.ext4":
+            raise AssertionError(f"путь образа: {workspace.image_of('7')}")
 
     def test_relative_image_bound_by_absolute_path(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -362,7 +357,7 @@ class TestRelativePaths:
 
 def _chain() -> LauncherChain:
     return LauncherChain(
-        ProcessInterpreter().snapshot(), _trusted(), _launcher_options()
+        ProgramRoots().locate().interpreter, _trusted(), _launcher_options()
     )
 
 
@@ -495,10 +490,8 @@ class TestErrorBoundary:
     @staticmethod
     def _local(tmp_path: Path) -> LocalStorageClient:
         cfg = _storage_cfg(files_dir=str(tmp_path / "files"))
-        client = StorageFactory.create(cfg)
-        if not (isinstance(client, LocalStorageClient)):
-            raise AssertionError("isinstance(client, LocalStorageClient)")
-        return client
+
+        return LocalStorageClient(cfg)
 
     @staticmethod
     def _guarded_operations() -> Iterator[str]:

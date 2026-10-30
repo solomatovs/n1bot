@@ -101,13 +101,14 @@ STREAM_CFG = StreamGroupsConfig(
 def _launcher(workdir: Path, ambient: CallAmbient) -> ProcessToolCaller:
     cfg = ProcessLauncherConfig(
         provider="process",
-        workdir=str(workdir),
         timeout_sec=60.0,
         channel_limit_bytes=4_000_000,
         stderr_tail_bytes=8192,
         kill_grace_sec=0.5,
     )
-    return ProcessToolCaller("stream-group", cfg, CallContexts(), ambient, PROGRAM)
+    return ProcessToolCaller(
+        "stream-group", cfg, str(workdir), CallContexts(), ambient, PROGRAM
+    )
 
 
 @dataclass(frozen=True)

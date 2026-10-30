@@ -44,6 +44,8 @@ from boba.runtime.bus import PgMessageBus
 from boba.runtime.commands import CommandRunner
 from boba.runtime.config import (
     AppName,
+    InstanceConfig,
+    InstanceData,
     LocalMessagingConfig,
     ProcessConfig,
     RawConfig,
@@ -409,7 +411,8 @@ def call_journals(
     if not section.enable:
         return CallJournals(None, active)
 
-    vault = DirVault(section.dir)
+    instance = bind(raw, InstanceConfig.SECTION, InstanceConfig)
+    vault = DirVault(str(instance.data(InstanceData.TOOL_LOGS)))
     return CallJournals(StreamJournal(vault, section.reserve_bytes), active)
 
 

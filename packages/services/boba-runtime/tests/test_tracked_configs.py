@@ -26,7 +26,7 @@ class TrackedConfigs:
     ALLOWED: ClassVar[Mapping[str, str]] = {}
     """Поля с литералом по делу: путь поля -> почему это не секрет и не адрес."""
     PARTIAL_REFERENCE: ClassVar[re.Pattern[str]] = re.compile(r"\$\{[a-z_][\w.]*\}")
-    """Строка, собранная из ссылок (FILE:${krb.x}, ${env.krb}/file), литералом
+    """Строка, собранная из ссылок (${instance.data_dir}/dump, FILE:${a.b}), литералом
     машины не является: машинная часть приходит из конфига экземпляра."""
 
     def files(self) -> list[Path]:

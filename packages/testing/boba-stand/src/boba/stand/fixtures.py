@@ -19,7 +19,7 @@ from boba.stand.database import TestDatabase
 from boba.stand.overlay import ConfigOverlay
 from boba.stand.refs import StandRefs
 from boba.stand.site import StandConfigPaths
-from boba.stand.ui.stand import REPO_ROOT, StandApp, StandPaths
+from boba.stand.ui.stand import StandApp
 from boba.stand.zygote import ZygoteStand
 from boba.stand_core.context import CallStand, call_stand
 from boba.toolkit.chain import CallAmbient
@@ -117,10 +117,7 @@ def service_raw_config(tmp_path_factory: pytest.TempPathFactory) -> DictConfig:
     for name in ServiceData:
         (data / name.value).mkdir()
 
-    changes = {
-        "env.base": str(StandPaths.MCP_BASE.under(REPO_ROOT)),
-        "env.data": str(data),
-    }
+    changes = {"instance.data_dir": str(data)}
 
     return ConfigOverlay(raw).merged(changes)
 
@@ -166,11 +163,14 @@ def stand_postgres(raw_config: DictConfig) -> PostgresConfig:
 def kerberos_workspace(
     process_config: ProcessConfig, tmp_path_factory: pytest.TempPathFactory
 ) -> None:
-    """Кэши билетов теста: тела инструментов ждут настроенный workspace."""
+    """Кэши билетов теста: тела инструментов ждут настроенный workspace;
+    krb5.conf и keytab'ы — conf/krb рядом с главным конфигом прогона."""
     from boba.krb import KerberosWorkspace  # noqa: PLC0415
 
+    conf_dir = StandConfigPaths().paths()[0].resolve().parent
+    krb5_conf = process_config.instance.layout(conf_dir).krb5_conf()
     cache = tmp_path_factory.mktemp("krb-cache")
-    KerberosWorkspace.configure(process_config.krb.config, str(cache))
+    KerberosWorkspace.configure(str(krb5_conf), str(cache))
 
 
 @pytest.fixture(scope="session")

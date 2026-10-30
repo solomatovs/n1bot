@@ -135,10 +135,7 @@ async def sso_login(tmp_path: Path, user_password: str) -> tuple[SsoTickets, str
     accept идёт асинхронно, как в приложении: синхронный захват лока
     KerberosEnv в потоке цикла встал бы за воркером пула, держащим лок
     через await connect."""
-    delegation = ConstrainedDelegation(
-        service_ccache=f"FILE:{tmp_path / 'service'}",
-        krb5_config=str(KRB5_CONF),
-    )
+    delegation = ConstrainedDelegation()
     accept = AcceptConfig(service_name=SERVICE_SPN, keytab=str(SERVICE_KEYTAB))
     token = Browser.token(tmp_path, user_password)
     identity = await SpnegoAcceptor(accept, delegation).accept_async(token)

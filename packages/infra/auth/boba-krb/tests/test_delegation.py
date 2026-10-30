@@ -126,17 +126,13 @@ def _accept() -> AcceptConfig:
     return AcceptConfig(service_name=SERVICE_SPN, keytab=str(SERVICE_KEYTAB))
 
 
-def _constrained(tmp_path: Path) -> ConstrainedDelegation:
-    return ConstrainedDelegation(
-        service_ccache=f"FILE:{tmp_path / 'service'}",
-        krb5_config=str(KRB5_CONF),
-    )
+def _constrained() -> ConstrainedDelegation:
+    """krb5.conf и кэш TGT сервиса — рабочий каталог kerberos прогона."""
+    return ConstrainedDelegation()
 
 
 def _forwarded() -> ForwardedDelegation:
-    return ForwardedDelegation(
-        krb5_config=str(KRB5_CONF),
-    )
+    return ForwardedDelegation()
 
 
 def _servers(ticket_ccache: str) -> list[tuple[str, str]]:
@@ -154,7 +150,7 @@ class TestConstrained:
     def test_login_yields_a_postgres_ticket_for_the_user(
         self, tmp_path: Path, krb5_env: None
     ) -> None:
-        delegation = _constrained(tmp_path)
+        delegation = _constrained()
         acceptor = SpnegoAcceptor(_accept(), delegation)
         identity = acceptor.accept(Browser.ticket(tmp_path))
         if identity.principal != USER_PRINCIPAL:
@@ -222,7 +218,7 @@ class TestBrowserDelegationIsRefused:
         self, tmp_path: Path, krb5_env: None
     ) -> None:
         """Проверка сути: делегируя, клиент отдаёт именно TGT."""
-        delegation = _constrained(tmp_path)
+        delegation = _constrained()
         acceptor = SpnegoAcceptor(_accept(), delegation)
 
         identity = acceptor.accept(Browser.delegating_ticket(tmp_path))
@@ -246,7 +242,7 @@ class TestBrowserDelegationIsRefused:
         self, tmp_path: Path, krb5_env: None
     ) -> None:
         """Вход состоится, но делегирования у него нет: метка входа пустая."""
-        delegation = _constrained(tmp_path)
+        delegation = _constrained()
         acceptor = SpnegoAcceptor(_accept(), delegation)
         identity = acceptor.accept(Browser.delegating_ticket(tmp_path))
 

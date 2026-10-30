@@ -53,7 +53,6 @@ RELAY_TOOL = ToolMain.toolset(fake_relay)[0]
 def _launcher(workdir: Path, **overrides: object) -> ProcessToolCaller:
     values: dict[str, object] = {
         "provider": "process",
-        "workdir": str(workdir),
         "timeout_sec": 60.0,
         "channel_limit_bytes": 1_000_000,
         "stderr_tail_bytes": 4096,
@@ -64,6 +63,7 @@ def _launcher(workdir: Path, **overrides: object) -> ProcessToolCaller:
     return ProcessToolCaller(
         "fake",
         ProcessLauncherConfig.model_validate(values),
+        str(workdir),
         CallContexts(),
         CallAmbient(),
         PROGRAM,

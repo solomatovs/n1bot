@@ -1,7 +1,8 @@
-"""Рабочий каталог kerberos приложения: krb5.conf и кэши билетов.
+"""Рабочий каталог kerberos приложения: krb5.conf, keytab'ы и кэши билетов.
 
 Модели способов аутентификации живут в boba.kerberos; здесь —
-где лежат их кэши, чтобы две строки не поделили один ccache.
+где лежат их кэши, чтобы две строки не поделили один ccache, и где
+лежат keytab'ы, которые конфиг называет именем файла.
 
 Ошибки:
 KerberosError — рабочий каталог kerberos не настроен либо принципал непригоден
@@ -15,6 +16,7 @@ import os
 import re
 from collections.abc import Generator
 from contextlib import contextmanager
+from pathlib import Path
 from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -37,10 +39,14 @@ class KerberosWorkspace:
 
     Кэш выделяется на пару «принципал — источник кредов»: у двух строк с
     разными keytab один файл не появится даже при одинаковом принципале.
+    keytab'ы лежат рядом с krb5.conf: имя файла из конфига разрешается от его
+    каталога.
     """
 
     CCACHE_TYPE: ClassVar[str] = CcacheKind.FILE.value
     PREFIX: ClassVar[str] = "krb5cc"
+    SERVICE_CCACHE: ClassVar[str] = "krb5cc_http"
+    """Кэш собственного TGT сервиса для ограниченного делегирования."""
     TAG_LENGTH: ClassVar[int] = 12
     DIR_MODE: ClassVar[int] = 0o700
 
@@ -74,6 +80,18 @@ class KerberosWorkspace:
     @classmethod
     def krb5_config(cls) -> str:
         return cls._setting("krb5_config")
+
+    @classmethod
+    def keytab(cls, name: str) -> str:
+        """keytab по имени файла: каталог krb5.conf приложения."""
+        return str(Path(cls.krb5_config()).parent / name)
+
+    @classmethod
+    def service_ccache(cls) -> str:
+        """FILE-ccache собственного TGT сервиса в каталоге кэшей."""
+        path = os.path.join(cls._setting("ccache_dir"), cls.SERVICE_CCACHE)
+
+        return f"{cls.CCACHE_TYPE}:{path}"
 
     @classmethod
     def ccache_of(cls, principal: str, source: str) -> str:
@@ -111,9 +129,12 @@ class KerberosWorkspaceConfig(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
+    CONFIG_ENV: ClassVar[str] = "KRB5_CONFIG"
+    """Переменная, из которой libkrb5 берёт krb5.conf процесса."""
+
     config: str = Field(
         min_length=1,
-        description="krb5.conf приложения; тот же путь виден телу в песочнице.",
+        description="krb5.conf приложения; keytab'ы лежат в его каталоге.",
     )
     ccache_dir: str = Field(
         min_length=1,
@@ -124,5 +145,7 @@ class KerberosWorkspaceConfig(BaseModel):
     )
 
     def apply(self) -> None:
-        """Ставит рабочий каталог процесса; зовётся один раз на старте."""
+        """Ставит рабочий каталог процесса и KRB5_CONFIG для libkrb5, которая
+        читает конфиг из окружения; зовётся один раз на старте."""
         KerberosWorkspace.configure(self.config, self.ccache_dir)
+        os.environ[self.CONFIG_ENV] = self.config

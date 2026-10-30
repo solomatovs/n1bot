@@ -461,6 +461,7 @@ class KeytabCredentials(IssuedCredentials):
             auth.principal, KerberosWorkspace.ccache_for(auth), auth.min_lifetime
         )
         self._auth = auth
+        self._keytab = KerberosWorkspace.keytab(auth.keytab)
 
     @classmethod
     def of(cls, auth: KeytabAuth) -> KeytabCredentials:
@@ -476,7 +477,7 @@ class KeytabCredentials(IssuedCredentials):
 
     def env(self) -> Mapping[str, str]:
         values = dict(super().env())
-        values[KerberosEnv.CLIENT_KEYTAB] = self._auth.keytab
+        values[KerberosEnv.CLIENT_KEYTAB] = self._keytab
         return values
 
     def _acquire(self) -> None:
@@ -485,7 +486,7 @@ class KeytabCredentials(IssuedCredentials):
         try:
             context = krb5.init_context()
             principal = krb5.parse_name_flags(context, self._principal.encode())
-            keytab = krb5.kt_resolve(context, self._auth.keytab.encode())
+            keytab = krb5.kt_resolve(context, self._keytab.encode())
 
             options = krb5.get_init_creds_opt_alloc(context)
             krb5.get_init_creds_opt_set_forwardable(options, True)
@@ -494,13 +495,13 @@ class KeytabCredentials(IssuedCredentials):
             creds = krb5.get_init_creds_keytab(context, principal, options, keytab)
             self._store(context, creds)
         except krb5.Krb5Error as exc:
-            msg = f"kinit {self._principal} from {self._auth.keytab} to {self._ccache}"
+            msg = f"kinit {self._principal} from {self._keytab} to {self._ccache}"
             raise KeytabError(f"{msg}: {exc}") from exc
 
         self._logger.info(
             "kerberos: TGT %s from %s -> %s in %dms",
             self._principal,
-            self._auth.keytab,
+            self._keytab,
             self._ccache,
             elapsed.ms(),
         )

@@ -71,16 +71,12 @@ class ProcessCallError(LauncherError):
 
 class ProcessLauncherConfig(BaseModel):
     """Секция конфига [tool_launcher] provider = process: параметры запуска
-    без песочницы (workdir, шелл, таймаут и потолки каналов)."""
+    без песочницы (таймаут и потолки каналов). Рабочий каталог — workspace
+    данных экземпляра, его называет способ запуска, а не конфиг."""
 
     model_config = ConfigDict(extra="ignore")
 
     provider: Literal["process"]
-
-    workdir: str = Field(
-        min_length=1,
-        description="Рабочий каталог tool-процессов; файлы инструментов пишутся сюда.",
-    )
 
     timeout_sec: float = Field(gt=0, description="Потолок времени одного вызова.")
 
@@ -394,7 +390,8 @@ class ProcessToolCaller(ToolLauncher):
     open() спавнит тело и отдаёт PumpedCall для потокового вызова.
     Создаётся способом запуска процессом хоста (ProcessLaunchers) на плагин
     и стендами тестов. program — префикс команды вызова до имени
-    инструмента: у плагина `python -m boba.sandbox.program <id> call`.
+    инструмента: у плагина `python -m boba.sandbox.program <id> call`;
+    workdir — рабочий каталог тел, свой подкаталог на область вызова.
     """
 
     POLL_SEC: ClassVar[float] = 0.05
@@ -408,10 +405,11 @@ class ProcessToolCaller(ToolLauncher):
     )
     """Каналы вызова модуля, попадающие в журнал при поставленном тапе."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — вызов собирается конфигом, каталогом и контекстом
         self,
         tool: str,
         cfg: ProcessLauncherConfig,
+        workdir: str,
         contexts: CallContexts,
         ambient: CallAmbient,
         program: Sequence[str],
@@ -419,6 +417,7 @@ class ProcessToolCaller(ToolLauncher):
         self._tool = tool
         self._program = tuple(program)
         self._cfg = cfg
+        self._workdir = workdir
         self._contexts = contexts
         self._ambient = ambient
         self._sinks = CallSinks()
@@ -520,9 +519,9 @@ class ProcessToolCaller(ToolLauncher):
         """
         context = self._contexts.peek()
         if context is None:
-            return self._cfg.workdir
+            return self._workdir
 
-        scoped = Path(self._cfg.workdir) / context.scope.id
+        scoped = Path(self._workdir) / context.scope.id
         scoped.mkdir(parents=True, exist_ok=True)
         return str(scoped)
 

@@ -11,10 +11,10 @@ from pathlib import Path
 
 import pytest
 from aid_stand import FakeSecret
-from omegaconf import DictConfig
 
 from boba.aid.infra.entry import AppEntry, ChainlitEnv
-from boba.config import ConfigLoader
+from boba.config import ConfigError, ConfigLoader
+from boba.runtime.config import ProgramRoots
 
 
 @pytest.fixture(autouse=True)
@@ -43,6 +43,10 @@ CONFIG = """
     aid     = "${aid}"
     session = "${session}"
 
+[instance]
+    data_dir = "<data_dir>"
+    ca_file  = "/etc/ssl/certs/ca-certificates.crt"
+
 [session]
     auth_secret     = "<auth_secret>"
     cookie          = "boba_token"
@@ -51,14 +55,12 @@ CONFIG = """
     session_max_sec = 86400
 
 [aid]
-    root                 = "<root>"
-    files_dir            = "<files_dir>"
     url_prefix           = "/boba"
     shutdown_timeout_sec = 10
 """
 
 ASSETS = Path(__file__).resolve().parents[1] / "assets"
-"""Ассеты пакета: готовый app_root, который отладка отдаёт chainlit напрямую."""
+"""Ассеты пакета: из них make web собирает share/ каталога программы."""
 
 FILES_PROBE = """
 import sys
@@ -84,50 +86,44 @@ print(BaseSession.files_dir.fget(SimpleNamespace(id="s1")))
 копия в chainlit.server и каталог сессии."""
 
 
+def _config_file(tmp_path: Path, data_dir: Path) -> Path:
+    path = tmp_path / "config.toml"
+    body = CONFIG.replace("<data_dir>", str(data_dir))
+    body = body.replace("<auth_secret>", FakeSecret.AUTH)
+    path.write_text(body, encoding="utf-8")
+
+    return path
+
+
 class TestExportEnv:
-    @staticmethod
-    def _config(tmp_path: Path, root: str) -> DictConfig:
-        path = tmp_path / "config.toml"
-        body = CONFIG.replace("<root>", root)
-        body = body.replace("<files_dir>", str(tmp_path / "files"))
-        body = body.replace("<auth_secret>", FakeSecret.AUTH)
-        path.write_text(body, encoding="utf-8")
-
-        return ConfigLoader([path]).load()
-
-    def test_env_taken_from_config(
+    def test_env_taken_from_config_and_program(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """Корень chainlit — share/ каталога программы, остальное — конфиг."""
         monkeypatch.delenv(ChainlitEnv.APP_ROOT, raising=False)
         monkeypatch.delenv(ChainlitEnv.ROOT_PATH, raising=False)
         monkeypatch.delenv(ChainlitEnv.AUTH_SECRET, raising=False)
+        runtime = tmp_path / "runtime"
+        monkeypatch.setenv(ProgramRoots.RUNTIME_ENV, str(runtime))
+        runtime.mkdir()
 
-        root = tmp_path / "data"
-        AppEntry().export_env(self._config(tmp_path, str(root)))
+        raw = ConfigLoader([_config_file(tmp_path, tmp_path / "data")]).load()
+        AppEntry().export_env(raw)
 
-        if os.environ[ChainlitEnv.APP_ROOT] != str(root):
-            raise AssertionError("os.environ[ChainlitEnv.APP_ROOT] == str(root)")
-        if os.environ[ChainlitEnv.ROOT_PATH] != "/boba":
-            raise AssertionError('os.environ[ChainlitEnv.ROOT_PATH] == "/boba"')
-        if os.environ[ChainlitEnv.AUTH_SECRET] != FakeSecret.AUTH:
-            raise AssertionError("os.environ[ChainlitEnv.AUTH_SECRET] == FakeSecret.…")
-
+        assert os.environ[ChainlitEnv.APP_ROOT] == str(runtime / "share")
+        assert os.environ[ChainlitEnv.ROOT_PATH] == "/boba"
+        assert os.environ[ChainlitEnv.AUTH_SECRET] == FakeSecret.AUTH
         assert os.environ[ChainlitEnv.COOKIE_NAME] == "boba_token"
         assert os.environ[ChainlitEnv.COOKIE_SAMESITE] == "strict"
 
-    def test_relative_root_resolved(
+    def test_program_without_runtime_refused(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv(ProgramRoots.RUNTIME_ENV, raising=False)
+        raw = ConfigLoader([_config_file(tmp_path, tmp_path / "data")]).load()
 
-        AppEntry().export_env(self._config(tmp_path, "./data"))
-
-        if not (Path(os.environ[ChainlitEnv.APP_ROOT]).is_absolute()):
-            raise AssertionError("Path(os.environ[ChainlitEnv.APP_ROOT]).is_absolute…")
-
-    def test_empty_root_rejected(self, tmp_path: Path) -> None:
-        with pytest.raises(ValueError, match="root"):
-            AppEntry().export_env(self._config(tmp_path, ""))
+        with pytest.raises(ConfigError, match=ProgramRoots.RUNTIME_ENV):
+            AppEntry().export_env(raw)
 
 
 class TestEntryPointsFreeOfChainlit:
@@ -160,7 +156,8 @@ class TestEntryPointsFreeOfChainlit:
 
 
 class TestChainlitFilesOutsideAppRoot:
-    """chainlit пишет вложения в [aid].files_dir, а app_root не трогает.
+    """chainlit пишет вложения в files/ каталога данных экземпляра, а share/
+    программы не трогает.
 
     Проверка идёт в подпроцессе: путь chainlit фиксирует на импорте. Упадёт,
     если после обновления chainlit запись снова пойдёт в APP_ROOT.
@@ -180,28 +177,23 @@ class TestChainlitFilesOutsideAppRoot:
 
         return entries
 
-    @staticmethod
-    def _config(tmp_path: Path, root: Path, files_dir: str) -> Path:
-        path = tmp_path / "config.toml"
-        body = CONFIG.replace("<root>", str(root))
-        body = body.replace("<files_dir>", files_dir)
-        body = body.replace("<auth_secret>", FakeSecret.AUTH)
-        path.write_text(body, encoding="utf-8")
-
-        return path
-
     def test_app_root_stays_untouched(self, tmp_path: Path) -> None:
-        root = tmp_path / "root"
+        runtime = tmp_path / "runtime"
+        root = runtime / "share"
         shutil.copytree(ASSETS / ".chainlit", root / ".chainlit")
-        files_dir = tmp_path / "data" / "files"
+        data_dir = tmp_path / "data"
+        files_dir = data_dir / "files"
         cwd = tmp_path / "cwd"
         cwd.mkdir()
-        config = self._config(tmp_path, root, str(files_dir))
+        config = _config_file(tmp_path, data_dir)
         before = self._tree(root)
+        env = dict(os.environ)
+        env[ProgramRoots.RUNTIME_ENV] = str(runtime)
 
         result = subprocess.run(
             [sys.executable, "-c", FILES_PROBE, str(config)],
             cwd=cwd,
+            env=env,
             capture_output=True,
             text=True,
             check=False,
@@ -219,12 +211,3 @@ class TestChainlitFilesOutsideAppRoot:
         expected = [str(files_dir), str(files_dir), str(files_dir / "s1")]
         if result.stdout.split() != expected:
             raise AssertionError(f"{result.stdout.split()} != {expected}")
-
-    def test_empty_files_dir_rejected(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv(ChainlitEnv.APP_ROOT, str(tmp_path))
-        raw = ConfigLoader([self._config(tmp_path, tmp_path, "")]).load()
-
-        with pytest.raises(ValueError, match="files_dir"):
-            AppEntry().attachments(raw)

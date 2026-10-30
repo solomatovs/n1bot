@@ -37,11 +37,19 @@ from pydantic import (
 from boba.canvas.keys import WorkspaceMount
 from boba.config import bind
 from boba.identity.context import CallContexts
-from boba.runtime.config import ProcessInterpreter
+from boba.krb import KerberosWorkspace
+from boba.runtime.config import (
+    InstanceConfig,
+    InstanceData,
+    ProgramFile,
+    ProgramRoot,
+    ProgramRoots,
+)
 from boba.sandbox import (
     BindSpec,
     CgroupManager,
     SandboxProfile,
+    WorkspaceSpec,
     has_bwrap,
 )
 from boba.sandbox.program import PluginCommand, PluginEntry
@@ -154,12 +162,19 @@ class SandboxLauncherConfig(BaseModel):
     """Секция [tool_launcher] provider = sandbox: запуск в песочнице bwrap.
 
     Лишние ключи игнорируются: секция общая для всех провайдеров, provider
-    выбирается env-переменной.
+    выбирается ссылкой из конфига экземпляра.
     """
 
     model_config = ConfigDict(extra="ignore")
 
     provider: Literal["sandbox"]
+    cgroup_base: str = Field(
+        min_length=1,
+        description=(
+            "Каталог cgroup песочниц экземпляра: подкаталог sandbox юнита "
+            "boba-sandbox@<экземпляр>.service; его вписывает make."
+        ),
+    )
 
 
 ToolLauncherConfig = Annotated[
@@ -171,20 +186,6 @@ ToolLauncherConfig = Annotated[
 
 class ToolLauncherSection(RootModel[ToolLauncherConfig]):
     """Секция [tool_launcher] целиком."""
-
-
-class EnvPaths(BaseModel):
-    """Пути развёртывания из [env]: на них стоят конвенции песочницы."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    base: str
-    data: str
-    sandbox: str
-    third: str
-    models: str
-    krb: str
-    cgroup_base: str
 
 
 class PluginSandbox(BaseModel):
@@ -235,32 +236,33 @@ class PluginSandbox(BaseModel):
 
 
 class PluginLayout(StrEnum):
-    """Комплект плагина в каталоге песочницы и программа в корне его образа."""
+    """Программа плагина в корне его образа."""
 
-    DIR = "plugins"
-    IMAGE_SUFFIX = ".ext4"
     PROGRAM = "/plugin/run"
 
 
 class SandboxDefaults:
-    """Дефолтный профиль песочницы: числа здесь, пути — конвенциями от [env].
+    """Дефолтный профиль песочницы: числа здесь, пути — от каталога программы
+    и каталога данных экземпляра.
 
     Секции [sandbox] в корневом конфиге нет: всё выводимое строится кодом,
     файл плагина описывает только отличия, манифест — сеть и образы данных.
     Память группы вызова кодом не выводится: её объявляет [sandbox.limits]
-    каждого плагина, а профиль без неё не собирается.
+    каждого плагина, а профиль без неё не собирается. Создаёт его способ
+    запуска в песочнице (ZygoteLaunchers).
     """
 
     TMP_SIZE: ClassVar[str] = "512M"
-    WORKSPACE_TARGET: ClassVar[str] = "/workspace"
 
     NETWORK_BINDS: ClassVar[tuple[str, ...]] = (
         "/etc/resolv.conf:/etc/resolv.conf",
         "/etc/hosts:/etc/hosts",
     )
     """Файлы хоста, без которых у плагина с сетью нет имён."""
-    KRB5_CONF: ClassVar[str] = "krb5.conf:/etc/krb5.conf"
-    """krb5.conf каталога [env].krb: плагину с сетью нужен для билетов."""
+    KRB5_CONF: ClassVar[str] = "/etc/krb5.conf"
+    """Куда плагину с сетью кладётся krb5.conf процесса: нужен для билетов."""
+    CA_FILE: ClassVar[str] = "/etc/ssl/certs/ca-certificates.crt"
+    """Куда плагину с сетью кладётся CA-файл контура ([instance].ca_file)."""
 
     HOST: ClassVar[dict[str, Any]] = {
         "stderr_tail_bytes": 4096,
@@ -300,74 +302,72 @@ class SandboxDefaults:
         "group_oom_kill_all": True,
     }
 
-    @classmethod
-    def image(cls, env: EnvPaths, plugin_id: str) -> Path:
-        """Образ плагина: <sandbox>/plugins/<id>.ext4."""
-        return (
-            Path(env.sandbox)
-            / PluginLayout.DIR
-            / f"{plugin_id}{PluginLayout.IMAGE_SUFFIX}"
-        )
+    def __init__(
+        self, program: ProgramRoot, instance: InstanceConfig, cgroup_base: str
+    ) -> None:
+        self._program = program
+        self._instance = instance
+        self._cgroup_base = cgroup_base
 
-    @classmethod
-    def network_binds(cls, env: EnvPaths) -> list[str]:
-        return [*cls.NETWORK_BINDS, f"{env.krb}/{cls.KRB5_CONF}"]
+    def network_binds(self) -> list[str]:
+        """Имена, krb5.conf процесса (если kerberos настроен файлом) и CA
+        контура."""
+        binds = [*self.NETWORK_BINDS, f"{self._instance.ca_file}:{self.CA_FILE}"]
 
-    @classmethod
-    def data_images(cls, env: EnvPaths, data: Sequence[DataImage]) -> list[str]:
-        """Образы данных манифеста: <models>/<имя>.ext4 в точку плагина."""
+        krb5_conf = KerberosWorkspace.krb5_config()
+        if Path(krb5_conf).is_file():
+            binds.append(f"{krb5_conf}:{self.KRB5_CONF}")
+
+        return binds
+
+    def network_env(self) -> dict[str, str]:
+        return {InstanceConfig.CA_ENV: self.CA_FILE}
+
+    def data_images(self, data: Sequence[DataImage]) -> list[str]:
+        """Образы данных манифеста: models/<имя>.ext4 программы в точку плагина."""
         images: list[str] = []
         for image in data:
-            images.append(
-                f"{env.models}/{image.name}{PluginLayout.IMAGE_SUFFIX}:{image.target}"
-            )
+            images.append(f"{self._program.model_image(image.name)}:{image.target}")
 
         return images
 
-    @classmethod
-    def profile(cls, env: EnvPaths, plugin_id: str) -> dict[str, Any]:
+    def profile(self, plugin_id: str) -> dict[str, Any]:
+        binaries = self._program.binaries()
+
         return {
-            "rootfs": str(cls.image(env, plugin_id)),
+            "rootfs": str(self._program.plugin_image(plugin_id)),
             "host": {
-                "cgroup_base": env.cgroup_base,
-                "binaries": {
-                    "dirs": [
-                        f"{env.third}/bin",
-                        "/usr/bin",
-                        "/usr/sbin",
-                        "/bin",
-                        "/sbin",
-                    ],
-                },
-                **cls.HOST,
+                "cgroup_base": self._cgroup_base,
+                "binaries": {"dirs": list(binaries.dirs)},
+                **self.HOST,
             },
             "mounts": {
                 "ro": [],
                 "rw": [],
-                "tmp": cls.TMP_SIZE,
+                "tmp": self.TMP_SIZE,
             },
-            "isolation": dict(cls.ISOLATION),
-            "limits": dict(cls.LIMITS),
+            "isolation": self._isolation(),
+            "limits": dict(self.LIMITS),
             "run": {"cwd": "/tmp"},  # noqa: S108 — внутри песочницы  # nosec B108
         }
 
-    @classmethod
-    def workspace(cls, env: EnvPaths) -> dict[str, Any]:
-        return {
-            "template": f"{env.sandbox}/workspace.ext4",
-            "mount": (f"{env.data}/workspace/{{user_id}}.ext4:{cls.WORKSPACE_TARGET}"),
-        }
+    def workspace(self) -> WorkspaceSpec:
+        return self._program.workspace(self._instance.data(InstanceData.WORKSPACE))
 
-    @classmethod
-    def merged(
-        cls, base: dict[str, Any], override: Mapping[str, Any]
-    ) -> dict[str, Any]:
+    def _isolation(self) -> dict[str, Any]:
+        isolation = dict(self.ISOLATION)
+        isolation["env"] = dict(self.ISOLATION["env"])
+
+        return isolation
+
+    @staticmethod
+    def merged(base: dict[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
         """Рекурсивное наложение таблиц файла плагина на дефолтный профиль."""
         result = dict(base)
         for key, value in override.items():
             below = result.get(key)
             if isinstance(below, dict) and isinstance(value, Mapping):
-                result[key] = cls.merged(below, value)
+                result[key] = SandboxDefaults.merged(below, value)
             else:
                 result[key] = value
 
@@ -483,18 +483,24 @@ class NoLaunchers(SectionLaunchers):
 
 
 class ZygoteLaunchers(SectionLaunchers):
-    """Запуск в песочнице: зигота на плагин, профиль собирается из [env],
-    дефолтов, манифеста и секции [sandbox] файла плагина.
+    """Запуск в песочнице: зигота на плагин, профиль собирается из каталога
+    программы, каталога данных экземпляра, дефолтов, манифеста и секции
+    [sandbox] файла плагина.
 
     Реализация SectionLaunchers; объект один на процесс, зиготы плагинов
-    живут в его реестре (ZygoteRegistry) между сборками инструментов. Цепочке
-    лаунчера реестр отдаёт снимок интерпретатора процесса (ProcessInterpreter).
-    Программа плагина — /plugin/run его образа: manifest идёт в песочнице без
-    сети и образов данных, setup и зигота — в профиле плагина."""
+    живут в его реестре (ZygoteRegistry) между сборками инструментов. Каталог
+    программы (ProgramRoot) даёт образы плагинов и моделей, bwrap и
+    интерпретатор для цепочки лаунчера. Программа плагина — /plugin/run его
+    образа: manifest идёт в песочнице без сети и образов данных, setup и
+    зигота — в профиле плагина."""
 
     def __init__(self, raw: DictConfig) -> None:
         self._raw = raw
-        self._zygotes = ZygoteRegistry(ProcessInterpreter().snapshot())
+        self._program = ProgramRoots().locate()
+        section = bind(raw, ToolLaunchers.SECTION, SandboxLauncherConfig)
+        instance = bind(raw, InstanceConfig.SECTION, InstanceConfig)
+        self._defaults = SandboxDefaults(self._program, instance, section.cgroup_base)
+        self._zygotes = ZygoteRegistry(self._program.interpreter)
         self._output = PluginOutput()
 
     def settle(self) -> None:
@@ -504,19 +510,22 @@ class ZygoteLaunchers(SectionLaunchers):
         self._zygotes.stop_all()
 
     def probe(self) -> None:
-        """Пути конвенций проверяются разбором [env]; cgroup-лимиты каждой
-        секции проверяет сборка её профиля.
-        """
-        self._env()
+        """Каталог образов плагинов программы есть; cgroup-лимиты каждой
+        секции проверяет сборка её профиля."""
+        images = self._program.plugin_images()
+        if images.is_dir():
+            return
 
-    def _env(self) -> EnvPaths:
-        return bind(self._raw, "env", EnvPaths)
+        msg = (
+            f"[tool_launcher] provider = sandbox: the program has no plugin images "
+            f"directory {images}"
+        )
+        raise RuntimeError(msg)
 
     def check_kits(self, plugin_ids: Sequence[str]) -> None:
         """Конфиг без образа и образ без конфига — отказ с обоими путями."""
-        env = self._env()
         for plugin_id in plugin_ids:
-            image = SandboxDefaults.image(env, plugin_id)
+            image = self._program.plugin_image(plugin_id)
             if image.is_file():
                 continue
 
@@ -526,9 +535,9 @@ class ZygoteLaunchers(SectionLaunchers):
             )
             raise RuntimeError(msg)
 
-        images = Path(env.sandbox) / PluginLayout.DIR
-        for image in sorted(images.glob(f"*{PluginLayout.IMAGE_SUFFIX}")):
-            plugin_id = image.name.removesuffix(PluginLayout.IMAGE_SUFFIX)
+        suffix = ProgramFile.IMAGE_SUFFIX.value
+        for image in sorted(self._program.plugin_images().glob(f"*{suffix}")):
+            plugin_id = image.name.removesuffix(suffix)
             if plugin_id in plugin_ids:
                 continue
 
@@ -600,19 +609,17 @@ class ZygoteLaunchers(SectionLaunchers):
         if sandbox.profile is not None:
             return self._checked(sandbox.profile, launch.id)
 
-        env = self._env()
         data = self._composed(launch.id, sandbox)
         if launch.manifest.network:
             data["isolation"]["network"] = True
-            data["mounts"]["ro"] = SandboxDefaults.network_binds(env)
+            data["isolation"]["env"].update(self._defaults.network_env())
+            data["mounts"]["ro"] = self._defaults.network_binds()
 
-        data["mounts"]["images"] = SandboxDefaults.data_images(
-            env, launch.manifest.data
-        )
+        data["mounts"]["images"] = self._defaults.data_images(launch.manifest.data)
 
         if sandbox.workspace:
-            data["mounts"]["workspace"] = SandboxDefaults.workspace(env)
-            data["run"]["cwd"] = SandboxDefaults.WORKSPACE_TARGET
+            data["mounts"]["workspace"] = self._defaults.workspace()
+            data["run"]["cwd"] = ProgramRoot.WORKSPACE_TARGET
 
         return self._checked(SandboxProfile.model_validate(data), launch.id)
 
@@ -640,9 +647,9 @@ class ZygoteLaunchers(SectionLaunchers):
         return profile
 
     def _composed(self, plugin_id: str, needs: PluginSandbox) -> dict[str, Any]:
-        """Дефолтный профиль от [env] + образ plugins/<id>.ext4 + таблицы из
+        """Дефолтный профиль программы + образ plugins/<id>.ext4 + таблицы из
         [sandbox] файла conf/plugins/<id>.toml."""
-        data = SandboxDefaults.profile(self._env(), plugin_id)
+        data = self._defaults.profile(plugin_id)
 
         overrides = {
             "host": needs.host,
@@ -658,28 +665,29 @@ class ZygoteLaunchers(SectionLaunchers):
 
 
 class ProcessLaunchers(SectionLaunchers):
-    """Запуск субпроцессом хоста: без песочницы, файлы инструментов в workdir.
+    """Запуск субпроцессом хоста: без песочницы, файлы инструментов в workdir —
+    каталоге workspace данных экземпляра.
 
     Программа плагина — `python -m boba.sandbox.program <id>` интерпретатором
     приложения: плагин стоит в окружении исходников, режим — только отладка.
     """
 
-    def __init__(self, cfg: ProcessLauncherConfig) -> None:
+    def __init__(self, cfg: ProcessLauncherConfig, workdir: Path) -> None:
         self._cfg = cfg
+        self._workdir = workdir
         self._output = PluginOutput()
         self._entry = PluginEntry()
 
     def probe(self) -> None:
-        workdir = Path(self._cfg.workdir)
-        if not workdir.is_dir():
+        if not self._workdir.is_dir():
             msg = (
-                "[tool_launcher] provider = process: workdir must be an existing "
-                f"directory, got {self._cfg.workdir!r}"
+                "[tool_launcher] provider = process: the workspace directory of "
+                f"the instance data must exist, {self._workdir} does not"
             )
             raise RuntimeError(msg)
 
         # файловые ссылки канваса читают файлы инструментов из workdir
-        WorkspaceMount.configure(self._cfg.workdir)
+        WorkspaceMount.configure(str(self._workdir))
 
     def check_kits(self, plugin_ids: Sequence[str]) -> None:
         return
@@ -699,7 +707,9 @@ class ProcessLaunchers(SectionLaunchers):
     ) -> ToolLauncher:
         program = (*self._program(launch.id), PluginCommand.CALL.value)
 
-        return ProcessToolCaller(launch.id, self._cfg, contexts, ambient, program)
+        return ProcessToolCaller(
+            launch.id, self._cfg, str(self._workdir), contexts, ambient, program
+        )
 
     def settle(self) -> None:
         return
@@ -723,7 +733,7 @@ class ProcessLaunchers(SectionLaunchers):
                 input=self._output.section_bytes(section),
                 capture_output=True,
                 timeout=self._cfg.timeout_sec,
-                cwd=self._cfg.workdir,
+                cwd=self._workdir,
                 check=False,
             )
         except subprocess.TimeoutExpired as exc:
@@ -764,4 +774,5 @@ class ToolLaunchers:
             case SandboxLauncherConfig():
                 return ZygoteLaunchers(raw)
             case ProcessLauncherConfig():
-                return ProcessLaunchers(section)
+                instance = bind(raw, InstanceConfig.SECTION, InstanceConfig)
+                return ProcessLaunchers(section, instance.data(InstanceData.WORKSPACE))

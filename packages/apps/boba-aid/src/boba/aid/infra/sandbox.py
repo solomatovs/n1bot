@@ -124,11 +124,12 @@ class AidListeners:
     локальному порту сокета, на который пришёл (scope["server"]), а не по
     заголовку Host: на порт песочницы отвечает её SandboxSite, на порт
     чата — приложение чата, ему же уходит lifespan. Так песочница живёт на
-    своём источнике без внешнего веб-сервера. Создаёт run_app по конфигу
-    и приложению чата.
+    своём источнике без внешнего веб-сервера. Создаёт run_app по конфигу,
+    приложению чата и корню статики chainlit (root), где лежат страницы
+    песочницы MCP Apps.
     """
 
-    def __init__(self, config: AppConfig, chat: ASGIApp) -> None:
+    def __init__(self, config: AppConfig, chat: ASGIApp, root: Path) -> None:
         self._chat = chat
         self._host = config.aid.host
         self._chat_port = config.aid.port
@@ -136,7 +137,6 @@ class AidListeners:
         if config.aid.ssl_cert:
             self._scheme = ListenScheme.TLS
 
-        root = Path(config.aid.root).resolve()
         self._sites: dict[int, ASGIApp] = {}
         self._servers: dict[int, str] = {}
         for name, server in config.mcp.servers.items():

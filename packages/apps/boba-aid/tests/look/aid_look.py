@@ -35,6 +35,7 @@ from PIL import Image, ImageChops
 from playwright.sync_api import Browser, BrowserContext, Locator, Page, ViewportSize
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 
+from boba.runtime.config import ProgramDir
 from boba.stand.ui.stand import (
     StandApp,
     StandAuth,
@@ -1230,9 +1231,9 @@ class LookLanguage(StrEnum):
 
 
 class LookAppRoots:
-    """Корни приложения chainlit под язык: язык конфига assets — сами assets,
-    другой — копия assets в рабочем каталоге с этим языком в
-    .chainlit/config.toml (ссылок нет, только копии)."""
+    """Каталоги программы чата под язык: язык конфига assets — каталог
+    прогона, другой — свой каталог в рабочем с копией assets в share/ и этим
+    языком в .chainlit/config.toml (ссылок нет, только копии)."""
 
     CONFIG: ClassVar[tuple[str, str]] = (".chainlit", "config.toml")
     LANGUAGE: ClassVar[str] = 'language = "{language}"'
@@ -1241,7 +1242,8 @@ class LookAppRoots:
         self._workdir = workdir
 
     def of(self, language: LookLanguage) -> str:
-        """Корень для [env].app_root стенда; пусто — assets пакета.
+        """Каталог программы (BOBA_RUNTIME) процесса стенда; пусто — каталог
+        прогона.
 
         Ошибки:
         LookError — в конфиге chainlit assets нет строки языка.
@@ -1252,14 +1254,15 @@ class LookAppRoots:
         if own == wanted:
             return ""
 
-        root = self._workdir / f"app-root-{language.value}"
-        if not root.is_dir():
-            shutil.copytree(LookPaths.ASSETS, root)
-            root.joinpath(*self.CONFIG).write_text(
+        runtime = self._workdir / f"runtime-{language.value}"
+        share = runtime / ProgramDir.SHARE.value
+        if not share.is_dir():
+            shutil.copytree(LookPaths.ASSETS, share)
+            share.joinpath(*self.CONFIG).write_text(
                 config.replace(own, wanted), encoding="utf-8"
             )
 
-        return str(root)
+        return str(runtime)
 
     def _language_line(self, config: str) -> str:
         for line in config.splitlines():
@@ -1317,7 +1320,7 @@ class LookStand:
             db_name=self._database,
             url_prefix="/boba-look",
             auth=auth,
-            app_root=self._roots.of(language),
+            runtime=self._roots.of(language),
         )
         process = StandProcess(config=config, log_path=self._workdir / f"{name}.log")
         process.start(boot_timeout_sec=self.BOOT_TIMEOUT_SEC)

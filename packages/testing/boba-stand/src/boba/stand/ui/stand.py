@@ -34,9 +34,9 @@ import httpx
 from omegaconf import DictConfig, OmegaConf
 from typing_extensions import TypeVar
 
-from boba.config import ConfigError, ConfigLoader, bind
+from boba.config import ConfigError, ConfigLoader
 from boba.core.mcp_names import McpToolNames
-from boba.runtime.launchers import EnvPaths
+from boba.runtime.config import ProgramDir, ProgramFile, ProgramRoot, ProgramRoots
 from boba.stand.ui.toml_text import TomlText
 
 __all__ = [
@@ -320,75 +320,59 @@ class StandApp(StrEnum):
 
 
 class RuntimeLayout(StrEnum):
-    """Раскладка каталогов сборки runtime: образы плагинов песочницы и
-    бинарники развёртывания."""
+    """Образ плагина, по которому стенды берут базовый корень песочницы."""
 
-    PLUGINS = "plugins"
-    WORKSPACE = "workspace.ext4"
-    IMAGE_SUFFIX = ".ext4"
     SHELL_PLUGIN = "bash"
-    BIN = "bin"
 
 
 class StandRuntime:
-    """Каталоги сборки runtime на стенде: образы песочницы, бинарники third и
-    модели плагинов.
+    """Каталог программы на стенде: образы песочницы, libexec и модели.
 
-    Их называет секция [env] конфига отладки сервиса (debug/mcp/conf) — те же
-    ключи sandbox, third и models, по которым сервис собирает профили
-    песочницы, поэтому от положения дерева исходников они не зависят. Создают
-    стенды песочницы и зигот (boba.stand.zygote); тесты берут готовый объект
-    оттуда.
+    Его называет BOBA_RUNTIME окружения тестов — тот же каталог runtime/, по
+    которому сервис из исходников собирает профили песочницы (ProgramRoots),
+    поэтому от положения дерева исходников он не зависит. Создают стенды
+    песочницы и зигот (boba.stand.zygote); тесты берут готовый объект оттуда.
     """
 
     def __init__(self) -> None:
-        config = StandApp.MCP.config_path()
         try:
-            self._paths = bind(StandApp.MCP.raw(), path="env", model=EnvPaths)
+            self._program = ProgramRoots().locate()
         except ConfigError as exc:
-            msg = (
-                f"stand runtime: [env] of {config} expects the sandbox, "
-                f"third and models directories of the build, got: {exc}"
-            )
+            msg = f"stand runtime: the program directory of the tests: {exc}"
             raise StandError(msg) from exc
+
+    @property
+    def program(self) -> ProgramRoot:
+        return self._program
 
     @property
     def sandbox(self) -> Path:
         """Артефакты песочницы: образы плагинов и workspace.ext4."""
-        return Path(self._paths.sandbox)
+        return self._program.path(ProgramDir.SANDBOX)
 
     @property
-    def third(self) -> Path:
-        """Сторонние зависимости развёртывания: bin и lib."""
-        return Path(self._paths.third)
-
-    @property
-    def third_bin(self) -> Path:
-        """Бинарники развёртывания: bwrap и fuse2fs из make sandbox."""
-        return self.third / RuntimeLayout.BIN
+    def libexec(self) -> Path:
+        """Вспомогательные программы: bwrap, fuse2fs и mke2fs из make sandbox."""
+        return self._program.path(ProgramDir.LIBEXEC)
 
     @property
     def models(self) -> Path:
         """Модели плагинов: fastembed, rapidocr и прочие."""
-        return Path(self._paths.models)
+        return self._program.path(ProgramDir.MODELS)
 
     def plugin_rootfs(self, plugin_id: str) -> Path:
         """Образ корня плагина: make plugin-rootfs PLUGIN=<id>."""
-        return (
-            self.sandbox
-            / RuntimeLayout.PLUGINS
-            / f"{plugin_id}{RuntimeLayout.IMAGE_SUFFIX}"
-        )
+        return self._program.plugin_image(plugin_id)
 
     def model_image(self, name: str) -> Path:
         """Образ весов модели name: make models-image кладёт его рядом с
         каталогом модели."""
-        return self.models / f"{name}{RuntimeLayout.IMAGE_SUFFIX}"
+        return self._program.model_image(name)
 
     @property
     def workspace_template(self) -> Path:
-        """Шаблон workspace сборки: make sandbox делает его mke2fs из tools."""
-        return self.sandbox / RuntimeLayout.WORKSPACE
+        """Шаблон workspace сборки: make sandbox делает его mke2fs из libexec."""
+        return self._program.root / ProgramFile.WORKSPACE.value
 
     @property
     def shell_rootfs(self) -> Path:
@@ -480,6 +464,7 @@ class StandFiles:
     workdir: Path
 
     OVERLAY: ClassVar[str] = "overlay.toml"
+    SERVE: ClassVar[str] = "serve"
 
     @property
     def overlay(self) -> Path:
@@ -490,8 +475,8 @@ class StandFiles:
         return (app.config_path(), self.overlay)
 
     def arguments(self, app: StandApp) -> list[str]:
-        """Аргументы --config процесса приложения."""
-        arguments: list[str] = []
+        """Подкоманда serve процесса приложения и её аргументы --config."""
+        arguments: list[str] = [self.SERVE]
         for path in self.paths(app):
             arguments.extend(("--config", str(path)))
 
@@ -651,10 +636,6 @@ class ServiceStand(StandService):
         overlay.set(("postgres", "pool", "min_size"), 1)
         overlay.set(("postgres", "pool", "max_size"), 6)
 
-        journal_dir = self.workdir / "tool-logs"
-        journal_dir.mkdir(parents=True, exist_ok=True)
-        overlay.set(("stream_journal", "dir"), str(journal_dir))
-
         if not self.sandbox:
             files_dir = self.workdir / "files"
             files_dir.mkdir(parents=True, exist_ok=True)
@@ -730,12 +711,19 @@ class ServiceStand(StandService):
 
 
 class StandEnv:
-    """Секция [env] наложения приложения стенда: корень отладки, свой каталог
-    данных, порт, имя инстанса и способ запуска инструментов. Создают конфиги
-    стенда на запись; каталоги данных, которые приложение ждёт готовыми,
-    заводит put."""
+    """Свой каталог данных ([instance].data_dir) и секция [env] наложения
+    приложения стенда: порт, имя инстанса и способ запуска инструментов.
+    Создают конфиги стенда на запись; каталоги данных, которые приложение
+    ждёт готовыми, заводит put."""
 
-    DATA_DIRS: ClassVar[tuple[str, ...]] = ("workspace", "tool-logs", "dump", "krb")
+    DATA_DIRS: ClassVar[tuple[str, ...]] = (
+        "workspace",
+        "tool-logs",
+        "dump",
+        "krb",
+        "agents",
+        "files",
+    )
 
     def __init__(self, app: StandApp, data_dir: Path) -> None:
         self._app = app
@@ -750,8 +738,7 @@ class StandEnv:
         if sandbox:
             launcher = "sandbox"
 
-        overlay.set(("env", "base"), str(self._app.base.under(REPO_ROOT)))
-        overlay.set(("env", "data"), str(self._data_dir))
+        overlay.set(("instance", "data_dir"), str(self._data_dir))
         overlay.set(("env", "port"), port)
         overlay.set(("env", "instance_id"), f"stand{port}")
         overlay.set(("env", "tool_launcher"), launcher)
@@ -873,9 +860,10 @@ class StandConfig(StandService):
     messaging: str = ""
     """Провайдер шины [messaging]: пусто — как в конфиге отладки (память
     процесса); postgres — шина в базе стенда, общая у двух инстансов."""
-    app_root: str = ""
-    """Корень приложения chainlit ([env].app_root): пусто — assets пакета, как
-    в отладке; свой корень даёт стенду другой конфиг chainlit (язык)."""
+    runtime: str = ""
+    """Каталог программы процесса чата (BOBA_RUNTIME): пусто — тот же, что у
+    прогона; свой каталог со своим share/ даёт стенду другой конфиг chainlit
+    (язык)."""
 
     CHAT_TOOLS: ClassVar[tuple[str, ...]] = StandToolNames.CHAT_TOOLS
     """Инструменты, которые чат исполняет сам; остальные — у сервиса boba-mcp."""
@@ -970,20 +958,17 @@ class StandConfig(StandService):
 
     def _use_agent(self, overlay: StandOverlay) -> None:
         """Агент ACP стенда чата: процесс и история по полям стенда,
-        приватные каталоги в рабочем каталоге стенда; инструменты «всегда
+        приватные каталоги — agents/ данных стенда; инструменты «всегда
         загружать» и пределы хода — как в конфиге приложения."""
         agent = self.app.table("agent")
         if not agent:
             return
 
-        private_dir = self.workdir / "agents"
-        private_dir.mkdir(parents=True, exist_ok=True)
         overlay.set(("postgres_history", "dbname"), self.db_name)
         start_sec, request_sec = self.agent_timeouts_sec
         process: dict[str, Any] = {
             "command": self.agent_process["command"],
             "args": self.agent_process["args"],
-            "private_dir": str(private_dir),
             "start_timeout_sec": start_sec,
             "request_timeout_sec": request_sec,
             "stop_timeout_sec": 10,
@@ -1016,15 +1001,12 @@ class StandConfig(StandService):
         overlay.set(("postgres", "pool", "max_size"), 6)
 
     def _use_env(self, overlay: StandOverlay) -> None:
-        """Секция [env] стенда: каталог данных, порт, имя инстанса, префикс,
-        шина и корень chainlit, если стенд их задал."""
+        """Каталог данных и секция [env] стенда: порт, имя инстанса, префикс и
+        шина, если стенд её задал."""
         StandEnv(self.app, self.data_dir).put(overlay, self.app_port, self.sandbox)
         overlay.set(("env", "url_prefix"), self.url_prefix)
         if self.messaging:
             overlay.set(("env", "messaging_provider"), self.messaging)
-
-        if self.app_root:
-            overlay.set(("env", "app_root"), self.app_root)
 
     def env(self) -> dict[str, str]:
         """Окружение процесса приложения: конфиг целиком в файлах --config,
@@ -1036,6 +1018,9 @@ class StandConfig(StandService):
         env["PYTHONUNBUFFERED"] = "1"
         env.pop("KRB5_CLIENT_KTNAME", None)
         env.pop("KRB5CCNAME", None)
+        if self.runtime:
+            env[ProgramRoots.RUNTIME_ENV] = self.runtime
+
         return env
 
     def _use_fake_llm(self, overlay: StandOverlay) -> None:
@@ -1150,11 +1135,6 @@ class StandConfig(StandService):
         if self.app.table("storage") and not self.sandbox:
             overlay.set(("storage", "kind"), "local")
             overlay.set(("storage", "files_dir"), str(files_dir))
-
-        if self.app.table("stream_journal"):
-            journal_dir = self.workdir / "tool-logs"
-            journal_dir.mkdir(parents=True, exist_ok=True)
-            overlay.set(("stream_journal", "dir"), str(journal_dir))
 
     def _without_mcp_servers(self, overlay: StandOverlay) -> None:
         """Внешние MCP-серверы рабочего конфига стенду не нужны: набор

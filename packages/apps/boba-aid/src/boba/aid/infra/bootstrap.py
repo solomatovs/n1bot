@@ -60,10 +60,10 @@ from boba.runtime.storage import StorageClient
 from boba.toolrun.streams import CallJournals
 
 
-def run_app(raw: DictConfig):
+def run_app(raw: DictConfig, conf_dir: Path):
     """Запуск приложения по загруженному дереву конфига; env chainlit к этому
-    моменту выставлен AppEntry."""
-    c = AppConfig.of(raw)
+    моменту выставлен AppEntry. conf_dir — каталог главного файла конфига."""
+    c = AppConfig.of(raw, conf_dir)
     SandboxCors(chainlit_config.project.allow_origins).check(c)
 
     UserLogContext.install()
@@ -108,7 +108,7 @@ def run_app(raw: DictConfig):
         if c.aid.ws_ping_timeout:
             ws_ping_timeout = c.aid.ws_ping_timeout
 
-        listeners = AidListeners(c, app)
+        listeners = AidListeners(c, app, Path(chainlit_config.root).resolve())
         uv_config = uvicorn.Config(
             listeners,
             host=c.aid.host,
@@ -234,7 +234,7 @@ def _use_chainlit_middleware(app: FastAPI, config: AidSection):
     # хендлеры chainlit зарегистрированы импортом chainlit.server выше
     SocketEvents.install()
 
-    init_markdown(config.root)
+    init_markdown(chainlit_config.root)
 
     # адрес аватара фронт ставит в <img> как есть, а префикс приложения chainlit
     # добавляет только адресам index.html: относительный ведём от корня приложения
@@ -352,7 +352,7 @@ def _use_auth(container: Container) -> None:
         auth,
         config.session.session_ttl_sec,
         sessions,
-        Path(config.aid.root).resolve(),
+        Path(chainlit_config.root).resolve(),
     )
     installer.install(chainlit_app)
 

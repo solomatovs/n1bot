@@ -719,6 +719,7 @@ class ProcessLinks(AgentLinks):
         self,
         config: AgentConfig,
         process: AgentCommandConfig,
+        agents_dir: Path,
         servers: McpServersConfig,
         profiles: ChatProfiles,
         relay: McpRelay,
@@ -729,7 +730,7 @@ class ProcessLinks(AgentLinks):
         self._profiles = profiles
         self._specs = ProfileModelSpecs()
         self._files = SettingsFileBuilder(config, servers)
-        self._workdirs = AgentWorkdirs(Path(process.private_dir))
+        self._workdirs = AgentWorkdirs(agents_dir)
         self._environment = HistoryEnvironment(config.history)
         program = process.program()
         self._command = AgentCommand(
@@ -900,7 +901,9 @@ class AgentLauncher:
     служба (AgentLinks). Удалению треда даёт агента для `session/delete` по
     профилю из threads.meta и текущему конфигу.
 
-    Создаётся провайдером процесса; зовут ThreadAgent и ThreadDeleter.
+    Создаётся провайдером процесса; agents_dir — корень приватных каталогов
+    процессов агента (agents/ данных экземпляра). Зовут ThreadAgent и
+    ThreadDeleter.
     Регистрации выдаёт и снимает реестр McpRegistrations: каждый запуск получает
     новые serverId, остановка процесса и несостоявшийся запуск их снимают.
     Запросы mcp/message агента отвечает общий ретранслятор (McpRelay).
@@ -915,12 +918,15 @@ class AgentLauncher:
         registrations: McpRegistrations,
         relay: McpRelay,
         version: str,
+        agents_dir: Path,
     ) -> None:
         self._specs = ProfileModelSpecs()
         self._registrations = registrations
         self._relay = relay
         self._files = SettingsFileBuilder(config, servers)
-        self._links = self._chosen(config, servers, profiles, users, relay, version)
+        self._links = self._chosen(
+            config, servers, profiles, users, relay, version, agents_dir
+        )
 
     @staticmethod
     def _chosen(  # noqa: PLR0913 — вид агента выбирается всеми входами запуска
@@ -930,12 +936,15 @@ class AgentLauncher:
         users: UserRows,
         relay: McpRelay,
         version: str,
+        agents_dir: Path,
     ) -> AgentLinks:
         process = config.process
         if isinstance(process, AgentServiceConfig):
             return ServiceLinks(process, users, relay, version)
 
-        return ProcessLinks(config, process, servers, profiles, relay, version)
+        return ProcessLinks(
+            config, process, agents_dir, servers, profiles, relay, version
+        )
 
     def prepare(self, identity: ThreadIdentity) -> AgentLaunch:
         """Заготовка запуска по текущему профилю треда: то, что может

@@ -30,6 +30,7 @@ from boba.kerberos import (
     KeytabError,
     SignInTicket,
 )
+from boba.krb.auth import KerberosWorkspace
 from boba.krb.credentials import CcacheLifetime, KerberosEnv
 from boba.krb.errors import GssErrors
 from boba.krb.pac import PacGroupSids
@@ -76,7 +77,7 @@ class SpnegoAcceptor:
         пустой ccache сервиса заставляет libkrb5 идти в KDC за собственным
         TGT, а адрес KDC берётся только из конфига.
         """
-        values = {KerberosEnv.CONFIG: self._delegation.krb5_config}
+        values = {KerberosEnv.CONFIG: KerberosWorkspace.krb5_config()}
 
         with KerberosEnv.applied(values):
             return self._accepted(token)
@@ -123,12 +124,13 @@ class SpnegoAcceptor:
         except GSSError as exc:
             msg = (
                 f"acquiring spnego accept credentials for "
-                f"{self._config.service_name} from keytab {self._config.keytab}"
+                f"{self._config.service_name} from keytab "
+                f"{KerberosWorkspace.keytab(self._config.keytab)}"
             )
             raise KeytabError(f"{msg}: {exc}") from exc
 
     def _credentials(self) -> Credentials:
-        keytab = self._config.keytab.encode()
+        keytab = KerberosWorkspace.keytab(self._config.keytab).encode()
 
         if isinstance(self._delegation, ForwardedDelegation):
             name = Name(self._config.service_name, NameType.kerberos_principal)
@@ -140,7 +142,7 @@ class SpnegoAcceptor:
             store={
                 b"keytab": keytab,
                 b"client_keytab": keytab,
-                b"ccache": self._delegation.service_ccache.encode(),
+                b"ccache": KerberosWorkspace.service_ccache().encode(),
             },
         )
 

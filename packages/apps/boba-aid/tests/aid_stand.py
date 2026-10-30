@@ -124,7 +124,6 @@ from boba.transport.acp.protocol import (
     McpVersion,
     ToolSourceContent,
 )
-from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.launcher import MountingConfig, ReadWindow
 
 AUTH_USER = "test-user"
@@ -852,7 +851,6 @@ def storage(files_dir: Path) -> LocalStorageClient:
             copy_chunk_bytes=65536,
         ),
         mount_dir=str(files_dir),
-        binaries=TrustedBinaries(dirs=("/usr/bin", "/bin")),
     )
 
     return LocalStorageClient(config)

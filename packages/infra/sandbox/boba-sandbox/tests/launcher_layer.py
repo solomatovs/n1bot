@@ -29,7 +29,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import ClassVar
 
-from boba.runtime.config import ProcessInterpreter
+from boba.runtime.config import ProgramRoots
 from boba.sandbox.argv import ZygoteArgv
 from boba.stand.shell import ShellRun
 from boba.stand.zygote import ProcTree, SandboxStand, ZygoteStand
@@ -163,7 +163,7 @@ class ChainRace:
             copy_chunk_bytes=1 << 16,
         )
         self._chain = LauncherChain(
-            ProcessInterpreter().snapshot(),
+            ProgramRoots().locate().interpreter,
             TrustedBinaries(dirs=tuple(SandboxStand.bin_dirs())),
             mounting.to_options(),
         )

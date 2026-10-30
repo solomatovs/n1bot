@@ -62,7 +62,7 @@ from boba.oauth.server import (
     TrustedClient,
 )
 from boba.runtime.journal import DirVault, StreamJournal
-from boba.runtime.storage import LocalStorageConfig
+from boba.runtime.storage import LocalStorageClient, LocalStorageConfig
 from boba.stand import fake_connection
 from boba.stand.service_signin import ServiceSignIn
 from boba.stand.toolstand import ToolStand
@@ -73,7 +73,6 @@ from boba.toolrun.hosted import PluginSection
 from boba.toolrun.injected import InjectedConfig, StaticConfig, StaticSection
 from boba.toolrun.stream_calls import StreamGroupsConfig
 from boba.toolrun.streams import CallJournals
-from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.launcher import MountingConfig
 
 PROFILE = "service"
@@ -347,6 +346,17 @@ class ServiceStand:
         self._sign_in = ServiceSignIn(
             public_url, CLIENT_ID, CLIENT_SECRET, PROXY_SECRET
         )
+        storage = LocalStorageConfig(
+            files_dir=str(workdir / "files"),
+            mounting=MountingConfig(
+                mount_wait_sec=1.0,
+                mount_poll_sec=0.1,
+                shutdown_wait_sec=1.0,
+                lock_wait_sec=1.0,
+                copy_chunk_bytes=65536,
+            ),
+            mount_dir=str(workdir),
+        )
         self.endpoints = McpEndpoints(
             self.registry,
             runs,
@@ -355,18 +365,8 @@ class ServiceStand:
             granted,
             params,
             limits,
-            LocalStorageConfig(
-                files_dir=str(workdir / "files"),
-                mounting=MountingConfig(
-                    mount_wait_sec=1.0,
-                    mount_poll_sec=0.1,
-                    shutdown_wait_sec=1.0,
-                    lock_wait_sec=1.0,
-                    copy_chunk_bytes=65536,
-                ),
-                mount_dir=str(workdir),
-                binaries=TrustedBinaries(dirs=("/usr/bin", "/bin")),
-            ),
+            storage,
+            LocalStorageClient(storage),
         )
 
     def _prompts(self, workdir: Path) -> dict[str, PromptFile]:

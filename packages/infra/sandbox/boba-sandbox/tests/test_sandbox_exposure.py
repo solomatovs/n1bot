@@ -22,7 +22,7 @@ from omegaconf import DictConfig, OmegaConf
 from test_sandbox_disguise import HostOwner
 
 from boba.config import bind
-from boba.runtime.launchers import EnvPaths
+from boba.runtime.config import InstanceConfig, ProgramRoots
 from boba.sandbox import SandboxProfile
 from boba.sandbox.zygote import (
     ZygoteState,
@@ -30,6 +30,7 @@ from boba.sandbox.zygote import (
 )
 from boba.stand.sandbox import section_profile
 from boba.stand.shell import ShellRun
+from boba.stand.site import StandConfigPaths
 from boba.stand.zygote import SandboxStand, ZygoteStand
 from boba.toolkit.launcher import ChannelOverflowError
 
@@ -163,7 +164,7 @@ class TestMountinfoHasNoHostPaths:
 
     Источник fuse-корня был путём rootfs.ext4 на хосте, у биндов resolv.conf,
     hosts, krb5.conf и каталогов весов моделей поле root несло host-путь
-    (${env.krb}/krb5.conf, ${env.models}/fastembed). Тело не должно видеть ни
+    (krb5.conf из conf/krb, модели программы). Тело не должно видеть ни
     одного пути [env] развёртывания, ни uid, gid и имени пользователя хоста
     (их печатала tmpfs из userns). Исключение — бинд кода bash-тула, который
     кладёт сам стенд (SandboxStand.with_shell): в бою его нет.
@@ -208,8 +209,11 @@ class TestMountinfoHasNoHostPaths:
 
     @staticmethod
     def _deployment_paths(raw_config: DictConfig) -> list[str]:
-        env = bind(raw_config, "env", EnvPaths)
-        values = (env.base, env.data, env.sandbox, env.third, env.models, env.krb)
+        """Каталог программы, каталог данных экземпляра и conf/krb рядом с
+        конфигом прогона."""
+        instance = bind(raw_config, InstanceConfig.SECTION, InstanceConfig)
+        krb = StandConfigPaths().paths()[0].resolve().parent / "krb"
+        values = (str(ProgramRoots().locate().root), instance.data_dir, str(krb))
 
         markers: list[str] = []
         for value in values:

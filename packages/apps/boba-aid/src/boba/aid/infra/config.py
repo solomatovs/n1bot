@@ -16,7 +16,6 @@ from boba.access import RoleConfig
 from boba.aid.agent.config import AgentConfig
 from boba.auth.config import AuthConfig
 from boba.chat.profiles import ChatProfileConfig
-from boba.krb import KerberosWorkspaceConfig
 from boba.mcp_client.client import McpServersConfig
 from boba.runtime.config import RuntimeConfig
 
@@ -67,9 +66,10 @@ LOGGING_CONFIG: dict[str, Any] = {
 
 class AidSection(BaseModel):
     """Секция [aid]: HTTP-сервер чата — адрес, TLS, префикс приложения,
-    каталоги статики и вложений, пульс сокетов и остановка uvicorn. Модель
-    собирает AppConfig; bootstrap поднимает по ней uvicorn и ставит префикс,
-    AppEntry передаёт root и files_dir библиотеке chainlit."""
+    пульс сокетов и остановка uvicorn. Модель собирает AppConfig; bootstrap
+    поднимает по ней uvicorn и ставит префикс. Статику chainlit точка входа
+    берёт из share/ каталога программы, вложения — из files/ каталога данных
+    экземпляра."""
 
     host: str = Field(default="127.0.0.1")
     port: int = Field(default=8501)
@@ -77,15 +77,6 @@ class AidSection(BaseModel):
     ssl_key: str | None = Field(default=None)
     ssl_ca_certs: str | None = Field(default=None)
     url_prefix: str = Field(default="")
-    root: str = Field(default="")
-    files_dir: str = Field(
-        default="",
-        description=(
-            "Каталог вложений сессий чата вместо <root>/.files: root — "
-            "статика, писать в него приложение не должно. Пустое значение "
-            "точка входа отвергает."
-        ),
-    )
 
     ping_interval: int = Field(
         default=300,
@@ -163,10 +154,6 @@ class AppConfig(RuntimeConfig):
 
     model_config = ConfigDict(extra="ignore")
 
-    krb: Annotated[
-        KerberosWorkspaceConfig,
-        Field(description="Секция [krb]: krb5.conf и каталог кэшей билетов."),
-    ]
     aid: Annotated[
         AidSection,
         Field(description="Секция [aid]: HTTP-сервер чата; ${aid.<name>}."),

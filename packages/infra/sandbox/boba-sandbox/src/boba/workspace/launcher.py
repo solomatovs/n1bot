@@ -1040,7 +1040,7 @@ class LauncherView:
                 f"launcher view: chain executable {executable} resolves to {real} "
                 "through a link outside the paths the outer sandbox layer sees; "
                 "put a regular copy of the binary into the trusted directory of "
-                "the deployment (${env.third}/bin)"
+                "the program (its libexec directory)"
             )
             raise UntrustedBinaryError(msg)
 

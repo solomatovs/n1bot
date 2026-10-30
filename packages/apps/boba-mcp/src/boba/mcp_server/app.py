@@ -1,14 +1,15 @@
 """Процесс сервиса исполнения: сборка объектов и запуск MCP-сервера.
 
-`boba-mcp --config <toml> [--config <наложение>]` читает конфиг экземпляра
-(промпты endpoint'ов он подключает сам), поднимает контейнер
+`boba-mcp serve --config <toml> [--config <наложение>]` читает конфиг
+экземпляра (промпты endpoint'ов он подключает сам), поднимает контейнер
 общих сервисов (журналы вызовов, реестр запусков, способ запуска, реестр
 инструментов, способы входа), строит endpoint'ы MCP над реестром — по одному на
-профиль конфига — и слушает адрес секции [mcp].
+профиль конфига — и слушает адрес секции [mcp]. `boba-mcp health --config
+<toml>` пробует готовность запущенного сервиса на порту из [mcp].
 
 Ошибки:
-SystemExit — конфиг не прочитан либо сервис не поднялся; текст
-    называет причину.
+SystemExit — конфиг не прочитан, сервис не поднялся либо не ответил на
+    пробу готовности; текст называет причину.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ import asyncio
 import logging
 import logging.config
 import signal
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Annotated, Self
@@ -29,6 +31,7 @@ from pydantic import ConfigDict, Field, StringConstraints
 from boba.auth.credentials import NoRefresh
 from boba.auth.proxy import ProxyAssertions
 from boba.cancellation import ProcessStop, StopReason
+from boba.config import ConfigLoader, bind
 from boba.connection_broker.sealed import ServerConnection
 from boba.connections.sealed import SealKeys
 from boba.identity.context import CallContexts
@@ -50,11 +53,17 @@ from boba.oauth.server import (
     TrustedClient,
 )
 from boba.runtime import providers
-from boba.runtime.config import ConfigArguments, ProcessConfig, RawConfig
+from boba.runtime.config import (
+    ConfigArguments,
+    ProcessConfig,
+    ProgramCall,
+    ProgramCommand,
+    RawConfig,
+)
 from boba.runtime.di import Container
-from boba.runtime.http import SignalledServer
+from boba.runtime.http import HealthProbe, SignalledServer
 from boba.runtime.launchers import ToolLaunchers
-from boba.runtime.storage import LocalStorageConfig
+from boba.runtime.storage import LocalStorageConfig, StorageFactory
 
 __all__ = ["McpAppConfig", "McpEntry", "McpHost", "McpSection"]
 
@@ -195,6 +204,7 @@ class McpHost:
                 self._container.resolved(providers.connection_params),
                 section.limits,
                 self._config.storage,
+                StorageFactory(self._config.instance).create(self._config.storage),
             )
             stop = ProcessStop()
             stop.on_stop(StoppedRuns(self._container.resolved(providers.runs)))
@@ -269,21 +279,36 @@ class McpHost:
 
 
 class McpEntry:
-    """Вход процесса: `boba-mcp --config <toml> [--config <наложение>]`."""
+    """Вход процесса: `boba-mcp serve|health --config <toml> [--config <наложение>]`."""
 
-    def config_paths(self) -> tuple[Path, ...]:
-        """Конфиг экземпляра и наложения — обязательные аргументы --config."""
+    def call(self) -> ProgramCall:
+        """Подкоманда и файлы конфига: конфиг экземпляра и наложения."""
         parser = argparse.ArgumentParser(
             prog="boba-mcp", description="Tool execution service of boba"
         )
 
-        return ConfigArguments(parser).paths()
+        return ConfigArguments(parser).call()
 
     async def run(self) -> None:
-        config = McpAppConfig.load(self.config_paths())
+        call = self.call()
+        match call.command:
+            case ProgramCommand.SERVE:
+                await self.serve(call.paths)
+            case ProgramCommand.HEALTH:
+                self.health(call.paths)
+
+    async def serve(self, paths: Sequence[Path]) -> None:
+        config = McpAppConfig.load(paths)
         logging.config.dictConfig(config.logger)
 
         await McpHost(config).serve()
+
+    def health(self, paths: Sequence[Path]) -> None:
+        """Проба готовности по [mcp]: порт и префикс сервиса."""
+        section = bind(ConfigLoader(paths).load(), "mcp", McpSection)
+        probe = HealthProbe(section.port, section.url_prefix, McpEndpoints.HEALTH)
+
+        sys.stdout.write(f"{probe.check()}\n")
 
 
 async def main() -> None:

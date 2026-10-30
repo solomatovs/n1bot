@@ -1,4 +1,4 @@
-"""python -m boba.mcp_server --config <toml> [--config <наложение>]."""
+"""python -m boba.mcp_server serve|health --config <toml> [--config <наложение>]."""
 
 import asyncio
 
