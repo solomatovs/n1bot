@@ -2056,9 +2056,12 @@ BOBA_CONFIG_PATH=$PWD/conf/config.toml:$PWD/conf/stand.toml \
 программа SDK находит объявление `ToolPlugin` по entry point'у `<id>`
 группы `boba.tools` в окружении образа и строит из него всё остальное.
 
-Внутренний шаг сборки `plugin-bin` собирает тот же плагин без python: модуль `boba.sandbox.program` компилируется Nuitka в каталог
-`/plugin/run.dist`, а `/plugin/run` — скрипт `exec
-/plugin/run.dist/run.bin <id> "$@"`. Корень образа — голый glibc с CA
+Внутренний шаг сборки `plugin-bin` собирает тот же плагин без python:
+сценарий `build/scripts/nuitka.sh` компилирует модуль `boba.sandbox.program`
+в каталог `/plugin/run.dist`, а `/plugin/run` — скрипт `exec
+/plugin/run.dist/run.bin <id> "$@"`. Данные и ленивые импорты чужих
+пакетов, которых Nuitka не видит сама (yaml rapidocr), называет
+`build/conf/nuitka.yml`. Корень образа — голый glibc с CA
 контура, `apt`, `root`, `setup` и точками `data` из деклараций. Опись
 сборки (`boba.core.package_data`) кладёт в бинарник файлы данных пакетов
 boba, метаданные их дистрибутивов и модули entry points групп `boba.*`,
