@@ -35,7 +35,7 @@ from PIL import Image, ImageChops
 from playwright.sync_api import Browser, BrowserContext, Locator, Page, ViewportSize
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 
-from boba.runtime.config import ProgramDir
+from boba.runtime.config import SourceTree
 from boba.stand.ui.stand import (
     StandApp,
     StandAuth,
@@ -1231,9 +1231,10 @@ class LookLanguage(StrEnum):
 
 
 class LookAppRoots:
-    """Каталоги программы чата под язык: язык конфига assets — каталог
-    прогона, другой — свой каталог в рабочем с копией assets в share/ и этим
-    языком в .chainlit/config.toml (ссылок нет, только копии)."""
+    """Деревья исходников чата под язык: язык конфига assets — дерево прогона,
+    другой — своё дерево в рабочем каталоге: пустой runtime/ и копия assets
+    пакета чата с этим языком в .chainlit/config.toml (ссылок нет, только
+    копии). Чату из исходников статика нужна только из ассетов пакета."""
 
     CONFIG: ClassVar[tuple[str, str]] = (".chainlit", "config.toml")
     LANGUAGE: ClassVar[str] = 'language = "{language}"'
@@ -1254,9 +1255,11 @@ class LookAppRoots:
         if own == wanted:
             return ""
 
-        runtime = self._workdir / f"runtime-{language.value}"
-        share = runtime / ProgramDir.SHARE.value
+        tree = self._workdir / f"sources-{language.value}"
+        runtime = tree / "runtime"
+        share = tree / SourceTree.AID_ASSETS.value
         if not share.is_dir():
+            runtime.mkdir(parents=True, exist_ok=True)
             shutil.copytree(LookPaths.ASSETS, share)
             share.joinpath(*self.CONFIG).write_text(
                 config.replace(own, wanted), encoding="utf-8"

@@ -12,6 +12,7 @@ import argparse
 import os
 import secrets
 import sys
+from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -50,6 +51,7 @@ __all__ = [
     "AppName",
     "ClusterConfig",
     "ConfigArguments",
+    "InstalledProgram",
     "InstanceConf",
     "InstanceConfig",
     "InstanceData",
@@ -68,6 +70,8 @@ __all__ = [
     "RawConfig",
     "RuntimeConfig",
     "SessionConfig",
+    "SourceProgram",
+    "SourceTree",
     "StreamJournalConfig",
     "TokenConfig",
     "ValueCipherConfig",
@@ -150,19 +154,31 @@ class ProgramFile(StrEnum):
     IMAGE_SUFFIX = ".ext4"
 
 
+class SourceTree(StrEnum):
+    """Дерево исходников вокруг runtime/: по нему программа из .venv берёт то,
+    что лежит в git, прямо из исходников."""
+
+    PACKAGES = "packages"
+    """Каталог пакетов: его наличие рядом с runtime/ и есть дерево исходников."""
+    AID_ASSETS = "packages/apps/boba-aid/assets"
+    """Статика чата: share/ программы из исходников."""
+
+
 @dataclass(frozen=True)
-class ProgramRoot:
+class ProgramRoot(ABC):
     """Каталог программы: только чтение, обновление — замена каталога.
 
-    Находит его ProgramRoots на границе конфига; пользуются им способ запуска
-    плагинов в песочнице (образы плагинов и моделей, bwrap), хранилище образов
-    workspace и вход чата (статика chainlit). interpreter — чем цепочка
-    лаунчера песочницы запускает ту же программу во внешнем слое.
+    Базовый класс; наследники — установленная программа (InstalledProgram) и
+    программа из исходников (SourceProgram), выбирает их ProgramRoots на
+    границе конфига. Пользуются им способ запуска плагинов в песочнице (образы
+    плагинов и моделей, bwrap), хранилище образов workspace и вход чата
+    (статика chainlit). root — каталог программы (у исходников — runtime/),
+    interpreter — чем цепочка лаунчера песочницы запускает ту же программу во
+    внешнем слое.
     """
 
     root: Path
     interpreter: LauncherInterpreter
-    compiled: bool
 
     SYSTEM_BINARIES: ClassVar[tuple[str, ...]] = (
         "/usr/bin",
@@ -174,8 +190,9 @@ class ProgramRoot:
 
     WORKSPACE_TARGET: ClassVar[str] = "/workspace"
 
+    @abstractmethod
     def path(self, part: ProgramDir) -> Path:
-        return self.root / part.value
+        """Каталог части программы."""
 
     def plugin_images(self) -> Path:
         return self.root / ProgramFile.PLUGINS.value
@@ -187,6 +204,9 @@ class ProgramRoot:
         models = self.path(ProgramDir.MODELS)
 
         return models / f"{name}{ProgramFile.IMAGE_SUFFIX.value}"
+
+    def workspace_template(self) -> Path:
+        return self.root / ProgramFile.WORKSPACE.value
 
     def binaries(self) -> TrustedBinaries:
         """Доверенные каталоги bwrap и fuse2fs: libexec программы, затем
@@ -201,32 +221,48 @@ class ProgramRoot:
         mount = f"{images}/{WorkspaceSpec.USER_VAR}.ext4:{self.WORKSPACE_TARGET}"
 
         return WorkspaceSpec.model_validate(
-            {"template": str(self.root / ProgramFile.WORKSPACE.value), "mount": mount}
+            {"template": str(self.workspace_template()), "mount": mount}
         )
 
-    def python_module(self, module: str) -> tuple[str, ...]:
-        """Команда модуля python интерпретатором программы; у собранной
-        программы интерпретатора нет — ConfigError."""
-        if self.compiled:
-            msg = (
-                f"running python module {module} needs the program from sources "
-                f"(BOBA_RUNTIME), got the compiled program in {self.root}"
-            )
-            raise ConfigError(msg)
 
-        return (self.interpreter.executable, "-m", module)
+@dataclass(frozen=True)
+class InstalledProgram(ProgramRoot):
+    """Реализация ProgramRoot установленной программы: собранной Nuitka или
+    программы на python в образе и дереве релиза. Все части — в её каталоге."""
+
+    def path(self, part: ProgramDir) -> Path:
+        return self.root / part.value
+
+
+@dataclass(frozen=True)
+class SourceProgram(ProgramRoot):
+    """Реализация ProgramRoot программы из исходников (.venv): то, что лежит в
+    git, берётся из дерева исходников sources (статика чата — ассеты пакета
+    boba-aid), а собранное, чего в исходниках нет, — из root, каталога runtime/
+    (libexec, models, sandbox)."""
+
+    sources: Path
+
+    def path(self, part: ProgramDir) -> Path:
+        if part is ProgramDir.SHARE:
+            return self.sources / SourceTree.AID_ASSETS.value
+
+        return self.root / part.value
 
 
 class ProgramRoots:
-    """Поиск каталога программы на границе конфига.
+    """Поиск каталога программы на границе конфига: единственное место, где
+    различаются собранная программа и программа из исходников.
 
     Собранная программа (Nuitka, `__compiled__`) лежит в
     <корень>/bin/<имя>.dist/<имя>.bin, и корень — третий предок бинарника;
     лаунчер песочницы и проба cgroup — её подкоманды (ProgramTool).
-    Программа из исходников (.venv) находит корень одной переменной
-    BOBA_RUNTIME: она называет каталог runtime/, разложенный так же, как
-    каталог программы. Создают его компоненты, которым каталог программы
-    нужен: способ запуска плагинов, хранилище образов, вход чата.
+    Программа на python находит корень одной переменной BOBA_RUNTIME. Если
+    рядом с ним лежит дерево исходников (каталог packages), это runtime/
+    репозитория и программа из исходников (SourceProgram), иначе — каталог
+    установленной программы на python (образ, релиз). Создают его компоненты,
+    которым каталог программы нужен: способ запуска плагинов, хранилище
+    образов, вход чата.
     """
 
     RUNTIME_ENV: ClassVar[str] = "BOBA_RUNTIME"
@@ -243,7 +279,7 @@ class ProgramRoots:
         if self.compiled():
             return self._compiled()
 
-        return self._sources()
+        return self._python()
 
     def _compiled(self) -> ProgramRoot:
         binary = Path(sys.executable).resolve()
@@ -257,15 +293,15 @@ class ProgramRoots:
             probe=(executable, ProgramTool.PROBE.value),
         )
 
-        return ProgramRoot(root=root, interpreter=interpreter, compiled=True)
+        return InstalledProgram(root=root, interpreter=interpreter)
 
-    def _sources(self) -> ProgramRoot:
+    def _python(self) -> ProgramRoot:
         runtime = os.environ.get(self.RUNTIME_ENV)
         if not runtime:
             msg = (
-                f"program directory: the program runs from sources, so "
-                f"{self.RUNTIME_ENV} must name the runtime/ directory laid out as "
-                "a program (libexec, share, models, sandbox); it is not set"
+                f"program directory: the program runs on python, so "
+                f"{self.RUNTIME_ENV} must name its directory (runtime/ of the "
+                "repository for sources); it is not set"
             )
             raise ConfigError(msg)
 
@@ -277,7 +313,13 @@ class ProgramRoots:
             )
             raise ConfigError(msg)
 
-        return ProgramRoot(root=root, interpreter=self._interpreter(), compiled=False)
+        sources = root.parent
+        if (sources / SourceTree.PACKAGES.value).is_dir():
+            return SourceProgram(
+                root=root, interpreter=self._interpreter(), sources=sources
+            )
+
+        return InstalledProgram(root=root, interpreter=self._interpreter())
 
     def _interpreter(self) -> LauncherInterpreter:
         """Интерпретатор исходников со своим окружением и корнями.

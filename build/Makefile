@@ -21,14 +21,14 @@ CONF_DIR        := $(BASE_DIR)/conf
 -include $(CONF_DIR)/local.mk
 # артефакты для сборки: tarball'ы, uv, webassets, колесо oracledb
 DEPS_DIR        ?= $(BASE_DIR)/src
-# каталог программы для отладки и тестов из .venv (BOBA_RUNTIME): та же раскладка, что у
-# каталога программы в образе — libexec (bwrap, fuse2fs, mke2fs), share (статика чата),
-# models, sandbox (workspace.ext4, plugins/<id>.ext4). Один на репозиторий: образы
-# корней плагинов, модели и workspace из него берёт и сборка образа mcp
+# собранное для отладки и тестов из .venv (BOBA_RUNTIME), чего в исходниках нет: libexec
+# (bwrap, fuse2fs, mke2fs), models, sandbox (workspace.ext4, plugins/<id>.ext4) — в той же
+# раскладке, что у каталога программы в образе; статику чата программа из исходников
+# берёт из ассетов пакета. Один на репозиторий: образы корней плагинов, модели и
+# workspace из него берёт и сборка образа mcp
 RUNTIME_DIR     := $(SRC_DIR)/runtime
 MODELS_DIR      := $(RUNTIME_DIR)/models
 LIBEXEC_DIR     := $(RUNTIME_DIR)/libexec
-SHARE_DIR       := $(RUNTIME_DIR)/share
 SANDBOX_DIR     := $(RUNTIME_DIR)/sandbox
 RELEASE_DIR     := $(SRC_DIR)/release
 
@@ -715,8 +715,7 @@ define HELP
   install               дерево релиза в INSTALL_ROOT/boba-<экземпляр> и юниты systemd пользователя
 
 Фронт чата на хосте (для debug; образ собирает его сам):
-  web                   page.js, UI chainlit (фронт + copilot) и vendor в assets пакета boba-aid,
-                        затем assets целиком -> runtime/share (статика чата отладки и тестов)
+  web                   page.js, UI chainlit (фронт + copilot) и vendor в assets пакета boba-aid
   chainlit-ui           UI chainlit заново
 
 Обслуживание:
@@ -727,8 +726,8 @@ define HELP
   prune                 старые теги образов, образы без тега, кэш BuildKit до PRUNE_KEEP=$(PRUNE_KEEP).
                         Образы без тега — кэш классического сборщика: после prune сборке
                         снова нужны apt-зеркало и реестры
-  clean                 release, артефакты fetch в build/src, собранный фронт, runtime/libexec,
-                        runtime/share и runtime/sandbox (песочница и образы плагинов); модели остаются
+  clean                 release, артефакты fetch в build/src, собранный фронт, runtime/libexec и
+                        runtime/sandbox (песочница и образы плагинов); модели остаются
   sec                   sec.sh, MODE=all|full|sast|sca|rules
 
 Переменные: JOBS=$(JOBS) — заданий на шаг сборки; входит в ключ кэша, другое значение
@@ -1303,9 +1302,9 @@ dev:
 
 # дерево отладки и тестов на хосте: свои данные и свой config.toml, чтобы процесс на
 # хосте и контейнер compose не писали в одни каталоги. Файлы плагинов отладка читает
-# прямо из пакета mcp, каталог программы — runtime/ (BOBA_RUNTIME): libexec, модели,
-# образы песочницы и статика share/ (её собирает цель из WEB_<приложение>). config.toml
-# отладки и conf/krb пишет разработчик; цель их не порождает
+# прямо из пакета mcp, статику — из ассетов пакета чата (собранный фронт кладёт туда цель
+# из WEB_<приложение>), собранное — libexec, модели, образы песочницы — из runtime/
+# (BOBA_RUNTIME). config.toml отладки и conf/krb пишет разработчик; цель их не порождает
 debug: OUT = $(SRC_DIR)/debug/$(APP)
 debug: $(WEB_$(APP)) vscode
 	@if [ -n "$(APP_SANDBOX)" ]; then
@@ -1332,13 +1331,7 @@ endif
 web: $(PAGE_JS) $(UI_DIST)/index.html $(WEB_FILES)
 	@rm -rf "$(ASSETS_VENDOR)"
 	cp -a "$(WEBASSETS_DIR)" "$(ASSETS_VENDOR)"
-	# share/ каталога программы отладки: копия ассетов, как в образе чата
-	stage=$$(mktemp -d "$(STAGE_TEMPLATE)")
-	cp -a "$(ASSETS_DIR)/." "$$stage/"
-	rm -rf "$(SHARE_DIR)"
-	mv "$$stage" "$(SHARE_DIR)"
-	chmod -R go-w "$(SHARE_DIR)"
-	echo ">>> фронт чата: $(PAGE_JS), $(UI_DIST), $(ASSETS_VENDOR) -> $(SHARE_DIR)"
+	echo ">>> фронт чата: $(PAGE_JS), $(UI_DIST), $(ASSETS_VENDOR)"
 
 # скрипт страницы node'ом образа: на хосте node не нужен
 $(PAGE_JS): $(PAGE_SRCS)
@@ -1459,7 +1452,7 @@ prune:
 # качаются долго
 .PHONY: clean
 clean:
-	@echo "== чистка: release, артефакты fetch, собранный фронт, runtime/libexec, runtime/share и runtime/sandbox =="
+	@echo "== чистка: release, артефакты fetch, собранный фронт, runtime/libexec и runtime/sandbox =="
 	rm -rf $(RELEASE_DIR) $(DEPS_DIR)/uv $(WEBASSETS_DIR) $(ORACLEDB_DIR) $(FETCH_CONSTRAINTS) \
 	       $(DEPS_DIR)/*.tar.xz $(DEPS_DIR)/*.tar.gz $(PNPM_STORE) $(PAGE_JS) $(ASSETS_VENDOR) $(UI_DIST) \
-	       $(LIBEXEC_DIR) $(SHARE_DIR) $(SANDBOX_DIR)
+	       $(LIBEXEC_DIR) $(SANDBOX_DIR)
