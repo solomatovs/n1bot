@@ -636,8 +636,8 @@ class Launcher:
 
     @classmethod
     def main(cls, argv: list[str]) -> int:
-        # возраст процесса = bwrap + старт python с импортами до этой строки
-        trace(f"launcher up {ProcessAge.ms()}ms after exec (bwrap + python startup)")
+        # возраст процесса = bwrap + старт программы с импортами до этой строки
+        trace(f"launcher up {ProcessAge.ms()}ms after exec (bwrap + program startup)")
 
         args = cls._parse_args(argv)
         images: list[tuple[str, str]] = []
