@@ -333,9 +333,15 @@ runtime/
 Запуск любой программы — одна команда:
 
 ```
-<программа>/bin/boba-mcp serve --config <экземпляр>/conf/config.toml
-<программа>/bin/boba-mcp health --config <экземпляр>/conf/config.toml
+<программа>/bin/boba-mcp.dist/boba-mcp.bin serve --config <экземпляр>/conf/config.toml
+<программа>/bin/boba-mcp.dist/boba-mcp.bin health --config <экземпляр>/conf/config.toml
 ```
+
+boba-mcp — бинарник Nuitka без python: кроме `serve` и `health` у него есть
+служебные подкоманды `launcher` (внешний слой песочницы), `probe` (пустой
+процесс пробы cgroup) и `self-check` (данные пакетов и entry points внутри
+бинарника на месте). Первые две зовёт сам сервер, `self-check` — сборка и
+`make test APP=mcp`.
 
 `health` спрашивает запущенную службу по `127.0.0.1` на порту и префиксе из
 её секции конфига (`[mcp]`, `[app].aid`, `[agent]`) и выходит с кодом 0 при
@@ -543,7 +549,7 @@ watch -n 5 "docker ps --format '{{.Names}} {{.Status}}' | grep -E '^(aid|boba|bo
 обязательный аргумент подкоманды `serve`:
 
 ```
-<программа>/bin/boba-mcp serve --config <каталог экземпляра>/conf/config.toml
+<программа>/bin/boba-mcp.dist/boba-mcp.bin serve --config <каталог экземпляра>/conf/config.toml
 ```
 
 Из исходников то же самое — `BOBA_RUNTIME=<репозиторий>/runtime python -m
@@ -1923,7 +1929,7 @@ Requires=boba-sandbox@mcp.service
 [Service]
 Slice=boba-mcp.slice
 WorkingDirectory=/app/boba-mcp
-ExecStart=/app/boba-mcp/bin/boba-mcp serve --config /app/boba-mcp/conf/config.toml
+ExecStart=/app/boba-mcp/bin/boba-mcp.dist/boba-mcp.bin serve --config /app/boba-mcp/conf/config.toml
 Restart=always
 RestartSec=5
 TimeoutStopSec=30
@@ -2337,7 +2343,8 @@ xdist набор задаёт в своём conftest, остальным тес�
 Песочница собирается в три слоя, и каждый видит своё.
 
 - **Внешний слой** — bwrap со своим user namespace, в котором у лаунчера (это
-  python приложения, модуль `boba.workspace.launcher`) есть `CAP_SYS_ADMIN`.
+  подкоманда `launcher` бинарника boba-mcp, из исходников — модуль
+  `boba.workspace.launcher` интерпретатором приложения) есть `CAP_SYS_ADMIN`.
   В нём `fuse2fs` монтирует образ корня секции на всю жизнь зиготы, а
   хранилище вложений — образ пользователя на одну операцию. Слой видит только
   явный список путей: загрузчик ОС (`/usr`, `/lib`, `/lib64`,
@@ -2350,7 +2357,8 @@ xdist набор задаёт в своём conftest, остальным тес�
   systemd-resolved на место `/etc/resolv.conf` встаёт файл, на который она
   указывает, а `/run` слой не видит. Пути, которого на машине нет, в слое тоже
   нет. Корень слоя после сборки перемонтирован только для чтения, а
-  лаунчер запущен с `python -P`: текущий каталог в его `sys.path` не попадает.
+  лаунчер из исходников запущен с `python -P`: текущий каталог в его
+  `sys.path` не попадает.
   `/sys`, `/run`, `/home`, конфигурация и keytab приложения, журналы
   инструментов и образы других плагинов слою не видны.
 - **Вложенный слой** — bwrap, которым лаунчер заменяет себя. Его корень —

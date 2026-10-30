@@ -30,7 +30,7 @@ dependencies = [
 ]
 
 [project.scripts]
-boba-mcp = "boba.mcp_server.app:cli"
+boba-mcp = "boba.mcp_server.program:cli"
 
 [project.optional-dependencies]
 dev = [

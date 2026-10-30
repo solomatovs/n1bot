@@ -197,9 +197,10 @@ class LauncherEnv(StrEnum):
 class LauncherInterpreter(BaseModel):
     """Интерпретатор лаунчера цепочки: исполняемый файл, его окружение и корни.
 
-    Лаунчер — тот же python, что и процесс приложения, но во внешнем слое
-    цепочки он видит только явный список путей (LauncherView) и приносит в
-    него свои. Это факт процесса, а не конфиг: его даёт ProgramRoot
+    Лаунчер — та же программа, что и процесс приложения: подкоманда launcher
+    собранного бинарника или модуль лаунчера интерпретатором исходников. Во
+    внешнем слое цепочки он видит только явный список путей (LauncherView) и
+    приносит в него свои. Это факт процесса, а не конфиг: его даёт ProgramRoot
     (boba.runtime.config), его получают построитель цепочки LauncherChain
     хранилища образов и реестр зигот способа запуска песочницы.
     """
@@ -208,7 +209,10 @@ class LauncherInterpreter(BaseModel):
 
     executable: str = Field(
         min_length=1,
-        description="Абсолютный путь интерпретатора процесса (sys.executable).",
+        description=(
+            "Абсолютный путь исполняемого файла процесса (sys.executable): "
+            "интерпретатор исходников или бинарник собранной программы."
+        ),
     )
     env: dict[LauncherEnv, str] = Field(
         description=(
@@ -222,6 +226,21 @@ class LauncherInterpreter(BaseModel):
             "каталог исполняемого файла, каталоги sys.path и LD_LIBRARY_PATH. "
             "Текущего каталога процесса и его предков среди них нет: в нём "
             "лежит дерево установки с конфигом и данными."
+        ),
+    )
+    launcher: tuple[str, ...] = Field(
+        min_length=1,
+        description=(
+            "Команда лаунчера до его опций: подкоманда launcher собранной "
+            "программы или модуль лаунчера интерпретатором исходников."
+        ),
+    )
+    probe: tuple[str, ...] = Field(
+        min_length=1,
+        description=(
+            "Пустой процесс, которым проба cgroup проверяет вход ребёнка в "
+            "leaf: подкоманда probe собранной программы или пустая строка "
+            "кода интерпретатором исходников."
         ),
     )
 
@@ -1108,6 +1127,7 @@ class LauncherChain:
     """
 
     MODULE: ClassVar[str] = "boba.workspace.launcher"
+    """Модуль лаунчера для запуска интерпретатором исходников."""
 
     def __init__(
         self,
@@ -1211,11 +1231,7 @@ class LauncherChain:
 
         argv += [
             "--",
-            self._interpreter.executable,
-            # -P: корень слоя не встаёт первым в sys.path лаунчера
-            "-P",
-            "-m",
-            self.MODULE,
+            *self._interpreter.launcher,
             "--template",
             template,
             *self._flags(limits),

@@ -15,7 +15,6 @@ SystemExit — конфиг не прочитан, сервис не подня�
 from __future__ import annotations
 
 import argparse
-import asyncio
 import logging
 import logging.config
 import signal
@@ -316,11 +315,3 @@ async def main() -> None:
         await McpEntry().run()
     except Exception as exc:
         raise SystemExit(f"boba-mcp failed: {type(exc).__name__}: {exc}") from exc
-
-
-def cli() -> None:
-    asyncio.run(main())
-
-
-if __name__ == "__main__":
-    asyncio.run(main())

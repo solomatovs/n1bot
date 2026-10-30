@@ -42,9 +42,10 @@ from boba.db.postgres.connection import PostgresConfig
 from boba.identity.token import CookieSpec, SessionRenewal
 from boba.krb import KerberosWorkspace, KerberosWorkspaceConfig
 from boba.krb.seal import SsoTickets, TicketSealer
+from boba.runtime.program import ProgramTool
 from boba.sandbox import WorkspaceSpec
 from boba.workspace.binaries import TrustedBinaries
-from boba.workspace.launcher import LauncherEnv, LauncherInterpreter
+from boba.workspace.launcher import LauncherChain, LauncherEnv, LauncherInterpreter
 
 __all__ = [
     "AppName",
@@ -254,7 +255,8 @@ class ProgramRoots:
     различаются собранная программа и программа из исходников.
 
     Собранная программа (Nuitka, `__compiled__`) лежит в
-    <корень>/bin/<имя>.dist/<имя>.bin, и корень — третий предок бинарника.
+    <корень>/bin/<имя>.dist/<имя>.bin, и корень — третий предок бинарника;
+    лаунчер песочницы и проба cgroup — её подкоманды (ProgramTool).
     Программа на python находит корень одной переменной BOBA_RUNTIME. Если
     рядом с ним лежит дерево исходников (каталог packages), это runtime/
     репозитория и программа из исходников (SourceProgram), иначе — каталог
@@ -266,8 +268,15 @@ class ProgramRoots:
     RUNTIME_ENV: ClassVar[str] = "BOBA_RUNTIME"
     BINARY_DEPTH: ClassVar[int] = 2
 
+    SOURCES_PROBE: ClassVar[tuple[str, ...]] = ("-c", "")
+    """Пустой процесс интерпретатора исходников для пробы cgroup."""
+
+    def compiled(self) -> bool:
+        """Процесс — собранная программа: интерпретатора python у неё нет."""
+        return "__compiled__" in globals()
+
     def locate(self) -> ProgramRoot:
-        if "__compiled__" in globals():
+        if self.compiled():
             return self._compiled()
 
         return self._python()
@@ -275,8 +284,13 @@ class ProgramRoots:
     def _compiled(self) -> ProgramRoot:
         binary = Path(sys.executable).resolve()
         root = binary.parents[self.BINARY_DEPTH]
+        executable = str(binary)
         interpreter = LauncherInterpreter(
-            executable=str(binary), env={}, roots=(str(root),)
+            executable=executable,
+            env={},
+            roots=(str(root),),
+            launcher=(executable, ProgramTool.LAUNCHER.value),
+            probe=(executable, ProgramTool.PROBE.value),
         )
 
         return InstalledProgram(root=root, interpreter=interpreter)
@@ -347,8 +361,15 @@ class ProgramRoots:
 
             roots.append(root)
 
+        # -P: корень слоя не встаёт первым в sys.path лаунчера
+        launcher = (executable, "-P", "-m", LauncherChain.MODULE)
+
         return LauncherInterpreter(
-            executable=executable, env=env, roots=tuple(dict.fromkeys(roots))
+            executable=executable,
+            env=env,
+            roots=tuple(dict.fromkeys(roots)),
+            launcher=launcher,
+            probe=(executable, *self.SOURCES_PROBE),
         )
 
     @staticmethod
