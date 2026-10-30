@@ -46,3 +46,13 @@
     - description: 'mypy plugin of pydantic'
       no-follow:
         'pydantic.mypy': 'mypy plugin'
+
+- module-name: 'rapidocr'
+  data-files:
+    - patterns:
+        - 'config.yaml'
+        - 'default_models.yaml'
+  implicit-imports:
+    - depends:
+        - 'rapidocr.main'
+        - 'rapidocr.inference_engine.onnxruntime'
