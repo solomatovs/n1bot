@@ -431,7 +431,8 @@ class CallSetupFailed(BaseModel):
 
 
 class WarmupMessage(BaseModel):
-    """Первое сообщение хоста: секция плагина, которой зигота прогревается.
+    """Первое сообщение хоста: часть секции плагина, которой зигота
+    прогревается, — только ключи, объявленные прогревами манифеста.
 
     Каждый прогрев объявления плагина разбирает её своей моделью конфига.
     """
@@ -1165,10 +1166,15 @@ class ZygoteMain:
 
     @classmethod
     def _run_warmups(cls, sock: socket.socket, plugin: ToolPlugin) -> None:
-        """Первое сообщение хоста — секция плагина; прогревы объявления
-        исполняются с ней до ready."""
+        """Первое сообщение хоста — ключи секции плагина, объявленные его
+        прогревами; прогревы объявления исполняются с ними до ready."""
         message, _fds = ZygoteWire.recv(sock)
         warmup = WarmupMessage.model_validate(message)
+
+        keys = ", ".join(sorted(warmup.config))
+        logger.info(
+            "zygote: plugin %s warms up with section keys [%s]", plugin.id, keys
+        )
 
         for hook in plugin.warmups:
             elapsed = Elapsed()

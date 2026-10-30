@@ -64,6 +64,7 @@ from boba.toolkit.manifest import (
     ManifestError,
     ManifestReader,
     PluginManifest,
+    WarmupSection,
 )
 from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
 
@@ -496,7 +497,8 @@ class ZygoteLaunchers(SectionLaunchers):
     программы (ProgramRoot) разрешает пути из конфига плагина и даёт bwrap и
     интерпретатор для цепочки лаунчера. Программа плагина — `/plugin/run <id>`
     его каталога: manifest идёт в песочнице без сети и workspace, setup и
-    зигота — в профиле плагина."""
+    зигота — в профиле плагина. Зигота получает из секции только ключи
+    прогревов манифеста (WarmupSection), тело вызова — секцию целиком."""
 
     def __init__(self, raw: DictConfig) -> None:
         self._raw = raw
@@ -507,6 +509,7 @@ class ZygoteLaunchers(SectionLaunchers):
         self._zygotes = ZygoteRegistry(self._program.interpreter)
         self._cgroups = CgroupProbe(self._program.interpreter.probe)
         self._output = PluginOutput()
+        self._warmups = WarmupSection()
 
     def settle(self) -> None:
         self._zygotes.settle()
@@ -556,7 +559,7 @@ class ZygoteLaunchers(SectionLaunchers):
                 profile=profile,
                 program=(PluginLayout.RUN, launch.id, PluginCommand.ZYGOTE),
                 policy=ZygotePolicy.model_validate(sandbox.zygote),
-                warmup=launch.section,
+                warmup=self._warmups.of(launch.manifest, launch.section),
                 manifest=launch.manifest.digest(),
             )
         )
