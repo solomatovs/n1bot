@@ -44,6 +44,7 @@ packages/**/dist/
 /build/cache/
 /build/conf/pip.conf
 /build/conf/uv.toml
+/build/conf/npmrc
 /build/conf/ca-chain.crt
 /build/conf/local.mk
 /sec/semgrep/

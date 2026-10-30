@@ -2,11 +2,16 @@
 # web/chainlit-ui по всем пакетам workspace — react-client, app (фронт) и copilot
 # (виджет), как pnpm build у upstream: custom_build chainlit резолвит из одного
 # каталога и index.html фронта, и index.js copilot. Зависимости pnpm и npm — из
-# реестра npm образа nodejs (в закрытом контуре — nexus). Итог — стадия share
+# реестра build/conf/npmrc (в закрытом контуре — nexus), без него — из настроек
+# образа nodejs. Итог — стадия share
 ARG NODE_IMAGE=dmp/nodejs:20
 ARG OS_IMAGE
 
 FROM ${OS_IMAGE} AS conf
+
+COPY build/conf/  /tmp/conf/
+
+RUN if [ -f /tmp/conf/npmrc ]; then cp /tmp/conf/npmrc /npmrc; else : > /npmrc; fi
 
 
 # store pnpm: слой зависит только от тарболла тега и манифестов overlay, поэтому
@@ -21,6 +26,7 @@ ENV HOME=/tmp HUSKY=0 CYPRESS_INSTALL_BINARY=0 \
 
 COPY --from=conf /etc/ssl/certs/                     /etc/ssl/certs/
 COPY --from=conf /usr/local/share/ca-certificates/   /usr/local/share/ca-certificates/
+COPY --from=conf /npmrc                              /tmp/.npmrc
 COPY build/src/chainlit-${CHAINLIT_VERSION}.tar.gz   /tmp/chainlit.tar.gz
 COPY packages/apps/boba-aid/web/chainlit-ui/overlay/frontend/package.json \
      packages/apps/boba-aid/web/chainlit-ui/overlay/frontend/pnpm-lock.yaml  /tmp/manifests/frontend/
@@ -81,6 +87,7 @@ ENV HOME=/tmp npm_config_update_notifier=false
 
 COPY --from=conf /etc/ssl/certs/                    /etc/ssl/certs/
 COPY --from=conf /usr/local/share/ca-certificates/  /usr/local/share/ca-certificates/
+COPY --from=conf /npmrc                             /tmp/.npmrc
 COPY packages/apps/boba-aid/web/page/  /src/web/page/
 
 WORKDIR /src/web/page

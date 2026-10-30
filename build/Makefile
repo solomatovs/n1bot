@@ -252,8 +252,8 @@ define HELP
 
 Шаги и сеть: fetch — интернет (curl); prepare — docker build, только реестры
 контура: apt из sources.list образов dmp/*, pypi из build/conf/pip.conf и uv.toml,
-npm из образа nodejs, CA — build/conf/ca-chain.crt; compile — docker run
---network none; image — docker build без сети.
+npm из build/conf/npmrc (без него — из образа nodejs), CA — build/conf/ca-chain.crt;
+compile — docker run --network none; image — docker build без сети.
 
 Переменные: PARALLEL=$(PARALLEL) (рецептов сразу), JOBS=$(JOBS) (заданий компилятора
 в одной компиляции Nuitka), TAG=$(TAG), NO_CACHE=1 (docker build --no-cache),

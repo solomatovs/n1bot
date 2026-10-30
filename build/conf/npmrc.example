@@ -1,0 +1,2 @@
+registry=https://nexus.example.local/repository/npm-group/
+//nexus.example.local/repository/npm-group/:_authToken=<token>
