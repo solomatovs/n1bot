@@ -118,11 +118,13 @@ _run_audit() {
   echo "== pip-audit =="
   local _req
   _req=$(mktemp)
-  "$_uv" export --system-certs --frozen --no-dev --no-emit-workspace \
+  # хэши не выгружаются: колесо oracledb собрано у нас и хэша в uv.lock не имеет;
+  # зависимости в выгрузке уже полные, поэтому pip-audit их не разрешает заново
+  "$_uv" export --system-certs --frozen --no-dev --no-emit-workspace --no-hashes \
     --format requirements-txt -o "$_req" --quiet || _rc=1
   # mcp приходит транзитивно от chainlit, свой MCP-сервер проект не поднимает:
   # все три CVE про server transport, а апгрейд упирается в пин pydantic<2.11
-  "$_uv" tool run --system-certs pip-audit -r "$_req" --disable-pip \
+  "$_uv" tool run --system-certs pip-audit -r "$_req" --disable-pip --no-deps \
     --ignore-vuln PYSEC-2026-1617 \
     --ignore-vuln PYSEC-2026-3482 \
     --ignore-vuln PYSEC-2026-3483 || _rc=1

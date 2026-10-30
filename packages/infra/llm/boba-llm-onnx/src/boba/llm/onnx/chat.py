@@ -721,6 +721,8 @@ class OnnxChatModel(ChatModel):
         rendered = self._runtime.render(self._render.messages_json(request))
         prefix = request.sampling.get(SamplingKey.REPLY_PREFIX.value, "")
 
+        # текст подсказки модели, а не ответ HTTP: правило Flask сюда не относится
+        # nosemgrep: directly-returned-format-string
         return f"{rendered}{prefix}"
 
     def _spec(self, request: ChatRequest) -> RunSpec:
