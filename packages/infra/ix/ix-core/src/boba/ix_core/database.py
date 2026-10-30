@@ -5,7 +5,8 @@ boba-db-postgres; секция приложения наследует моде�
 AsyncPostgresPool напрямую: воркер держит одно выделенное соединение на цикл
 (`AsyncPostgresPool.dedicated`), http-стенд открывает пул.
 
-Файл конфига утилиты читает IxConfigFile одним ConfigLoader'ом. Рабочий
+Файлы конфига утилиты (повторный --config: главный файл и наложения поверх
+него) читает IxConfigFile одним ConfigLoader'ом. Рабочий
 каталог kerberos задаёт секция [krb] того же файла, как у приложения и toolcli:
 enter_kerberos ставит его один раз на процесс; секции нет — kerberos утилите не
 нужен, и профили с keytab билета не получат. Дочерний процесс (источник
@@ -18,6 +19,7 @@ ConfigError — файл конфига не читается или не раз
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import ClassVar, TypeVar
 
@@ -43,14 +45,15 @@ class IxDatabase(BaseModel):
 
 
 class IxConfigFile:
-    """Файл конфига утилиты ix (--config): загружается один раз при создании,
-    секции отдаёт моделями. Создаёт его вход утилиты (воркер, скрапер,
-    стенд поиска) и зовёт enter_kerberos до работы с базой."""
+    """Конфиг утилиты ix: файлы --config (первый — главный, следующие —
+    наложения поверх него) загружаются один раз при создании, секции отдаются
+    моделями. Создаёт его вход утилиты (воркер, скрапер, стенд поиска) и
+    зовёт enter_kerberos до работы с базой."""
 
     KERBEROS: ClassVar[str] = "krb"
 
-    def __init__(self, path: Path) -> None:
-        self._raw = ConfigLoader([path]).load()
+    def __init__(self, paths: Sequence[Path]) -> None:
+        self._raw = ConfigLoader(paths).load()
 
     def section(self, path: str, model: type[M]) -> M:
         return bind(self._raw, path, model)

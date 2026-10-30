@@ -83,4 +83,4 @@ fi
 export BOBA_RUNTIME="$DIR/runtime"
 
 # остальные BOBA_* сюда не тянем: цели launch.json называют файлы конфигурации
-# аргументами --config, тесты — переменной BOBA_CONFIG_PATH
+# аргументами --config, тесты — переменными BOBA_CONFIG_PATH и BOBA_MCP_CONFIG_PATH

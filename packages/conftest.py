@@ -93,7 +93,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         LookOption.OUT.value,
         dest=LookOption.OUT.dest,
         default="",
-        help="каталог отчёта тестов вида; по умолчанию debug/look-out корня",
+        help="каталог отчёта тестов вида вне git; без него тесты вида не идут",
     )
 
 

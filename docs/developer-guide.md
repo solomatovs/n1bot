@@ -506,8 +506,8 @@ Entry point материализуется установкой: после пр
 в git:
 `packages/apps/boba-mcp/conf/plugins/redis.toml`. Сборка кладёт его в образ
 сервиса (`/app/boba/conf/plugins`), а отладка подключает каталог пакета прямо
-(`tool = "${toml_dir:../../../packages/apps/boba-mcp/conf/plugins}"` в
-`debug/mcp/conf/config.toml`). Значения машины — адреса, логины, секреты —
+(`tool = "${toml_dir:<репозиторий>/packages/apps/boba-mcp/conf/plugins}"` в
+наложении отладки `.vscode/boba/mcp.toml`). Значения машины — адреса, логины, секреты —
 живут в `config.toml` экземпляра, а файл плагина на них ссылается.
 
 ```toml
@@ -1633,9 +1633,14 @@ EXPECTED = {
 готовности — `health`:
 
 ```bash
-BOBA_RUNTIME=$PWD/runtime .venv/bin/python -m boba.mcp_server serve \
-    --config debug/mcp/conf/config.toml
+BOBA_RUNTIME=$PWD/runtime BOBA_TOOL_LAUNCHER=process .venv/bin/python -m boba.mcp_server serve \
+    --config compose/mcp/conf/config.toml --config .vscode/boba/mcp.toml
 ```
+
+Первый `--config` — конфиг экземпляра дерева compose (секреты, `conf/krb`
+рядом с ним), второй — наложение отладки разработчика с портом, префиксом,
+базой и каталогом данных (руководство администратора, раздел 8,
+«Конфигурация отладки»).
 
 Каталог данных экземпляра называет `[instance] data_dir`, раскладка внутри
 фиксирована (`InstanceData`), `conf/krb` лежит рядом с `config.toml`
@@ -1710,8 +1715,8 @@ kerberos-connection в файл подставляется готовая сек
 
 ```bash
 echo '{"pattern": "user:*", "limit": 50}' > /tmp/scan.json
-.venv/bin/python -m boba.runtime.toolcli redis redis_scan \
-    --config debug/mcp/conf/config.toml \
+BOBA_TOOL_LAUNCHER=process .venv/bin/python -m boba.runtime.toolcli redis redis_scan \
+    --config compose/mcp/conf/config.toml --config .vscode/boba/mcp.toml \
     --args /tmp/scan.json
 ```
 
@@ -1719,17 +1724,20 @@ echo '{"pattern": "user:*", "limit": 50}' > /tmp/scan.json
 сервиса, проверяет тест `test_plugin_manifests.py` пакета boba-stand.
 Окружение разработчика готовит `source dev.sh` в корне репозитория: оно ставит `.venv`,
 выполняет `uv sync --all-packages --all-extras` и называет каталог программы
-`BOBA_RUNTIME=<репозиторий>/runtime`. Тесты идут из дерева
-отладки и берут файлы конфигурации из переменной `BOBA_CONFIG_PATH` —
-конфиг экземпляра и наложение стенда через `:`, как описано в
-руководстве администратора (раздел 8, «Тесты»); долгий прогон запускают в
-своей сессии tmux с выводом в файл:
+`BOBA_RUNTIME=<репозиторий>/runtime`. Тесты берут файлы конфигурации из
+переменных `BOBA_CONFIG_PATH` (чат) и `BOBA_MCP_CONFIG_PATH` (boba-mcp):
+конфиг compose, наложение отладки и последним наложение стенда
+`~/.config/boba/stand.toml` через `:`, как описано в руководстве
+администратора (раздел 8, «Тесты»); долгий прогон запускают в своей сессии
+tmux с выводом в файл:
 
 ```bash
 source dev.sh
-cd debug/aid
-BOBA_CONFIG_PATH=$PWD/conf/config.toml:$PWD/conf/stand.toml \
-    ../../.venv/bin/pytest ../../packages/testing/boba-stand/tests/test_plugin_manifests.py -q
+S=$HOME/.config/boba/stand.toml
+BOBA_AGENT_MODE=process BOBA_TOOL_LAUNCHER=process \
+BOBA_CONFIG_PATH=$PWD/compose/aid/conf/config.toml:$PWD/.vscode/boba/aid.toml:$S \
+BOBA_MCP_CONFIG_PATH=$PWD/compose/mcp/conf/config.toml:$PWD/.vscode/boba/mcp.toml:$S \
+    .venv/bin/pytest packages/testing/boba-stand/tests/test_plugin_manifests.py -q
 ```
 
 Тесты пишутся интеграционными, на реальных зависимостях, и живут в

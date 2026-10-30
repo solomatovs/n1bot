@@ -34,7 +34,7 @@ from boba.ix_core.scrape import PackageDir
 from boba.ix_core.upgrade import SchemaUpgrade
 from boba.krb import KerberosWorkspaceConfig
 from boba.stand.names import StandNames
-from boba.stand.site import StandConfigPaths, StandError
+from boba.stand.site import StandConfigEnv, StandConfigPaths, StandError
 
 __all__ = ["IxSchemas", "IxStand", "IxStandDatabase", "IxStandError"]
 
@@ -58,7 +58,7 @@ class IxStand(BaseModel):
     @classmethod
     def load(cls) -> Self:
         section = "ix_stand"
-        config = StandConfigPaths()
+        config = StandConfigPaths(StandConfigEnv.RUN)
         try:
             raw = config.load()
             stand = bind(raw, path=section, model=cls)

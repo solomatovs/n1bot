@@ -285,7 +285,8 @@ class LabServer:
 
 
 def parse_args(argv: Sequence[str] | None = None) -> LabConfig:
-    """Запуск с одним аргументом --config: секция [ix.search_lab] в модель."""
+    """Запуск с аргументом --config (повтор кладёт наложение): секция
+    [ix.search_lab] в модель."""
     parser = argparse.ArgumentParser(
         prog="boba-ix-search-lab",
         description="Стенд поисковой выдачи ix: страница и http-сервер.",
@@ -293,10 +294,12 @@ def parse_args(argv: Sequence[str] | None = None) -> LabConfig:
     parser.add_argument(
         "--config",
         required=True,
+        action="append",
         type=Path,
         help=(
-            "Путь к файлу конфига приложения (toml). Адрес страницы, база ix и "
-            "модель эмбеддингов берутся из секции [ix.search_lab]."
+            "Файл конфига приложения (toml); повтор кладёт наложение поверх. "
+            "Адрес страницы, база ix и модель эмбеддингов берутся из секции "
+            "[ix.search_lab]."
         ),
     )
     args = parser.parse_args(argv)

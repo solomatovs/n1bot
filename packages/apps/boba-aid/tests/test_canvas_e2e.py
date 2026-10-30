@@ -7,10 +7,11 @@ DOM: картинка загрузилась, диаграмма отрисов�
 
 Запуск: BOBA_CONFIG_PATH=... pytest -m integration
 packages/apps/boba-aid/tests/test_canvas_e2e.py
-Стенд — два собственных процесса на конфигах деревьев отладки: сервис boba-mcp
-(debug/mcp) и чат (файлы стенда), который ходит к этому сервису. Порты,
-каталоги данных и база у стенда свои (E2eStand): прогон не занимает адреса
-отладки из конфигов и не трогает её данные; контейнеры compose не участвуют.
+Стенд — два собственных процесса на конфигах отладки (файлы приложений из
+BOBA_CONFIG_PATH и BOBA_MCP_CONFIG_PATH): сервис boba-mcp и чат, который ходит
+к этому сервису. Порты, каталоги данных и база у стенда свои (E2eStand):
+прогон не занимает адреса отладки из конфигов и не трогает её данные;
+контейнеры compose не участвуют.
 Нужны: playwright + chromium, postgres, образ workspace из runtime/sandbox.
 """
 
@@ -71,15 +72,13 @@ class E2eStand:
     """Адреса, каталоги и база стенда e2e поверх конфигов отладки.
 
     Конфиги отладки называют порты, данные и базу интерактивной отладки; стенд
-    кладёт поверх них наложение в debug/e2e/<приложение>/conf со своей базой,
-    портами, префиксами, каталогами данных и адресом сервиса (отладка ходит в
-    сервис через nginx), чтобы прогон шёл рядом с запущенной отладкой. Чат и
-    сервис делят одну базу стенда.
+    кладёт поверх них наложение в <root>/<приложение>/conf со своей базой,
+    портами, префиксами, каталогами данных <root>/<приложение>/data и адресом
+    сервиса (отладка ходит в сервис через nginx), чтобы прогон шёл рядом с
+    запущенной отладкой. Каталог root — временный каталог прогона, его даёт
+    фикстура app_server. Чат и сервис делят одну базу стенда.
     """
 
-    ROOT: ClassVar[Path] = REPO / "debug" / "e2e"
-    APP_DATA: ClassVar[Path] = ROOT / "aid" / "data"
-    SERVICE_DATA: ClassVar[Path] = ROOT / "mcp" / "data"
     SERVICE_PORT: ClassVar[int] = StandPorts().free()
     SERVICE_HOST: ClassVar[str] = "localhost"
     SERVICE_SCHEME: ClassVar[str] = "http"
@@ -90,9 +89,15 @@ class E2eStand:
     DATA_DIRS: ClassVar[tuple[str, ...]] = ("krb", "dump", "workspace", "tool-logs")
     DB_NAME: ClassVar[str] = "e2e"
     CONF: ClassVar[str] = "conf"
+    DATA: ClassVar[str] = "data"
+
+    def __init__(self, root: Path) -> None:
+        self._root = root
+        self._app_data = root / StandApp.AID.value / self.DATA
+        self._service_data = root / StandApp.MCP.value / self.DATA
 
     def prepare(self) -> None:
-        for data in (self.APP_DATA, self.SERVICE_DATA):
+        for data in (self._app_data, self._service_data):
             for name in self.DATA_DIRS:
                 (data / name).mkdir(parents=True, exist_ok=True)
 
@@ -111,7 +116,7 @@ class E2eStand:
         return self._files(app).paths(app)
 
     def _files(self, app: StandApp) -> StandFiles:
-        return StandFiles(self.ROOT / app.value / self.CONF)
+        return StandFiles(self._root / app.value / self.CONF)
 
     def _service_overlay(self, database: str) -> StandOverlay:
         origin = f"{self.SERVICE_SCHEME}://{self.SERVICE_HOST}:{self.SERVICE_PORT}"
@@ -120,7 +125,7 @@ class E2eStand:
         overlay.set(("env", "port"), self.SERVICE_PORT)
         overlay.set(("env", "url_prefix"), self.SERVICE_PREFIX)
         overlay.set(("env", "public_url"), f"{origin}{self.SERVICE_PREFIX}")
-        overlay.set(("instance", "data_dir"), str(self.SERVICE_DATA))
+        overlay.set(("instance", "data_dir"), str(self._service_data))
         # тесты называют файлы путями тела инструмента (/workspace/...):
         # так их видит только сервис с песочницей
         overlay.set(("env", "tool_launcher"), self.SERVICE_LAUNCHER)
@@ -134,7 +139,7 @@ class E2eStand:
         overlay.set(("env", "port"), PORT)
         overlay.set(("env", "url_prefix"), self.APP_PREFIX)
         overlay.set(("env", "instance_id"), self.INSTANCE)
-        overlay.set(("instance", "data_dir"), str(self.APP_DATA))
+        overlay.set(("instance", "data_dir"), str(self._app_data))
         overlay.set(("env", "mcp_scheme"), self.SERVICE_SCHEME)
         overlay.set(("env", "mcp_host"), self.SERVICE_HOST)
         overlay.set(("env", "mcp_port"), self.SERVICE_PORT)
@@ -415,11 +420,12 @@ class E2eProcesses:
 
     app: E2eApp
     service: E2eApp
+    stand: E2eStand
 
 
 @pytest.fixture(scope="module")
 def app_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[E2eProcesses]:
-    stand = E2eStand()
+    stand = E2eStand(tmp_path_factory.mktemp("boba-e2e-stand"))
     try:
         stand.prepare()
     except (ConfigError, StandError) as exc:
@@ -451,7 +457,7 @@ def app_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[E2eProcesse
     try:
         service.start()
         app.start()
-        yield E2eProcesses(app=app, service=service)
+        yield E2eProcesses(app=app, service=service, stand=stand)
     finally:
         app.stop()
         service.stop()
@@ -466,11 +472,11 @@ async def _cookie_header(context: Any) -> str:
     return "; ".join(pairs)
 
 
-def _app_config() -> Any:
+def _app_config(stand: E2eStand) -> Any:
     from boba.aid.infra.config import AppConfig
     from boba.config import ConfigLoader, bind
 
-    raw = ConfigLoader(E2eStand().paths(StandApp.AID)).load()
+    raw = ConfigLoader(stand.paths(StandApp.AID)).load()
     return bind(raw, path="app", model=AppConfig)
 
 
@@ -510,7 +516,7 @@ async def _user_row(config: Any, identifier: str) -> tuple[str, Mapping[str, Any
     return str(row[0]), dict(row[1])
 
 
-async def _store(thread_id: str, files: Mapping[str, bytes]) -> None:
+async def _store(thread_id: str, files: Mapping[str, bytes], stand: E2eStand) -> None:
     """Кладёт файлы в workspace пользователя стенда на сервисе boba-mcp тем
     же путём, каким их кладёт чат: клиентом MCP от имени пользователя."""
     from boba.canvas.keys import ObjectKey
@@ -518,7 +524,7 @@ async def _store(thread_id: str, files: Mapping[str, bytes]) -> None:
     from boba.mcp_client.client import McpCaller, McpServers
     from boba.stand.storage import StorageSeed
 
-    config = _app_config()
+    config = _app_config(stand)
     owner, meta = await _user_row(config, LOGIN[0])
     caller = McpCaller(login=LOGIN[0], roles=SignInMetadata.parse(meta).roles)
     server = config.profiles[FILES_PROFILE].mcp[0]
@@ -535,8 +541,8 @@ async def _store(thread_id: str, files: Mapping[str, bytes]) -> None:
         await servers.stop()
 
 
-async def _upload(thread_id: str) -> None:
-    await _store(thread_id, FILES)
+async def _upload(thread_id: str, stand: E2eStand) -> None:
+    await _store(thread_id, FILES, stand)
 
 
 class _SessionProbe:
@@ -785,9 +791,10 @@ class CanvasPage:
     NARROW_WIDTH: ClassVar[int] = 420
     """Окно уже точки перелома chainlit (768 px): панель — лист поверх чата."""
 
-    def __init__(self, page: Page, probe: _SessionProbe) -> None:
+    def __init__(self, page: Page, probe: _SessionProbe, stand: E2eStand) -> None:
         self.page = page
         self.probe = probe
+        self._stand = stand
         self.thread = probe.session["thread"]
         self._session_id = probe.session["id"]
 
@@ -797,7 +804,7 @@ class CanvasPage:
 
     async def rewrite(self, name: str, blob: bytes) -> None:
         """Переписать файл workspace: так его меняет инструмент между показами."""
-        await _store(self.thread, {name: blob})
+        await _store(self.thread, {name: blob}, self._stand)
 
     async def show(self, name: str) -> Locator:
         """Клик по ссылке на файл: ссылка называет и путь, и вид файла."""
@@ -974,9 +981,9 @@ async def panel(app_server: E2eProcesses) -> AsyncIterator[CanvasPage]:
         await page.locator('form button[type="submit"]').first.click()
 
         await probe.joined()
-        await _upload(probe.session["thread"])
+        await _upload(probe.session["thread"], app_server.stand)
 
-        yield CanvasPage(page, probe)
+        yield CanvasPage(page, probe, app_server.stand)
 
         await browser.close()
 

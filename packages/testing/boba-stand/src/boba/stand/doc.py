@@ -13,7 +13,7 @@ from typing import ClassVar, Self
 from pydantic import BaseModel, ConfigDict
 
 from boba.config import ConfigError, bind
-from boba.stand.site import StandConfigPaths, StandError
+from boba.stand.site import StandConfigEnv, StandConfigPaths, StandError
 
 __all__ = ["DocStand", "DocStandError"]
 
@@ -34,7 +34,7 @@ class DocStand(BaseModel):
 
     @classmethod
     def load(cls) -> Self:
-        config = StandConfigPaths()
+        config = StandConfigPaths(StandConfigEnv.RUN)
         try:
             return bind(config.load(), path=cls.SECTION, model=cls)
         except (StandError, ConfigError) as exc:

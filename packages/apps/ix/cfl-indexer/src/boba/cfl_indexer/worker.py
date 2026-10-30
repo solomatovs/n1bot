@@ -713,8 +713,12 @@ class IndexerCli:
         parser.add_argument(
             "--config",
             required=True,
+            action="append",
             type=Path,
-            help="Файл конфига приложения (toml), секция [ix.cfl_indexer].",
+            help=(
+                "Файл конфига приложения (toml), секция [ix.cfl_indexer]; повтор "
+                "кладёт наложение поверх."
+            ),
         )
         parser.add_argument(
             "--source", default="", help="Только этот источник из sources конфига."

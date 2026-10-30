@@ -2,13 +2,14 @@
 процессом тем же входом, что и в проде; провайдер модели, база, хранилище и журнал
 уводятся на тестовые.
 
-Конфиг стенда — config.toml дерева отладки приложения и поверх него один файл-
-наложение в рабочем каталоге стенда, где лежат только изменённые ключи; процесс
-получает оба файла повторным --config.
+Конфиг стенда — файлы приложения из переменной прогона (StandConfigEnv: конфиг
+экземпляра и наложение отладки) и поверх них один файл-наложение в рабочем
+каталоге стенда, где лежат только изменённые ключи; процесс получает их
+повторным --config.
 
 Ошибки:
-StandError — стенд не поднялся, не ответил в отведённое время, конфиг отладки
-    не загружается или не называет каталоги сборки runtime.
+StandError — стенд не поднялся, не ответил в отведённое время, конфиг
+    приложения не загружается или не называет каталоги сборки runtime.
 """
 
 from __future__ import annotations
@@ -40,6 +41,8 @@ from boba.config import ConfigError, ConfigLoader
 from boba.core.mcp_names import McpToolNames
 from boba.runtime.config import ProgramDir, ProgramRoot, ProgramRoots
 from boba.runtime.launchers import PluginSandbox
+from boba.stand.site import StandConfigEnv, StandConfigPaths
+from boba.stand.site import StandError as SiteStandError
 from boba.stand.ui.toml_text import TomlText
 
 __all__ = [
@@ -49,7 +52,6 @@ __all__ = [
     "StandError",
     "StandFiles",
     "StandOverlay",
-    "StandPaths",
     "StandPorts",
     "StandProcess",
     "StandRuntime",
@@ -62,22 +64,6 @@ REPO_ROOT = Path(__file__).resolve().parents[7]
 
 class StandError(Exception):
     """Стенд не поднялся."""
-
-
-class StandPaths(StrEnum):
-    """Пути репозитория, которые стенд подставляет вместо рантайма релиза:
-    деревья отладки debug/<приложение> с config.toml экземпляра и наложением
-    stand.toml в conf/. Каталоги сборки runtime называет конфиг (StandRuntime)."""
-
-    AID_BASE = "debug/aid"
-    MCP_BASE = "debug/mcp"
-    PACKAGES = "packages"
-    CONF = "conf"
-    CONFIG = "config.toml"
-    STAND = "stand.toml"
-
-    def under(self, root: Path) -> Path:
-        return root / self.value
 
 
 class StandServerName(StrEnum):
@@ -224,11 +210,11 @@ class StandCredential:
 
 @dataclass(frozen=True)
 class StandAppTraits:
-    """Чем приложения стенда отличаются друг от друга: модуль запуска, корень
-    рантайма, конфиг и проба готовности."""
+    """Чем приложения стенда отличаются друг от друга: модуль запуска,
+    переменная прогона с файлами конфига и проба готовности."""
 
     module: str
-    base: StandPaths
+    config: StandConfigEnv
     ready_path: str
 
 
@@ -242,12 +228,12 @@ class StandApp(StrEnum):
         known = {
             StandApp.AID: StandAppTraits(
                 module="boba.aid.main",
-                base=StandPaths.AID_BASE,
+                config=StandConfigEnv.RUN,
                 ready_path="/",
             ),
             StandApp.MCP: StandAppTraits(
                 module="boba.mcp_server",
-                base=StandPaths.MCP_BASE,
+                config=StandConfigEnv.SERVICE,
                 ready_path="/health",
             ),
         }
@@ -258,25 +244,21 @@ class StandApp(StrEnum):
     def module(self) -> str:
         return self.traits().module
 
-    @property
-    def base(self) -> StandPaths:
-        return self.traits().base
+    def config_files(self) -> StandConfigPaths:
+        return StandConfigPaths(self.traits().config)
 
     def config_path(self) -> Path:
-        """config.toml экземпляра отладки приложения: главный файл процессов
-        стенда."""
-        conf = self.traits().base.under(REPO_ROOT) / StandPaths.CONF.value
-        return conf / StandPaths.CONFIG.value
+        """Главный файл конфига приложения: рядом с ним conf/krb экземпляра."""
+        return self.config_files().main()
 
     def paths(self) -> tuple[Path, ...]:
-        """Конфиг отладки глазами тестов: config.toml и наложение stand.toml
-        рядом с ним, если оно есть (адреса живых сервисов, секция [stand])."""
-        config = self.config_path()
-        stand = config.with_name(StandPaths.STAND.value)
-        if not stand.is_file():
-            return (config,)
+        """Конфиг приложения глазами тестов: его файлы и последним наложение
+        стенда stand.toml (адреса живых сервисов, секция [stand])."""
+        return self.config_files().paths()
 
-        return (config, stand)
+    def app_paths(self) -> tuple[Path, ...]:
+        """Файлы приложения без наложения стенда: с них стартует процесс."""
+        return self.config_files().app_paths()
 
     def tools_app(self) -> StandApp:
         """Приложение, которое исполняет инструменты этого: у чата — сервис
@@ -287,13 +269,13 @@ class StandApp(StrEnum):
         return self
 
     def raw(self) -> DictConfig:
-        """Загруженный config.toml отладки без наложения стенда: из него стенд
+        """Загруженные файлы приложения без наложения стенда: из них стенд
         берёт таблицы, которые переписывает в наложении целиком."""
-        config = self.config_path()
         try:
-            return ConfigLoader([config]).load()
-        except ConfigError as exc:
-            msg = f"stand: loading the debug config of {self.value}: {exc}"
+            files = self.app_paths()
+            return ConfigLoader(files).load()
+        except (ConfigError, SiteStandError) as exc:
+            msg = f"stand: loading the config of {self.value}: {exc}"
             raise StandError(msg) from exc
 
     def table(self, path: str) -> dict[str, Any]:
@@ -484,7 +466,7 @@ class StandOverlay:
 class StandFiles:
     """Файл-наложение приложения стенда в его рабочем каталоге.
 
-    Процесс стенда получает два файла: config.toml отладки приложения и
+    Процесс стенда получает файлы приложения (StandApp.app_paths) и последним
     наложение с изменёнными стендом ключами (StandOverlay). Плагины не
     копируются: выключенный стендом плагин — ключ tool.<id>.enable в
     наложении.
@@ -499,9 +481,9 @@ class StandFiles:
     def overlay(self) -> Path:
         return self.workdir / self.OVERLAY
 
-    def paths(self, app: StandApp) -> tuple[Path, Path]:
-        """Файлы процесса по порядку: конфиг отладки, затем наложение."""
-        return (app.config_path(), self.overlay)
+    def paths(self, app: StandApp) -> tuple[Path, ...]:
+        """Файлы процесса по порядку: файлы приложения, затем наложение."""
+        return (*app.app_paths(), self.overlay)
 
     def arguments(self, app: StandApp) -> list[str]:
         """Подкоманда serve процесса приложения и её аргументы --config."""
@@ -515,7 +497,7 @@ class StandFiles:
         self.workdir.mkdir(parents=True, exist_ok=True)
         self.overlay.write_text(TomlText.dumps(overlay.document()), encoding="utf-8")
 
-    def write_debug(self, app: StandApp, database: str) -> tuple[Path, Path]:
+    def write_debug(self, app: StandApp, database: str) -> tuple[Path, ...]:
         """Наложение на конфиг отладки приложения app с базой database:
         процесс на конфиге отладки не пишет в её базу. Отдаёт файлы процесса."""
         overlay = StandOverlay()

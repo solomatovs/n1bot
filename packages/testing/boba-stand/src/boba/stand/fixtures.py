@@ -1,7 +1,8 @@
 """Плагин pytest общего стенда: конфиг приложения, тестовая база и пул, kerberos.
 
-Файлы конфигурации называет окружение: BOBA_CONFIG_PATH — главный конфиг и
-наложения через os.pathsep (StandConfigPaths).
+Файлы конфигурации называет окружение (StandConfigEnv): BOBA_CONFIG_PATH —
+файлы чата и последним наложение стенда, BOBA_MCP_CONFIG_PATH — то же для
+сервиса boba-mcp; разделитель os.pathsep (StandConfigPaths).
 """
 
 from collections.abc import AsyncIterator, Iterator
@@ -18,7 +19,7 @@ from boba.stand.apps_slot import AppsDocker, AppsSlot
 from boba.stand.database import TestDatabase
 from boba.stand.overlay import ConfigOverlay
 from boba.stand.refs import StandRefs
-from boba.stand.site import StandConfigPaths
+from boba.stand.site import StandConfigEnv, StandConfigPaths
 from boba.stand.toolsetup import ToolSetup
 from boba.stand.ui.stand import StandApp
 from boba.stand.zygote import ZygoteStand
@@ -101,14 +102,14 @@ class ServiceData(StrEnum):
 def raw_config() -> DictConfig:
     """Конфиг прогона: файлы BOBA_CONFIG_PATH — конфиг приложения и наложение
     стенда stand.toml поверх; он же — дерево процесса (RawConfig)."""
-    return RawConfig.load(StandConfigPaths().paths())
+    return RawConfig.load(StandConfigPaths(StandConfigEnv.RUN).paths())
 
 
 @pytest.fixture(scope="session")
 def config_overlay() -> ConfigOverlay:
     """Файлы прогона BOBA_CONFIG_PATH для тестов, которым нужны свои ключи
     поверх конфига: дерево с изменениями собирает config_overlay.tree."""
-    return ConfigOverlay(ConfigLoader(StandConfigPaths().paths()), {})
+    return ConfigOverlay(ConfigLoader(StandConfigPaths(StandConfigEnv.RUN).paths()), {})
 
 
 @pytest.fixture(scope="session")
@@ -186,7 +187,7 @@ def kerberos_workspace(
     krb5.conf и keytab'ы — conf/krb рядом с главным конфигом прогона."""
     from boba.krb import KerberosWorkspace  # noqa: PLC0415
 
-    conf_dir = StandConfigPaths().paths()[0].resolve().parent
+    conf_dir = StandConfigPaths(StandConfigEnv.RUN).main().resolve().parent
     krb5_conf = process_config.instance.layout(conf_dir).krb5_conf()
     cache = tmp_path_factory.mktemp("krb-cache")
     KerberosWorkspace.configure(str(krb5_conf), str(cache))

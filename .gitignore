@@ -13,6 +13,7 @@ __pycache__
 !/docs/knowledge-graph-plan.md
 !/docs/knowledge-schema.sql
 !/docs/psql-queries/
+!/docs/migrations/
 /docs/psql-queries/*.log
 .claude
 CLAUDE.md
