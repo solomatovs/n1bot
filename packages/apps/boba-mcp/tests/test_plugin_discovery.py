@@ -1,12 +1,13 @@
-"""Комплекты плагинов сервиса: id из секций [tool.*], манифесты от программ
-плагинов в обоих способах запуска и отказы старта на неполном комплекте."""
+"""Плагины сервиса: id из секций [tool.*], манифесты от программ плагинов в
+обоих способах запуска; плагин без своего корня или с непригодной секцией не
+поднимается, а остальные стартуют."""
 
 from __future__ import annotations
 
 from collections.abc import Iterable
 
 import pytest
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 
 from boba.runtime.plugins import PluginKits
 from boba.stand.overlay import ConfigOverlay
@@ -61,42 +62,25 @@ async def test_manifests_come_from_the_plugin_programs(
     assert canvas["canvas_open"].injected["subject"] is InjectedRole.SUBJECT
 
 
-async def test_config_without_image_refuses_start(
+async def test_plugin_without_its_root_is_left_out(
     runtime_stand: StandRefs,
     call_stand: CallStand,
     raw_config: DictConfig,
     config_overlay: ConfigOverlay,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    changes = _enabled_only(raw_config, ("pg",), "sandbox")
-    changes["tool.nope"] = {"enable": False}
+    """Корень называет конфиг плагина: нет файла — не поднимается только этот
+    плагин, и журнал старта называет путь."""
+    changes = ToolSetup.sandbox_changes()
+    changes.update(_enabled_only(raw_config, ("pg", "bash"), "sandbox"))
+    changes["tool.pg.sandbox.rootfs"] = "rootfs/nope.ext4"
     raw = config_overlay.tree(changes)
 
-    loading = PluginKits(raw, runtime_stand.launchers(raw), StaticSection())
+    kits = await PluginKits(raw, runtime_stand.launchers(raw), StaticSection()).load()
 
-    with pytest.raises(RuntimeError, match=r"conf/plugins/nope\.toml.*nope\.ext4"):
-        await loading.load()
-
-
-async def test_image_without_config_refuses_start(
-    runtime_stand: StandRefs,
-    call_stand: CallStand,
-    raw_config: DictConfig,
-    config_overlay: ConfigOverlay,
-) -> None:
-    changes = _enabled_only(raw_config, ("pg",), "sandbox")
-    enabled = config_overlay.tree(changes)
-    plugins = OmegaConf.to_container(enabled["tool"], resolve=False)
-    assert isinstance(plugins, dict)
-    plugins.pop("mail")
-    changes.update(
-        config_overlay.replacement("tool", {str(k): v for k, v in plugins.items()})
-    )
-    raw = config_overlay.tree(changes)
-
-    loading = PluginKits(raw, runtime_stand.launchers(raw), StaticSection())
-
-    with pytest.raises(RuntimeError, match=r"mail\.ext4 has no config"):
-        await loading.load()
+    assert set(kits) == {"bash"}
+    assert "plugin pg is not started" in caplog.text
+    assert "nope.ext4" in caplog.text
 
 
 async def test_tool_the_plugin_does_not_declare_refuses_start(
@@ -120,17 +104,17 @@ async def test_plugin_section_is_checked_by_the_plugin(
     call_stand: CallStand,
     raw_config: DictConfig,
     config_overlay: ConfigOverlay,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Ключи секции сверх ключей фреймворка проверяет сам плагин: сервер их
-    не знает, а непригодную секцию отвергает программа плагина."""
+    не знает, а непригодную секцию отвергает программа плагина, и этот плагин
+    не поднимается."""
     changes = ToolSetup.sandbox_changes()
     changes.update(_enabled_only(raw_config, ("pg",), "sandbox"))
     changes["tool.pg.max_rows"] = 0
     raw = config_overlay.tree(changes)
 
-    loading = PluginKits(raw, runtime_stand.launchers(raw), StaticSection())
+    kits = await PluginKits(raw, runtime_stand.launchers(raw), StaticSection()).load()
 
-    with pytest.raises(
-        RuntimeError, match=r"(?s)`manifest`.*does not fit PgToolConfig"
-    ):
-        await loading.load()
+    assert "pg" not in kits
+    assert "does not fit PgToolConfig" in caplog.text

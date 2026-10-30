@@ -192,5 +192,5 @@ def test_sandbox_plugin_without_program_is_refused(
     section["tool"] = {"pg": {"sandbox": {"rootfs": "rootfs/base.ext4"}}}
     launchers = ToolLaunchers(OmegaConf.create(section)).build()
 
-    with pytest.raises(ConfigError, match=r"tool\.pg\.sandbox.*program"):
+    with pytest.raises(ConfigError, match=r"(?s)tool\.pg\.sandbox.*program"):
         launchers.manifest_of("pg", PG_SECTION)

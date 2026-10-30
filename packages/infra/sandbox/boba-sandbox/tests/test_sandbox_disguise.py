@@ -17,7 +17,6 @@ import os
 import pwd
 import re
 import shutil
-import subprocess
 from pathlib import Path
 from typing import ClassVar
 
@@ -93,16 +92,16 @@ def probe(zygote_stand: ZygoteStand) -> Probe:
 class MountProbe:
     """Таблица монтирования и содержимое конфига изнутри секции с workspace.
 
-    Профиль несёт образ workspace (fuse rw), образ данных (fuse ro, как веса
-    моделей) и бинд хостового resolv.conf — так один вызов покрывает источник
-    fuse у корня и у образов, каталог образов и нейтрализацию хостового бинда
-    конфига.
+    Профиль несёт образ workspace (fuse rw), каталог данных (ro-бинд, как
+    веса моделей) и бинд хостового resolv.conf — так один вызов покрывает
+    источник fuse у корня и workspace, каталог образов, каталог данных и
+    нейтрализацию хостового бинда конфига.
     """
 
     FAKE_DNS: ClassVar[str] = "nameserver 10.1.2.3"
     WEIGHTS: ClassVar[str] = "weights-of-the-model"
     DATA_TARGET: ClassVar[str] = "/media"
-    """Точка образа данных: пустой каталог, который есть в корне shell-плагина."""
+    """Точка каталога данных: пустой каталог, который есть в корне shell-плагина."""
     MOUNTS: ClassVar[str] = "@@mounts@@"
     RESOLV: ClassVar[str] = "@@resolv@@"
     DATA: ClassVar[str] = "@@data@@"
@@ -121,7 +120,7 @@ class MountProbe:
         fake = tmp_path / "resolv.conf"
         fake.write_text(f"{self.FAKE_DNS}\n")
         self._fake = str(fake)
-        self._image = self._data_image(tmp_path)
+        self._data_dir = self._data_tree(tmp_path)
 
         # код репозитория (/usr/src) остаётся: иначе зигота взяла бы guest из
         # запечённого образа, а не из текущих исходников
@@ -129,7 +128,7 @@ class MountProbe:
             tmp_path,
             process_memory_bytes=MEM_BYTES,
             ro=(*SandboxStand.image_ro_binds(), f"{fake}:/etc/resolv.conf"),
-            images=(f"{self._image}:{self.DATA_TARGET}",),
+            images=(f"{self._data_dir}:{self.DATA_TARGET}",),
         )
         caller = stand.caller(
             "mnt", profile, path_vars=lambda: {"user_id": "3", "scope_id": "x"}
@@ -144,24 +143,13 @@ class MountProbe:
         self._resolv, _, rest = rest.partition(f"{self.DATA}\n")
         self._data, _, self._status = rest.partition(f"{self.STATUS}\n")
 
-    def _data_image(self, tmp_path: Path) -> str:
-        """Ext4-образ данных с одним файлом весов: mke2fs кладёт дерево сам."""
-        mkfs = shutil.which("mkfs.ext4")
-        if mkfs is None:
-            msg = "mount probe: mkfs.ext4 is not found on PATH for the data image"
-            raise AssertionError(msg)
-
+    def _data_tree(self, tmp_path: Path) -> str:
+        """Каталог данных с одним файлом весов, как каталог модели."""
         tree = tmp_path / "data-tree"
         tree.mkdir()
         (tree / "weights.txt").write_text(f"{self.WEIGHTS}\n")
 
-        image = tmp_path / "data.ext4"
-        subprocess.run(
-            [mkfs, "-q", "-F", "-t", "ext4", "-d", str(tree), str(image), "4m"],
-            check=True,
-            capture_output=True,
-        )
-        return str(image)
+        return str(tree)
 
     @property
     def mountinfo(self) -> str:
@@ -200,8 +188,8 @@ class MountProbe:
         return lines
 
     @property
-    def data_image_path(self) -> str:
-        return self._image
+    def data_dir_path(self) -> str:
+        return self._data_dir
 
     def fuse_sources(self) -> list[str]:
         """Источник (поле после типа) каждой строки fuse mountinfo."""
@@ -341,16 +329,28 @@ class TestMountinfoIsClean:
             msg = f"содержимое resolv.conf потеряно: {mount_probe.resolv!r}"
             raise AssertionError(msg)
 
-    def test_data_image_is_mounted_neutrally(self, mount_probe: MountProbe) -> None:
-        """Образ данных (как веса моделей) читается телом, а путь образа на
-        хосте в таблице монтирования не виден."""
+    def test_data_directory_is_read_only(self, mount_probe: MountProbe) -> None:
+        """Каталог данных (как веса моделей) читается телом и смонтирован
+        только на чтение в объявленную точку. Путь каталога в таблице виден —
+        это объявленная точка, секретов в её пути быть не должно."""
         if MountProbe.WEIGHTS not in mount_probe.data:
-            msg = f"файл образа данных не читается: {mount_probe.data!r}"
+            msg = f"файл каталога данных не читается: {mount_probe.data!r}"
             raise AssertionError(msg)
 
-        table = mount_probe.mountinfo + mount_probe.mounts
-        if mount_probe.data_image_path in table:
-            raise AssertionError("путь образа данных виден в таблице монтирования")
+        for line in mount_probe.mountinfo.splitlines():
+            fields = line.split()
+            if len(fields) < 6:
+                continue
+
+            if fields[4] != MountProbe.DATA_TARGET:
+                continue
+
+            if "ro" not in fields[5].split(","):
+                raise AssertionError(f"каталог данных смонтирован не на чтение: {line}")
+
+            return
+
+        raise AssertionError("точки каталога данных нет в таблице монтирования")
 
     def test_no_host_owner(self, mount_probe: MountProbe) -> None:
         """Ни uid, ни gid, ни имя пользователя хоста: tmpfs из userns печатала

@@ -163,11 +163,15 @@ class TestMountinfoHasNoHostPaths:
     """Дефект: таблица монтирования тела выдавала раскладку развёртывания.
 
     Источник fuse-корня был путём rootfs.ext4 на хосте, у биндов resolv.conf,
-    hosts, krb5.conf и каталогов весов моделей поле root несло host-путь
-    (krb5.conf из conf/krb, модели программы). Тело не должно видеть ни
-    одного пути [env] развёртывания, ни uid, gid и имени пользователя хоста
-    (их печатала tmpfs из userns). Исключение — бинд кода bash-тула, который
-    кладёт сам стенд (SandboxStand.with_shell): в бою его нет.
+    hosts и krb5.conf поле root несло host-путь (krb5.conf из conf/krb). Тело
+    не должно видеть ни одного пути [env] развёртывания — корня, workspace,
+    каталога данных, conf/krb, служебных каталогов, — ни uid, gid и имени
+    пользователя хоста (их печатала tmpfs из userns). Объявленные точки
+    видны с путём источника: /plugin (каталог программы группы) и точки images
+    конфига плагина (каталоги моделей) — бинд каталога иначе не умеет, поэтому
+    секретов в этих путях быть не должно. Ещё исключение — бинд кода
+    bash-тула, который кладёт сам стенд (SandboxStand.with_shell): в бою его
+    нет.
     """
 
     def test_no_section_sees_a_deployment_path(
@@ -187,8 +191,12 @@ class TestMountinfoHasNoHostPaths:
                 "cat /proc/self/mountinfo; cat /proc/mounts; cat /proc/self/status",
             )
 
+            declared = self._declared_points(section.profile)
             for line in outcome.stdout.splitlines():
                 if self._stand_overlay(line):
+                    continue
+
+                if self._mount_point(line) in declared:
                     continue
 
                 for marker in markers:
@@ -221,6 +229,24 @@ class TestMountinfoHasNoHostPaths:
                 markers.append(value)
 
         return markers
+
+    @staticmethod
+    def _declared_points(profile: SandboxProfile) -> frozenset[str]:
+        """Точки каталогов программы и данных профиля: их источник виден."""
+        points: set[str] = set()
+        for spec in profile.mounts.images:
+            points.add(spec.target)
+
+        return frozenset(points)
+
+    @staticmethod
+    def _mount_point(line: str) -> str:
+        """Точка монтирования строки mountinfo (пятое поле); иначе пусто."""
+        fields = line.split()
+        if len(fields) < 5:
+            return ""
+
+        return fields[4]
 
     @staticmethod
     def _stand_overlay(line: str) -> bool:
