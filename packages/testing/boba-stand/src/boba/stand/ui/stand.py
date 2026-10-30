@@ -36,7 +36,7 @@ from typing_extensions import TypeVar
 
 from boba.config import ConfigError, ConfigLoader
 from boba.core.mcp_names import McpToolNames
-from boba.runtime.config import ProgramDir, ProgramFile, ProgramRoot, ProgramRoots
+from boba.runtime.config import ProgramDir, ProgramRoot, ProgramRoots
 from boba.stand.ui.toml_text import TomlText
 
 __all__ = [
@@ -372,7 +372,7 @@ class StandRuntime:
     @property
     def workspace_template(self) -> Path:
         """Шаблон workspace сборки: make sandbox делает его mke2fs из libexec."""
-        return self._program.root / ProgramFile.WORKSPACE.value
+        return self._program.workspace_template()
 
     @property
     def shell_rootfs(self) -> Path:
@@ -861,9 +861,9 @@ class StandConfig(StandService):
     """Провайдер шины [messaging]: пусто — как в конфиге отладки (память
     процесса); postgres — шина в базе стенда, общая у двух инстансов."""
     runtime: str = ""
-    """Каталог программы процесса чата (BOBA_RUNTIME): пусто — тот же, что у
-    прогона; свой каталог со своим share/ даёт стенду другой конфиг chainlit
-    (язык)."""
+    """Каталог runtime/ процесса чата (BOBA_RUNTIME): пусто — тот же, что у
+    прогона; runtime/ своего дерева исходников со своими ассетами чата даёт
+    стенду другой конфиг chainlit (язык)."""
 
     CHAT_TOOLS: ClassVar[tuple[str, ...]] = StandToolNames.CHAT_TOOLS
     """Инструменты, которые чат исполняет сам; остальные — у сервиса boba-mcp."""

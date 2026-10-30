@@ -60,7 +60,7 @@ CONFIG = """
 """
 
 ASSETS = Path(__file__).resolve().parents[1] / "assets"
-"""Ассеты пакета: из них make web собирает share/ каталога программы."""
+"""Ассеты пакета: share/ программы из исходников и источник share/ образа."""
 
 FILES_PROBE = """
 import sys
@@ -115,6 +115,22 @@ class TestExportEnv:
         assert os.environ[ChainlitEnv.AUTH_SECRET] == FakeSecret.AUTH
         assert os.environ[ChainlitEnv.COOKIE_NAME] == "boba_token"
         assert os.environ[ChainlitEnv.COOKIE_SAMESITE] == "strict"
+
+    def test_sources_serve_the_package_assets(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Из исходников корень chainlit — ассеты пакета в дереве, а не
+        собранный runtime/: правка ассета видна без сборки."""
+        tree = tmp_path / "tree"
+        (tree / "runtime").mkdir(parents=True)
+        (tree / "packages").mkdir()
+        monkeypatch.setenv(ProgramRoots.RUNTIME_ENV, str(tree / "runtime"))
+
+        raw = ConfigLoader([_config_file(tmp_path, tmp_path / "data")]).load()
+        AppEntry().export_env(raw)
+
+        expected = tree.resolve() / "packages/apps/boba-aid/assets"
+        assert os.environ[ChainlitEnv.APP_ROOT] == str(expected)
 
     def test_program_without_runtime_refused(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
