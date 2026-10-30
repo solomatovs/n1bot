@@ -1,20 +1,12 @@
-# Конфигурация пакетов Nuitka для сборки агента boba (стадия boba-bin).
-# onnxruntime_genai ищет каталог пакета onnxruntime через find_spec, а у пакета,
-# скомпилированного Nuitka, submodule_search_locations пуст; каталог onnxruntime
-# с его библиотеками лежит рядом с пакетом genai в распакованном дереве.
-- module-name: 'onnxruntime_genai._dll_directory' # checksum: 26f576a0
+- module-name: 'onnxruntime_genai._dll_directory'
   anti-bloat:
-    - description: 'onnxruntime directory next to this package instead of find_spec locations'
+    - description: 'onnxruntime directory next to this package instead of find_spec locations: a package compiled by Nuitka has empty submodule_search_locations, and the onnxruntime directory with its libraries lies next to onnxruntime_genai'
       replacements_plain:
         'ort_package_path = ort_package.submodule_search_locations[0]': 'ort_package_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "onnxruntime")'
 
-# Модели схемы ACP просят у pydantic описания полей из исходного текста
-# (use_attribute_docstrings): у скомпилированного модуля исходника нет, и pydantic
-# на каждом классе схемы ищет его по путям и модулям — это секунда старта агента.
-# Описания полей агенту в работе не нужны.
 - module-name: 'acp._schema_base'
   anti-bloat:
-    - description: 'no field docstrings from the source of compiled schema models'
+    - description: 'no field docstrings from the source of compiled schema models: a compiled module has no source, pydantic would search for it on every schema class for a second of the agent start, and the agent needs no field descriptions'
       replacements_plain:
         'use_attribute_docstrings=True,': 'use_attribute_docstrings=False,'
 
@@ -23,8 +15,6 @@
     - description: 'the agent takes the OAuth server pieces and MCP Apps config of fastmcp: no client, MCP server configs, OAuth proxies to other identity providers or OpenAPI'
       no-follow:
         'fastmcp.client': 'the agent is no fastmcp client'
-        # агент теперь использует fastmcp app, поэтому надо что бы fastmcp.apps импортировался
-        # 'fastmcp.apps': 'no fastmcp applications in the agent'
         'fastmcp.mcp_config': 'no MCP server configs in the agent'
         'fastmcp.server.server': 'the agent runs no fastmcp server'
         'fastmcp.server.context': 'the agent runs no fastmcp server'

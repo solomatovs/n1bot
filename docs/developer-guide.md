@@ -2055,7 +2055,9 @@ entry point'у `<id>` группы `boba.tools` и строит из него в
 В релизе программа группы — каталог Nuitka: `build/nuitka.sh` компилирует
 модуль `boba.sandbox.program` над деревом пакетов всех плагинов группы в
 исполняемый `run`. Данные и ленивые импорты чужих пакетов, которых Nuitka не
-видит сама (yaml rapidocr), называет `build/conf/nuitka.yml`. Опись сборки
+видит сама (yaml rapidocr), называет `build/conf/nuitka/common.yml`; своё
+программам boba и boba-aid добавляют `build/conf/nuitka/boba.yml` и
+`build/conf/nuitka/aid.yml`. Опись сборки
 (`boba.core.package_data`) кладёт в бинарник файлы данных пакетов boba,
 метаданные их дистрибутивов и модули entry points групп `boba.*`, иначе
 поиск провайдеров внутри бинарника пуст. Системные библиотеки, кроме glibc,

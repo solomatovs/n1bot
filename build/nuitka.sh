@@ -40,7 +40,7 @@ start=$(date +%s)
 # shellcheck disable=SC2046 # флаги описи — по одному на строку, без пробелов
 python3 -m nuitka --standalone --static-libpython=yes --output-filename="$name" \
     --update-check=never --output-dir="$work/out" --jobs="$jobs" \
-    --user-package-configuration-file=/conf/nuitka.yml \
+    --user-package-configuration-file=/conf/nuitka/common.yml \
     $(cat "$work/flags") "$@" "$entry"
 echo "nuitka: $dest compiled in $(( $(date +%s) - start )) s"
 ccache --show-stats | grep -E 'cache hit|cache miss|cache size'

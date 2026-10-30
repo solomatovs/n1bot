@@ -133,7 +133,7 @@ boba_ENTRY      := boba/cli/app.py
 boba_BIN        := boba
 boba_PORT       := 8660
 # onnxruntime_genai находит onnxruntime через find_spec, не импортом: пакет — явно
-boba_FLAGS      := --user-package-configuration-file=/conf/nuitka-boba.yml \
+boba_FLAGS      := --user-package-configuration-file=/conf/nuitka/boba.yml \
                    --include-distribution-metadata=boba-cli --include-package=onnxruntime_genai \
                    --include-package-data=onnxruntime_genai --include-package=onnxruntime
 boba_DEST       := $(OUT_BOBA)/bin/boba.dist
@@ -141,7 +141,7 @@ aid_PACKAGES    := boba-aid boba-llm-http
 aid_ENTRY       := boba/aid/main.py
 aid_BIN         := boba-aid
 aid_PORT        := 8501
-aid_FLAGS       := --user-package-configuration-file=/conf/nuitka-aid.yml --include-distribution-metadata=boba-aid
+aid_FLAGS       := --user-package-configuration-file=/conf/nuitka/aid.yml --include-distribution-metadata=boba-aid
 aid_DEST        := $(OUT_AID)/bin/boba-aid.dist
 # группа плагинов — одна программа над несколькими плагинами: `run <id> <подкоманда>`
 plugins_ENTRY   := boba/sandbox/program.py
@@ -496,8 +496,8 @@ endef
 
 # сумма дерева пакетов ложится в $(OUT)/compiled последней: по ней make видит, что
 # программа собрана из этого дерева
-$(NUITKA_PROGRAMS:%=$(OUT)/compiled/%.sum): $(OUT)/compiled/%.sum: $(OUT)/site/%.sum $(BUILD)/nuitka.sh $(BUILD)/conf/nuitka.yml \
-        $(BUILD)/conf/nuitka-boba.yml $(BUILD)/conf/nuitka-aid.yml
+$(NUITKA_PROGRAMS:%=$(OUT)/compiled/%.sum): $(OUT)/compiled/%.sum: $(OUT)/site/%.sum $(BUILD)/nuitka.sh $(BUILD)/conf/nuitka/common.yml \
+        $(BUILD)/conf/nuitka/boba.yml $(BUILD)/conf/nuitka/aid.yml
 	@$(call nuitka-compile,$*,$($*_ENTRY),$($*_BIN).bin,$($*_FLAGS),$($*_DEST))
 	mkdir -p "$(@D)"
 	cp "$<" "$@"
@@ -514,7 +514,7 @@ endef
 
 # группа плагинов: программа `run` в plugins/<группа> каталога mcp, затем проверка в
 # корне каждого её плагина
-$(GROUPS:%=$(OUT)/compiled/plugins-%.sum): $(OUT)/compiled/plugins-%.sum: $(OUT)/site/plugins-%.sum $(BUILD)/nuitka.sh $(BUILD)/conf/nuitka.yml \
+$(GROUPS:%=$(OUT)/compiled/plugins-%.sum): $(OUT)/compiled/plugins-%.sum: $(OUT)/site/plugins-%.sum $(BUILD)/nuitka.sh $(BUILD)/conf/nuitka/common.yml \
         $(BUILD)/plugin_check.sh $(OUT)/glibc-packages.txt | $(ROOTFS:%=$(OUT)/rootfs/%.sum)
 	@$(call nuitka-compile,plugins-$*,$(plugins_ENTRY),run,$(plugins-$*_FLAGS),$(OUT_MCP)/plugins/$*)
 	$(foreach rootfs,$(call group-rootfs,$*),$(call plugin-check,$*,$(rootfs)))
