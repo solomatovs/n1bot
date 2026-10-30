@@ -642,8 +642,6 @@ define HELP
   plugin-rootfs         образ корня одного плагина: PLUGIN=<id> -> runtime/sandbox/plugins/<id>.ext4
   plugin-rootfs-all     образы корней всех плагинов (entry points boba.tools), всегда заново,
                         по PARALLEL одновременно (лог — release/logs/plugin-rootfs/<id>.log)
-  plugin-bin            образ корня плагина с программой Nuitka, без python: PLUGIN=<id> ->
-                        release/<версия>/plugins/<id>/<id>.ext4; кэш компиляции — том NUITKA_CACHE
   models-image          образы данных песочницы ($(MODEL_IMAGES)): ext4 рядом с каталогом модели,
                         секции монтируют их read-only вместо каталога; пересобираются по файлам моделей
 
@@ -938,13 +936,13 @@ plugin-rootfs-all: version-check
 	$(call plugin-rootfs-many,$(PLUGIN_IDS))
 
 # образ корня плагина с программой Nuitka: голый glibc без python, в /plugin — программа
-# run и её каталог run.dist. Компиляция — docker run образа plugin-bin-tools с томом
+# run и её каталог run.dist. Компиляция — docker run образа plugin-bin-tools с каталогом
 # кэша NUITKA_CACHE (ccache и кэш Nuitka), затем в голом корне проверка ldd и
 # self-check (build/scripts/plugin_ldd.sh), затем mke2fs. Образ ложится в комплект
-# релиза, runtime/ с образами для тестов не трогается
+# релиза, runtime/ с образами для тестов не трогается. Цель внутренняя: в справке её нет
 PLUGIN_BIN_DIR   = $(RELEASE_DIR)/$(VERSION)/plugins/$(PLUGIN)
 PLUGIN_BIN_IMAGE = $(PLUGIN_BIN_DIR)/$(PLUGIN).ext4
-NUITKA_CACHE    ?= boba-nuitka-cache
+NUITKA_CACHE    ?= $(DEPS_DIR)/nuitka-cache
 
 .PHONY: plugin-bin
 plugin-bin: version-check
@@ -956,7 +954,7 @@ plugin-bin: version-check
 	tmp= stage= root_cid=
 	trap 'docker rm -f $$root_cid > /dev/null 2>&1 || true; rm -rf "$$tmp" "$$stage"' EXIT
 	tmp=$$(mktemp -d)
-	mkdir -p "$(PLUGIN_BIN_DIR)"
+	mkdir -p "$(PLUGIN_BIN_DIR)" "$(NUITKA_CACHE)"
 	stage=$$(mktemp -d "$(PLUGIN_BIN_DIR)/.stage.XXXXXX")
 	$(call docker-image,plugin-bin-tools,$$tmp/tools.iid,$(PLUGIN_ARGS) $(BIN_TOOL_ARGS) --build-arg PLUGIN=$(PLUGIN_PACKAGE))
 	$(call docker-image,plugin-bin-root,$$tmp/root.iid,$(PLUGIN_ARGS) $(BIN_TOOL_ARGS) --build-arg PLUGIN=$(PLUGIN_PACKAGE))

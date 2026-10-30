@@ -2055,8 +2055,7 @@ BOBA_CONFIG_PATH=$PWD/conf/config.toml:$PWD/conf/stand.toml \
 программа SDK находит объявление `ToolPlugin` по entry point'у `<id>`
 группы `boba.tools` в окружении образа и строит из него всё остальное.
 
-Цель `make -C build plugin-bin PLUGIN=<id>` собирает тот же плагин без
-python: модуль `boba.sandbox.program` компилируется Nuitka в каталог
+Внутренний шаг сборки `plugin-bin` собирает тот же плагин без python: модуль `boba.sandbox.program` компилируется Nuitka в каталог
 `/plugin/run.dist`, а `/plugin/run` — скрипт `exec
 /plugin/run.dist/run.bin <id> "$@"`. Корень образа — голый glibc с CA
 контура, `apt`, `root`, `setup` и точками `data` из деклараций. Опись

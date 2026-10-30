@@ -21,7 +21,7 @@ while read -r file; do
     # у статической ELF ldd отвечает «not a dynamic executable» с кодом 1
     ldd "$file" > "$report/ldd" 2>&1 || true
     sed -n "s|^\s*\(\S*\) => not found.*|$file \1|p" "$report/ldd" >> "$report/missing"
-    awk '/=> \// {print $3}' "$report/ldd" >> "$report/resolved"
+    awk -v elf="$file" '{for (i = 1; i < NF; i++) if ($i == "=>" && $(i + 1) ~ /^\//) print $(i + 1), elf}' "$report/ldd" >> "$report/resolved"
 done < "$report/files"
 
 if [ -s "$report/missing" ]; then
@@ -32,7 +32,7 @@ if [ -s "$report/missing" ]; then
 fi
 
 touch "$report/resolved"
-sort -u "$report/resolved" | while read -r lib; do
+cut -d' ' -f1 "$report/resolved" | sort -u | while read -r lib; do
     case "$lib" in
         /plugin/*) continue ;;
     esac
@@ -58,6 +58,10 @@ done > "$report/accidental"
 if [ -s "$report/accidental" ]; then
     echo "plugin $plugin: the program loads libraries of the base image packages other than glibc:" >&2
     cat "$report/accidental" >&2
+    echo "loaded by:" >&2
+    cut -d' ' -f1 "$report/accidental" | while read -r lib; do
+        grep "^$lib " "$report/resolved" >&2
+    done
     echo "the build must bundle them into /plugin/run.dist or the plugin declares them by apt" >&2
     exit 1
 fi

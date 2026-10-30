@@ -279,8 +279,9 @@ COPY --from=plugin-site /opt/code-sandbox  /usr/src
 
 # --- программа плагина каталогом Nuitka: make plugin-bin PLUGIN=<id> ---------------
 
-# компилятор программы плагина: site-packages плагина из plugin-site, Nuitka, patchelf и
-# ccache. Компилирует make plugin-bin запуском docker run этого образа с томом кэша:
+# компилятор программы плагина: site-packages плагина из plugin-site, Nuitka, patchelf,
+# ccache и пакеты ключа apt плагина — Nuitka импортирует часть пакетов при сборке (cv2
+# без libGL не импортируется). Компилирует make plugin-bin запуском docker run этого образа с томом кэша:
 # классический сборщик кэш-монтирований не знает. Стадии plugin-bin-* стоят до
 # sandbox-base: образ корня с python ради них не собирается. Без PLUGIN или
 # NUITKA_VERSION (их проходят цели ниже) стадии пусты
@@ -292,7 +293,9 @@ ARG PATCHELF_VERSION
 ARG ORDERED_SET_VERSION
 
 RUN mkdir -p /opt/bin-tools && { [ -z "${PLUGIN}" ] || [ -z "${NUITKA_VERSION}" ] || { \
-        apt-get update && apt-get install -y --no-install-recommends ccache \
+        dpkg-query -W -f '${Package}\n' > /opt/bin-tools/build-packages.txt \
+        && apt-get update \
+        && apt-get install -y --no-install-recommends ccache $(tr '\n' ' ' < /opt/plugin-apt.txt) \
         && rm -rf /var/lib/apt/lists/* \
         && uv pip install --python "$(command -v python3)" --target /opt/bin-tools \
             "nuitka==${NUITKA_VERSION}" "patchelf==${PATCHELF_VERSION}" \
