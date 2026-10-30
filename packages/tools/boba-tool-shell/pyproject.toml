@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-tool-shell"
-version = "0.0.30.dev5"
+version = "0.0.30.dev7"
 description = "Инструмент bash: команда пользователя в песочнице поверх workspace-образа."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-toolkit==0.0.30.dev5",
+    "boba-toolkit==0.0.30.dev7",
     "pydantic>=2.12,<3",
 ]
 
@@ -31,6 +31,7 @@ payload = [
     "charset-normalizer>=3.4,<4",
     "pyyaml>=6,<7",
     "pillow>=10",
+    "pillow-heif>=1,<2",
 ]
 
 [tool.setuptools.packages.find]
@@ -52,6 +53,7 @@ imports = [
     "charset_normalizer",
     "yaml",
     "PIL",
+    "pillow_heif",
 ]
 apt = [
     "unzip",
@@ -68,4 +70,6 @@ apt = [
     "sqlite3",
     "xz-utils",
     "bzip2",
+    "imagemagick",
+    "ffmpeg",
 ]

@@ -9,11 +9,9 @@ from __future__ import annotations
 import asyncio
 import json
 import shlex
-import shutil
 import socket
 import subprocess
 import sys
-import threading
 import time
 from collections.abc import (
     AsyncIterator,
@@ -25,8 +23,6 @@ from collections.abc import (
     Sequence,
 )
 from dataclasses import dataclass, replace
-from functools import partial
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, ClassVar
 from uuid import uuid4
@@ -214,6 +210,29 @@ class AgentHistoryStand:
         return PostgresAgentHistory.model_validate(
             {"kind": "postgres", "schema": self.schema(), "postgres": self.postgres()}
         )
+
+    async def records(self, session_id: str, kind: str) -> list[dict[str, Any]]:
+        """Записи вида kind (колонка type) сессии session_id по порядку."""
+        pool = AsyncPostgresPool(self.postgres())
+        await pool.open()
+        try:
+            async with pool.connection() as conn:
+                cursor = await conn.execute(
+                    sql.SQL(
+                        "select record from {}.session_records where session_id = %s "
+                        "and type = %s order by seq"
+                    ).format(sql.Identifier(self.schema())),
+                    (session_id, kind),
+                )
+                rows = await cursor.fetchall()
+        finally:
+            await pool.close()
+
+        found: list[dict[str, Any]] = []
+        for row in rows:
+            found.append(dict(row[0]))
+
+        return found
 
     async def rows(self, session_id: str) -> int:
         """Записи сессии session_id в истории агента."""
@@ -569,54 +588,21 @@ def standard() -> McpServerConfig:
     )
 
 
-class SandboxPages(SimpleHTTPRequestHandler):
-    """Статика хоста песочницы с Access-Control-Allow-Origin: *, как у nginx
-    хоста песочницы: приложение живёт на непрозрачном источнике, и шрифт
-    чата для @font-face без CORS не загрузится."""
-
-    def end_headers(self) -> None:
-        self.send_header("Access-Control-Allow-Origin", "*")
-        super().end_headers()
-
-
 class SandboxHost:
-    """Страница-прокси песочницы MCP Apps на своём источнике, разложенная как
-    в образе чата: sandbox.html и рядом шрифт Inter (fonts/inter/files) из
-    vendor фронта. Чат открыт на 127.0.0.1, песочница — на localhost со
-    своим портом: источники разные, и у каждого сервера с приложениями
-    песочница своя. Создают её хост приложений AppsHost и ui-тесты
-    приложений чужих серверов; секцию [mcp.servers.<имя>] сервера по HTTP
-    с этой песочницей даёт drawn."""
+    """Песочница MCP Apps одного сервера стенда: порт, на котором её
+    страницу-прокси отдаёт сам чат стенда. Чат и песочница на одном хосте
+    127.0.0.1, источники различает порт; у каждого сервера с приложениями
+    песочница своя. Адрес страницы чата в секцию apps кладёт StandConfig.
+    Создают её хост приложений AppsHost и ui-тесты приложений чужих
+    серверов; секцию [mcp.servers.<имя>] сервера по HTTP с этой песочницей
+    даёт drawn."""
 
-    ASSETS: ClassVar[Path] = REPO_ROOT / "packages/apps/boba-aid/assets"
-    FONTS: ClassVar[tuple[str, ...]] = ("fonts", "inter", "files")
-    SANDBOX: ClassVar[str] = "sandbox.html"
+    def __init__(self) -> None:
+        self.port = StandPorts().free()
 
-    def __init__(self, workdir: Path) -> None:
-        vendor = self.ASSETS.joinpath("public", "vendor", "inter", "files")
-        faces = sorted(vendor.glob("*.woff2"))
-        if not faces:
-            msg = (
-                f"sandbox host: no Inter fonts in {vendor} to put next to the "
-                "sandbox page; build the front with make -C build web"
-            )
-            raise AssertionError(msg)
-
-        root = workdir / "mcp-apps"
-        fonts = root.joinpath(*self.FONTS)
-        fonts.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(self.ASSETS / "mcp-apps" / self.SANDBOX, root / self.SANDBOX)
-        for face in faces:
-            shutil.copy2(face, fonts / face.name)
-
-        self._port = StandPorts().free()
-        handler = partial(SandboxPages, directory=str(root))
-        self._pages = ThreadingHTTPServer(("127.0.0.1", self._port), handler)
-        threading.Thread(target=self._pages.serve_forever, daemon=True).start()
-
-    @property
-    def sandbox_url(self) -> str:
-        return f"http://localhost:{self._port}/{self.SANDBOX}"
+    def apps(self) -> dict[str, Any]:
+        """Секция [mcp.servers.<имя>.apps] без адреса чата."""
+        return {"port": self.port}
 
     def drawn(self, host: str, port: int) -> dict[str, Any]:
         """Секция [mcp.servers.<имя>] сервера по HTTP на host:port с
@@ -628,12 +614,8 @@ class SandboxHost:
                 "service": {"scheme": "http", "host": host, "port": port, "path": ""},
                 "path": "/mcp",
             },
-            "apps": {"sandbox_url": self.sandbox_url},
+            "apps": self.apps(),
         }
-
-    def stop(self) -> None:
-        self._pages.shutdown()
-        self._pages.server_close()
 
 
 class AppsHost:
@@ -649,8 +631,8 @@ class AppsHost:
     BOOT_SEC: ClassVar[float] = 60.0
     STOP_SEC: ClassVar[float] = 10.0
 
-    def __init__(self, workdir: Path, flags: Sequence[str]) -> None:
-        self._sandbox = SandboxHost(workdir)
+    def __init__(self, flags: Sequence[str]) -> None:
+        self._sandbox = SandboxHost()
         self._mcp_port = StandPorts().free()
         self._server = subprocess.Popen(
             [
@@ -661,10 +643,6 @@ class AppsHost:
                 *flags,
             ]
         )
-
-    @property
-    def sandbox_url(self) -> str:
-        return self._sandbox.sandbox_url
 
     def await_listening(self) -> None:
         """Ошибки:
@@ -698,7 +676,6 @@ class AppsHost:
         return self._sandbox.drawn(self.HOST, self._mcp_port)
 
     def stop(self) -> None:
-        self._sandbox.stop()
         self.stop_server()
 
     def stop_server(self) -> None:

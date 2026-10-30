@@ -79,7 +79,7 @@ class StandServerName(StrEnum):
     CHAT = "chat"
     """Собственные инструменты чата в его процессе."""
 
-    SERVICE = "boba_{endpoint}"
+    SERVICE = "aid_{endpoint}"
     """Endpoint сервиса boba-mcp: у каждого профиля чата свой."""
 
     def of(self, endpoint: str) -> str:
@@ -97,7 +97,7 @@ class StandToolNames:
     """
 
     CHAT_TOOLS: ClassVar[tuple[str, ...]] = ("connection_list", "connection_search")
-    ENDPOINT: ClassVar[str] = "general"
+    ENDPOINT: ClassVar[str] = "all"
     """Endpoint профиля по умолчанию: отдаёт все инструменты сервиса."""
 
     def __init__(self) -> None:
@@ -517,11 +517,16 @@ class ServiceStand(StandService):
     """Клиент OAuth чата стенда у сервера авторизации сервиса."""
 
     ENDPOINTS: ClassVar[Mapping[str, Sequence[str]]] = {
-        "general": ("*",),
+        "all": ("*",),
         "search": ("diagram_save", "canvas_open"),
     }
-    """Endpoint'ы стенда по профилям чата: general — все инструменты,
-    search — узкий набор."""
+    """Endpoint'ы стенда: all — все инструменты, search — узкий набор."""
+
+    PROFILE_ENDPOINTS: ClassVar[Mapping[str, str]] = {
+        "general": "all",
+        "search": "search",
+    }
+    """Endpoint сервиса у каждого профиля чата стенда."""
 
     SEALING: ClassVar[Mapping[str, Any]] = {
         "roles": ["*"],
@@ -1094,16 +1099,20 @@ class StandConfig(StandService):
     def _without_mcp_servers(self, doc: MutableMapping[str, Any]) -> None:
         """Внешние MCP-серверы рабочего конфига стенду не нужны: набор
         инструментов сессии не должен зависеть от сети. Остаются только
-        серверы, заданные самим стендом: их называет каждый профиль стенда."""
+        серверы, заданные самим стендом: их называет каждый профиль стенда.
+        Песочницы серверов с секцией apps встраивает чат стенда: адрес его
+        страницы — chat_url каждой такой секции."""
         service = self.service()
         servers: dict[str, dict[str, Any]] = {}
         own: dict[str, str] = {}
         if service is not None:
-            for endpoint in service.ENDPOINTS:
-                own[endpoint] = service.server_name(endpoint)
-                servers[own[endpoint]] = service.server(endpoint)
+            for name, endpoint in service.PROFILE_ENDPOINTS.items():
+                own[name] = service.server_name(endpoint)
+                servers[own[name]] = service.server(endpoint)
 
-        servers.update(self.mcp_servers)
+        for name, section in self.mcp_servers.items():
+            servers[name] = self._embedded(section)
+
         doc["mcp"] = {"servers": servers}
         for name, profile in doc["profiles"].items():
             named: list[str] = []
@@ -1112,6 +1121,14 @@ class StandConfig(StandService):
 
             named.extend(sorted(self.mcp_servers))
             profile["mcp"] = named
+
+    def _embedded(self, section: Mapping[str, Any]) -> dict[str, Any]:
+        """Секция [mcp.servers.<имя>] с адресом чата стенда в секции apps."""
+        embedded = dict(section)
+        if apps := section.get("apps"):
+            embedded["apps"] = {**apps, "chat_url": self.base_url}
+
+        return embedded
 
     def _use_local_auth(self, doc: MutableMapping[str, Any]) -> None:
         """Учётки и роли стенда: рабочий [auth.local] не трогаем и не наследуем."""

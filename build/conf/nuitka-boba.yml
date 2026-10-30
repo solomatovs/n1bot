@@ -20,10 +20,11 @@
 
 - module-name: 'fastmcp'
   anti-bloat:
-    - description: 'the agent takes only the OAuth server pieces of fastmcp: no client, server application, providers, OAuth proxies to other identity providers or OpenAPI'
+    - description: 'the agent takes the OAuth server pieces and MCP Apps config of fastmcp: no client, MCP server configs, OAuth proxies to other identity providers or OpenAPI'
       no-follow:
         'fastmcp.client': 'the agent is no fastmcp client'
-        'fastmcp.apps': 'no fastmcp applications in the agent'
+        # агент теперь использует fastmcp app, поэтому надо что бы fastmcp.apps импортировался
+        # 'fastmcp.apps': 'no fastmcp applications in the agent'
         'fastmcp.mcp_config': 'no MCP server configs in the agent'
         'fastmcp.server.server': 'the agent runs no fastmcp server'
         'fastmcp.server.context': 'the agent runs no fastmcp server'

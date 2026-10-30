@@ -311,7 +311,7 @@ class TestVersionNegotiation:
 
 class TestMcpMessage:
     CALL: ClassVar[McpMessage] = McpMessage(
-        server_id="boba_general",
+        server_id="aid_all",
         request_id="mcp-1",
         method="tools/call",
         params={"name": "pg_query", "arguments": {"sql": "select 1"}},
@@ -338,7 +338,7 @@ class TestMcpMessage:
 
     async def test_outer_error_keeps_its_code(self, acp_pair: AcpPair) -> None:
         refusal = RequestError(
-            AcpErrorCode.UNKNOWN_SERVER, "No MCP server 'boba_general' is declared"
+            AcpErrorCode.UNKNOWN_SERVER, "No MCP server 'aid_all' is declared"
         )
         await acp_pair.stand_client.replies.put(refusal)
 
@@ -350,7 +350,7 @@ class TestMcpMessage:
     async def test_notification_reaches_agent(self, acp_pair: AcpPair) -> None:
         received: asyncio.Queue[McpMessage] = asyncio.Queue()
         progress = McpMessage(
-            server_id="boba_general",
+            server_id="aid_all",
             request_id=self.CALL.request_id,
             method="notifications/progress",
             params={"progressToken": "mcp-1", "progress": 1, "total": 2},
@@ -398,7 +398,7 @@ class TestToolSource:
     REQUEST: ClassVar[ToolSourceRequest] = ToolSourceRequest(
         session_id="s-1",
         tool_call_id="call-1",
-        server_id="boba_general",
+        server_id="aid_all",
         name="pg_query",
         arguments={"sql": "select 1"},
     )

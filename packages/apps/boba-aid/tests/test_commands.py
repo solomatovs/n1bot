@@ -3,21 +3,24 @@
 по HTTP с расширением com.boba/commands и по stdio без него — и реестр команд
 вкладки, который рисует меню и окна в приёмник теста.
 
-Проверяется: меню собирается из команд чата, агента (ACP
-`available_commands_update`) и промптов серверов под полными именами и
-следует за сменой промптов; вызов каждого вида уходит владельцу — команда
-агента и промпт сервера без расширения агенту вопросом, помеченный промпт
-сервера с расширением — tools/call и приложение целиком (карточка, итог,
-ресурс), команда чата — таблица; исполненная вкладкой команда и её отказ —
-запись истории агента (`_boba/session/record`), её эхо приходит вкладке
-вживую и при воспроизведении, модель её не видит; запись посреди хода
-ложится на границе шага; агент без расширения — таких команд нет в меню и
-вызов отказывает; имя чата зарезервировано; недоступный сервер уходит из
-меню и отказывает понятно, вернувшийся — возвращается.
+Проверяется: меню вкладки — только команды сессии из истории агента
+(`_boba/commands`): команда чата (объявлена агенту `_boba/session/record`),
+команды агента и промпты и интерфейсы серверов под полными именами, с
+подсказками аргументов; смена промптов сервера и его обрыв доходят до меню
+записью истории; вызов каждого вида уходит владельцу — команда агента и
+промпт сервера без расширения агенту вопросом, интерфейс сервера с
+расширением — tools/call и приложение целиком (карточка, итог, ресурс),
+команда чата — таблица; исполненная вкладкой команда и её отказ — запись
+истории агента, её эхо приходит вкладке вживую и при воспроизведении, модель
+её не видит; запись посреди хода ложится на границе шага; агент без
+расширения — меню из стандартного списка, всё уходит ему вопросом; сервер,
+переименованный посреди чата, — в меню и запросе модели только под новым
+именем, через записи истории.
 """
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
 import socket
@@ -25,7 +28,7 @@ import subprocess
 import sys
 import time
 from collections.abc import AsyncIterator, Iterator, Sequence
-from dataclasses import replace
+from enum import StrEnum
 from importlib.resources import files
 from pathlib import Path
 from secrets import token_bytes
@@ -52,7 +55,7 @@ from boba.aid.agent.chat import (
     ThreadAgent,
     ThreadIdentity,
 )
-from boba.aid.agent.commands import CommandError, CommandIcon, MenuCommand
+from boba.aid.agent.commands import CommandIcon, MenuCommand
 from boba.aid.agent.relay import ChatTools
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.chat.profiles import ChatProfileConfig, SelectedProfile
@@ -157,8 +160,8 @@ class HttpStandard:
             process.kill()
             process.wait(timeout=self.STOP_SEC)
 
-    def config(self, sandbox: str) -> McpServerConfig:
-        """Запись сервера с секцией apps и песочницей sandbox."""
+    def config(self, sandbox: int) -> McpServerConfig:
+        """Запись сервера с секцией apps и песочницей на порту sandbox."""
         endpoint = HttpEndpoint.model_validate(
             {
                 "transport": "streamable-http",
@@ -175,7 +178,9 @@ class HttpStandard:
         return McpServerConfig(
             endpoint=endpoint,
             limits=McpServerLimits(connect_timeout_sec=20.0, call_timeout_sec=60.0),
-            apps=McpServerApps.model_validate({"sandbox_url": sandbox}),
+            apps=McpServerApps.model_validate(
+                {"chat_url": "http://127.0.0.1:8122/aid/", "port": sandbox}
+            ),
         )
 
 
@@ -223,7 +228,7 @@ async def store(pool: AsyncPostgresPool) -> ConnectionStore:
 
 
 class CommandsTab:
-    """Вкладка теста: агент треда над серверами EXTENDED и PLAIN профиля,
+    """Вкладка теста: агент треда thread_id над серверами профиля servers,
     его реестр команд рисует меню и окна в updates; tab — вход вкладки."""
 
     ROLES: ClassVar[frozenset[str]] = frozenset({"dev"})
@@ -237,6 +242,7 @@ class CommandsTab:
         model: FakeModel,
         servers: McpServersConfig,
         store: ConnectionStore,
+        thread_id: str,
     ) -> None:
         credentials = KerberosCredentialSource(None, NoRefresh())
         relays = RelayStand(lambda: store, lambda: credentials, CallContexts())
@@ -255,13 +261,14 @@ class CommandsTab:
         tab = TabSession()
         tab.password_sign_in(self.ROLES)
         self.identity = ThreadIdentity(
-            thread_id=str(uuid4()),
+            thread_id=thread_id,
             user_id=uuid4(),
             login=TabSession.LOGIN,
             roles=self.ROLES,
             session=tab.live,
             profile=SelectedProfile(
-                name=SignInStand.PROFILE, config=self._profile(model)
+                name=SignInStand.PROFILE,
+                config=self._profile(model, sorted(servers.servers)),
             ),
         )
         self._launcher = launcher
@@ -292,7 +299,7 @@ class CommandsTab:
         await self.servers.stop()
 
     @staticmethod
-    def _profile(model: FakeModel) -> ChatProfileConfig:
+    def _profile(model: FakeModel, servers: Sequence[str]) -> ChatProfileConfig:
         provider = {
             "kind": "openai",
             "connection": {
@@ -311,7 +318,7 @@ class CommandsTab:
                 **base,
                 "provider": provider,
                 "model": "fake-model",
-                "mcp": [EXTENDED, PLAIN],
+                "mcp": list(servers),
             }
         )
 
@@ -333,15 +340,17 @@ async def tab(  # noqa: PLR0913 — вкладка собирается из ф�
     plain = standard.model_copy(
         update={
             "apps": McpServerApps.model_validate(
-                {"sandbox_url": f"http://localhost:{StandPorts().free()}/sandbox.html"}
+                {"chat_url": "http://127.0.0.1:8122/aid/", "port": 8124}
             )
         }
     )
-    sandbox = f"http://localhost:{StandPorts().free()}/sandbox.html"
+    sandbox = 8123
     servers = McpServersConfig(
         servers={EXTENDED: extended.config(sandbox), PLAIN: plain}
     )
-    opened = CommandsTab(tmp_path, stand, users, threads, model, servers, store)
+    opened = CommandsTab(
+        tmp_path, stand, users, threads, model, servers, store, str(uuid4())
+    )
     try:
         await opened.agent.start()
         yield opened
@@ -432,38 +441,78 @@ def last_menu(updates: RecordingUpdates) -> dict[str, MenuCommand]:
 
 
 class TestMenu:
-    """Меню вкладки из трёх источников и его обновление по уведомлениям."""
+    """Меню вкладки — команды сессии из истории агента."""
 
-    async def test_menu_gathers_the_chat_the_agent_and_the_servers(
+    async def test_menu_is_the_commands_of_the_session_history(
         self, tab: CommandsTab
     ) -> None:
-        """Новая вкладка без вопросов: команда чата, команды агента по ACP с
-        сессией, открытой вкладкой, и промпты серверов под полными именами с
-        подсказками аргументов (значения — completion/complete)."""
+        """Новая вкладка без вопросов: команда чата, команда агента и
+        промпты и интерфейсы серверов под полными именами с подсказками
+        аргументов (значения — completion/complete) — и всё это записями
+        commands_delta в истории сессии, которые меню и повторяет."""
         greet = f"mcp__{EXTENDED}__greet"
         console = f"mcp__{PLAIN}__{CONSOLE}"
+        app = f"mcp__{EXTENDED}__{CONSOLE}"
 
-        names = await tab.updates.menu(has("connections", "compact", greet, console), 0)
+        names = await tab.updates.menu(
+            has("connections", "compact", greet, console, app), 0
+        )
         menu = last_menu(tab.updates)
+        session_id = tab.agent.session_id
+        assert session_id is not None
+        recorded = await self._recorded(tab, session_id, len(names))
 
-        assert names[0] == "connections", names
         assert menu["connections"].icon is CommandIcon.HARNESS
         assert menu["compact"].icon is CommandIcon.AGENT
-        assert menu["compact"].hint == "optional instructions for the summary"
+        assert menu["compact"].hint == "instructions"
         assert menu[greet].icon is CommandIcon.MCP
         assert menu[greet].hint == "name style (plain|poem|pirate)", menu[greet]
         assert menu[console].hint == "status", menu[console]
+        assert menu[app].icon is CommandIcon.MCP
+        declared: list[str] = []
+        kinds: dict[str, str] = {}
+        for record in recorded:
+            for entry in record["added"]:
+                declared.append(entry["name"])
+                kinds[entry["name"]] = entry["type"]
+
+        assert sorted(set(declared)) == sorted(names), (declared, names)
+        assert kinds["connections"] == "harness"
+        assert kinds["compact"] == "agent"
+        assert kinds[greet] == "prompt"
+        assert kinds[console] == "prompt"
+        assert kinds[app] == "app"
+
+    @staticmethod
+    async def _recorded(
+        tab: CommandsTab, session_id: str, count: int
+    ) -> list[dict[str, Any]]:
+        """Записи commands_delta сессии, когда в журнале их команд не меньше
+        count: писатель истории сбрасывает записи сам по себе."""
+        async with asyncio.timeout(30.0):
+            while True:
+                recorded = await tab.history.records(session_id, "commands-delta")
+                named: set[str] = set()
+                for record in recorded:
+                    for entry in record["added"]:
+                        named.add(entry["name"])
+
+                if len(named) >= count:
+                    return recorded
+
+                await asyncio.sleep(0.2)
 
     async def test_tab_without_a_question_leaves_no_session(
         self, tab: CommandsTab
     ) -> None:
-        """Сессия, которую вкладка открыла ради команд агента, тред не узнаёт,
-        пока нет вопроса, а закрытие вкладки удаляет её у агента."""
-        await tab.updates.menu(has("compact"), 0)
+        """Сессия, которую вкладка открыла ради команд, тред не узнаёт, пока
+        нет вопроса, а закрытие вкладки удаляет её у агента."""
+        names = await tab.updates.menu(has("compact", "connections"), 0)
         opened = tab.agent.session_id
         assert opened is not None
 
         recorded = await tab.meta.session_of(tab.identity.thread_id)
+        await self._recorded(tab, opened, len(names))
         held = await tab.history.rows(opened)
         await tab.agent.close()
         left = await tab.history.rows(opened)
@@ -492,8 +541,9 @@ class TestMenu:
     async def test_menu_follows_the_prompt_changes_of_a_server(
         self, tab: CommandsTab
     ) -> None:
-        """notifications/prompts/list_changed потоком subscriptions/listen:
-        новый промпт сервера появляется в меню без хода, убранный — уходит."""
+        """notifications/prompts/list_changed потоком subscriptions/listen
+        агента: новый промпт сервера — запись истории и строка меню без хода,
+        убранный — уходит так же."""
         extra = f"mcp__{EXTENDED}__extra_prompt"
         await tab.updates.menu(has(f"mcp__{EXTENDED}__greet"), 0)
 
@@ -506,55 +556,32 @@ class TestMenu:
 
         assert f"mcp__{EXTENDED}__greet" in names, names
 
-    async def test_agent_command_named_as_a_chat_command_is_left_out(
+    async def test_agent_without_the_extension_lists_only_its_own_commands(
         self, tab: CommandsTab
     ) -> None:
-        """Имя чата зарезервировано: одноимённая команда агента в меню не
-        попадает, команда чата остаётся одна."""
-        updates = RecordingUpdates()
-        registration = replace(tab.identity.registration(PLAIN), servers=frozenset())
-        menu = tab.menus.menu(registration, updates)
-        clash = schema.AvailableCommand(name="connections", description="agent's")
-        own = schema.AvailableCommand(name="review", description="review the diff")
-        await menu.start(True)
-
-        await menu.heard(
-            schema.AvailableCommandsUpdate(available_commands=[clash, own])
-        )
-        await menu.close()
-
-        listed = updates.menus[-1]
-        assert RecordingUpdates.names(listed) == ["connections", "review"]
-        assert listed[0].icon is CommandIcon.HARNESS
-
-    async def test_agent_without_the_record_extension_gets_no_tab_commands(
-        self, tab: CommandsTab
-    ) -> None:
-        """Агент не объявил `_boba/session/record`: команд, которые исполняет
-        вкладка, в меню нет — ни команды чата, ни промпта, открывающего
-        приложение, — а набранный вызов отказывает, а не уходит модели;
-        обычный промпт сервера остаётся вопросом агенту."""
+        """Агент не ведёт команды сессии в истории: меню — его стандартный
+        список, команд, которые исполняет вкладка, нет, и любой вызов уходит
+        агенту вопросом; объявлять команды чата некуда."""
         updates = RecordingUpdates()
         registration = tab.identity.registration(ChatTools.NAME)
         menu = tab.menus.menu(registration, updates)
-        console = f"mcp__{EXTENDED}__{CONSOLE}"
         greet = f"mcp__{EXTENDED}__greet"
+        listed = schema.AvailableCommandsUpdate(
+            available_commands=[
+                schema.AvailableCommand(name="compact", description="compact"),
+                schema.AvailableCommand(name=greet, description="greet"),
+            ]
+        )
         await menu.start(False)
-        try:
-            names = await updates.menu(has(greet), 0)
-            with pytest.raises(CommandError, match="does not keep the commands"):
-                await menu.routed("", "connections")
+        await menu.listed(listed)
 
-            with pytest.raises(CommandError, match="does not keep the commands"):
-                await menu.routed(f"/{console} new", None)
+        asked = await menu.routed("plain", greet)
+        chat = await menu.routed("", "connections")
 
-            asked = await menu.routed("plain", greet)
-        finally:
-            await menu.close()
-
-        assert "connections" not in names, names
-        assert console not in names, names
+        assert RecordingUpdates.names(updates.menus[-1]) == ["compact", greet]
         assert asked == f"/{greet} plain", asked
+        assert chat == "/connections", chat
+        assert menu.declaration("s-1") is None
 
 
 class TestRoutes:
@@ -702,7 +729,10 @@ class TestRoutes:
                 if update.status == "completed":
                     order.append("tool")
 
-            if isinstance(update, schema.OtherSessionUpdate):
+            if not isinstance(update, schema.OtherSessionUpdate):
+                continue
+
+            if update.session_update == BobaExtension.COMMAND_OUTCOME.value:
                 order.append("command")
 
         assert order.count("command") == 1, order
@@ -725,20 +755,16 @@ class TestUnavailableServer:
     async def test_server_that_left_takes_its_commands_and_brings_them_back(
         self, tab: CommandsTab, extended: HttpStandard
     ) -> None:
-        """Сервер ушёл: поток смены промптов оборвался, перечитывание не
-        удалось — его команды уходят из меню, вызов отказывает понятно.
-        Сервер вернулся: конец следующего хода перечитывает его, команды
-        снова в меню."""
+        """Сервер ушёл: поток смены списков агента оборвался, перечитывание
+        не удалось — запись истории снимает его команды, и они уходят из
+        меню. Сервер вернулся: начало следующего хода перечитывает его,
+        запись истории возвращает команды в меню."""
         greet = f"mcp__{EXTENDED}__greet"
         await tab.updates.menu(has(greet), 0)
 
         left = len(tab.updates.menus)
         await asyncio.to_thread(extended.stop)
         await tab.updates.menu(lacks(f"mcp__{EXTENDED}__"), left)
-        await tab.agent.routed(Question(key="q1", text="new"), greet)
-        refused = outcome_of(tab.updates, greet)
-        assert isinstance(refused, CommandFailure), refused
-        assert f"MCP server '{EXTENDED}' is unavail" in refused.error, refused
 
         back = len(tab.updates.menus)
         await asyncio.to_thread(extended.start)
@@ -785,3 +811,187 @@ class TestHistory:
         seen = ModelRequests(model)
         assert not seen.saw("the orders console is open"), seen.read()
         assert not seen.saw("Your connections"), seen.read()
+
+
+class TestRenamedServer:
+    OLD: ClassVar[str] = "boba_general"
+    NEW: ClassVar[str] = "aid_all"
+
+    async def test_server_renamed_mid_chat_is_only_its_new_name(  # noqa: PLR0913 — вкладки собираются из фикстур
+        self,
+        tmp_path: Path,
+        stand: Stand,
+        users: UsersTable,
+        threads: ThreadsTable,
+        model: FakeModel,
+        standard: McpServerConfig,
+        extended: HttpStandard,
+        store: ConnectionStore,
+    ) -> None:
+        """Сервер профиля переименован между вкладками одного треда: вторая
+        вкладка открывает ту же сессию, и при подключении агент пишет одну
+        запись команд — снятые старые имена и новые команды; меню и запрос
+        модели знают только новое имя, а беседа до переименования на месте."""
+        sandbox = StandPorts().free()
+        thread_id = str(uuid4())
+        first = CommandsTab(
+            tmp_path / "old",
+            stand,
+            users,
+            threads,
+            model,
+            McpServersConfig(servers={self.OLD: extended.config(sandbox)}),
+            store,
+            thread_id,
+        )
+        try:
+            await first.agent.start()
+            await first.updates.menu(has(f"mcp__{self.OLD}__greet"), 0)
+            await first.turn(f"before {ScenarioName.ANSWER.value}")
+            session_id = first.agent.session_id
+        finally:
+            await first.close()
+
+        assert session_id is not None
+        second = CommandsTab(
+            tmp_path / "new",
+            stand,
+            users,
+            threads,
+            model,
+            McpServersConfig(servers={self.NEW: extended.config(sandbox)}),
+            store,
+            thread_id,
+        )
+        try:
+            await second.agent.start()
+            loaded = await second.agent.resume()
+            names = await second.updates.menu(has(f"mcp__{self.NEW}__greet"), 0)
+            await second.turn(f"after {ScenarioName.ANSWER.value}")
+        finally:
+            await second.close()
+
+        assert loaded
+        assert not [name for name in names if self.OLD in name], names
+        recorded = await second.history.records(session_id, "commands-delta")
+        renamed = recorded[-1]
+        assert f"mcp__{self.OLD}__greet" in renamed["removed"], renamed
+        added: list[str] = []
+        for entry in renamed["added"]:
+            added.append(entry["name"])
+            assert entry["owner"] in (self.NEW, "agent", "harness"), entry
+
+        assert f"mcp__{self.NEW}__greet" in added, added
+        tools: list[str] = []
+        for tool in ModelRequests(model).last().get("tools", ()):
+            tools.append(tool["function"]["name"])
+
+        assert not [name for name in tools if self.OLD in name], tools
+        assert ModelRequests(model).saw(f"before {ScenarioName.ANSWER.value}")
+
+
+class HistoryOnly(StrEnum):
+    """Конструкторы меню и объявления команд, которые живут только в одном
+    месте: строки меню и маршруты вкладки — в реестре команд вкладки,
+    объявления команд клиенту — в формах команд агента над историей."""
+
+    MENU = "MenuCommand"
+    AGENT_ROUTE = "AgentRoute"
+    APP_ROUTE = "AppRoute"
+    HARNESS_ROUTE = "HarnessRoute"
+    AVAILABLE = "AvailableCommandsUpdate"
+    DECLARED = "CommandsUpdate"
+
+
+class McpListing(StrEnum):
+    """Запросы описаний сервера MCP, которых реестр команд вкладки не шлёт:
+    команды он берёт только из объявления агента."""
+
+    LIST_PROMPTS = "list_prompts"
+    GET_PROMPT = "get_prompt"
+    LISTEN = "listen"
+    DESCRIBED = "described"
+    TOOLS = "tools"
+    COMPLETE = "complete"
+    PORT = "port"
+
+
+class TestOnlyFromHistory:
+    """Меню и маршрут команд обойти нельзя: строки меню и маршруты строит
+    только реестр команд вкладки из объявления агента, объявления команд
+    клиенту строят только формы команд агента над историей сессии, а реестр
+    вкладки не спрашивает описаний у серверов MCP."""
+
+    PACKAGES: ClassVar[Path] = Path(__file__).resolve().parents[3]
+    MENU_MODULE: ClassVar[Path] = (
+        PACKAGES / "apps/boba-aid/src/boba/aid/agent/commands.py"
+    )
+    AGENT_MODULE: ClassVar[Path] = PACKAGES / "apps/boba-cli/src/boba/cli/acp_server.py"
+    FORMS: ClassVar[str] = "CommandForms"
+
+    def test_menu_and_routes_are_built_only_by_the_menu_of_the_tab(self) -> None:
+        for name in (
+            HistoryOnly.MENU,
+            HistoryOnly.AGENT_ROUTE,
+            HistoryOnly.APP_ROUTE,
+            HistoryOnly.HARNESS_ROUTE,
+        ):
+            assert set(self._makers(name.value)) == {self.MENU_MODULE}, name
+
+    def test_commands_reach_the_client_only_from_the_session_history(self) -> None:
+        for name in (HistoryOnly.AVAILABLE, HistoryOnly.DECLARED):
+            assert set(self._makers(name.value)) == {self.AGENT_MODULE}, name
+            classes = set(self._owners(self.AGENT_MODULE, name.value))
+            assert classes == {self.FORMS}, (name, classes)
+
+    def test_menu_of_the_tab_asks_no_mcp_server_for_its_commands(self) -> None:
+        tree = ast.parse(self.MENU_MODULE.read_text(encoding="utf-8"))
+        asked: set[str] = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+
+            func = node.func
+            if not isinstance(func, ast.Attribute):
+                continue
+
+            asked.add(func.attr)
+
+        listing = {member.value for member in McpListing}
+        assert not asked & listing, sorted(asked & listing)
+
+    def _makers(self, name: str) -> Iterator[Path]:
+        """Исходники пакетов (без тестов), где зовётся конструктор name."""
+        for path in self.PACKAGES.rglob("*.py"):
+            if "tests" in path.parts:
+                continue
+
+            source = path.read_text(encoding="utf-8")
+            if f"{name}(" not in source:
+                continue
+
+            if any(self._calls(ast.parse(source), name)):
+                yield path.resolve()
+
+    def _owners(self, path: Path, name: str) -> Iterator[str]:
+        """Классы модуля path, в которых зовётся конструктор name."""
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if not isinstance(node, ast.ClassDef):
+                continue
+
+            if any(self._calls(node, name)):
+                yield node.name
+
+    @staticmethod
+    def _calls(tree: ast.AST, name: str) -> Iterator[bool]:
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+
+            func = node.func
+            if isinstance(func, ast.Name) and func.id == name:
+                yield True
+
+            if isinstance(func, ast.Attribute) and func.attr == name:
+                yield True

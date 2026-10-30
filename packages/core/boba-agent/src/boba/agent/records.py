@@ -58,9 +58,11 @@ from boba.agent.tags import AgentTag, TagShield
 from boba.llm.chat import LlmTrouble
 
 __all__ = [
+    "AgentCommandEntry",
     "Announced",
     "ApiErrorRecord",
     "ApiRequestRecord",
+    "AppCommandEntry",
     "AssistantBlock",
     "AssistantMessage",
     "AssistantRecord",
@@ -71,8 +73,16 @@ __all__ = [
     "BlockType",
     "CallStatus",
     "ChainRecord",
+    "CommandArgumentEntry",
+    "CommandEntry",
+    "CommandHistory",
     "CommandOutputRecord",
+    "CommandOwner",
     "CommandRecord",
+    "CommandSource",
+    "CommandType",
+    "CommandsChange",
+    "CommandsDeltaRecord",
     "CompactBoundaryRecord",
     "CompactMetadata",
     "CompactSummaryRecord",
@@ -87,6 +97,7 @@ __all__ = [
     "EnvironmentField",
     "EnvironmentSnapshot",
     "FeedSink",
+    "HarnessCommandEntry",
     "HarnessCommandRecord",
     "HistoryFold",
     "InformationalRecord",
@@ -113,6 +124,7 @@ __all__ = [
     "PermissionRuleRecord",
     "Placement",
     "PreservedMessages",
+    "PromptCommandEntry",
     "PromptRecord",
     "PromptSnapshot",
     "QueueOperation",
@@ -172,6 +184,7 @@ class RecordType(StrEnum):
     PERMISSION_MODE = "permission-mode"
     PERMISSION_RULE = "permission-rule"
     API_REQUEST = "api-request"
+    COMMANDS_DELTA = "commands-delta"
 
     @property
     def chained(self) -> bool:
@@ -221,6 +234,7 @@ class RecordKind(StrEnum):
     PERMISSION_MODE = "permission_mode"
     PERMISSION_RULE = "permission_rule"
     API_REQUEST = "api_request"
+    COMMANDS_DELTA = "commands_delta"
 
 
 class AttachmentKind(StrEnum):
@@ -1779,6 +1793,203 @@ class ApiRequestRecord(ServiceRecord):
     digest: str
 
 
+class CommandType(StrEnum):
+    """Вид команды сессии: кто и как её исполняет. PROMPT — промпт сервера
+    MCP, агент раскрывает его prompts/get для модели; APP — интерфейс MCP
+    Apps, клиент сам зовёт tools/call инструмента и рисует его приложение;
+    AGENT — команда сессии агента; HARNESS — команда запускающей программы,
+    которую та исполняет сама."""
+
+    PROMPT = "prompt"
+    APP = "app"
+    AGENT = "agent"
+    HARNESS = "harness"
+
+    @property
+    def source(self) -> CommandSource:
+        """Кто объявляет команды этого вида."""
+        match self:
+            case CommandType.PROMPT | CommandType.APP:
+                return CommandSource.SERVERS
+            case CommandType.AGENT:
+                return CommandSource.AGENT
+            case CommandType.HARNESS:
+                return CommandSource.HARNESS
+
+
+class CommandSource(StrEnum):
+    """Кто объявляет команды сессии: серверы MCP (промпты и интерфейсы),
+    агент (свои команды сессии) или клиент (команды запускающей программы).
+    Каждый источник сверяет с историей только команды своих видов."""
+
+    SERVERS = "servers"
+    AGENT = "agent"
+    HARNESS = "harness"
+
+
+class CommandOwner(StrEnum):
+    """Владелец команды, который не сервер MCP: у команд серверов владелец —
+    имя сервера в сессии."""
+
+    AGENT = "agent"
+    HARNESS = "harness"
+
+
+class CommandArgumentEntry(PayloadModel):
+    """Аргумент команды: имя, описание, обязательность и значения, которые
+    подсказал владелец (completion/complete сервера MCP)."""
+
+    name: str = Field(min_length=1)
+    description: str = ""
+    required: bool
+    values: Sequence[str] = Field(default_factory=list)
+
+
+class CommandEntryBase(PayloadModel):
+    """Основа записи команды сессии в истории: имя в меню без косой черты,
+    описание и аргументы по порядку. Наследники — по виду команды
+    (CommandType)."""
+
+    name: str = Field(min_length=1)
+    description: str
+    arguments: Sequence[CommandArgumentEntry] = Field(default_factory=list)
+
+    def same(self, other: CommandEntryBase) -> bool:
+        """Та же запись на проводе: сравнение по JSON."""
+        return self.model_dump(mode="json", by_alias=True) == other.model_dump(
+            mode="json", by_alias=True
+        )
+
+
+class PromptCommandEntry(CommandEntryBase):
+    """Промпт сервера owner с именем prompt на сервере; имя команды — полное
+    имя `mcp__<сервер>__<промпт>`."""
+
+    type: Literal[CommandType.PROMPT] = CommandType.PROMPT
+    owner: str = Field(min_length=1)
+    prompt: str = Field(min_length=1)
+
+
+class AppCommandEntry(CommandEntryBase):
+    """Интерфейс MCP Apps сервера owner: промпт prompt, помеченный
+    расширением команд, ведёт к инструменту tool (карточка tools/list
+    целиком) с приложением resource_uri; аргументы команды — аргументы
+    вызова."""
+
+    type: Literal[CommandType.APP] = CommandType.APP
+    owner: str = Field(min_length=1)
+    prompt: str = Field(min_length=1)
+    tool: mt.Tool
+    resource_uri: str = Field(min_length=1)
+
+
+class AgentCommandEntry(CommandEntryBase):
+    """Команда сессии агента."""
+
+    type: Literal[CommandType.AGENT] = CommandType.AGENT
+    owner: Literal[CommandOwner.AGENT] = CommandOwner.AGENT
+
+
+class HarnessCommandEntry(CommandEntryBase):
+    """Команда запускающей программы: её объявляет и исполняет клиент."""
+
+    type: Literal[CommandType.HARNESS] = CommandType.HARNESS
+    owner: Literal[CommandOwner.HARNESS] = CommandOwner.HARNESS
+
+
+CommandEntry: TypeAlias = Annotated[
+    PromptCommandEntry | AppCommandEntry | AgentCommandEntry | HarnessCommandEntry,
+    Field(discriminator="type"),
+]
+"""Запись команды сессии: модель выбирается по полю type."""
+
+
+class CommandsDeltaRecord(ServiceRecord):
+    """Смена команд сессии: снятые имена и добавленные команды целиком (новая
+    запись с прежним именем заменяет прежнюю). Пишет набор команд сессии
+    (CommandBook) при каждом подключении и переподключении к серверам MCP,
+    обрыве связи и объявлении команд клиентом — только если есть разница с
+    историей. Модели запись не уходит."""
+
+    type: Literal[RecordType.COMMANDS_DELTA] = RecordType.COMMANDS_DELTA
+    kind: Literal[RecordKind.COMMANDS_DELTA] = RecordKind.COMMANDS_DELTA
+    removed: Sequence[str] = Field(default_factory=list)
+    added: Sequence[CommandEntry] = Field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class CommandsChange:
+    """Разница команд источника с историей: снятые имена и добавленные или
+    сменившиеся команды; записью её делает набор команд сессии."""
+
+    removed: Sequence[str]
+    added: Sequence[CommandEntry]
+
+
+class CommandHistory:
+    """Команды сессии, свёрнутые из её записей commands_delta по порядку:
+    единственный источник меню и маршрута команд у агента и, через его
+    объявление, у клиента. Записи служебные, сжатие их не отпускает, поэтому
+    свёртка идёт по всей сессии. Создаёт набор команд сессии (CommandBook)
+    на каждое чтение."""
+
+    def __init__(self, records: Iterable[ServiceRecord]) -> None:
+        self._commands: dict[str, CommandEntry] = {}
+        for delta in self._deltas(records):
+            for name in delta.removed:
+                self._commands.pop(name, None)
+
+            for entry in delta.added:
+                self._commands[entry.name] = entry
+
+    def entries(self) -> Sequence[CommandEntry]:
+        """Команды в порядке объявления."""
+        return list(self._commands.values())
+
+    def named(self, name: str) -> CommandEntry | None:
+        return self._commands.get(name)
+
+    def delta(
+        self, live: Sequence[CommandEntry], source: CommandSource
+    ) -> CommandsChange | None:
+        """Разница живых команд live источника source с историей: команды
+        этого источника, которых нет в live, снимаются, новые и сменившиеся
+        добавляются; без разницы — None."""
+        fresh: dict[str, CommandEntry] = {}
+        for entry in live:
+            fresh[entry.name] = entry
+
+        removed: list[str] = []
+        for name, entry in self._commands.items():
+            if entry.type.source is not source:
+                continue
+
+            if name not in fresh:
+                removed.append(name)
+
+        added = list(self._changed(fresh.values()))
+        if not removed and not added:
+            return None
+
+        return CommandsChange(removed=removed, added=added)
+
+    def _changed(self, live: Iterable[CommandEntry]) -> Iterator[CommandEntry]:
+        for entry in live:
+            known = self._commands.get(entry.name)
+            if known is None:
+                yield entry
+                continue
+
+            if not known.same(entry):
+                yield entry
+
+    @staticmethod
+    def _deltas(records: Iterable[ServiceRecord]) -> Iterator[CommandsDeltaRecord]:
+        for record in records:
+            if isinstance(record, CommandsDeltaRecord):
+                yield record
+
+
 Record: TypeAlias = Annotated[
     PromptRecord
     | TaskNotificationRecord
@@ -1801,7 +2012,8 @@ Record: TypeAlias = Annotated[
     | QueueOperationRecord
     | PermissionModeRecord
     | PermissionRuleRecord
-    | ApiRequestRecord,
+    | ApiRequestRecord
+    | CommandsDeltaRecord,
     Field(discriminator="kind"),
 ]
 """Запись журнала: модель выбирается по полю kind."""

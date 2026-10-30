@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-tool-clickhouse"
-version = "0.0.30.dev5"
+version = "0.0.30.dev7"
 description = "ClickHouse-инструменты только на чтение: соединение и запрос идут из песочницы."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-core==0.0.30.dev5",
-    "boba-toolkit==0.0.30.dev5",
-    "boba-db-clickhouse==0.0.30.dev5",
+    "boba-core==0.0.30.dev7",
+    "boba-toolkit==0.0.30.dev7",
+    "boba-db-clickhouse==0.0.30.dev7",
     "pydantic>=2.12,<3",
 ]
 
@@ -21,16 +21,16 @@ ch = "boba.tool.ch.plugin:MANIFEST"
 
 [project.optional-dependencies]
 payload = [
-    "boba-db-clickhouse[payload]==0.0.30.dev5",
+    "boba-db-clickhouse[payload]==0.0.30.dev7",
 ]
 dev = [
-    "boba-runtime==0.0.30.dev5",
+    "boba-runtime==0.0.30.dev7",
     "omegaconf>=2.3,<3",
-    "boba-connections==0.0.30.dev5",
-    "boba-config==0.0.30.dev5",
-    "boba-stand==0.0.30.dev5",
-    "boba-db-clickhouse[payload]==0.0.30.dev5",
-    "boba-stand-core==0.0.30.dev5",
+    "boba-connections==0.0.30.dev7",
+    "boba-config==0.0.30.dev7",
+    "boba-stand==0.0.30.dev7",
+    "boba-db-clickhouse[payload]==0.0.30.dev7",
+    "boba-stand-core==0.0.30.dev7",
     "pytest>=9.1,<10",
 ]
 

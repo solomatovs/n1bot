@@ -1060,36 +1060,59 @@ class McpServerApps(BaseModel):
     """Секция [mcp.servers.<имя>.apps]: серверу разрешено показывать свой
     интерфейс (MCP Apps) в браузере пользователя.
 
-    sandbox_url — страница-прокси песочницы на источнике, отдельном от чата
-    и от песочниц других серверов: в ней чат рисует приложения сервера.
-    Запись сервера с этой секцией объявляет серверу расширение
-    io.modelcontextprotocol/ui; источник адреса проверяют McpServersConfig и
-    конфиг хоста приложений.
+    Страницу-прокси песочницы, в которой чат рисует приложения сервера,
+    отдаёт сам чат на своём порту port: тот же хост, что у страницы чата
+    chat_url, но другой источник — отдельный от чата и от песочниц других
+    серверов. chat_url — адрес чата в браузере пользователя; только его
+    источник может встроить песочницу. Запись сервера с этой секцией
+    объявляет серверу расширение io.modelcontextprotocol/ui; источники
+    проверяют McpServersConfig и конфиг хоста приложений.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    sandbox_url: HttpUrl
+    chat_url: HttpUrl
+    port: int = Field(gt=0, le=65535)
+
+    def sandbox_url(self) -> str:
+        """Адрес страницы-прокси в браузере: схема и хост страницы чата,
+        порт песочницы, корень пути."""
+        chat = self.chat_url
+        host = self._host(chat)
+        sandbox = HttpUrl.build(scheme=chat.scheme, host=host, port=self.port)
+
+        return str(sandbox)
 
     def origin(self) -> str:
-        """Источник страницы-прокси в форме браузера: схема, хост и порт,
-        если он не порт схемы по умолчанию; учётные данные адреса в
-        источник не входят."""
-        url = self.sandbox_url
-        host = url.host
-        if host is None:
-            msg = f"[apps] sandbox_url {url} expects a host, got none"
-            raise ValueError(msg)
+        """Источник страницы-прокси в форме браузера."""
+        return self._origin(HttpUrl(self.sandbox_url()))
 
-        bare = HttpUrl.build(scheme=url.scheme, host=host, port=url.port)
-        parts = urlsplit(str(bare))
-
-        return urlunsplit((parts.scheme, parts.netloc, "", "", ""))
+    def chat_origin(self) -> str:
+        """Источник страницы чата в форме браузера: единственный, кому
+        разрешено встраивать песочницу."""
+        return self._origin(self.chat_url)
 
     def settings(self) -> dict[str, Any]:
         """Настройки расширения MCP Apps в возможностях клиента: клиент
         рисует ресурсы приложений этого вида."""
         return {"mimeTypes": [APP_MIME_TYPE]}
+
+    @staticmethod
+    def _host(url: HttpUrl) -> str:
+        host = url.host
+        if host is None:
+            msg = f"[apps] chat_url {url} expects a host, got none"
+            raise ValueError(msg)
+
+        return host
+
+    def _origin(self, url: HttpUrl) -> str:
+        """Схема, хост и порт, если он не порт схемы по умолчанию; учётные
+        данные адреса в источник не входят."""
+        bare = HttpUrl.build(scheme=url.scheme, host=self._host(url), port=url.port)
+        parts = urlsplit(str(bare))
+
+        return urlunsplit((parts.scheme, parts.netloc, "", "", ""))
 
 
 class McpServerLimits(BaseModel):
@@ -1161,10 +1184,10 @@ class McpServersConfig(BaseModel):
             other = held.get(origin)
             if other is not None:
                 msg = (
-                    f"[mcp.servers.{name}.apps] sandbox_url {apps.sandbox_url} is on "
+                    f"[mcp.servers.{name}.apps] port {apps.port} puts the sandbox on "
                     f"origin {origin}, which is already the sandbox origin of server "
-                    f"{other!r}; give every server with apps a sandbox on its own "
-                    "origin, so that the apps of one server cannot reach another"
+                    f"{other!r}; give every server with apps a port of its own, so "
+                    "that the apps of one server cannot reach another"
                 )
                 raise ValueError(msg)
 
@@ -2023,11 +2046,6 @@ class McpDescription:
         """Инструмент сервера со вложенными вызовами и форма его узлов;
         None — сервер такого не объявил."""
         return self._feature(NestedCallsFeature)
-
-    def commands(self) -> CommandsFeature | None:
-        """Расширение команд пользователя: сервер помечает промпты, которые
-        открывают его приложение; None — сервер его не объявил."""
-        return self._feature(CommandsFeature)
 
     def links(self) -> JournalLinks | None:
         """Адреса каналов журнала по шаблону, объявленному сервером; None —

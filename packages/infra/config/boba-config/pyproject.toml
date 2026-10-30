@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-config"
-version = "0.0.30.dev5"
+version = "0.0.30.dev7"
 description = "Boba config: загрузка toml/yaml/CLI в OmegaConf и привязка секций к pydantic-моделям."
 requires-python = ">=3.11,<4"
 dependencies = [
@@ -14,7 +14,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "boba-stand==0.0.30.dev5",
+    "boba-stand==0.0.30.dev7",
     "pytest>=9.1,<10",
 ]
 

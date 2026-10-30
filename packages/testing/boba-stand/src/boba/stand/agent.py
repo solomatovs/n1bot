@@ -26,6 +26,7 @@ from boba.agent.ids import Clock, SystemClock
 from boba.agent.mcp import ToolCard, ToolHints, ToolReplies, ToolReply
 from boba.agent.profile import CompactionSettings, ModelProfile, TurnLimits
 from boba.agent.records import (
+    CommandEntry,
     EnvironmentSnapshot,
     PermissionMode,
     ReasoningReturn,
@@ -358,12 +359,13 @@ class FakeServer:
 
 class StandServers(McpServerSet):
     """Реализация McpServerSet в процессе теста: подключённые серверы с
-    инструкциями задаёт тест полем connected_servers, смены их состояния —
-    полем pending_notices (отдаются первым освежением), освежения
-    считаются."""
+    инструкциями задаёт тест полем connected_servers, их команды — полем
+    server_commands, смены их состояния — полем pending_notices (отдаются
+    первым освежением), освежения считаются."""
 
     def __init__(self, connected: Sequence[ConnectedServer]) -> None:
         self.connected_servers = list(connected)
+        self.server_commands: list[CommandEntry] = []
         self.pending_notices: list[ServerNotice] = []
         self.refreshes = 0
 
@@ -376,6 +378,9 @@ class StandServers(McpServerSet):
 
     def connected(self) -> Sequence[ConnectedServer]:
         return self.connected_servers
+
+    def commands(self) -> Sequence[CommandEntry]:
+        return self.server_commands
 
 
 class StandAgents:

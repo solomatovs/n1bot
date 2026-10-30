@@ -70,6 +70,7 @@ from boba.agent.records import (
     AssistantMessage,
     CommandOutputRecord,
     CommandRecord,
+    CommandSource,
     CompactionPhase,
     CompactionRecord,
     CompactTrigger,
@@ -105,6 +106,7 @@ from boba.agent.tools import (
 )
 from boba.agent.writer import (
     ClientCommands,
+    CommandBook,
     HistoryWriter,
     RecordKeeper,
     RequestRecorder,
@@ -212,9 +214,11 @@ class TurnLoop:
         agent_name: str,
         recorder: RequestRecorder,
         client_commands: ClientCommands,
+        command_book: CommandBook,
     ) -> None:
         self._recorder = recorder
         self._client_commands = client_commands
+        self._command_book = command_book
         self._request_id = ""
         self._message_id = ""
         self._keeper = keeper
@@ -835,6 +839,8 @@ class TurnLoop:
         перечитывается: свежесть проверяется там, где списки нужны."""
         for notice in await self._catalog.refreshed():
             await self._write_notice(notice.level, notice.text, notice.detail)
+
+        await self._command_book.synced(self._catalog.commands(), CommandSource.SERVERS)
 
         announced = Announced(self._session.conversation())
         if self._environment is not None:

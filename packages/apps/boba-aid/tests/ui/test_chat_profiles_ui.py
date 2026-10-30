@@ -37,9 +37,9 @@ AGENT_TOOL = "AskUserQuestion"
 STAND_TOOLS = frozenset(
     {
         AGENT_TOOL,
-        "mcp__boba_general__send_file",
-        "mcp__boba_general__diagram_save",
-        "mcp__boba_general__canvas_open",
+        "mcp__aid_all__send_file",
+        "mcp__aid_all__diagram_save",
+        "mcp__aid_all__canvas_open",
         "mcp__chat__connection_list",
         "mcp__chat__connection_search",
     }
@@ -53,7 +53,7 @@ DEV_OWN_TOOLS = frozenset({"mcp__chat__connection_list"})
 """Собственные инструменты чата, выданные роли DEV: без connection_search."""
 
 SEARCH_PROFILE_TOOLS = frozenset(
-    {AGENT_TOOL, "mcp__boba_search__diagram_save", "mcp__boba_search__canvas_open"}
+    {AGENT_TOOL, "mcp__aid_search__diagram_save", "mcp__aid_search__canvas_open"}
 )
 """Набор endpoint'а search сервиса, который называет профиль search стенда,
 и вопрос пользователю агента."""

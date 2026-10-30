@@ -47,8 +47,8 @@ PREFIX_aid       := /aid
 SANDBOX_aid      :=
 MODELS_aid       :=
 PARTS_aid        := app_root/public app_root/public/page.js app_root/public/vendor \
-                    app_root/ui/index.html app_root/ui/index.js app_root/mcp-apps/sandbox.html \
-                    app_root/mcp-apps/fonts/inter/files
+                    app_root/public/vendor/inter/files \
+                    app_root/ui/index.html app_root/ui/index.js app_root/mcp-apps/sandbox.html
 # агента в образе чата нет: на выкатке чат ходит в службу агента (образ boba, boba serve)
 BUILD_ARGS_aid    =
 # фронт на хосте нужен только отладке чата: образ собирает его сам
@@ -1222,10 +1222,13 @@ install:
 	else
 	    install -m 0644 "$(OUT)/conf/boba.env" "$(INSTALL_DIR)/conf/boba.env"
 	fi
-	rm -rf "$(INSTALL_DIR)/conf/plugins"
+	rm -rf "$(INSTALL_DIR)/conf/plugins" "$(INSTALL_DIR)/conf/prompts"
 	cp -a "$(OUT)/conf/config.toml" "$(INSTALL_DIR)/conf/config.toml"
 	if [ -d "$(OUT)/conf/plugins" ]; then
 	    cp -a "$(OUT)/conf/plugins" "$(INSTALL_DIR)/conf/plugins"
+	fi
+	if [ -d "$(OUT)/conf/prompts" ]; then
+	    cp -a "$(OUT)/conf/prompts" "$(INSTALL_DIR)/conf/prompts"
 	fi
 	$(call site-hint,$(INSTALL_DIR)/conf)
 	mkdir -p "$(USER_UNITS)"

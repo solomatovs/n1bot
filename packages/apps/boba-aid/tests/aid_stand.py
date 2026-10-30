@@ -136,7 +136,7 @@ class TabSession:
 
     LOGIN: ClassVar[str] = "ivanov"
     PRINCIPAL: ClassVar[str] = "ivanov@STAND.LOCAL"
-    SERVER: ClassVar[str] = "boba_general"
+    SERVER: ClassVar[str] = "aid_all"
 
     def __init__(self) -> None:
         self.raw = SimpleNamespace(token="")
@@ -271,7 +271,7 @@ class ToolService:
     ServiceTools.
     """
 
-    ENDPOINT: ClassVar[str] = "general"
+    ENDPOINT: ClassVar[str] = "all"
     PLUGINS: ClassVar[tuple[str, ...]] = ("pg", "ch", "web")
     """Плагины песочницы, которые зовут тесты сервиса: соединения
     пользователя (pg, ch) и делегированный HTTP (web)."""

@@ -86,6 +86,8 @@ from boba.runtime.threads import ThreadsTable
 from boba.toolkit.result import BlockAudience, ContentMime, JsonBlock
 from boba.transport.acp.protocol import (
     AcpErrorCode,
+    BobaExtension,
+    CommandsUpdate,
     MetaKey,
     SessionRecordRequest,
 )
@@ -604,7 +606,10 @@ class AskedQuestions(SessionUpdates):
             self.links[update.message_id] = tuple(links)
 
         if isinstance(update, schema.AvailableCommandsUpdate):
-            await self._menu.heard(update)
+            await self._menu.listed(update)
+
+        if isinstance(update, schema.OtherSessionUpdate):
+            await self._commands(update)
 
         ending = self._ending.get(session_id)
         if ending is not None:
@@ -613,6 +618,18 @@ class AskedQuestions(SessionUpdates):
                 self._ending.pop(session_id)
 
         await self._inner.update(session_id, update)
+
+    async def _commands(self, update: schema.OtherSessionUpdate) -> None:
+        """Команды сессии из истории агента — реестру команд вкладки.
+
+        Ошибки:
+        ValidationError — команды не по форме расширения.
+        """
+        if update.session_update != BobaExtension.COMMANDS.value:
+            return
+
+        dumped = update.model_dump(mode="json", by_alias=True)
+        await self._menu.heard(CommandsUpdate.model_validate(dumped))
 
     async def permission(
         self, session_id: str, title: str, options: Sequence[schema.PermissionOption]
@@ -1106,9 +1123,8 @@ class ThreadAgent:
         сессии, и меню получает их с открытием вкладки."""
         async with self._gate:
             await self._launch(self._launcher.prepare(self._identity))
+            await self._menu.start(self.process.records_commands())
             await self._opened_ahead()
-
-        await self._menu.start(self.process.records_commands())
 
     async def _opened_ahead(self) -> None:
         """Новая сессия треду, у которого в threads.meta её нет; агент её не
@@ -1130,6 +1146,7 @@ class ThreadAgent:
         self._session_id = opened.session_id
         self._open = True
         self._unclaimed = True
+        await self._declare(opened.session_id)
         logger.info(
             "thread %s: agent session %s opened with the tab",
             self.thread_id,
@@ -1239,6 +1256,20 @@ class ThreadAgent:
             outcome=executed.outcome,
         )
 
+    async def _declare(self, session_id: str) -> None:
+        """Команды чата — в историю открытой сессии, если агент ведёт там
+        команды сессии: в меню они вернутся из его объявления.
+
+        Ошибки:
+        AgentRequestError — агент отказал в записи.
+        AgentProcessError — агент ушёл, не записав.
+        """
+        declaration = self._menu.declaration(session_id)
+        if declaration is None:
+            return
+
+        await self.process.record(declaration)
+
     async def _restart(self) -> None:
         """Замена процесса под замком вкладки перед ходом: файл настроек
         собирается заново по профилю, прежний процесс закрывается, новый
@@ -1331,6 +1362,7 @@ class ThreadAgent:
 
         self._session_id = known
         self._open = True
+        await self._declare(known)
         if not replay:
             return True
 
@@ -1468,7 +1500,6 @@ class ThreadAgent:
         finally:
             self._current = None
             self._closed.set()
-            self._menu.revisit()
 
     async def _begin(self, question: Question) -> StartedTurn:
         """Начало хода под замком вкладки: вышедший процесс заменяется,
@@ -1716,13 +1747,9 @@ class ThreadAgent:
             await self._close_process()
 
     async def close(self) -> None:
-        """Закрытие сессии у агента (замок отпущен), остановка процесса и
-        потоков меню команд."""
-        try:
-            async with self._gate:
-                await self._close_process()
-        finally:
-            await self._menu.close()
+        """Закрытие сессии у агента (замок отпущен) и остановка процесса."""
+        async with self._gate:
+            await self._close_process()
 
     async def _close_process(self) -> None:
         """Прежний процесс: сессия закрыта у агента, процесс остановлен, его
@@ -1806,6 +1833,7 @@ class ThreadAgent:
         await self._meta.remember(self.thread_id, created, self._identity.profile.name)
         self._session_id = created
         self._open = True
+        await self._declare(created)
         logger.info("thread %s: agent session %s created", self.thread_id, created)
 
         return created

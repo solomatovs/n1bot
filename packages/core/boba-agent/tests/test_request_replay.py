@@ -16,6 +16,7 @@ import json
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import aclosing
 from dataclasses import dataclass
+from itertools import pairwise
 from pathlib import Path
 from typing import ClassVar
 
@@ -32,12 +33,17 @@ from boba.agent.profile import ModelProfile, TurnLimits
 from boba.agent.queue import QueueEntry, QueueKind
 from boba.agent.records import (
     ApiRequestRecord,
+    AppCommandEntry,
     AttachmentKind,
     AttachmentRecord,
+    CommandArgumentEntry,
+    CommandEntry,
+    CommandsDeltaRecord,
     DeferredToolsDeltaAttachment,
     DeferredToolsRecordAttachment,
     McpInstructionsAttachment,
     NoticeLevel,
+    PromptCommandEntry,
     PromptSnapshot,
     ReasoningReturn,
     Record,
@@ -668,12 +674,12 @@ class RenamedServer(StandTools):
 
 class TestServerRenamed:
     OLD: ClassVar[str] = "boba_general"
-    NEW: ClassVar[str] = "aid_general"
+    NEW: ClassVar[str] = "aid_all"
 
     async def test_a_renamed_server_reaches_the_model_through_history_only(
         self, server: FakeServer, agents: StandAgents, tmp_path: Path
     ) -> None:
-        """Сервер boba_general переименован в aid_general посреди сессии:
+        """Сервер boba_general переименован в aid_all посреди сессии:
         история получает разницу — старые имена инструментов (и с полным
         определением, и отложенные) сняты, новые объявлены, инструкции
         старого сервера сняты, нового — объявлены; следующий запрос несёт
@@ -899,5 +905,140 @@ class TestServerReconnected:
             delta = record.attachment
             assert isinstance(delta, McpInstructionsAttachment)
             found.append((tuple(delta.added_names), tuple(delta.removed_names)))
+
+        return found
+
+
+class TestCommandsFromHistory:
+    """Команды серверов MCP — только через историю: перед каждым запросом
+    агент сверяет промпты и интерфейсы подключённых серверов с записями
+    commands_delta и пишет разницу; модели они не уходят."""
+
+    OLD: ClassVar[str] = "boba_general"
+    NEW: ClassVar[str] = "aid_all"
+
+    async def test_server_commands_follow_every_connection_and_rename(
+        self, server: FakeServer, agents: StandAgents, tmp_path: Path
+    ) -> None:
+        """Подключение объявляет промпт и интерфейс целиком (вид, владелец,
+        аргументы, инструмент и приложение); обрыв снимает их, возвращение
+        без интерфейса возвращает один промпт, переподключение без перемен
+        ничего не пишет, переименование сервера — одна запись: снятые старые
+        имена и новые команды. Возобновлённая сессия видит в истории ровно
+        последний набор, а запросы повторяются из истории байт в байт."""
+        connected = ConnectedServer(name=self.OLD, instructions=INSTRUCTIONS)
+        servers = StandServers([connected])
+        servers.server_commands = self._commands(self.OLD, app=True)
+        served = Served(
+            agents.agent(
+                openai(agents), Collected(), servers=servers, record_requests=True
+            )
+        )
+        await served.open(SESSION, resume=False)
+        root = tmp_path / "history"
+        marks: list[int] = []
+        for live in (
+            self._commands(self.OLD, app=True),
+            [],
+            self._commands(self.OLD, app=False),
+            self._commands(self.OLD, app=False),
+            self._commands(self.NEW, app=False),
+        ):
+            servers.server_commands = live
+            marks.append(len(await journal(root)))
+            served.agent.queue.enqueue(prompt(ScenarioName.ANSWER.value))
+            await served.agent.settled()
+
+        await served.close()
+        records = await journal(root)
+        marks.append(len(records))
+        deltas: list[list[CommandsDeltaRecord]] = []
+        for start, end in pairwise(marks):
+            deltas.append(self._deltas(records[start:end]))
+
+        self._check(deltas)
+        assert await checked(records, tmp_path / "replay") == (5, 0)
+        for request in server.requests():
+            sent = json.dumps(request)
+            assert self._full(self.OLD) not in sent, request
+            assert "Review an SQL statement" not in sent, request
+
+        resumed = Served(agents.agent(openai(agents), Collected(), servers=servers))
+        await resumed.open(SESSION, resume=True)
+        try:
+            kept = resumed.agent.commands.history().entries()
+        finally:
+            await resumed.close()
+
+        assert [entry.name for entry in kept] == [self._full(self.NEW)]
+
+    def _check(self, deltas: Sequence[Sequence[CommandsDeltaRecord]]) -> None:
+        opened, dropped, back, same, renamed = deltas
+        assert len(opened) == 1
+        prompt_entry, app_entry = opened[0].added
+        assert isinstance(prompt_entry, PromptCommandEntry)
+        assert prompt_entry.owner == self.OLD
+        assert prompt_entry.prompt == "review"
+        assert [a.name for a in prompt_entry.arguments] == ["sql", "dialect"]
+        assert prompt_entry.arguments[1].values == ["postgres", "oracle"]
+        assert isinstance(app_entry, AppCommandEntry)
+        assert app_entry.tool.name == "orders_console"
+        assert app_entry.resource_uri == "ui://stand/orders.html"
+        assert [list(d.removed) for d in dropped] == [
+            [self._full(self.OLD), self._full(self.OLD, "console")]
+        ]
+        assert [[e.name for e in d.added] for d in back] == [[self._full(self.OLD)]]
+        assert same == []
+        assert [list(d.removed) for d in renamed] == [[self._full(self.OLD)]]
+        assert [[e.name for e in d.added] for d in renamed] == [[self._full(self.NEW)]]
+
+    @staticmethod
+    def _full(server: str, prompt: str = "review") -> str:
+        return McpToolNames().full(server, prompt)
+
+    def _commands(self, server: str, app: bool) -> list[CommandEntry]:
+        arguments = (
+            CommandArgumentEntry(
+                name="sql", description="The statement", required=True
+            ),
+            CommandArgumentEntry(
+                name="dialect", required=False, values=("postgres", "oracle")
+            ),
+        )
+        commands: list[CommandEntry] = [
+            PromptCommandEntry(
+                name=self._full(server),
+                description="Review an SQL statement",
+                owner=server,
+                prompt="review",
+                arguments=arguments,
+            )
+        ]
+        if not app:
+            return commands
+
+        commands.append(
+            AppCommandEntry(
+                name=self._full(server, "console"),
+                description="Open the orders console",
+                owner=server,
+                prompt="console",
+                tool=mt.Tool(
+                    name="orders_console",
+                    input_schema={"type": "object"},
+                    _meta={"ui": {"resourceUri": "ui://stand/orders.html"}},
+                ),
+                resource_uri="ui://stand/orders.html",
+            )
+        )
+
+        return commands
+
+    @staticmethod
+    def _deltas(records: Sequence[Record]) -> list[CommandsDeltaRecord]:
+        found: list[CommandsDeltaRecord] = []
+        for record in records:
+            if isinstance(record, CommandsDeltaRecord):
+                found.append(record)
 
         return found

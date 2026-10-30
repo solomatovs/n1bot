@@ -741,7 +741,7 @@ class TestServerApps:
         {"id": 7, "customer": "Acme", "status": "new", "total": 120.5}
     ]
     SANDBOX: ClassVar[McpServerApps] = McpServerApps.model_validate(
-        {"sandbox_url": "http://localhost:8123/mcp-apps/sandbox.html"}
+        {"chat_url": "http://localhost:8122/aid/", "port": 8123}
     )
 
     async def _open(
@@ -809,13 +809,13 @@ class TestServerApps:
             {
                 "endpoint": endpoint,
                 "limits": {"connect_timeout_sec": 1.0, "call_timeout_sec": 1.0},
-                "apps": {"sandbox_url": "https://apps.example.com/one/sandbox.html"},
+                "apps": {"chat_url": "https://boba.example.com/aid/", "port": 8443},
             }
         )
         second = first.model_copy(
             update={
                 "apps": McpServerApps.model_validate(
-                    {"sandbox_url": "https://apps.example.com:443/two/sandbox.html"}
+                    {"chat_url": "https://boba.example.com:443/other/", "port": 8443}
                 )
             }
         )
@@ -824,16 +824,19 @@ class TestServerApps:
             McpServersConfig(servers={"one": first, "two": second})
 
         assert "'one'" in str(refused.value)
-        assert "[mcp.servers.two.apps]" in str(refused.value)
-        assert "https://apps.example.com" in str(refused.value)
+        assert "[mcp.servers.two.apps] port 8443" in str(refused.value)
+        assert "https://boba.example.com:8443" in str(refused.value)
 
-    def test_origin_of_the_sandbox_is_scheme_host_and_port(self) -> None:
+    def test_sandbox_is_the_host_of_the_chat_on_its_own_port(self) -> None:
         signed = McpServerApps.model_validate(
-            {"sandbox_url": "https://u:p@apps.example.com:443/mcp-apps/sandbox.html"}
+            {"chat_url": "https://u:p@boba.example.com/aid/", "port": 443}
         )
 
+        assert self.SANDBOX.sandbox_url() == "http://localhost:8123/"
         assert self.SANDBOX.origin() == "http://localhost:8123"
-        assert signed.origin() == "https://apps.example.com"
+        assert self.SANDBOX.chat_origin() == "http://localhost:8122"
+        assert signed.origin() == "https://boba.example.com"
+        assert signed.chat_origin() == "https://boba.example.com"
 
     async def test_prefab_tool_names_its_renderer_and_structured_view(
         self, apps_slot: AppsSlot

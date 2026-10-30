@@ -4,19 +4,19 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-cfl-indexer"
-version = "0.0.30.dev5"
+version = "0.0.30.dev7"
 description = "Скрапер Confluence в граф ix: спейсы, страницы, блог-записи, вложения и комментарии; текст кладётся в общий полнотекст."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-cancellation==0.0.30.dev5",
-    "boba-config==0.0.30.dev5",
-    "boba-confluence[html]==0.0.30.dev5",
-    "boba-db-postgres==0.0.30.dev5",
-    "boba-doc[readers,ocr]==0.0.30.dev5",
-    "boba-ix-core==0.0.30.dev5",
-    "boba-krb==0.0.30.dev5",
-    "boba-llm==0.0.30.dev5",
-    "boba-transport-http==0.0.30.dev5",
+    "boba-cancellation==0.0.30.dev7",
+    "boba-config==0.0.30.dev7",
+    "boba-confluence[html]==0.0.30.dev7",
+    "boba-db-postgres==0.0.30.dev7",
+    "boba-doc[readers,ocr]==0.0.30.dev7",
+    "boba-ix-core==0.0.30.dev7",
+    "boba-krb==0.0.30.dev7",
+    "boba-llm==0.0.30.dev7",
+    "boba-transport-http==0.0.30.dev7",
     "httpx>=0.28,<1",
     "psycopg>=3.3,<4",
     "pydantic>=2.12,<3",
@@ -27,7 +27,7 @@ boba-cfl-indexer = "boba.cfl_indexer.worker:cli"
 
 [project.optional-dependencies]
 dev = [
-    "boba-stand==0.0.30.dev5",
+    "boba-stand==0.0.30.dev7",
     "pillow>=10",
     "pytest>=9.1,<10",
 ]

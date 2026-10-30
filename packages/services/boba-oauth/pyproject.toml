@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-oauth"
-version = "0.0.30.dev5"
+version = "0.0.30.dev7"
 description = "Boba oauth: сервер авторизации OAuth 2.1 служб boba — токены, печати, страницы входа, обмен утверждения proxy."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-auth==0.0.30.dev5",
-    "boba-identity==0.0.30.dev5",
-    "boba-runtime==0.0.30.dev5",
+    "boba-auth==0.0.30.dev7",
+    "boba-identity==0.0.30.dev7",
+    "boba-runtime==0.0.30.dev7",
     "fastmcp-slim[server]>=4.0,<5",
     "mcp>=2.3,<3",
     "joserfc>=1.0,<2",
@@ -21,7 +21,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "boba-stand==0.0.30.dev5",
+    "boba-stand==0.0.30.dev7",
     "pytest>=9.1,<10",
 ]
 

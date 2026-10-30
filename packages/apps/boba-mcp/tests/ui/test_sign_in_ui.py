@@ -51,7 +51,7 @@ pytestmark = pytest.mark.ui
 
 BOOT_SEC = 180.0
 STEP_SEC = 60.0
-ENDPOINT = "general"
+ENDPOINT = "all"
 TOOL = "canvas_open"
 """Инструмент, который есть у endpoint'а и стенда, и развёрнутого сервиса."""
 LOGIN_FIELD = 'input[name="login"]'

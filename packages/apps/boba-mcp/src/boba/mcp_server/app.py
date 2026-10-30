@@ -1,12 +1,14 @@
 """Процесс сервиса исполнения: сборка объектов и запуск MCP-сервера.
 
-`boba-mcp --config <toml> --site <toml>` читает конфиг, поднимает контейнер общих
-сервисов (журналы вызовов, реестр запусков, способ запуска, реестр инструментов,
-способы входа), строит endpoint'ы MCP над реестром — по одному на профиль
-конфига — и слушает адрес секции [mcp].
+`boba-mcp --config <toml> --site <toml>` читает конфиг и промпты endpoint'ов
+(prompts/<endpoint>/<имя>.toml рядом с общим конфигом), поднимает контейнер
+общих сервисов (журналы вызовов, реестр запусков, способ запуска, реестр
+инструментов, способы входа), строит endpoint'ы MCP над реестром — по одному на
+профиль конфига — и слушает адрес секции [mcp].
 
 Ошибки:
-SystemExit — конфиг не прочитан либо сервис не поднялся; текст называет причину.
+SystemExit — конфиг или промпты не прочитаны либо сервис не поднялся; текст
+    называет причину.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ import asyncio
 import logging
 import logging.config
 import signal
+from collections.abc import Mapping, Sequence
 from typing import Annotated, Self
 
 import uvicorn
@@ -30,6 +33,7 @@ from boba.connections.sealed import SealKeys
 from boba.identity.context import CallContexts
 from boba.identity.run import Runs
 from boba.mcp_server.auth import ServiceMark
+from boba.mcp_server.prompts import FilePrompt, PromptFiles
 from boba.mcp_server.server import (
     EndpointCatalog,
     McpEndpoint,
@@ -149,8 +153,11 @@ class McpHost:
     """Сборка процесса сервиса: контейнер общих сервисов и MCP-сервер над
     реестром инструментов. Создаётся входом процесса из конфига."""
 
-    def __init__(self, config: McpAppConfig) -> None:
+    def __init__(
+        self, config: McpAppConfig, prompts: Mapping[str, Sequence[FilePrompt]]
+    ) -> None:
         self._config = config
+        self._prompts = prompts
         self._container = Container(level="app")
         self._container.provide(providers.get_process_config, config)
         self._container.provide(providers.seal_keys, SealKeys())
@@ -191,6 +198,7 @@ class McpHost:
                 self._container.resolved(providers.connection_params),
                 section.limits,
                 self._config.storage,
+                self._prompts,
             )
             stop = ProcessStop()
             stop.on_stop(StoppedRuns(self._container.resolved(providers.runs)))
@@ -276,10 +284,12 @@ class McpEntry:
         return ConfigArguments(parser).files()
 
     async def run(self) -> None:
-        config = McpAppConfig.load(self.config_files())
+        files = self.config_files()
+        config = McpAppConfig.load(files)
         logging.config.dictConfig(config.logger)
+        prompts = PromptFiles().read(files.prompts_dir(), config.mcp.endpoints)
 
-        await McpHost(config).serve()
+        await McpHost(config, prompts).serve()
 
 
 async def main() -> None:

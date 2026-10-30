@@ -10,7 +10,7 @@ services:
     cpus: 4
     pids_limit: 512
     restart: unless-stopped
-    image: boba-aid:0.0.30.dev5
+    image: boba-aid:0.0.30.dev7
     hostname: aid
     container_name: aid
     networks:
@@ -31,6 +31,7 @@ services:
       - ./data:/app/boba/data:rw
     ports:
       - "8501"
+      - "8502"
 networks:
   default:
     name: ${BOBA_NETWORK}

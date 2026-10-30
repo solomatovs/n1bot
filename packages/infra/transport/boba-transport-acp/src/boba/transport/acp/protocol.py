@@ -1,8 +1,11 @@
 """Провод ACP v2 (alpha.8) агента и клиента поверх SDK acp.experimental.v2.
 
-Расширение записи команд клиента (BobaExtension): клиент пишет в историю
-сессии команду, которую исполнил сам, запросом `_boba/session/record`, агент
-отдаёт её итог уведомлением `session/update` вида `_boba/command_outcome`.
+Расширение команд сессии (BobaExtension): клиент пишет в историю сессии
+команду, которую исполнил сам, и объявление своих команд запросом
+`_boba/session/record`, агент отдаёт итог команды уведомлением
+`session/update` вида `_boba/command_outcome`, а все команды сессии из
+истории целиком (вид, владелец, аргументы, приложение) — видом
+`_boba/commands`.
 Расширение источника вызова: агент спрашивает клиента запросом
 `_boba/tool_source`, что сохранить в истории для показа вызова инструмента
 сервера клиента, и отдаёт ответ содержимым вызова вида `_boba/tool_source`.
@@ -69,7 +72,16 @@ __all__ = [
     "CommandKind",
     "CommandOutcome",
     "CommandOutcomeUpdate",
+    "CommandOwner",
     "CommandText",
+    "CommandType",
+    "CommandsUpdate",
+    "DeclaredAgentCommand",
+    "DeclaredApp",
+    "DeclaredArgument",
+    "DeclaredCommand",
+    "DeclaredHarnessCommand",
+    "DeclaredPrompt",
     "ElicitationRound",
     "ErrorDataKey",
     "McpErrorOutcome",
@@ -78,6 +90,9 @@ __all__ = [
     "McpResultOutcome",
     "McpVersion",
     "MetaKey",
+    "RecordedKind",
+    "SessionCommandsRequest",
+    "SessionRecordParams",
     "SessionRecordRequest",
     "StopReason",
     "ToolSourceContent",
@@ -207,12 +222,15 @@ class ElicitationRound(BaseModel):
 
 
 class BobaExtension(StrEnum):
-    """Расширения ACP boba: имена методов, вид уведомления `session/update` и
+    """Расширения ACP boba: имена методов, виды уведомления `session/update` и
     вид содержимого вызова.
 
-    Запись команд клиента: агент объявляет её ключом SESSION_RECORD (true) в
-    `capabilities._meta` ответа initialize; клиент без объявления команд,
-    которые исполняет сам, не предлагает; итог команды агент отдаёт
+    Команды сессии: агент объявляет их ключами SESSION_RECORD и COMMANDS
+    (true) в `capabilities._meta` ответа initialize; клиент объявляет приём
+    уведомлений COMMANDS ключом COMMANDS (true) в `clientCapabilities._meta`
+    запроса initialize. Без объявления агента клиент не предлагает команд,
+    которые исполняет сам, а без объявления клиента агент шлёт только
+    стандартный `available_commands_update`; итог команды агент отдаёт
     уведомлением COMMAND_OUTCOME.
 
     Источник вызова: клиент объявляет его ключом TOOL_SOURCE (true) в
@@ -223,6 +241,7 @@ class BobaExtension(StrEnum):
 
     SESSION_RECORD = "_boba/session/record"
     COMMAND_OUTCOME = "_boba/command_outcome"
+    COMMANDS = "_boba/commands"
     TOOL_SOURCE = "_boba/tool_source"
 
 
@@ -268,17 +287,141 @@ CommandOutcome: TypeAlias = Annotated[
 """Итог команды клиента по виду kind."""
 
 
+class RecordedKind(StrEnum):
+    """Что клиент пишет в историю запросом `_boba/session/record`."""
+
+    COMMAND = "command"
+    COMMANDS = "commands"
+
+
 class SessionRecordRequest(BaseModel):
-    """Параметры `_boba/session/record`: команда, которую клиент исполнил
+    """Параметры `_boba/session/record` с командой, которую клиент исполнил
     сам, — messageId записи (его даёт клиент), имя команды, набранный текст
     `/<имя> <аргументы>` и итог. Агент отвечает, когда запись легла в
     историю сессии и её уведомления ушли клиенту."""
 
     session_id: Annotated[str, Field(alias="sessionId", min_length=1)]
+    kind: Literal[RecordedKind.COMMAND] = RecordedKind.COMMAND
     message_id: Annotated[str, Field(alias="messageId", min_length=1)]
     command: Annotated[str, Field(min_length=1)]
     text: str
     outcome: CommandOutcome
+
+
+class CommandType(StrEnum):
+    """Вид команды сессии: PROMPT — промпт сервера MCP, его раскрывает агент
+    для модели; APP — интерфейс MCP Apps, клиент сам зовёт tools/call и
+    рисует приложение; AGENT — команда сессии агента; HARNESS — команда
+    клиента, её исполняет клиент."""
+
+    PROMPT = "prompt"
+    APP = "app"
+    AGENT = "agent"
+    HARNESS = "harness"
+
+
+class CommandOwner(StrEnum):
+    """Владелец команды, который не сервер MCP."""
+
+    AGENT = "agent"
+    HARNESS = "harness"
+
+
+class DeclaredArgument(BaseModel):
+    """Аргумент команды: имя, описание, обязательность и значения, которые
+    подсказал владелец."""
+
+    name: Annotated[str, Field(min_length=1)]
+    description: str = ""
+    required: bool
+    values: list[str] = Field(default_factory=list)
+
+
+class DeclaredPrompt(BaseModel):
+    """Промпт prompt сервера owner; name — полное имя команды."""
+
+    type: Literal[CommandType.PROMPT] = CommandType.PROMPT
+    name: Annotated[str, Field(min_length=1)]
+    description: str
+    owner: Annotated[str, Field(min_length=1)]
+    prompt: Annotated[str, Field(min_length=1)]
+    arguments: list[DeclaredArgument] = Field(default_factory=list)
+
+
+class DeclaredApp(BaseModel):
+    """Интерфейс MCP Apps сервера owner: промпт prompt ведёт к инструменту
+    tool (карточка целиком) с приложением resource_uri; аргументы команды —
+    аргументы вызова."""
+
+    type: Literal[CommandType.APP] = CommandType.APP
+    name: Annotated[str, Field(min_length=1)]
+    description: str
+    owner: Annotated[str, Field(min_length=1)]
+    prompt: Annotated[str, Field(min_length=1)]
+    tool: mcp_types.Tool
+    resource_uri: Annotated[str, Field(alias="resourceUri", min_length=1)]
+    arguments: list[DeclaredArgument] = Field(default_factory=list)
+
+
+class DeclaredAgentCommand(BaseModel):
+    """Команда сессии агента."""
+
+    type: Literal[CommandType.AGENT] = CommandType.AGENT
+    name: Annotated[str, Field(min_length=1)]
+    description: str
+    owner: Literal[CommandOwner.AGENT] = CommandOwner.AGENT
+    arguments: list[DeclaredArgument] = Field(default_factory=list)
+
+
+class DeclaredHarnessCommand(BaseModel):
+    """Команда клиента: её объявляет и исполняет клиент."""
+
+    type: Literal[CommandType.HARNESS] = CommandType.HARNESS
+    name: Annotated[str, Field(min_length=1)]
+    description: str
+    owner: Literal[CommandOwner.HARNESS] = CommandOwner.HARNESS
+    arguments: list[DeclaredArgument] = Field(default_factory=list)
+
+
+DeclaredCommand: TypeAlias = Annotated[
+    DeclaredPrompt | DeclaredApp | DeclaredAgentCommand | DeclaredHarnessCommand,
+    Field(discriminator="type"),
+]
+"""Команда сессии целиком по виду type."""
+
+
+class SessionCommandsRequest(BaseModel):
+    """Параметры `_boba/session/record` с объявлением команд клиента: все
+    его команды разом. Агент пишет в историю разницу с объявленным раньше
+    и отвечает, когда она легла."""
+
+    session_id: Annotated[str, Field(alias="sessionId", min_length=1)]
+    kind: Literal[RecordedKind.COMMANDS] = RecordedKind.COMMANDS
+    commands: list[DeclaredHarnessCommand]
+
+
+SessionRecordParams: TypeAlias = Annotated[
+    SessionRecordRequest | SessionCommandsRequest, Field(discriminator="kind")
+]
+"""Параметры `_boba/session/record` по виду kind."""
+
+
+class CommandsUpdate(BaseModel):
+    """Уведомление `session/update` вида `_boba/commands`: все команды сессии
+    из истории по порядку объявления. Агент шлёт его после ответа на
+    открытие сессии и после каждой смены команд, клиенту, который объявил
+    приём, — следом идёт стандартный `available_commands_update`."""
+
+    session_update: Annotated[
+        Literal[BobaExtension.COMMANDS], Field(alias="sessionUpdate")
+    ] = BobaExtension.COMMANDS
+    commands: list[DeclaredCommand]
+
+    def wire(self) -> schema.OtherSessionUpdate:
+        """Уведомление видом расширения в общем конверте схемы SDK."""
+        dumped = self.model_dump(mode="json", by_alias=True, exclude_none=True)
+
+        return schema.OtherSessionUpdate.model_validate(dumped)
 
 
 class CommandOutcomeUpdate(BaseModel):

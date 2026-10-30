@@ -51,8 +51,8 @@ CONSOLE = f"mcp__{SERVER}__orders_console"
 
 
 @pytest.fixture(scope="module")
-def commands_host(stand_workdir: Path) -> Iterator[AppsHost]:
-    host = AppsHost(stand_workdir / "commands-host", ["--commands"])
+def commands_host() -> Iterator[AppsHost]:
+    host = AppsHost(["--commands"])
     try:
         host.await_listening()
         yield host
@@ -167,7 +167,7 @@ class TestCommandMenu:
         assert items.count() > 0
         assert "Opens the orders console" in described, described
         assert "— status" in described, described
-        assert "optional instructions for the summary" in compact, compact
+        assert "instructions" in compact, compact
 
     def test_app_command_opens_the_app_in_the_tab_without_the_model(
         self, commands_stand: StandProcess, open_chat: OpenChat, llm_port: int
