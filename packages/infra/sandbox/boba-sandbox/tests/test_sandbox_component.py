@@ -11,7 +11,7 @@ import pytest
 from omegaconf import DictConfig, OmegaConf
 from omegaconf.errors import InterpolationKeyError
 
-from boba.config import bind
+from boba.config import ConfigError, bind
 from boba.sandbox import SandboxConfig, SandboxProfile, SandboxToolConfig
 from boba.stand.zygote import ROOTFS_IMAGE, ProfileFields, SandboxCgroup
 
@@ -216,9 +216,15 @@ class TestProfileReference:
             raise AssertionError("cfg.profile.isolation.reap_poll_sec == 0.05")
 
     def test_unknown_profile_fails_at_load(self) -> None:
+        """bind выпускает ошибку своего слоя: секция и ссылка названы, причина
+        omegaconf сохранена."""
         raw = self._raw("${sandbox.profiles.нет-такого}")
-        with pytest.raises(InterpolationKeyError, match=r"sandbox\.profiles"):
+        missing = r"sandbox\.profiles\.нет-такого"
+        with pytest.raises(ConfigError, match=missing) as caught:
             bind(raw, path="tool.bash.sandbox", model=SandboxToolConfig)
+
+        assert "[tool.bash.sandbox]" in str(caught.value)
+        assert isinstance(caught.value.__cause__, InterpolationKeyError)
 
 
 class TestComponentIsolation:

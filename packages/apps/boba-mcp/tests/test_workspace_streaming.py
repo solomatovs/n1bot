@@ -27,6 +27,7 @@ from boba.runtime.config import ProgramRoots
 from boba.runtime.storage import ImageStorageClient, LocalStorageConfig
 from boba.sandbox import WorkspaceSpec
 from boba.stand.storage import StorageSeed
+from boba.stand.zygote import SandboxStand
 from boba.workspace.launcher import LayerPath, ReadWindow
 
 needs_fuse = pytest.mark.failif(
@@ -177,7 +178,7 @@ def big_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
         [mkfs, "-F", "-q", "-O", "^has_journal", "-m", "0", str(path)],
         check=True,
     )
-    return path
+    return Path(SandboxStand.packed(path))
 
 
 @pytest.fixture(scope="module")

@@ -728,7 +728,7 @@ def template(tmp_path: Path) -> Path:
         [mkfs, "-F", "-q", "-O", "^has_journal", "-m", "0", str(path)],
         check=True,
     )
-    return path
+    return Path(SandboxStand.packed(path))
 
 
 @pytest.fixture

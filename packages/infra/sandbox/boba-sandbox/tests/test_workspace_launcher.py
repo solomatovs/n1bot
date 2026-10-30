@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fcntl
+import gzip
 import io
 import os
 import shlex
@@ -43,8 +44,8 @@ CHUNK = 1 << 16
 
 @pytest.fixture
 def template(tmp_path: Path) -> Path:
-    path = tmp_path / "template.img"
-    path.write_bytes(b"TEMPLATE")
+    path = tmp_path / "template.img.gz"
+    path.write_bytes(gzip.compress(b"TEMPLATE"))
     return path
 
 
@@ -111,45 +112,52 @@ def _trusted() -> TrustedBinaries:
 
 
 class TestSparseCopier:
+    """Развёртка шаблона gzip: содержимое то же, нулевые блоки — дыры."""
+
     @staticmethod
-    def _copy(src: Path, dst: Path) -> None:
+    def _unpacked(tmp_path: Path, data: bytes) -> Path:
+        src, dst = tmp_path / "src.gz", tmp_path / "dst"
+        src.write_bytes(gzip.compress(data))
         SparseCopier(CHUNK).copy(str(src), str(dst))
+        return dst
 
     def test_content_preserved(self, tmp_path: Path) -> None:
-        src, dst = tmp_path / "src", tmp_path / "dst"
         data = bytes(range(256)) * 300
-        src.write_bytes(data)
-        self._copy(src, dst)
+        dst = self._unpacked(tmp_path, data)
         if dst.read_bytes() != data:
             raise AssertionError("dst.read_bytes() == data")
 
-    def test_holes_stay_holes(self, tmp_path: Path) -> None:
-        src, dst = tmp_path / "src", tmp_path / "dst"
-        with src.open("wb") as f:
-            f.write(b"head")
-            f.seek(8 * 1024 * 1024)
-            f.write(b"tail")
-        self._copy(src, dst)
-        if dst.read_bytes() != src.read_bytes():
-            raise AssertionError("dst.read_bytes() == src.read_bytes()")
+    def test_zero_run_becomes_a_hole(self, tmp_path: Path) -> None:
+        data = b"head" + b"\0" * (8 * 1024 * 1024) + b"tail"
+        dst = self._unpacked(tmp_path, data)
+        if dst.read_bytes() != data:
+            raise AssertionError("dst.read_bytes() == data")
         if dst.stat().st_blocks * 512 >= dst.stat().st_size:
             raise AssertionError("dst.stat().st_blocks * 512 < dst.stat().st_size")
 
-    def test_zero_blocks_become_holes(self, tmp_path: Path) -> None:
-        src, dst = tmp_path / "src", tmp_path / "dst"
-        src.write_bytes(b"\0" * (4 * CHUNK))
-        self._copy(src, dst)
-        if dst.read_bytes() != src.read_bytes():
-            raise AssertionError("dst.read_bytes() == src.read_bytes()")
-        if dst.stat().st_blocks * 512 >= dst.stat().st_size:
-            raise AssertionError("dst.stat().st_blocks * 512 < dst.stat().st_size")
+    def test_trailing_zeros_keep_the_size(self, tmp_path: Path) -> None:
+        dst = self._unpacked(tmp_path, b"\0" * (4 * CHUNK))
+        if dst.stat().st_size != 4 * CHUNK:
+            raise AssertionError(f"size {dst.stat().st_size} != {4 * CHUNK}")
+        if dst.stat().st_blocks != 0:
+            raise AssertionError(f"zero blocks took {dst.stat().st_blocks} blocks")
 
-    def test_empty_file(self, tmp_path: Path) -> None:
-        src, dst = tmp_path / "src", tmp_path / "dst"
-        src.touch()
-        self._copy(src, dst)
+    def test_empty_stream(self, tmp_path: Path) -> None:
+        dst = self._unpacked(tmp_path, b"")
         if dst.stat().st_size != 0:
             raise AssertionError("dst.stat().st_size == 0")
+
+    def test_plain_template_is_refused(self, tmp_path: Path) -> None:
+        src, dst = tmp_path / "plain.ext4", tmp_path / "dst"
+        src.write_bytes(b"TEMPLATE")
+        with pytest.raises(MountError, match=r"plain\.ext4.*expected a gzip stream"):
+            SparseCopier(CHUNK).copy(str(src), str(dst))
+
+    def test_truncated_template_is_refused(self, tmp_path: Path) -> None:
+        src, dst = tmp_path / "cut.gz", tmp_path / "dst"
+        src.write_bytes(gzip.compress(bytes(range(256)) * 300)[:-12])
+        with pytest.raises(MountError, match=r"cut\.gz.*expected a gzip stream"):
+            SparseCopier(CHUNK).copy(str(src), str(dst))
 
 
 class TestImageStore:

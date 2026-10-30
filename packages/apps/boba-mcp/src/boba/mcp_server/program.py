@@ -42,11 +42,8 @@ class McpProgram:
         if not argv:
             return True
 
-        for tool in ProgramTool:
-            if argv[0] == tool:
-                return False
-
-        return True
+        tools = tuple(ProgramTool)
+        return argv[0] not in tools
 
     def run(self, argv: Sequence[str]) -> int:
         match argv:

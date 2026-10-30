@@ -34,7 +34,6 @@ from boba.stand.overlay import ConfigOverlay
 from boba.stand.refs import StandRefs
 from boba.stand.toolsetup import ToolSetup
 from boba.stand.ui.stand import REPO_ROOT, ServiceStand, StandApp, StandPorts
-from boba.stand_core.context import CallStand
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -189,7 +188,6 @@ def _credentials() -> KerberosCredentialSource:
 
 async def test_setup_in_the_sandbox_creates_the_kb_tables(
     runtime_stand: StandRefs,
-    call_stand: CallStand,
     raw_config: DictConfig,
     config_overlay: ConfigOverlay,
     test_database: str,

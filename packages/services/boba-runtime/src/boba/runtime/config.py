@@ -141,13 +141,13 @@ class ProgramDir(StrEnum):
     SHARE = "share"
     """Статика: корень приложения chainlit (aid)."""
     SANDBOX = "sandbox"
-    """Шаблон workspace.ext4 (mcp)."""
+    """Шаблон workspace.ext4.gz (mcp)."""
 
 
 class ProgramFile(StrEnum):
     """Файлы каталога программы относительно его корня."""
 
-    WORKSPACE = "sandbox/workspace.ext4"
+    WORKSPACE = "sandbox/workspace.ext4.gz"
 
 
 class SourceTree(StrEnum):

@@ -425,7 +425,7 @@ class PrivateLayer:
         self._point.mkdir()
         flap = tmp_path / "flap"
         flap.mkdir()
-        self._image = Path(SandboxStand.mkfs_template(flap))
+        self._image = Path(SandboxStand.mkfs_image(flap))
         self._mount = PrivateImageMount(self._image, self._point)
         self._host = os.stat("/proc/self/ns/mnt").st_ino
         self._host_table = MountTable(os.getpid())

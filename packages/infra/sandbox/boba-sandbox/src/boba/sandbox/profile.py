@@ -150,8 +150,8 @@ class TmpfsSpec(BaseModel):
 class WorkspaceSpec(BaseModel):
     """Рабочий каталог чата: единственное описание workspace на всё приложение.
 
-    template — эталон, с которого снимается копия при первом обращении
-    пользователя. mount — сама копия и её точка внутри песочницы одной
+    template — эталон, сжатый gzip, из которого разворачивается образ при
+    первом обращении пользователя. mount — сама копия и её точка внутри песочницы одной
     записью `host:target`, где host обязан содержать {user_id}: иначе все
     пользователи писали бы в один образ.
     """
@@ -167,8 +167,8 @@ class WorkspaceSpec(BaseModel):
     template: str = Field(
         min_length=1,
         description=(
-            "Шаблонный ext4-образ: с него копируется образ пользователя при "
-            "первом обращении. Собирается деталью runtime."
+            "Шаблонный ext4-образ, сжатый gzip: из него разворачивается образ "
+            "пользователя при первом обращении. Собирается деталью runtime."
         ),
     )
     mount: BindSpec = Field(
@@ -316,7 +316,7 @@ class SandboxMount(StrEnum):
     DEV = "/dev"
     TMP = "/tmp"  # noqa: S108 — путь внутри песочницы  # nosec B108
     SETUP = "/mnt"
-    SETUP_TEMPLATE = "/mnt/template.ext4"
+    SETUP_TEMPLATE = "/mnt/template.ext4.gz"
     SETUP_FUSE2FS = "/mnt/fuse2fs"
     SETUP_IMAGES = "/mnt/images"
 

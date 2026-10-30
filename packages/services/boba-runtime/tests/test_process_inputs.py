@@ -113,7 +113,7 @@ def test_program_from_sources_takes_git_files_from_the_tree(
     assert program.path(ProgramDir.SHARE) == tree / "packages/apps/boba-aid/assets"
     assert program.path(ProgramDir.LIBEXEC) == tree / "runtime/libexec"
     assert program.located("models/rapidocr") == tree / "runtime/models/rapidocr"
-    assert program.workspace_template() == tree / "runtime/sandbox/workspace.ext4"
+    assert program.workspace_template() == tree / "runtime/sandbox/workspace.ext4.gz"
 
 
 def test_program_from_sources_without_runtime_refuses(

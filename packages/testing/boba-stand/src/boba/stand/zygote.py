@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import gzip
 import os
 import shutil
 import subprocess
@@ -356,9 +357,23 @@ class SandboxStand:
         raw.update(overrides)
         return cls.profile(**raw)
 
+    @classmethod
+    def mkfs_template(cls, tmp_path: Path) -> str:
+        """Шаблон workspace-образа: пустой ext4 на 8 МБ, сжатый gzip."""
+        return cls.packed(Path(cls.mkfs_image(tmp_path)))
+
     @staticmethod
-    def mkfs_template(tmp_path: Path) -> str:
-        """Шаблон workspace-образа: пустой ext4 на 8 МБ."""
+    def packed(image: Path) -> str:
+        """Шаблон из образа image: его копия, сжатая gzip, рядом с ним."""
+        template = image.with_name(f"{image.name}.gz")
+        with image.open("rb") as source, gzip.open(template, "wb", 1) as target:
+            shutil.copyfileobj(source, target)
+
+        return str(template)
+
+    @staticmethod
+    def mkfs_image(tmp_path: Path) -> str:
+        """Образ ext4 на 8 МБ без сжатия: его монтирует сам тест."""
         mkfs = shutil.which("mkfs.ext4")  # noqa: TID251 — стенд ищет по PATH сознательно
         if mkfs is None:
             msg = (

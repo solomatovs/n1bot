@@ -269,7 +269,7 @@ coreutils, `curl`, `tar` и Docker. Всё перечисленное выше �
 ```
 runtime/
   libexec/   bwrap  fuse2fs  mke2fs  mke2fs.conf
-  sandbox/   workspace.ext4
+  sandbox/   workspace.ext4.gz
   rootfs/    base.ext4  shell.ext4      — корни песочницы с python и кодом пакетов
   plugins/   core/run  shell/run  db/run  docs/run — `python3 -m boba.sandbox.program "$@"`
   models/    rapidocr/  fastembed/  onnx-genai/
@@ -289,7 +289,7 @@ runtime/
 <программа>/
   bin/       boba-mcp.dist/boba-mcp.bin | boba.dist/boba.bin (Nuitka); boba-aid — запуск чата на python
   libexec/   mcp: bwrap, fuse2fs, mke2fs
-  sandbox/   mcp: workspace.ext4 — шаблон рабочего каталога пользователя
+  sandbox/   mcp: workspace.ext4.gz — шаблон рабочего каталога пользователя, сжатый gzip
   plugins/   mcp: программы групп плагинов (core, shell, db, docs), каталог Nuitka с исполняемым run
   rootfs/    mcp: корни песочницы base.ext4 и shell.ext4
   conf/plugins/  mcp: конфиги плагинов <id>.toml
@@ -2176,7 +2176,7 @@ xdist набор задаёт в своём conftest, остальным тес�
 пути к каталогам программы и моделей, поэтому секретов в этих путях быть не
 должно. Рабочий каталог пользователя `/workspace` — его личный образ
 `data/workspace/<id>.ext4`, который монтирует `fuse2fs`; первый образ
-создаётся копией шаблона `workspace.ext4`. Перед запуском тела инструмента
+разворачивается из шаблона `workspace.ext4.gz`: пустые блоки остаются дырами файла. Перед запуском тела инструмента
 процесс сбрасывает все capabilities, запрещает их возврат (`no_new_privs`) и
 закрывает создание вложенных user namespace.
 
@@ -2195,7 +2195,7 @@ xdist набор задаёт в своём conftest, остальным тес�
   явный список путей: загрузчик ОС (`/usr`, `/lib`, `/lib64`,
   `/etc/ld.so.cache`), интерпретатор приложения — каталоги из секции
   `[interpreter]` (раздел 5), файлы `bwrap` и `fuse2fs`, образ корня своего
-  плагина, шаблон `workspace.ext4`, каталог `data/workspace` на запись и
+  плагина, шаблон `workspace.ext4.gz`, каталог `data/workspace` на запись и
   источники биндов профиля: `/etc/resolv.conf`, `/etc/hosts`,
   `conf/krb/krb5.conf`, модели. Путь загрузчика-ссылка вроде `/lib → usr/lib`
   ставится в слое ссылкой. Источник-ссылку bind разыменовывает сам: под

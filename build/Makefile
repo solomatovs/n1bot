@@ -236,7 +236,7 @@ define HELP
 
 Детали (APP=):
   mcp                   образ boba-mcp:$(TAG): сервер, программы плагинов ($(GROUPS)),
-                        корни песочниц rootfs/{$(subst $(space),$(comma),$(ROOTFS))}.ext4, libexec, workspace.ext4
+                        корни песочниц rootfs/{$(subst $(space),$(comma),$(ROOTFS))}.ext4, libexec, workspace.ext4.gz
   boba                  образ boba:$(TAG): агент с onnxruntime-genai, без моделей
   aid                   образ boba-aid:$(TAG): чат (python) и его фронт
   plugins-<группа>      программа группы плагинов -> build/out/boba-mcp/plugins/<группа>,
@@ -465,13 +465,15 @@ $(ROOTFS:%=$(OUT_MCP)/rootfs/%.ext4): $(OUT_MCP)/rootfs/%.ext4: $(OUT)/rootfs/%.
 $(ROOTFS:%=$(OUT)/rootfs-python/%.ext4): $(OUT)/rootfs-python/%.ext4: $(OUT)/rootfs-python/%.sum $(BUILD)/mkrootfs.sh | $(OUT_MCP)/libexec/mke2fs
 	@$(call rootfs-ext4,boba-build-rootfs-$*-python:$(TAG))
 
-$(OUT_MCP)/sandbox/workspace.ext4: | $(OUT_MCP)/libexec/mke2fs
+# шаблон workspace сжат: слой образа дыр разреженного файла не хранит
+$(OUT_MCP)/sandbox/workspace.ext4.gz: | $(OUT_MCP)/libexec/mke2fs
 	@mkdir -p "$(@D)"
 	docker run --rm --network none -e MKE2FS_CONFIG=/tools/mke2fs.conf -v "$(OUT_MCP)/libexec:/tools:ro" \
 	    -v "$(@D):/out" --entrypoint sh $(GLIBC_IMAGE) -c ' \
-	        truncate -s $(WORKSPACE_SIZE) /out/workspace.ext4.part \
-	        && /tools/mke2fs -F -q -t ext4 -O ^has_journal -m 0 -L workspace /out/workspace.ext4.part \
-	        && chown "$(RUN_OWNER)" /out/workspace.ext4.part && chmod 0644 /out/workspace.ext4.part'
+	        truncate -s $(WORKSPACE_SIZE) /tmp/workspace.ext4 \
+	        && /tools/mke2fs -F -q -t ext4 -O ^has_journal -m 0 -L workspace /tmp/workspace.ext4 \
+	        && gzip -n -c /tmp/workspace.ext4 > /out/workspace.ext4.gz.part \
+	        && chown "$(RUN_OWNER)" /out/workspace.ext4.gz.part && chmod 0644 /out/workspace.ext4.gz.part'
 	mv "$@.part" "$@"
 
 # пакеты базового образа glibc: программе плагина на них опираться нельзя
@@ -554,7 +556,7 @@ endef
 .PHONY: $(DETAILS:%=app-%)
 
 app-mcp: $(OUT)/compiled/mcp.sum $(GROUPS:%=$(OUT)/compiled/plugins-%.sum) $(ROOTFS:%=$(OUT_MCP)/rootfs/%.ext4) \
-        $(OUT_MCP)/sandbox/workspace.ext4 $(OUT_MCP)/libexec/bwrap | prepare-os
+        $(OUT_MCP)/sandbox/workspace.ext4.gz $(OUT_MCP)/libexec/bwrap | prepare-os
 	@rm -rf "$(OUT_MCP)/conf/plugins"
 	mkdir -p "$(OUT_MCP)/conf"
 	cp -a "$(PLUGIN_CONF_DIR)" "$(OUT_MCP)/conf/plugins"
@@ -588,13 +590,13 @@ app-models: $(foreach m,$(MODELS),$(MODEL_FILES_$(m)))
 
 # runtime/ повторяет каталог программы mcp, только корни — с python, а программы
 # плагинов — python исходников; фронт чата — в assets пакета boba-aid
-app-runtime: $(ROOTFS:%=$(OUT)/rootfs-python/%.ext4) $(OUT_MCP)/sandbox/workspace.ext4 $(OUT_MCP)/libexec/bwrap \
+app-runtime: $(ROOTFS:%=$(OUT)/rootfs-python/%.ext4) $(OUT_MCP)/sandbox/workspace.ext4.gz $(OUT_MCP)/libexec/bwrap \
         $(foreach m,$(MODELS),$(MODEL_FILES_$(m))) prepare-share
 	@mkdir -p "$(RUNTIME)/sandbox" "$(RUNTIME)/rootfs" "$(RUNTIME)/plugins" "$(RUNTIME)/models"
 	rm -rf "$(RUNTIME)/libexec"
 	cp -a "$(OUT_MCP)/libexec" "$(RUNTIME)/libexec"
-	cp "$(OUT_MCP)/sandbox/workspace.ext4" "$(RUNTIME)/sandbox/workspace.ext4.part"
-	mv "$(RUNTIME)/sandbox/workspace.ext4.part" "$(RUNTIME)/sandbox/workspace.ext4"
+	cp "$(OUT_MCP)/sandbox/workspace.ext4.gz" "$(RUNTIME)/sandbox/workspace.ext4.gz.part"
+	mv "$(RUNTIME)/sandbox/workspace.ext4.gz.part" "$(RUNTIME)/sandbox/workspace.ext4.gz"
 	$(foreach rootfs,$(ROOTFS),cp "$(OUT)/rootfs-python/$(rootfs).ext4" "$(RUNTIME)/rootfs/$(rootfs).ext4.part" && mv "$(RUNTIME)/rootfs/$(rootfs).ext4.part" "$(RUNTIME)/rootfs/$(rootfs).ext4"
 	)
 	$(foreach group,$(GROUPS),mkdir -p "$(RUNTIME)/plugins/$(group)" && printf '%s\n' '#!/bin/sh' 'exec python3 -m boba.sandbox.program "$$@"' > "$(RUNTIME)/plugins/$(group)/run" && chmod 0755 "$(RUNTIME)/plugins/$(group)/run"

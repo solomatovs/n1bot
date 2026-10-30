@@ -47,8 +47,7 @@ TESTS_DIR = str(Path(__file__).resolve().parent)
 needs_bwrap = pytest.mark.failif(
     shutil.which("bwrap") is None or not ROOTFS_IMAGE.exists() or not FUSE2FS.exists(),
     reason=(
-        "нет bwrap или артефактов песочницы "
-        "(собрать: make -C build build APP=runtime)"
+        "нет bwrap или артефактов песочницы (собрать: make -C build build APP=runtime)"
     ),
 )
 needs_userns = pytest.mark.failif(

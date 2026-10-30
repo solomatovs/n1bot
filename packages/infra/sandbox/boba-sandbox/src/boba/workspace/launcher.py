@@ -248,7 +248,10 @@ class LauncherInterpreter(BaseModel):
     @classmethod
     def _absolute_executable(cls, value: str) -> str:
         if not os.path.isabs(value):
-            msg = f"launcher interpreter: executable expects an absolute path, got {value!r}"
+            msg = (
+                "launcher interpreter: executable expects an absolute path, "
+                f"got {value!r}"
+            )
             raise ValueError(msg)
 
         return value
