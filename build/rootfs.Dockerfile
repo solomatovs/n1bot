@@ -26,9 +26,9 @@ RUN mkdir -p /out/tree /out/setup \
 
 # libstdc++ сборочного gcc новее, чем у glibc образа: его ждут программы Nuitka и
 # python-пакеты. Копия по настоящему имени, без номера версии в сборке
-RUN mkdir -p /out/tree/usr/lib/x86_64-linux-gnu \
+RUN mkdir -p /out/tree/usr/lib/x86_64-linux-gnu /out/tree/lib/x86_64-linux-gnu \
     && cp "$(readlink -f /usr/lib/x86_64-linux-gnu/libstdc++.so.6)" /out/tree/usr/lib/x86_64-linux-gnu/libstdc++.so.6 \
-    && cp /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 /out/tree/usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+    && cp /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 /out/tree/lib/x86_64-linux-gnu/libgcc_s.so.1
 
 # python и дерево payload: у плагинов с python = true — их пакеты, при PYTHON=1 —
 # все плагины набора, код пакетов boba — в /usr/src (стенд тестов монтирует туда
@@ -71,7 +71,7 @@ RUN apt="$(cat /tmp/decl/apt.txt)" \
            && rm -rf /var/lib/apt/lists/*; \
        fi
 
-RUN rm -f /usr/lib/x86_64-linux-gnu/libstdc++.so.6 /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+RUN rm -f /usr/lib/x86_64-linux-gnu/libstdc++.so.6 /lib/x86_64-linux-gnu/libgcc_s.so.1
 COPY --from=decl /out/tree/  /
 RUN ldconfig
 

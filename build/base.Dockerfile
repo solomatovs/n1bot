@@ -1,6 +1,7 @@
 # Шаг prepare: среда сборки boba. Классический сборщик (DOCKER_BUILDKIT=0) проходит
-# все стадии до --target по порядку файла, поэтому стадии идут от общих к частным, а
-# стадия site с аргументами одной детали стоит последней. Сеть — только реестры
+# все стадии до --target по порядку файла, поэтому стадии идут от общих к частным.
+# Деревья пакетов деталей строит build/site.Dockerfile поверх стадии nuitka. Сеть —
+# только реестры
 # контура: apt из sources.list образов dmp/*, pypi из build/conf. Синтаксис только
 # классический: без RUN --mount, COPY --chmod/--link и heredoc
 ARG PYTHON_VERSION=3.11
@@ -219,29 +220,3 @@ RUN uv pip install --python "$(command -v python3)" --target /opt/nuitka \
         "ordered-set==${ORDERED_SET_VERSION}"
 
 COPY build/plugin_rootfs.py  /opt/plugin_rootfs.py
-
-
-# дерево пакетов программы (PACKAGES) или группы плагинов (PLUGINS — id через
-# пробел) в /opt/site. У плагинов в дерево идёт замыкание их payload и поставщиков
-# потребляемых групп entry points, а системные библиотеки ключа libs их деклараций
-# ставятся в образ: Nuitka импортирует пакеты при сборке и кладёт копии этих
-# библиотек в программу. Нативные пакеты из sdist — без отладочной информации,
-# метки времени uv — вон: дерево зависит только от содержимого колёс
-FROM nuitka AS site
-
-ARG PACKAGES
-ARG PLUGINS
-
-RUN python3 /opt/plugin_rootfs.py libs /tmp/boba/packages ${PLUGINS} > /tmp/libs.txt \
-    && if [ -s /tmp/libs.txt ]; then \
-           apt-get update \
-           && apt-get install -y --no-install-recommends $(cat /tmp/libs.txt) \
-           && rm -rf /var/lib/apt/lists/*; \
-       fi
-RUN python3 /opt/plugin_rootfs.py names /tmp/boba/packages ${PLUGINS} > /tmp/names.txt \
-    && CFLAGS="-g0" uv pip install --python "$(command -v python3)" --target /opt/site \
-        --constraint /tmp/wheels/constraints.txt --find-links=/tmp/wheels \
-        --override /tmp/wheels/overrides.txt \
-        ${PACKAGES} $(cat /tmp/names.txt) \
-    && find /opt/site -name uv_cache.json -delete \
-    && sed -i '/uv_cache\.json,/d' /opt/site/*.dist-info/RECORD

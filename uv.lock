@@ -5582,7 +5582,7 @@ wheels = [
 [[package]]
 name = "oracledb"
 version = "26.0.0+boba.1"
-source = { registry = "build/src/oracledb" }
+source = { registry = "build/out/oracledb" }
 dependencies = [
     { name = "cryptography", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "typing-extensions", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },

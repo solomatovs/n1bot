@@ -16,6 +16,10 @@ SRC             := $(BUILD)/src
 OUT             := $(BUILD)/out
 CACHE           := $(BUILD)/cache
 RUNTIME         := $(ROOT)/runtime
+# каталоги программ: compile пишет в них сразу, image строит образ из каталога как есть
+OUT_MCP         := $(OUT)/boba-mcp
+OUT_BOBA        := $(OUT)/boba
+OUT_AID         := $(OUT)/boba-aid
 AID_ASSETS      := $(ROOT)/packages/apps/boba-aid/assets
 PLUGIN_CONF_DIR := $(ROOT)/packages/apps/boba-mcp/conf/plugins
 
@@ -123,6 +127,7 @@ mcp_ENTRY       := boba/mcp_server/program.py
 mcp_BIN         := boba-mcp
 mcp_PORT        := 8650
 mcp_FLAGS       :=
+mcp_DEST        := $(OUT_MCP)/bin/boba-mcp.dist
 boba_PACKAGES   := boba-cli boba-llm-onnx[generation]
 boba_ENTRY      := boba/cli/app.py
 boba_BIN        := boba
@@ -131,6 +136,7 @@ boba_PORT       := 8660
 boba_FLAGS      := --user-package-configuration-file=/conf/nuitka-boba.yml \
                    --include-distribution-metadata=boba-cli --include-package=onnxruntime_genai \
                    --include-package-data=onnxruntime_genai --include-package=onnxruntime
+boba_DEST       := $(OUT_BOBA)/bin/boba.dist
 # чат пока на python: дерево пакетов и интерпретатор в каталоге программы
 aid_PACKAGES    := boba-aid boba-llm-http
 aid_PORT        := 8501
@@ -150,7 +156,12 @@ group-plugins    = $(foreach e,$(PLUGIN_MAP),$(if $(filter $(1),$(word 2,$(subst
 rootfs-plugins   = $(foreach e,$(PLUGIN_MAP),$(if $(filter $(1),$(word 3,$(subst :, ,$(e)))),$(word 1,$(subst :, ,$(e)))))
 group-rootfs     = $(sort $(foreach e,$(PLUGIN_MAP),$(if $(filter $(1),$(word 2,$(subst :, ,$(e)))),$(word 3,$(subst :, ,$(e))))))
 
-DETAILS         := mcp boba aid rootfs models runtime testapps oracledb $(GROUPS:%=plugins-%)
+# программы Nuitka и деревья пакетов: по ним make знает свои цели поимённо
+NUITKA_PROGRAMS := mcp boba
+SITES           := $(NUITKA_PROGRAMS) aid $(GROUPS:%=plugins-%)
+
+DETAILS         := mcp boba aid rootfs models runtime testapps oracledb $(GROUPS:%=plugins-%) \
+                   $(GROUPS:%=plugins-%-image)
 APP             ?=
 ifneq ($(filter build,$(MAKECMDGOALS)),)
 ifeq ($(filter $(APP),$(DETAILS)),)
@@ -160,7 +171,11 @@ endif
 
 # --- docker -----------------------------------------------------------------------
 
-DOCKER_BUILD     = DOCKER_BUILDKIT=0 docker build --force-rm $(if $(NO_CACHE),--no-cache) $(PROXY_ARGS)
+DOCKER_BUILD     = DOCKER_BUILDKIT=0 docker build --force-rm $(PROXY_ARGS)
+# NO_CACHE=1 — сборка без кэша слоёв: заново проходят независимые сборки (стадия nuitka
+# со всеми общими стадиями, деревья пакетов, корни, фронт, образы), а стадии
+# base.Dockerfile после nuitka берут слои, собранные этим же прогоном
+FRESH            = $(if $(NO_CACHE),--no-cache)
 PROXY_VARS      := http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY
 PROXY_ARGS      := $(foreach v,$(PROXY_VARS),$(if $($(v)),--build-arg $(v)="$($(v))"))
 CA_CHAIN        := $(wildcard $(BUILD)/conf/ca-chain.crt)
@@ -224,9 +239,11 @@ define HELP
                         корни песочниц rootfs/{$(subst $(space),$(comma),$(ROOTFS))}.ext4, libexec, workspace.ext4
   boba                  образ boba:$(TAG): агент с onnxruntime-genai, без моделей
   aid                   образ boba-aid:$(TAG): чат (python) и его фронт
-  plugins-<группа>      программа группы плагинов -> build/out/compiled/plugins-<группа>,
+  plugins-<группа>      программа группы плагинов -> build/out/boba-mcp/plugins/<группа>,
                         проверенная в корне каждого плагина; группы: $(GROUPS)
-  rootfs                корни песочниц ext4 -> build/out/rootfs
+  plugins-<группа>-image  образ boba-plugins-<группа>:$(TAG): корень группы и её программа в
+                        /plugin, из тех же артефактов; в all не входит
+  rootfs                корни песочниц ext4 -> build/out/boba-mcp/rootfs
   models                каталоги моделей для админа -> build/out/models/{$(subst $(space),$(comma),$(MODELS))}
   runtime               запуск из исходников и тесты -> runtime/ (libexec, workspace, корни с
                         python, программы плагинов на python, модели), фронт чата -> assets boba-aid
@@ -377,7 +394,7 @@ $(SRC)/models/onnx-genai/%:
 
 .PHONY: prepare-nuitka prepare-os prepare-pyos prepare-share
 prepare-nuitka: $(SRC)/uv/uv $(TARBALLS)
-	@$(call base-stage,nuitka,boba-build-nuitka:$(TAG))
+	@$(call base-stage,nuitka,boba-build-nuitka:$(TAG),$(FRESH))
 	$(call base-stage,base,boba-build-base:$(TAG))
 
 # стадии base.Dockerfile идут после nuitka: она проходит общие стадии один раз, а
@@ -388,38 +405,39 @@ prepare-os: | prepare-nuitka
 prepare-pyos: | prepare-nuitka
 	@$(call base-stage,pyos,boba-build-pyos:$(TAG))
 
+# share/ чата сразу в каталог программы aid
 prepare-share: $(CHAINLIT_TARBALL) $(WEBASSETS) | prepare-os
-	@$(DOCKER_BUILD) -f $(BUILD)/ui.Dockerfile --build-arg NODE_IMAGE=$(NODE_IMAGE) \
+	@$(DOCKER_BUILD) $(FRESH) -f $(BUILD)/ui.Dockerfile --build-arg NODE_IMAGE=$(NODE_IMAGE) \
 	    --build-arg OS_IMAGE=boba-build-os:$(TAG) --build-arg CHAINLIT_VERSION=$(CHAINLIT_VERSION) \
 	    --target share --tag boba-build-share:$(TAG) $(ROOT)
-	$(call image-copy,boba-build-share:$(TAG),/share,$(OUT)/share)
+	$(call image-copy,boba-build-share:$(TAG),/share,$(OUT_AID)/share)
 
-$(OUT)/libexec/bwrap $(OUT)/libexec/fuse2fs $(OUT)/libexec/mke2fs &: $(TARBALLS) $(SRC)/uv/uv \
+$(OUT_MCP)/libexec/bwrap $(OUT_MCP)/libexec/fuse2fs $(OUT_MCP)/libexec/mke2fs &: $(TARBALLS) $(SRC)/uv/uv \
         $(BUILD)/base.Dockerfile $(BUILD)/patches/e2fsprogs-$(E2FSPROGS_VERSION)-ro-mount.patch | prepare-nuitka
 	@$(call base-stage,libexec,boba-build-libexec:$(TAG))
-	$(call image-copy,boba-build-libexec:$(TAG),/libexec,$(OUT)/libexec)
-	chmod -R go-w "$(OUT)/libexec"
-	touch $(OUT)/libexec/*
+	$(call image-copy,boba-build-libexec:$(TAG),/libexec,$(OUT_MCP)/libexec)
+	chmod -R go-w "$(OUT_MCP)/libexec"
+	touch $(OUT_MCP)/libexec/*
 
 # дерево пакетов детали $*: программы — пакеты $*_PACKAGES, группы плагинов — id плагинов
-$(OUT)/site/%.sum: FORCE | prepare-nuitka
+$(SITES:%=$(OUT)/site/%.sum): $(OUT)/site/%.sum: FORCE | prepare-nuitka
 	@mkdir -p "$(@D)"
-	$(DOCKER_BUILD) -f $(BUILD)/base.Dockerfile $(BUILD_ARGS) --target site --tag boba-build-site-$*:$(TAG) \
-	    --build-arg PACKAGES="$($*_PACKAGES)" \
+	$(DOCKER_BUILD) $(FRESH) -f $(BUILD)/site.Dockerfile --build-arg BUILD_IMAGE=boba-build-nuitka:$(TAG) \
+	    --tag boba-build-site-$*:$(TAG) --build-arg PACKAGES="$($*_PACKAGES)" \
 	    --build-arg PLUGINS="$(call group-plugins,$(patsubst plugins-%,%,$(filter plugins-%,$*)))" $(ROOT)
 	$(call tree-sum,boba-build-site-$*:$(TAG),/opt/site)
 
 # корень песочницы $* (плагины, чей конфиг его называет); -python — вариант для тестов
-$(OUT)/rootfs/%.sum: FORCE | prepare-nuitka prepare-os
+$(ROOTFS:%=$(OUT)/rootfs/%.sum): $(OUT)/rootfs/%.sum: FORCE | prepare-nuitka prepare-os
 	@mkdir -p "$(@D)"
-	$(DOCKER_BUILD) -f $(BUILD)/rootfs.Dockerfile --build-arg BUILD_IMAGE=boba-build-nuitka:$(TAG) \
+	$(DOCKER_BUILD) $(FRESH) -f $(BUILD)/rootfs.Dockerfile --build-arg BUILD_IMAGE=boba-build-nuitka:$(TAG) \
 	    --build-arg OS_IMAGE=boba-build-os:$(TAG) --build-arg PYTHON_VERSION=$(PYTHON_VERSION) \
 	    --build-arg PLUGINS="$(call rootfs-plugins,$*)" --tag boba-build-rootfs-$*:$(TAG) $(ROOT)
 	$(call tree-sum,boba-build-rootfs-$*:$(TAG),/)
 
-$(OUT)/rootfs-python/%.sum: FORCE | prepare-nuitka prepare-os
+$(ROOTFS:%=$(OUT)/rootfs-python/%.sum): $(OUT)/rootfs-python/%.sum: FORCE | prepare-nuitka prepare-os
 	@mkdir -p "$(@D)"
-	$(DOCKER_BUILD) -f $(BUILD)/rootfs.Dockerfile --build-arg BUILD_IMAGE=boba-build-nuitka:$(TAG) \
+	$(DOCKER_BUILD) $(FRESH) -f $(BUILD)/rootfs.Dockerfile --build-arg BUILD_IMAGE=boba-build-nuitka:$(TAG) \
 	    --build-arg OS_IMAGE=boba-build-os:$(TAG) --build-arg PYTHON_VERSION=$(PYTHON_VERSION) \
 	    --build-arg PLUGINS="$(call rootfs-plugins,$*)" --build-arg PYTHON=1 \
 	    --tag boba-build-rootfs-$*-python:$(TAG) $(ROOT)
@@ -429,26 +447,28 @@ $(OUT)/rootfs-python/%.sum: FORCE | prepare-nuitka prepare-os
 
 # ext4 корня: дерево образа tar'ом в mke2fs сборки, root'ом в контейнере glibc без сети
 define rootfs-ext4
+mkdir -p "$(@D)"
 stage=$$(mktemp -d "$(@D)/.stage.XXXXXX")
 trap 'rm -rf "$$stage"; docker rm -f "$$cid" > /dev/null 2>&1 || true' EXIT
 cid=$$(docker create $(1) /bin/true)
 docker cp "$$cid:/." - | docker run --rm -i --network none -e MKE2FS_CONFIG=/tools/mke2fs.conf \
-    -e PATH=/tools:/usr/sbin:/usr/bin:/sbin:/bin -v "$(OUT)/libexec:/tools:ro" \
+    -e PATH=/tools:/usr/sbin:/usr/bin:/sbin:/bin -v "$(OUT_MCP)/libexec:/tools:ro" \
     -v "$(BUILD)/mkrootfs.sh:/mkrootfs.sh:ro" -v "$$stage:/out" --entrypoint sh $(GLIBC_IMAGE) \
     /mkrootfs.sh /out/rootfs.ext4 $(PYTHON_VERSION) 16 $(JOBS) "$(RUN_OWNER)"
 chmod 0644 "$$stage/rootfs.ext4"
 mv -f "$$stage/rootfs.ext4" "$@"
 endef
 
-$(OUT)/rootfs/%.ext4: $(OUT)/rootfs/%.sum $(BUILD)/mkrootfs.sh | $(OUT)/libexec/mke2fs
+$(ROOTFS:%=$(OUT_MCP)/rootfs/%.ext4): $(OUT_MCP)/rootfs/%.ext4: $(OUT)/rootfs/%.sum $(BUILD)/mkrootfs.sh | $(OUT_MCP)/libexec/mke2fs
 	@$(call rootfs-ext4,boba-build-rootfs-$*:$(TAG))
 
-$(OUT)/rootfs-python/%.ext4: $(OUT)/rootfs-python/%.sum $(BUILD)/mkrootfs.sh | $(OUT)/libexec/mke2fs
+$(ROOTFS:%=$(OUT)/rootfs-python/%.ext4): $(OUT)/rootfs-python/%.ext4: $(OUT)/rootfs-python/%.sum $(BUILD)/mkrootfs.sh | $(OUT_MCP)/libexec/mke2fs
 	@$(call rootfs-ext4,boba-build-rootfs-$*-python:$(TAG))
 
-$(OUT)/workspace.ext4: | $(OUT)/libexec/mke2fs
-	@docker run --rm --network none -e MKE2FS_CONFIG=/tools/mke2fs.conf -v "$(OUT)/libexec:/tools:ro" \
-	    -v "$(OUT):/out" --entrypoint sh $(GLIBC_IMAGE) -c ' \
+$(OUT_MCP)/sandbox/workspace.ext4: | $(OUT_MCP)/libexec/mke2fs
+	@mkdir -p "$(@D)"
+	docker run --rm --network none -e MKE2FS_CONFIG=/tools/mke2fs.conf -v "$(OUT_MCP)/libexec:/tools:ro" \
+	    -v "$(@D):/out" --entrypoint sh $(GLIBC_IMAGE) -c ' \
 	        truncate -s $(WORKSPACE_SIZE) /out/workspace.ext4.part \
 	        && /tools/mke2fs -F -q -t ext4 -O ^has_journal -m 0 -L workspace /out/workspace.ext4.part \
 	        && chown "$(RUN_OWNER)" /out/workspace.ext4.part && chmod 0644 /out/workspace.ext4.part'
@@ -459,135 +479,138 @@ $(OUT)/glibc-packages.txt:
 	@mkdir -p "$(@D)"
 	docker run --rm --network none --entrypoint dpkg-query $(GLIBC_IMAGE) -W -f '$${Package}\n' > "$@"
 
-# компиляция Nuitka детали $(1) в каталог $(OUT)/compiled/$(1): файл входа $(2),
-# исполняемый файл $(3), флаги $(4); сумма дерева пакетов копируется в $@ последней
+# компиляция Nuitka детали $(1) в каталог $(5) каталога программы: файл входа $(2),
+# исполняемый файл $(3), флаги $(4)
 define nuitka-compile
-mkdir -p "$(CACHE)" "$(OUT)/compiled"
-stage=$$(mktemp -d "$(OUT)/compiled/.stage.XXXXXX")
+mkdir -p "$(CACHE)" "$(dir $(5))"
+stage=$$(mktemp -d "$(dir $(5)).stage.XXXXXX")
 trap 'rm -rf "$$stage"' EXIT
 docker run --rm --network none -u "$(RUN_OWNER)" -v "$(CACHE):/cache" -v "$(BUILD)/conf:/conf:ro" \
     -v "$(BUILD)/nuitka.sh:/nuitka.sh:ro" -v "$$stage:/out" --entrypoint sh boba-build-site-$(1):$(TAG) \
     /nuitka.sh /opt/site "/opt/site/$(2)" "$(3)" $(1) $(JOBS) $(4) < /dev/null
-rm -rf "$(OUT)/compiled/$(1)"
-mv "$$stage/$(1)" "$(OUT)/compiled/$(1)"
+rm -rf "$(5)"
+mv "$$stage/$(1)" "$(5)"
 endef
 
-$(OUT)/compiled/%.sum: $(OUT)/site/%.sum $(BUILD)/nuitka.sh $(BUILD)/conf/nuitka.yml $(BUILD)/conf/nuitka-boba.yml
-	@$(call nuitka-compile,$*,$($*_ENTRY),$($*_BIN).bin,$($*_FLAGS))
+# сумма дерева пакетов ложится в $(OUT)/compiled последней: по ней make видит, что
+# программа собрана из этого дерева
+$(NUITKA_PROGRAMS:%=$(OUT)/compiled/%.sum): $(OUT)/compiled/%.sum: $(OUT)/site/%.sum $(BUILD)/nuitka.sh $(BUILD)/conf/nuitka.yml $(BUILD)/conf/nuitka-boba.yml
+	@$(call nuitka-compile,$*,$($*_ENTRY),$($*_BIN).bin,$($*_FLAGS),$($*_DEST))
 	cp "$<" "$@"
 
-# проверка программы группы $(1) в корне $(2): build/plugin_check.sh в образе корня
-# без сети, программа на /plugin, id — плагины группы с этим корнем
+# проверка программы группы $(1) в её корне $(2): build/plugin_check.sh в образе
+# корня без сети, программа на /plugin
 define plugin-check
-docker run --rm --network none -v "$(OUT)/compiled/plugins-$(1):/plugin:ro" \
+docker run --rm --network none -v "$(OUT_MCP)/plugins/$(1):/plugin:ro" \
     -v "$(BUILD)/plugin_check.sh:/plugin_check.sh:ro" -v "$(OUT)/glibc-packages.txt:/base.txt:ro" \
     --entrypoint sh boba-build-rootfs-$(2):$(TAG) /plugin_check.sh /base.txt \
     $(filter $(call rootfs-plugins,$(2)),$(call group-plugins,$(1)))
 
 endef
 
-# группа плагинов: программа `run`, затем проверка в корне каждого её плагина
-$(OUT)/compiled/plugins-%.sum: $(OUT)/site/plugins-%.sum $(BUILD)/nuitka.sh $(BUILD)/conf/nuitka.yml \
+# группа плагинов: программа `run` в plugins/<группа> каталога mcp, затем проверка в
+# корне каждого её плагина
+$(GROUPS:%=$(OUT)/compiled/plugins-%.sum): $(OUT)/compiled/plugins-%.sum: $(OUT)/site/plugins-%.sum $(BUILD)/nuitka.sh $(BUILD)/conf/nuitka.yml \
         $(BUILD)/plugin_check.sh $(OUT)/glibc-packages.txt | $(ROOTFS:%=$(OUT)/rootfs/%.sum)
-	@$(call nuitka-compile,plugins-$*,$(plugins_ENTRY),run,)
+	@$(call nuitka-compile,plugins-$*,$(plugins_ENTRY),run,$(plugins-$*_FLAGS),$(OUT_MCP)/plugins/$*)
 	$(foreach rootfs,$(call group-rootfs,$*),$(call plugin-check,$*,$(rootfs)))
 	cp "$<" "$@"
 
-# чат на python: интерпретатор, дерево пакетов и вход каталогом программы, без сети
+# чат на python: интерпретатор, дерево пакетов и вход в каталог программы, без сети
 $(OUT)/compiled/aid.sum: $(OUT)/site/aid.sum
-	@mkdir -p "$(OUT)/compiled"
-	stage=$$(mktemp -d "$(OUT)/compiled/.stage.XXXXXX")
+	@mkdir -p "$(OUT)/compiled" "$(OUT_AID)"
+	stage=$$(mktemp -d "$(OUT_AID)/.stage.XXXXXX")
 	trap 'rm -rf "$$stage"' EXIT
 	docker run --rm --network none -u "$(RUN_OWNER)" -v "$$stage:/out" --entrypoint sh \
 	    boba-build-site-aid:$(TAG) -c ' \
-	        mkdir -p /out/aid/bin /out/aid/third/lib \
-	        && cp -a /opt/python-slim/. /out/aid/third/ \
-	        && cp "$$(readlink -f /usr/lib/x86_64-linux-gnu/libstdc++.so.6)" /out/aid/third/lib/libstdc++.so.6 \
-	        && cp /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 /out/aid/third/lib/ \
-	        && cp -a /opt/site /out/aid/app \
-	        && sed -i "1s|^#!.*python3.*|#!/app/boba/third/bin/python3|" /out/aid/app/bin/*' < /dev/null
+	        mkdir -p /out/bin /out/third/lib \
+	        && cp -a /opt/python-slim/. /out/third/ \
+	        && cp "$$(readlink -f /usr/lib/x86_64-linux-gnu/libstdc++.so.6)" /out/third/lib/libstdc++.so.6 \
+	        && cp /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 /out/third/lib/ \
+	        && cp -a /opt/site /out/app \
+	        && sed -i "1s|^#!.*python3.*|#!/app/boba/third/bin/python3|" /out/app/bin/*' < /dev/null
 	printf '%s\n' '#!/bin/sh' 'root=$$(cd "$$(dirname "$$0")/.." && pwd -P)' \
 	    'export BOBA_RUNTIME="$$root" PYTHONHOME="$$root/third" PYTHONPATH="$$root/app" PYTHONNOUSERSITE=1 PYTHONUTF8=1 LD_LIBRARY_PATH="$$root/third/lib"' \
-	    'exec "$$root/third/bin/python3" -m boba.aid.main "$$@"' > "$$stage/aid/bin/boba-aid"
-	chmod 0755 "$$stage/aid/bin/boba-aid"
-	rm -rf "$(OUT)/compiled/aid"
-	mv "$$stage/aid" "$(OUT)/compiled/aid"
+	    'exec "$$root/third/bin/python3" -m boba.aid.main "$$@"' > "$$stage/bin/boba-aid"
+	chmod 0755 "$$stage/bin/boba-aid"
+	for part in bin third app; do
+	    rm -rf "$(OUT_AID)/$$part"
+	    mv "$$stage/$$part" "$(OUT_AID)/$$part"
+	done
 	cp "$<" "$@"
 
 # --- image и детали ------------------------------------------------------------------
 
-# образ программы $(1) из каталога $(OUT)/$(1): основа $(2), исполняемый файл $(3),
-# порт $(4), самопроверка $(5)
+# образ программы из её каталога $(1) (он и есть контекст сборки): тег $(2), основа
+# $(3), исполняемый файл $(4), порт $(5), самопроверка $(6)
 define program-image
-$(DOCKER_BUILD) --network none -f $(BUILD)/program.Dockerfile --build-arg BASE=$(2) \
-    --build-arg PROGRAM=$(3) --build-arg PORT=$(4) --build-arg CHECK="$(5)" \
-    --tag $(1):$(TAG) "$(OUT)/$(1)"
-echo ">>> image $(1):$(TAG) from $(OUT)/$(1) ($$(du -sh "$(OUT)/$(1)" | cut -f1))"
+mkdir -p "$(1)/conf"
+$(DOCKER_BUILD) $(FRESH) --network none -f $(BUILD)/program.Dockerfile --build-arg BASE=$(3) \
+    --build-arg PROGRAM=$(4) --build-arg PORT=$(5) --build-arg CHECK="$(6)" \
+    --tag $(2):$(TAG) "$(1)"
+echo ">>> image $(2):$(TAG) from $(1) ($$(du -sh "$(1)" | cut -f1))"
 endef
 
 .PHONY: $(DETAILS:%=app-%)
 
-app-mcp: $(OUT)/compiled/mcp.sum $(GROUPS:%=$(OUT)/compiled/plugins-%.sum) $(ROOTFS:%=$(OUT)/rootfs/%.ext4) \
-        $(OUT)/workspace.ext4 $(OUT)/libexec/bwrap | prepare-os
-	@rm -rf "$(OUT)/boba-mcp"
-	mkdir -p $(OUT)/boba-mcp/bin $(OUT)/boba-mcp/plugins $(OUT)/boba-mcp/rootfs $(OUT)/boba-mcp/sandbox $(OUT)/boba-mcp/conf
-	cp -al "$(OUT)/compiled/mcp" "$(OUT)/boba-mcp/bin/boba-mcp.dist"
-	$(foreach group,$(GROUPS),cp -al "$(OUT)/compiled/plugins-$(group)" "$(OUT)/boba-mcp/plugins/$(group)"
-	)
-	cp -al $(ROOTFS:%=$(OUT)/rootfs/%.ext4) "$(OUT)/boba-mcp/rootfs/"
-	cp -al "$(OUT)/libexec" "$(OUT)/boba-mcp/libexec"
-	cp -al "$(OUT)/workspace.ext4" "$(OUT)/boba-mcp/sandbox/workspace.ext4"
-	cp -a "$(PLUGIN_CONF_DIR)" "$(OUT)/boba-mcp/conf/plugins"
-	$(call program-image,boba-mcp,boba-build-os:$(TAG),bin/boba-mcp.dist/boba-mcp.bin,$(mcp_PORT),self-check)
+app-mcp: $(OUT)/compiled/mcp.sum $(GROUPS:%=$(OUT)/compiled/plugins-%.sum) $(ROOTFS:%=$(OUT_MCP)/rootfs/%.ext4) \
+        $(OUT_MCP)/sandbox/workspace.ext4 $(OUT_MCP)/libexec/bwrap | prepare-os
+	@rm -rf "$(OUT_MCP)/conf/plugins"
+	mkdir -p "$(OUT_MCP)/conf"
+	cp -a "$(PLUGIN_CONF_DIR)" "$(OUT_MCP)/conf/plugins"
+	$(call program-image,$(OUT_MCP),boba-mcp,boba-build-os:$(TAG),bin/boba-mcp.dist/boba-mcp.bin,$(mcp_PORT),self-check)
 
 app-boba: $(OUT)/compiled/boba.sum | prepare-os
-	@rm -rf "$(OUT)/boba"
-	mkdir -p "$(OUT)/boba/bin" "$(OUT)/boba/conf"
-	cp -al "$(OUT)/compiled/boba" "$(OUT)/boba/bin/boba.dist"
-	$(call program-image,boba,boba-build-os:$(TAG),bin/boba.dist/boba.bin,$(boba_PORT),self-check)
+	@$(call program-image,$(OUT_BOBA),boba,boba-build-os:$(TAG),bin/boba.dist/boba.bin,$(boba_PORT),self-check)
 
 app-aid: $(OUT)/compiled/aid.sum prepare-share | prepare-pyos
-	@rm -rf "$(OUT)/boba-aid"
-	cp -al "$(OUT)/compiled/aid" "$(OUT)/boba-aid"
-	mkdir -p "$(OUT)/boba-aid/conf"
-	cp -al "$(OUT)/share" "$(OUT)/boba-aid/share"
-	$(call program-image,boba-aid,boba-build-pyos:$(TAG),bin/boba-aid,$(aid_PORT),--help)
+	@$(call program-image,$(OUT_AID),boba-aid,boba-build-pyos:$(TAG),bin/boba-aid,$(aid_PORT),--help)
 
-app-rootfs: $(ROOTFS:%=$(OUT)/rootfs/%.ext4)
+app-rootfs: $(ROOTFS:%=$(OUT_MCP)/rootfs/%.ext4)
 
 $(GROUPS:%=app-plugins-%): app-plugins-%: $(OUT)/compiled/plugins-%.sum
 
-# каталоги моделей для админа: жёсткие ссылки на скачанное, места не занимают
+# docker-образ группы плагинов: её корень — образ rootfs.Dockerfile, её программа — в
+# /plugin; оба из тех же артефактов, что у образа mcp. Корень у группы один: плагины
+# группы, назвавшие разные корни, такого образа не дают
+$(GROUPS:%=app-plugins-%-image): app-plugins-%-image: $(OUT)/compiled/plugins-%.sum
+	@$(if $(word 2,$(call group-rootfs,$*)),$(error plugins-$*-image: the plugins of group $* name different roots: $(foreach p,$(call group-plugins,$*),$(p) names rootfs/$(word 3,$(subst :, ,$(filter $(p):$*:%,$(PLUGIN_MAP)))).ext4;) one image carries one root, give the group one rootfs in plugins/*.toml))
+	$(DOCKER_BUILD) $(FRESH) --network none -f $(BUILD)/plugin.Dockerfile \
+	    --build-arg ROOTFS=boba-build-rootfs-$(call group-rootfs,$*):$(TAG) \
+	    --tag boba-plugins-$*:$(TAG) "$(OUT_MCP)/plugins/$*"
+	echo ">>> image boba-plugins-$*:$(TAG): root $(call group-rootfs,$*), program plugins/$*"
+
+# каталоги моделей для админа: копии скачанного, повтор докопирует только новое
 app-models: $(foreach m,$(MODELS),$(MODEL_FILES_$(m)))
-	@$(foreach m,$(MODELS),rm -rf "$(OUT)/models/$(m)" && mkdir -p "$(OUT)/models" && cp -al "$(SRC)/models/$(m)" "$(OUT)/models/$(m)"
+	@$(foreach m,$(MODELS),mkdir -p "$(OUT)/models/$(m)" && cp -a -u "$(SRC)/models/$(m)/." "$(OUT)/models/$(m)/"
 	)
 	du -sh $(OUT)/models/*
 
 # runtime/ повторяет каталог программы mcp, только корни — с python, а программы
 # плагинов — python исходников; фронт чата — в assets пакета boba-aid
-app-runtime: $(ROOTFS:%=$(OUT)/rootfs-python/%.ext4) $(OUT)/workspace.ext4 $(OUT)/libexec/bwrap \
+app-runtime: $(ROOTFS:%=$(OUT)/rootfs-python/%.ext4) $(OUT_MCP)/sandbox/workspace.ext4 $(OUT_MCP)/libexec/bwrap \
         $(foreach m,$(MODELS),$(MODEL_FILES_$(m))) prepare-share
 	@mkdir -p "$(RUNTIME)/sandbox" "$(RUNTIME)/rootfs" "$(RUNTIME)/plugins" "$(RUNTIME)/models"
 	rm -rf "$(RUNTIME)/libexec"
-	cp -a "$(OUT)/libexec" "$(RUNTIME)/libexec"
-	cp "$(OUT)/workspace.ext4" "$(RUNTIME)/sandbox/workspace.ext4.part"
+	cp -a "$(OUT_MCP)/libexec" "$(RUNTIME)/libexec"
+	cp "$(OUT_MCP)/sandbox/workspace.ext4" "$(RUNTIME)/sandbox/workspace.ext4.part"
 	mv "$(RUNTIME)/sandbox/workspace.ext4.part" "$(RUNTIME)/sandbox/workspace.ext4"
 	$(foreach rootfs,$(ROOTFS),cp "$(OUT)/rootfs-python/$(rootfs).ext4" "$(RUNTIME)/rootfs/$(rootfs).ext4.part" && mv "$(RUNTIME)/rootfs/$(rootfs).ext4.part" "$(RUNTIME)/rootfs/$(rootfs).ext4"
 	)
 	$(foreach group,$(GROUPS),mkdir -p "$(RUNTIME)/plugins/$(group)" && printf '%s\n' '#!/bin/sh' 'exec python3 -m boba.sandbox.program "$$@"' > "$(RUNTIME)/plugins/$(group)/run" && chmod 0755 "$(RUNTIME)/plugins/$(group)/run"
 	)
-	$(foreach m,$(MODELS),rm -rf "$(RUNTIME)/models/$(m)" && cp -al "$(SRC)/models/$(m)" "$(RUNTIME)/models/$(m)"
+	$(foreach m,$(MODELS),mkdir -p "$(RUNTIME)/models/$(m)" && cp -a -u "$(SRC)/models/$(m)/." "$(RUNTIME)/models/$(m)/"
 	)
 	rm -rf "$(AID_ASSETS)/ui" "$(AID_ASSETS)/public/vendor"
-	cp -a "$(OUT)/share/ui" "$(AID_ASSETS)/ui"
-	cp -a "$(OUT)/share/public/vendor" "$(AID_ASSETS)/public/vendor"
-	cp "$(OUT)/share/public/page.js" "$(AID_ASSETS)/public/page.js"
+	cp -a "$(OUT_AID)/share/ui" "$(AID_ASSETS)/ui"
+	cp -a "$(OUT_AID)/share/public/vendor" "$(AID_ASSETS)/public/vendor"
+	cp "$(OUT_AID)/share/public/page.js" "$(AID_ASSETS)/public/page.js"
 	chmod -R go-w "$(RUNTIME)/libexec"
 	chmod go-w "$(RUNTIME)"
 	echo ">>> runtime: $(RUNTIME), frontend: $(AID_ASSETS)"
 
 app-testapps: | prepare-nuitka
-	@$(DOCKER_BUILD) -f $(ROOT)/tests/services/testapps/Dockerfile --build-arg NODE_IMAGE=$(TESTAPPS_NODE_IMAGE) \
+	@$(DOCKER_BUILD) $(FRESH) -f $(ROOT)/tests/services/testapps/Dockerfile --build-arg NODE_IMAGE=$(TESTAPPS_NODE_IMAGE) \
 	    --build-arg PYTHON_IMAGE=$(PYTHON_IMAGE) --build-arg BASE_IMAGE=boba-build-base:$(TAG) \
 	    --tag boba-testapps:$(TAG) --tag boba-testapps:latest $(ROOT)/tests/services/testapps
 
