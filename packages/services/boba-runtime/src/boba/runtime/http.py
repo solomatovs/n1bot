@@ -81,7 +81,8 @@ class HealthProbe:
     def check(self) -> str:
         """Строка итога пробы; не 2xx или нет ответа — HealthCheckError."""
         try:
-            with urllib.request.urlopen(self._url, timeout=self.TIMEOUT_SEC) as answer:  # noqa: S310 — схема http собрана здесь
+            # схема http и адрес 127.0.0.1 собраны здесь: file:/ сюда не попадает
+            with urllib.request.urlopen(self._url, timeout=self.TIMEOUT_SEC) as answer:  # noqa: S310  # nosec B310
                 status = answer.status
         except (urllib.error.URLError, OSError) as exc:
             msg = f"health probe GET {self._url}: expected a 2xx answer, got {exc}"
