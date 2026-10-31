@@ -14,8 +14,9 @@ tools/call, resources/read, prompts/get и completion/complete и держит
 HTTP, SSE или stdio. Способ входа — свойство записи сервера (McpAuth): без
 входа, готовый токен, вход local учёткой с паролем и вход proxy
 утверждением о пользователе. Токен сервера для local и proxy получают и
-обновляют штатные провайдеры OAuth библиотеки mcp; своё здесь — только
-проход страницы входа без человека (UnattendedLogin).
+обновляют штатные провайдеры OAuth библиотеки mcp; своё здесь — проход
+страницы входа без человека (UnattendedLogin) и обновление токена,
+отвергнутого сервером раньше срока по часам клиента (RefreshingProvider).
 
 Ошибки:
 McpClientError — сервер не согласовал версию протокола, отказал во входе,
@@ -378,6 +379,58 @@ class HeldTokens(TokenStorage):
         self._client = client_info
 
 
+class TokenProvider(Protocol):
+    """Штатный провайдер OAuth под SharedToken: получает и обновляет токен
+    и узнаёт, что сервер отказал токену, который SharedToken раздавал без
+    его замка. Реализуют RefreshingProvider (вход local) и ExchangingProvider
+    (вход proxy)."""
+
+    @abstractmethod
+    def async_auth_flow(
+        self, request: httpx2.Request
+    ) -> AsyncGenerator[httpx2.Request, httpx2.Response]: ...
+
+    @abstractmethod
+    def refused(self, header: str) -> None:
+        """Сервер ответил 401 на запрос с заголовком Authorization header."""
+
+
+class RefreshingProvider(OAuthClientProvider, TokenProvider):
+    """Штатный провайдер OAuth входа local, который на отказ сервера сначала
+    обновляет токен по токену обновления.
+
+    Провайдер mcp считает токен живым по своим часам: от получения ответа
+    плюс expires_in. Сервер отсчитывает срок от выпуска и округляет его вниз
+    до секунды, а под нагрузкой ответ ещё и доходит до клиента с задержкой,
+    так что сервер отвергает токен раньше. На 401 при «живом» токене
+    штатный поток идёт во вход целиком мимо токена обновления. refused()
+    переносит срок отвергнутого токена в прошлое, и следующий поток
+    провайдера начинает с обновления. Создаётся LocalAuth на подключение.
+    """
+
+    EXPIRED_AGO_SEC: ClassVar[float] = 1.0
+
+    def refused(self, header: str) -> None:
+        tokens = self.context.current_tokens
+        if tokens is None:
+            return
+
+        # токен уже сменил другой запрос: новый сервер не отвергал
+        if header != f"Bearer {tokens.access_token}":
+            return
+
+        self.context.token_expiry_time = time.time() - self.EXPIRED_AGO_SEC
+
+
+class ExchangingProvider(IdentityAssertionOAuthProvider, TokenProvider):
+    """Штатный провайдер OAuth входа proxy: токена обновления нет, и на
+    любой отказ 401 провайдер сам меняет новое утверждение на токен, поэтому
+    отказ ему сообщать незачем. Создаётся ProxyAuth на подключение."""
+
+    def refused(self, header: str) -> None:
+        return None
+
+
 class SharedToken(httpx2.Auth):
     """Токен входа OAuth на все запросы подключения разом.
 
@@ -386,8 +439,8 @@ class SharedToken(httpx2.Auth):
     запрос панели ждёт, пока кончится долгий вызов агента. Этот вход
     отдаёт уже полученный токен каждому запросу без замка, а получение и
     обновление токена — отказ 401 или 403 — ведёт штатный провайдер
-    (inner) под его замком. Создаётся способом входа (LocalAuth, ProxyAuth)
-    на подключение.
+    (inner) под его замком; об отказе 401 провайдер узнаёт до своего
+    потока. Создаётся способом входа (LocalAuth, ProxyAuth) на подключение.
     """
 
     HEADER: ClassVar[str] = "Authorization"
@@ -395,7 +448,7 @@ class SharedToken(httpx2.Auth):
         {HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN}
     )
 
-    def __init__(self, inner: httpx2.Auth) -> None:
+    def __init__(self, inner: TokenProvider) -> None:
         self._inner = inner
         self._header: str | None = None
 
@@ -408,6 +461,9 @@ class SharedToken(httpx2.Auth):
             response = yield request
             if response.status_code not in self.REFUSED:
                 return
+
+            if response.status_code == HTTPStatus.UNAUTHORIZED:
+                self._inner.refused(header)
 
         # поток провайдера держит замок, привязанный к задаче: закрывается
         # он здесь же, в задаче запроса, даже когда запрос отменён
@@ -592,7 +648,7 @@ class LocalAuth(McpAuthEntry):
     def httpx_auth(self, resource: str) -> httpx2.Auth | None:
         login = UnattendedLogin(self.login, self.password, resource)
 
-        provider = OAuthClientProvider(
+        provider = RefreshingProvider(
             server_url=resource,
             client_metadata=login.client(),
             storage=HeldTokens(),
@@ -646,7 +702,7 @@ class ProxyAuth(McpAuthEntry):
             self.roles,
         )
 
-        provider = IdentityAssertionOAuthProvider(
+        provider = ExchangingProvider(
             server_url=resource,
             storage=HeldTokens(),
             client_id=self.client_id,
