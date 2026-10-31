@@ -35,7 +35,7 @@ langgraph, само исполняло инструменты в песочни�
 - **Агент** — служба агента: образ `boba`, контейнер `boba`, порт 8660,
   префикс `/boba`, команда `boba serve`. Она ведёт беседу с моделью и просит
   чат исполнить инструменты; чат входит в неё от имени пользователя вкладки
-  (вход proxy). Своё site.toml у неё отдельное (`make site-keys APP=boba`), история бесед
+  (вход proxy). Свой конфиг у неё отдельный, история бесед
   теперь принадлежит ей и хранится иначе, чем раньше.
 - **Сервис инструментов boba-mcp** — образ `boba-mcp`, контейнер `boba-mcp`,
   порт 8650, префикс `/mcp`. Это сервер протокола MCP: он исполняет инструменты (bash, запросы
@@ -45,14 +45,14 @@ langgraph, само исполняло инструменты в песочни�
 Из этого вытекает всё, что приходится переносить:
 
 - **Новые деревья запуска.** Чат живёт в `compose/aid`, сервис — в
-  `compose/mcp`, служба агента — в `compose/boba`; у каждого свой `conf/site.toml`, свой `conf/krb` и свой
+  `compose/mcp`, служба агента — в `compose/boba`; у каждого свой `conf/config.toml`, свой `conf/krb` и свой
   `data`. Деревья dev не переиспользуются и ссылками не связываются.
 - **Новая база с другой раскладкой.** Таблицы раскладываются по схемам
   компонентов: `aid` — чат (пользователи, треды, оценки, соединения, роли и
   гранты, шина `live_*`), `boba` — агент (история бесед), `mcp` — сервис и его
   плагины (база знаний `kb_*`, описания `node` и `edge`). Схема `ix`
   индексаторов остаётся как была. Имя базы приложения читают из ключа
-  `pg_database` своего site.toml. Переход делается в отдельную новую базу,
+  `[postgres].dbname` своего `config.toml`. Переход делается в отдельную новую базу,
   старая только читается.
 - **История бесед вместо чекпойнтов.** Dev хранил беседу треда в таблицах
   `checkpoints.*` библиотеки langgraph, в двоичном формате msgpack. Новый чат
@@ -185,85 +185,74 @@ Dev подключался к внешней сети `docker` — той, в к
 построено снаружи (записи DNS, правила межсетевого экрана, `pg_hba.conf`);
 если построено — закрепляют адрес.
 
-### Откуда берутся значения site.toml
+### Откуда берутся значения config.toml
 
-У каждого приложения конфигурация состоит из двух файлов: общий конфиг
-(`packages/apps/boba-aid/conf/config.toml`, `packages/apps/boba-mcp/conf/config.toml`
-с файлами `plugins/*.toml`) описывает устройство приложения и лежит в образе, а
-`site.toml` держит всё, что зависит от машины: порты, пути, адреса, логины,
-секреты. В site.toml допустимы только две секции, `[env]` и `[site]`; любая
-другая останавливает старт. Лишние ключи внутри этих секций не мешают: так
-один файл может нести и ключи, нужные dev, и ключи новой версии.
+У каждого приложения конфигурация экземпляра — один файл
+`compose/<приложение>/conf/config.toml`. Он описывает и устройство приложения,
+и специфику машины: порты, адреса, каталог данных, имена моделей, логины,
+секреты. Файл в git не входит — в нём секреты, — и готового образца не имеет:
+значения, общие для нескольких программ (адрес базы, realm, совпадающие
+секреты), повторяются в каждом файле. Разбор секций и ключей — руководство
+администратора, раздел 5.
 
-Перечень ключей, которые нужны именно этой версии, строится из общего конфига:
-
-```sh
-make -C build site-keys APP=aid
-make -C build site-keys APP=mcp
-make -C build site-keys APP=boba
-```
-
-Каждая строка вывода — ключ и место общего конфига, где он используется
-впервые. Ключ с точкой (`mcp_client.secret`) — поле таблицы
-(`[site.mcp_client]`). Пропущенный ключ обнаруживается при старте: приложение
-завершается и называет и ключ, и поле (`InterpolationKeyError: Interpolation
-key 'site.…' not found`, ниже `full_key: …`).
+Путей к файлам программы в нём нет: каталог программы и `conf/krb` программа
+находит сама, каталог экземпляра назван в `[instance]`. Из окружения читается
+только то, что записано как `${oc.env:ИМЯ}`; секреты через окружение не идут.
+Пропущенный ключ обнаруживается при старте: приложение завершается и называет
+его (`ConfigError: config <файл>: resolving the config failed: …`).
 
 Значения для чата берут из конфигурации dev (`compose/chainlit/conf`). Что
 переходит без изменений, что появляется и что уходит:
 
-| Группа ключей чата | Откуда взять |
+| Что в конфиге чата | Откуда взять |
 |---|---|
-| `pg_host`, `pg_addr`, `pg_port`, `pg_sslmode`, `pg_auth_method`, `[site.pg_auth.kerberos]` или `[site.pg_auth.password]` | как у dev: та же база данных, та же учётка |
-| `pg_history_auth_method`, `[site.pg_history_auth.password]` или `[site.pg_history_auth.kerberos]` | **новые ключи**: вход истории агента. По умолчанию — та же учётка, что `pg_auth` (значения повторяют `[site.pg_auth.*]`); если роли разводятся — своя роль истории (пароль либо свой принципал с keytab в `conf/krb`), шаг 4.6 |
-| `pg_database` | **другое значение**: имя новой базы (`"aid"`) вместо базы dev |
-| `ldap_url`, `ldap_base_dn`, `ldap_netbios`, `[site.ldap_roles.*]`, `krb_domain`, `krb_realm`, `krb_config`, `krb_http_keytab`, `krb_ccache_http`, `[site.local_auth.*]` | как у dev: вход пользователей не менялся |
-| `ldap_auth_method = "simple"`, `[site.ldap_auth.simple]` (`method = "simple"`, `user`, `password`) | **новые ключи** вместо `ldap_bind_user` и `ldap_bind_password` dev: служебный bind каталога, учётка и пароль — прежние |
-| `llm_host`, `llm_path`, `llm_ssl_verify`, `[site.models].general`, `[site.models].search` | как у dev: сервер модели и имена моделей профилей |
-| `llm_auth_method`, `[site.llm_auth.bearer]` (`method = "bearer"`, `token`) | **новые ключи**: вход к модели; токен — прежний `llm_token` dev. Другие способы входа — раздел 5 руководства, «Способ входа во внешние системы» |
-| `[site.profiles.general].system_prompt`, `[site.profiles.search].system_prompt` | **новые ключи**: системные промпты профилей чата |
-| `auth_secret` | как у dev — тогда действующие cookie входа остаются действительными; новое значение разлогинит всех, данные не пострадают |
-| `database_encryption_key` | **обязательно то же значение, что у dev**: им зашифрованы секреты соединений пользователей в базе. С другим ключом они не расшифруются, и инструмента перешифрования нет |
-| `proxy_secret` | **новый ключ** входа proxy в сам чат (nginx или другой доверенный сайт): сгенерировать `openssl rand -hex 32` |
-| `mcp_proxy_secret`, `[site.mcp_client].secret` | **новые ключи**, общие с сервисом: сгенерировать по разу (`openssl rand -hex 32` для каждого) и записать одно и то же значение в site.toml чата и сервиса |
-| `[site.proxy].allowed_clients`, `[site.proxy.local_roles]` | **новые ключи** входа proxy: кто вправе входить в чат по доверенному заголовку и какие локальные роли им даются (раздел 15 руководства). Если таких клиентов нет — пустой список и пустая таблица |
-| `[env]`: `mcp_scheme`, `mcp_host`, `mcp_port`, `mcp_prefix` | **новые ключи**: адрес сервиса boba-mcp глазами чата (ниже) |
-| `[env]`: `messaging_provider`, `instance_id`, `host`, `listen_host`, `data`, `models`, `app_root`, `krb` | `messaging_provider = "postgres"` у compose; `listen_host = "0.0.0.0"`; пути — от `${env.base}`, который в контейнере равен `/app/boba`: `data = "${env.base}/data"`, `app_root = "${env.base}/app_root"`, `krb = "${env.base}/conf/krb"` (таблица «Чем различаются site.toml трёх случаев» в разделе 5 руководства) |
-| `[env]`: `port`, `url_prefix` | в site.toml писать не нужно: их задаёт `conf/boba.env` переменными `BOBA_PORT`, `BOBA_URL_PREFIX`, который порождает `make dev` |
-| `[env]`: `agent_mode`, `agent_scheme`, `agent_host`, `agent_port`, `agent_prefix` | **новые ключи**: `agent_mode = "service"` и адрес службы агента глазами чата — через nginx: `https`, публичное имя, `443`, `/boba` |
-| `agent_proxy_secret`, `[site.agent_client].secret` | **новые ключи**, общие со службой агента: сгенерировать по разу (`openssl rand -hex 32`) и записать одно и то же значение в site.toml чата и службы |
+| `[postgres]` (`host`, `hostaddr`, `port`, `sslmode`) и `[postgres.auth]` | как у dev: та же база данных, та же учётка. Место `pg_auth_method` и `[site.pg_auth.*]` занимает `[postgres.auth]` с ключом `method` |
+| `[postgres_history]` и `[postgres_history.auth]` | **новый раздел**: вход истории агента. По умолчанию — та же учётка, что `[postgres]`; если роли разводятся — своя роль истории (пароль либо свой принципал с keytab в `conf/krb`), шаг 4.6 |
+| `[postgres] dbname` | **другое значение**: имя новой базы (`"aid"`) вместо базы dev; то же в `[postgres_history] dbname` |
+| `[ldap]` (`server`, `base_dn`), `[ldap.auth]`, `[ldap.mapping]`, `[auth.kerberos]`, `[auth.local]` | как у dev: вход пользователей не менялся. `ldap_netbios` отдельным ключом больше не задаётся — он входит в `[ldap.auth] user` (`LOSHARA\…`); `ldap_bind_user` и `ldap_bind_password` стали `[ldap.auth] user` и `password` |
+| `[llm.main]` (`kind`, `transport`), `[llm.main.connection]` (`host`, `path`, `ssl_verify`), `[llm.main.connection.auth]` | как у dev: сервер модели. Место `llm_auth_method` занимает `[llm.main.connection.auth]` с ключом `method`; токен — прежний. Другие способы входа — руководство администратора, раздел 5 |
+| `[model_limits.general]`, `[model_limits.search]` | **новые разделы**: окно и потолок ответа профилей |
+| `[profiles.general]`, `[profiles.search]` (модель, `system_prompt`, `sampling`) | **новые разделы**: профили чата |
+| `[keys] auth_secret` | как у dev — тогда действующие cookie входа остаются действительными; новое значение разлогинит всех, данные не пострадают |
+| `[keys] encryption` | **обязательно то же значение, что у dev**: им зашифрованы секреты соединений пользователей в базе. С другим ключом они не расшифруются, и инструмента перешифрования нет |
+| `[keys] proxy` | **новый ключ** входа proxy в сам чат (nginx или другой доверенный сайт): сгенерировать `openssl rand -hex 32` |
+| `[keys] mcp_proxy`, `[keys] mcp_client` | **новые ключи**, общие с сервисом: сгенерировать по разу (`openssl rand -hex 32` для каждого) и записать одно и то же значение в `config.toml` чата и сервиса |
+| `[keys] agent_proxy`, `[keys] agent_client` | **новые ключи**, общие со службой агента: сгенерировать по разу и записать одно и то же значение в `config.toml` чата и службы |
+| `[auth.proxy]` (`secret = "${keys.proxy}"`, `allowed_clients`, `[auth.proxy.roles.local.mapping]`) | **новый раздел** входа proxy: кто вправе входить в чат по доверенному заголовку и какие локальные роли им даются (раздел 15 руководства). Если таких клиентов нет — пустой список и пустая таблица |
+| `[env] mcp_scheme`, `mcp_host`, `mcp_port`, `mcp_prefix` | **новые ключи**: адрес сервиса boba-mcp глазами чата (ниже) |
+| `[env] agent_mode`, `agent_scheme`, `agent_host`, `agent_port`, `agent_prefix` | **новые ключи**: `agent_mode = "service"` и адрес службы агента глазами чата — через nginx: `https`, публичное имя, `443`, `/boba` |
+| `[env] messaging_provider`, `instance_id`, `host`, `listen_host` | `messaging_provider = "postgres"` у compose; `listen_host = "0.0.0.0"`; `host = "${oc.env:HOSTNAME}"` |
+| `[env] port`, `url_prefix` | свои у каждого дерева: `8501` и `/aid` у compose |
 
-Из site.toml чата **уходит** всё, что относилось к исполнению инструментов:
-пути `sandbox` и `third`, `cgroup_base`, `tool_launcher`, адреса Confluence и
-почты, модель эмбеддера. Инструменты теперь исполняет сервис, и эти значения
-нужны его site.toml. Ключи studio (например, адрес страницы workflow) не нужны
-никому.
+Из конфига чата **уходит** всё, что относилось к исполнению инструментов: пути
+`sandbox` и `third`, `cgroup_base`, `tool_launcher`, адреса Confluence и почты,
+модель эмбеддера. Инструменты теперь исполняет сервис, и эти значения нужны его
+`config.toml`. Ключи studio (например, адрес страницы workflow) не нужны никому.
 
-Для сервиса boba-mcp site.toml пишут заново по перечню `make site-keys APP=mcp`:
+Для сервиса boba-mcp `config.toml` пишут по секциям его программы:
 
-| Группа ключей сервиса | Откуда взять |
+| Что в конфиге сервиса | Откуда взять |
 |---|---|
-| `pg_*`, `[site.pg_auth.*]`, `pg_database`, `krb_config` | те же, что у чата: одна база, одна сервисная учётка |
-| `proxy_secret`, `[site.mcp_client].secret` | те же значения, что в site.toml чата |
-| `auth_secret` | **свой**, не тот, что у чата: `openssl rand -base64 48`. Им сервис подписывает собственные токены; совпадать с чатом он не должен |
-| `[site.confluence]`, `[site.mail]` (`server`, `port`, `use_tls`, `sender`, `recipient`), `[site.models].embedding` | из конфигурации dev: раньше эти значения нужны были чату |
-| `mail_auth_method`, `[site.mail_auth.<способ>]` | **новые ключи**: вход SMTP (`none` или `password` с `user` и `password` — прежние `[site.mail].user` и `password`) |
-| `confluence_auth_method`, `[site.confluence_auth.<способ>]` | **новые ключи**: вход в Confluence (`none`, `basic`, `bearer`, `digest`, `negotiate`) |
-| `[env]`: `port = 8650`, `url_prefix = "/mcp"`, `listen_host = "0.0.0.0"`, `tool_launcher = "sandbox"`, `cgroup_base = "/cgroup/boba-sandbox-mcp"` | как в примере site.toml сервиса в разделе 5 руководства («Первый site.toml») |
-| `[env]`: `data`, `sandbox`, `third`, `models`, `krb` | `"${env.base}/data"`, `"${env.base}/sandbox"`, `"${env.base}/third"`, `"${env.base}/models"`, `"${env.base}/conf/krb"` |
-| `[env]`: `public_url` | адрес, под которым сервис объявляет себя чату (ниже) |
+| `[postgres]`, `[postgres.auth]`, `dbname` | те же, что у чата: одна база, одна сервисная учётка |
+| `[auth.proxy] secret`, `[mcp.clients.boba-chat] secret` | те же значения, что в конфиге чата: `${keys.mcp_proxy}` и `${keys.mcp_client}` |
+| `[keys] session` | **свой**, не тот, что у чата. Им сервис подписывает собственные токены; совпадать с чатом он не должен |
+| `[confluence]`, `[mail]` (`host`, `port`, `sender`, `recipient`), `[embedding]` | из конфигурации dev: раньше эти значения нужны были чату |
+| `[confluence.auth]`, `[mail.auth]` | **новые разделы**: вход в Confluence (`none`, `basic`, `bearer`, `digest`, `negotiate`) и SMTP (`none`, `password`) |
+| `[env] port = 8650`, `url_prefix = "/mcp"`, `listen_host = "0.0.0.0"`, `tool_launcher = "sandbox"`, `cgroup_base = "/cgroup/boba-sandbox-mcp"` | как в конфиге сервиса у compose |
+| `[env] public_url` | адрес, под которым сервис объявляет себя чату (ниже) |
 
-Ключей входа пользователей (`ldap_*`, `krb_domain`, `local_auth`) у сервиса
-нет: пользователей он принимает только от чата, по подписанному утверждению.
+Ключей входа пользователей (`[ldap]`, `[auth.kerberos]`, `[auth.local]`) у
+сервиса нет: пользователей он принимает только от чата, по подписанному
+утверждению.
 
 ### Адрес сервиса: четыре ключа чата и `public_url` сервиса
 
-Чат находит сервис по ключам `[env]` своего site.toml: `mcp_scheme`,
+Чат находит сервис по ключам `[env]` своего `config.toml`: `mcp_scheme`,
 `mcp_host`, `mcp_port` и `mcp_prefix` составляют секцию `[service.boba_mcp]`
-общего конфига — адрес сервиса. Серверы инструментов — маршруты под ним
+того же файла — адрес сервиса. Серверы инструментов — маршруты под ним
 (`<scheme>://<host>:<port><prefix>/<имя>`, например `/mcp/all`), а сам
 адрес сервиса — издатель токенов. Сервис объявляет себя издателем под адресом
-из своего `public_url` и отвечает под своим `url_prefix`; путь `public_url`
+из своего `[mcp] public_url` и отвечает под своим `url_prefix`; путь `public_url`
 обязан совпадать с `url_prefix`, иначе сервис не стартует. Адрес чата и
 `public_url` обязаны совпадать буква в букву, иначе первый же вызов
 инструмента кончится ошибкой `Authorization server metadata issuer mismatch`
@@ -272,13 +261,13 @@ key 'site.…' not found`, ниже `full_key: …`).
 Сервер авторизации OAuth вне `localhost` принимает только https, поэтому чат
 ходит в сервис через nginx:
 
-- у сервиса: `url_prefix = "/mcp"`, `public_url = "https://boba.example.com/mcp"`;
+- у сервиса: `[mcp] url_prefix = "/mcp"`, `[mcp] public_url = "https://boba.example.com/mcp"`;
 - у чата: `mcp_scheme = "https"`, `mcp_host = "boba.example.com"`,
   `mcp_port = 443`, `mcp_prefix = "/mcp"` — без завершающего слэша, ровно путь
   из `public_url`.
 
 Стандартный порт 443 в адрес не попадает, а лишний слэш в конце уже даёт
-расхождение. Служба агента устроена так же: `url_prefix = "/boba"`,
+расхождение. Служба агента устроена так же: `[agent] url_prefix = "/boba"`,
 `public_url = "https://boba.example.com/boba"`, у чата `agent_scheme`,
 `agent_host`, `agent_port`, `agent_prefix = "/boba"`.
 
@@ -491,7 +480,7 @@ PGDATABASE=aid psql -v chat_url=http://127.0.0.1:8501/boba -f migrate.sql
 публичное имя за nginx: агент работает на той же машине, что и чат, и забирает
 у него вложения сообщений по этому адресу. У развёртывания compose с портом и
 префиксом по умолчанию это `http://127.0.0.1:8501/boba`; если в
-`compose/aid/conf/boba.env` стоят другие `BOBA_PORT` или `BOBA_URL_PREFIX`,
+`compose/aid/conf/config.toml` стоят другие `[env] port` или `url_prefix`,
 подставьте их. Из `chat_url` скрипт строит ссылки на вложения старых вопросов
 в перенесённой истории; с другим адресом агент эти вложения не получит.
 
@@ -596,8 +585,8 @@ belong to boba_history; the chat role boba-svc has no rights on them.`
 psql -d aid -c "select has_table_privilege('boba-svc', 'boba.session_records', 'select')"
 ```
 
-Ответ — `f`. Вход роли истории вписывается в site.toml чата ключами
-`pg_history_auth_method` и `[site.pg_history_auth.*]` (раздел 3).
+Ответ — `f`. Вход роли истории вписывается в `config.toml` чата разделом
+`[postgres_history]` с ключом `[postgres_history.auth] method` (раздел 3).
 
 ## 5. Перенос файлов пользователей
 
@@ -680,7 +669,7 @@ psql -d aid -c '\dt boba.*'
 
 Порядок: сначала сервис и служба агента, потом nginx, потом чат: чат и
 служба ходят друг к другу через nginx по https. Чат ходит к агенту только
-в службу `boba` (`agent_mode = "service"` в site.toml чата): без неё
+в службу `boba` (`agent_mode = "service"` в конфиге чата): без неё
 вопрос вкладки получает отказ входа в службу. Чат подключается к сервису, когда
 пользователь открывает тред; пока сервиса нет, в логе чата появляется `file
 upload is hidden for <логин>: mcp server '…': …`, а у модели нет инструментов
@@ -748,16 +737,16 @@ docker logs -f aid
 
 | Текст в логе | Причина |
 |---|---|
-| `InterpolationKeyError: Interpolation key 'site.…' not found` | в site.toml нет ключа; `full_key` ниже называет, какому полю он нужен |
-| `ConfigLayoutError: site file …: expected only sections ['env', 'site'], got also […]` | в site.toml попала секция устройства приложения |
+| `ConfigError: config <файл>: resolving the config failed: …` | ссылка не разрешилась: нет ключа, файла из `${toml:…}` или переменной окружения из `${oc.env:…}`; текст называет её |
+| `ConfigError: config: section [x] does not fit <Модель>: …` | ключ есть, но значение не то, что ждёт секция; текст называет и поле, и полученное |
 | `PostgresError: … couldn't get a connection` | база недоступна контейнеру: адрес, сеть, ограничение доступа по имени контейнера или Kerberos (выше в логе нет `kerberos: TGT … from …keytab`) |
-| `Token exchange failed (401): {"error":"invalid_grant", …}` | `proxy_secret` чата и сервиса различаются |
-| `Token exchange failed (401): {"error":"invalid_client", …}` | `[site.mcp_client].secret` чата и сервиса различаются |
-| `Authorization server metadata issuer mismatch` | ключи `mcp_*` чата и `public_url` сервиса описывают разные адреса |
-| `agent process '…' did not start from …: [Errno 2] No such file or directory; check [env].agent_command` | в site.toml чата `agent_mode = "process"` или его нет: на выкатке нужен `agent_mode = "service"` с адресом службы агента |
+| `Token exchange failed (401): {"error":"invalid_grant", …}` | `[keys] mcp_proxy` чата и сервиса различаются |
+| `Token exchange failed (401): {"error":"invalid_client", …}` | `[keys] mcp_client` и `[mcp.clients].secret` чата и сервиса различаются |
+| `Authorization server metadata issuer mismatch` | ключи `mcp_*` чата и `[mcp] public_url` сервиса описывают разные адреса |
+| `agent process '…' did not start from …: …; check [agent.process].command` | в конфиге чата выбран запуск агента процессом, а не службой: на выкатке нужен `agent_mode = "service"` с адресом службы агента |
 | `[postgres] auth '…' cannot be handed to the agent history as a libpq connection string` | способ входа в базу не передаётся агенту строкой libpq: нужен пароль, доверие или Kerberos по keytab или паролю |
 
-Правка site.toml вступает в силу только после пересоздания контейнера:
+Правка `config.toml` вступает в силу только после пересоздания контейнера:
 `docker compose up -d --force-recreate aid` (или `mcp`). Перезапуска
 `restart` недостаточно: файл смонтирован в контейнер поодиночке, и редактор,
 сохраняющий через замену файла, оставляет внутри старое содержимое.
