@@ -47,6 +47,7 @@ from acp_stand import (
     RecordingUpdates,
 )
 from aid_stand import RelayStand, TabSession
+from pydantic import TypeAdapter
 
 from boba.aid.agent.chat import (
     AgentLauncher,
@@ -85,6 +86,7 @@ from boba.stand.ui.stand import REPO_ROOT, StandPorts
 from boba.transport.acp.protocol import (
     BobaExtension,
     CommandApp,
+    CommandElement,
     CommandFailure,
     CommandOutcome,
     CommandOutcomeUpdate,
@@ -420,7 +422,8 @@ def outcomes(updates: RecordingUpdates) -> list[CommandOutcomeUpdate]:
 
 def outcome_of(updates: RecordingUpdates, command: str) -> CommandOutcome:
     """Итог последней записи команды command; запись — за строкой вызова с
-    тем же messageId."""
+    тем же messageId. По проводу итог идёт словарём: разбирает его клиент."""
+    adapter: TypeAdapter[CommandOutcome] = TypeAdapter(CommandOutcome)
     found = outcomes(updates)
     lines = dict(user_lines(updates))
     for update in reversed(found):
@@ -428,7 +431,7 @@ def outcome_of(updates: RecordingUpdates, command: str) -> CommandOutcome:
             continue
 
         assert update.message_id in lines, (update, lines)
-        return update.outcome
+        return adapter.validate_python(update.outcome)
 
     raise AssertionError(f"no outcome of /{command} among {found}")
 
@@ -632,14 +635,17 @@ class TestRoutes:
         assert len(model.app.requests) == asked
         lines = [text for _, text in user_lines(tab.updates)]
         assert lines == [f"/{name} new", f"/{name} shipped"], lines
+        adapter: TypeAdapter[CommandOutcome] = TypeAdapter(CommandOutcome)
         first, second = outcomes(tab.updates)
-        assert isinstance(first.outcome, CommandApp)
-        assert isinstance(second.outcome, CommandApp)
-        app = first.outcome
+        shown_first = adapter.validate_python(first.outcome)
+        shown_second = adapter.validate_python(second.outcome)
+        assert isinstance(shown_first, CommandApp)
+        assert isinstance(shown_second, CommandApp)
+        app = shown_first
         assert app.server == EXTENDED
         assert app.tool.name == CONSOLE
         assert app.arguments == {"status": "new"}
-        assert second.outcome.arguments == {"status": "shipped"}
+        assert shown_second.arguments == {"status": "shipped"}
         shown = app.result.content[0]
         assert isinstance(shown, mt.TextContent)
         assert shown.text == "the orders console is open for new orders"
@@ -693,6 +699,21 @@ class TestRoutes:
         assert isinstance(shown, CommandText)
         assert shown.text.startswith("**Your connections**"), shown
         assert name in shown.text, shown
+
+    async def test_mcp_opens_the_app_and_records_the_outcome(
+        self, tab: CommandsTab
+    ) -> None:
+        """mcp — команда чата: в ленту выводится приложение MCP-серверов,
+        итог CommandElement записью истории агента; модель не участвует."""
+        await tab.updates.menu(has("mcp", "connections"), 0)
+
+        routed = await tab.agent.routed(Question(key="q2", text=""), "mcp")
+
+        assert routed is None
+        assert tab.updates.inserted_questions == ["q2"]
+        shown = outcome_of(tab.updates, "mcp")
+        assert isinstance(shown, CommandElement), shown
+        assert shown.element == "McpServers", shown
 
     async def test_wrong_arguments_of_an_app_command_are_refused(
         self, tab: CommandsTab
@@ -786,7 +807,8 @@ class TestHistory:
         name = f"mcp__{EXTENDED}__{CONSOLE}"
         await tab.updates.menu(has(name), 0)
         await tab.agent.routed(Question(key="q1", text=""), "connections")
-        await tab.agent.routed(Question(key="q2", text="new"), name)
+        await tab.agent.routed(Question(key="q2", text=""), "mcp")
+        await tab.agent.routed(Question(key="q3", text="new"), name)
         await tab.turn(f"hello {ScenarioName.ANSWER.value}")
         live_lines = [text for _, text in user_lines(tab.updates)]
         live = outcomes(tab.updates)
@@ -805,6 +827,7 @@ class TestHistory:
         assert lines == live_lines, lines
         assert lines == [
             "/connections",
+            "/mcp",
             f"/{name} new",
             f"hello {ScenarioName.ANSWER.value}",
         ], lines

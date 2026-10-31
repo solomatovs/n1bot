@@ -216,7 +216,6 @@ from boba.transport.acp.protocol import (
     AcpVersion,
     AgentSide,
     BobaExtension,
-    CommandOutcome,
     CommandOutcomeUpdate,
     CommandsUpdate,
     DeclaredCommand,
@@ -1004,7 +1003,6 @@ class AcpMapping:
         self._templates = AgentTemplate()
         self._troubles = ModelTroubleTexts(self._templates)
         self._commands = LocalCommandText()
-        self._outcomes: TypeAdapter[CommandOutcome] = TypeAdapter(CommandOutcome)
 
     def turn_ended(self, record: TurnEndRecord) -> Iterator[Update]:
         """Конец хода по его записи — одинаково вживую и в воспроизведении:
@@ -1255,19 +1253,10 @@ class AcpMapping:
         self, record: HarnessCommandRecord
     ) -> schema.OtherSessionUpdate:
         """Итог команды клиента уведомлением `_boba/command_outcome` с uuid
-        записи; итог — каким клиент его записал."""
-        try:
-            outcome = self._outcomes.validate_python(record.outcome)
-        except ValidationError as exc:
-            msg = (
-                f"The command record {record.uuid} ({record.text!r}) holds an "
-                f"outcome off the {BobaExtension.SESSION_RECORD.value} form: "
-                f"{ValidationText.of(exc)}. This is a bug."
-            )
-            raise RuntimeError(msg) from exc
-
+        записи; итог — каким клиент его записал, без разбора: форму итога
+        знает только клиент, который его и построил."""
         update = CommandOutcomeUpdate(
-            message_id=record.uuid, command=record.name, outcome=outcome
+            message_id=record.uuid, command=record.name, outcome=record.outcome
         )
 
         return update.wire()
@@ -4273,14 +4262,11 @@ class AcpSession:
             )
             raise RequestError.internal_error({ErrorDataKey.DETAILS.value: details})
 
-        outcome = request.outcome.model_dump(
-            mode="json", by_alias=True, exclude_none=True
-        )
         command = ClientCommand(
             message_id=request.message_id,
             name=request.command,
             text=request.text,
-            outcome=outcome,
+            outcome=request.outcome,
         )
         inserted = self._relay.insertion(request.message_id)
         try:

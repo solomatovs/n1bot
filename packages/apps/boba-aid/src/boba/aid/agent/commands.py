@@ -38,6 +38,7 @@ from acp.experimental.v2 import schema
 from mcp.shared.exceptions import MCPError
 
 from boba.aid.agent.relay import McpRegistration, McpRelay
+from boba.aid.rendering.tool import ElementName
 from boba.connection_broker.tools import GrantedConnections
 from boba.connection_broker.user_connections import StoreRef
 from boba.connections.stored import ConnectionStoreError
@@ -52,6 +53,7 @@ from boba.mcp_client.client import McpClientError, McpServers
 from boba.toolkit.result import MarkdownTable, NoteLine, TableResult
 from boba.transport.acp.protocol import (
     CommandApp,
+    CommandElement,
     CommandFailure,
     CommandOutcome,
     CommandsUpdate,
@@ -175,6 +177,7 @@ class HarnessCommand(StrEnum):
     """Команды самого чата: их имена объявляет чат агенту."""
 
     CONNECTIONS = "connections"
+    MCP = "mcp"
 
 
 class HarnessCommands:
@@ -182,13 +185,19 @@ class HarnessCommands:
     они приходят из истории агента. connections — соединения, выданные
     пользователю вкладки, таблицей во вкладке: тот же каталог хранилища
     соединений чата (GrantedConnections), что модель читает инструментом
-    connection_list. Итог — markdown, каким его увидел пользователь. Создаёт
-    фабрика CommandMenus на реестр вкладки."""
+    connection_list. Итог — markdown, каким его увидел пользователь. mcp —
+    приложение MCP-серверов во вкладке: элемент McpServers, который сам
+    спрашивает состояние серверов действиями чата, поэтому в истории лежит
+    только его имя. Создаёт фабрика CommandMenus на реестр вкладки."""
 
     CARDS: ClassVar[Sequence[DeclaredHarnessCommand]] = (
         DeclaredHarnessCommand(
             name=HarnessCommand.CONNECTIONS.value,
             description="Show the connections granted to you",
+        ),
+        DeclaredHarnessCommand(
+            name=HarnessCommand.MCP.value,
+            description="Manage MCP servers: status, tools, sign-in",
         ),
     )
     TITLE: ClassVar[str] = "Your connections"
@@ -201,18 +210,28 @@ class HarnessCommands:
         """Объявление команд чата агенту сессии session_id."""
         return SessionCommandsRequest(session_id=session_id, commands=list(self.CARDS))
 
-    async def run(self, call: CommandCall) -> CommandText:
+    async def run(self, call: CommandCall) -> CommandText | CommandElement:
         """Ошибки:
         CommandError — команды такой у чата нет, вход не годен или
             соединения не прочитаны.
         """
-        if call.name != HarnessCommand.CONNECTIONS.value:
-            msg = (
-                f"The command /{call.name} did not run: the agent names it a command "
-                "of this chat, and the chat has no such command."
-            )
-            raise CommandError(msg)
+        try:
+            match call.name:
+                case HarnessCommand.CONNECTIONS.value:
+                    return await self._connections_command(call)
+                case HarnessCommand.MCP.value:
+                    return await self._mcp_command(call)
+                case _:
+                    msg = (
+                        f"The command /{call.name} did not run: the agent names it a "
+                        "command of this chat, and the chat has no such command."
+                    )
+                    raise CommandError(msg)
+        except AuthenticationError as exc:
+            msg = f"The command /{call.name} did not run: {exc.message}"
+            raise CommandError(msg) from exc
 
+    async def _connections_command(self, call: CommandCall) -> CommandText:
         try:
             subject = self._registration.context().subject
         except AuthenticationError as exc:
@@ -229,6 +248,12 @@ class HarnessCommands:
             raise CommandError(msg) from exc
 
         return CommandText(text=self._markdown(table))
+
+    async def _mcp_command(self, call: CommandCall) -> CommandElement:
+        """Приложение MCP-серверов во вкладке: элемент McpServers, который
+        сам спрашивает состояние серверов действиями чата."""
+
+        return CommandElement(element=ElementName.MCP.value, props={})
 
     def _markdown(self, table: TableResult) -> str:
         rows: list[dict[str, str]] = []

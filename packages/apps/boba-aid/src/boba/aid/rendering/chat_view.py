@@ -308,6 +308,9 @@ class StepRole(StrEnum):
     APP_MESSAGE = "app-message"
     """Сообщение ленты с карточкой приложения MCP Apps."""
 
+    ELEMENT_MESSAGE = "element-message"
+    """Сообщение ленты с приложением чата, которое открыла команда."""
+
     QUESTION = "question"
     QUESTION_CARD = "question-card"
     COMPACTION = "compaction"
@@ -1131,6 +1134,33 @@ class ChatView:
 
             element.props[AppProp.RESULT.value] = dict(result)
             message.elements = [element]
+
+        await self._sink.put(message)
+        await self._pulse.bump()
+        return message
+
+    async def command_element(
+        self, element: str, props: Mapping[str, Any], key: str
+    ) -> Step:
+        """Приложение чата, которое открыла команда вкладки, — сообщением
+        основной ленты с элементом element: тот работает действиями чата и
+        показывает своё текущее состояние, поэтому в записи истории лежат
+        только имя элемента и props на момент вызова."""
+        message = self._step(
+            self.COMMANDS_AUTHOR,
+            StepKind.ASSISTANT,
+            parent_id=None,
+            step_id=self.derive_id(self._thread_id, key, StepRole.ELEMENT_MESSAGE),
+        )
+        message.output = ""
+        message.metadata = {StepMeta.APP.value: True}
+        if self._sink.emits_elements:
+            card = self._elements.named(element, props)
+            card.thread_id = self._thread_id
+            if element_id := self.derive_id(self._thread_id, key, StepRole.ELEMENT):
+                card.id = element_id
+
+            message.elements = [card]
 
         await self._sink.put(message)
         await self._pulse.bump()

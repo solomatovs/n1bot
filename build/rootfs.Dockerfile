@@ -25,9 +25,12 @@ RUN mkdir -p /out/tree /out/setup \
        done
 
 # libstdc++ сборочного gcc новее, чем у glibc образа: его ждут программы Nuitka и
-# python-пакеты. Копия по настоящему имени, без номера версии в сборке
+# python-пакеты. Копия под настоящим именем с номером версии, имя SONAME — ссылка
+# на неё: ldconfig ругается на libstdc++.so.6, который не символическая ссылка
 RUN mkdir -p /out/tree/usr/lib/x86_64-linux-gnu /out/tree/lib/x86_64-linux-gnu \
-    && cp "$(readlink -f /usr/lib/x86_64-linux-gnu/libstdc++.so.6)" /out/tree/usr/lib/x86_64-linux-gnu/libstdc++.so.6 \
+    && lib="$(readlink -f /usr/lib/x86_64-linux-gnu/libstdc++.so.6)" \
+    && cp "$lib" "/out/tree/usr/lib/x86_64-linux-gnu/$(basename "$lib")" \
+    && ln -s "$(basename "$lib")" /out/tree/usr/lib/x86_64-linux-gnu/libstdc++.so.6 \
     && cp /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 /out/tree/lib/x86_64-linux-gnu/libgcc_s.so.1
 
 # python и дерево payload: у плагинов с python = true — их пакеты, при PYTHON=1 —
@@ -86,7 +89,33 @@ RUN for path in $(cat /tmp/decl/data.txt); do mkdir -p "$path"; done \
     && touch /etc/krb5.conf \
     && rm -rf /tmp/decl
 
-# glibc образа ищет локали в /usr/lib/x86_64-linux-gnu/locale, а libc-bin кладёт
-# C.UTF-8 в /usr/lib/locale; LANG=C.UTF-8 песочницы без неё роняет программу на старте
-RUN cp -a /usr/lib/locale/C.UTF-8 /usr/lib/x86_64-linux-gnu/locale/C.UTF-8 \
-    && [ "$(env -i LANG=C.UTF-8 locale charmap)" = UTF-8 ]
+# C.UTF-8 собирается localedef образа, а не копируется из базового: там её данные
+# сделаны glibc 2.36, а здесь glibc 2.28, и LC_TIME чужой версии не читается —
+# locale ругается на отсутствующую локаль, хотя charmap отдаёт UTF-8. Локаль ложится
+# туда, где glibc её ищет; копия в /usr/lib/locale от libc-bin нечитаема и удаляется.
+# Исходник C не описывает LC_MONETARY, поэтому категория дописана пустой — иначе
+# localedef завершается с ошибкой. Проверка ловит и предупреждение locale: stderr
+# сведён в тот же вывод, что сравнивается
+RUN src=/tmp/C.src \
+    && cp /usr/share/i18n/locales/C "$src" \
+    && printf '%s\n' \
+           'LC_MONETARY' \
+           'int_curr_symbol   ""' \
+           'currency_symbol   ""' \
+           'mon_decimal_point "."' \
+           'mon_thousands_sep ""' \
+           'mon_grouping      -1' \
+           'positive_sign     ""' \
+           'negative_sign     ""' \
+           'int_frac_digits   -1' \
+           'frac_digits       -1' \
+           'p_cs_precedes     -1' \
+           'p_sep_by_space    -1' \
+           'n_cs_precedes     -1' \
+           'n_sep_by_space    -1' \
+           'p_sign_posn       -1' \
+           'n_sign_posn       -1' \
+           'END LC_MONETARY' >> "$src" \
+    && rm -rf /usr/lib/locale/C.UTF-8 \
+    && localedef -i "$src" -f UTF-8 /usr/lib/x86_64-linux-gnu/locale/C.UTF-8 \
+    && [ "$(env -i LANG=C.UTF-8 locale charmap 2>&1)" = UTF-8 ]

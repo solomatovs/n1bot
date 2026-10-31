@@ -37,6 +37,7 @@ from boba.aid.infra.session import (
     current_session,
     session_source_ref,
 )
+from boba.aid.mcp_servers.directory import McpDirectory
 from boba.aid.rendering.renderer import TabSurfaces
 from boba.auth import JwtTokens
 from boba.chat.profiles import ChatProfiles, SelectedProfile
@@ -269,8 +270,16 @@ def command_menus(
     relay: Annotated[McpRelay, Depends(mcp_relay)],
 ) -> CommandMenus:
     """Реестры команд «/» вкладок: серверы MCP профиля, их приложения через
-    ретранслятор и соединения пользователя из хранилища чата."""
+    ретранслятор и соединения пользователя из хранилища чата; команды чата
+    выводят в ленту свои приложения."""
     return CommandMenus(servers, relay, runtime.connection_store_ref)
+
+
+def mcp_directory(
+    servers: Annotated[McpServers, Depends(mcp_servers)],
+) -> McpDirectory:
+    """Операции приложения MCP-серверов над клиентом MCP: один на процесс."""
+    return McpDirectory(servers)
 
 
 def agent_launcher(  # noqa: PLR0913 — запуск собирается всеми входами процесса

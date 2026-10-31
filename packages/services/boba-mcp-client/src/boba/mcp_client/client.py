@@ -170,6 +170,7 @@ __all__ = [
     "LocalAuth",
     "McpAuth",
     "McpAuthEntry",
+    "McpAuthRequired",
     "McpCaller",
     "McpClientError",
     "McpClientIdentity",
@@ -218,6 +219,12 @@ class McpUnansweredError(McpClientError):
     def __init__(self, message: str, brief: str) -> None:
         super().__init__(message)
         self.brief = brief
+
+
+class McpAuthRequired(McpUnansweredError):  # noqa: N818 — имя по форме ответа
+    """Сервер отказал во входе: HTTP 401 или 403 после всех попыток способа
+    входа. brief — тот же короткий отказ HTTP; полный текст — в сообщении
+    исключения для журнала."""
 
 
 @dataclass(frozen=True)
@@ -826,6 +833,7 @@ class Silence(StrEnum):
     NO_ANSWER = "no answer in time"
     BROKE_OFF = "the connection broke off"
     HANDSHAKE = "the MCP handshake failed"
+    DENIED = "the server denied the sign-in"
 
 
 class HttpRefusal:
@@ -862,6 +870,7 @@ class HttpRefusal:
         self._brief = ""
         self._bad_request = False
         self._forgotten = False
+        self._denied = False
         self._foreign = False
 
     def seen(self, response: httpx2.Response) -> None:
@@ -875,6 +884,7 @@ class HttpRefusal:
             self._last = None
             self._brief = ""
             self._bad_request = False
+            self._denied = False
             self._foreign = False
             if response.status_code == HTTPStatus.ACCEPTED:
                 return
@@ -895,6 +905,10 @@ class HttpRefusal:
             self._forgotten = MCP_SESSION_ID in request.headers
 
         self._bad_request = response.status_code == HTTPStatus.BAD_REQUEST
+        self._denied = response.status_code in (
+            HTTPStatus.UNAUTHORIZED,
+            HTTPStatus.FORBIDDEN,
+        )
         # ошибку JSON-RPC сервер MCP вправе вернуть телом с 400 или 404
         self._foreign = True
         if mcp_body and response.status_code in self.ANSWERED_STATUSES:
@@ -969,6 +983,11 @@ class HttpRefusal:
     def bad_request(self) -> bool:
         """Последний отказ запроса — 400."""
         return self._bad_request
+
+    def denied(self) -> bool:
+        """Последний отказ запроса — 401 или 403: сервер отверг способ входа
+        после всех попыток SharedToken."""
+        return self._denied
 
     def text(self, error: BaseException) -> str:
         """Причина error вместе с отказом HTTP запроса, если он был."""
@@ -1663,6 +1682,12 @@ class McpConnection:
                         f"mcp {self._transport.label()}: connecting and "
                         f"initializing failed: {refusal.text(exc)}"
                     )
+                    if refusal.denied():
+                        ready.set_exception(
+                            McpAuthRequired(msg, refusal.brief(Silence.DENIED.value))
+                        )
+                        return
+
                     brief = refusal.brief(Silence.HANDSHAKE.value)
                     ready.set_exception(McpUnansweredError(msg, brief))
                     return
@@ -2683,6 +2708,9 @@ class McpToolServer(McpToolPort):
         """Открытая сессия подключения; неудача подключения называет сервер."""
         try:
             return await connection.open(version)
+        except McpAuthRequired as exc:
+            msg = f"mcp server {self._name!r}: {exc}"
+            raise McpAuthRequired(msg, exc.brief) from exc
         except McpUnansweredError as exc:
             msg = f"mcp server {self._name!r}: {exc}"
             raise McpUnansweredError(msg, exc.brief) from exc
@@ -2745,8 +2773,9 @@ class McpToolServer(McpToolPort):
         """Запрос action остался без ответа — оборвалось подключение, вышел
         срок или сервер забыл сессию (её требует открыть заново 2025-11-25):
         наверх уходит McpClientError, оборванное и забытое подключение
-        закрывается, следующий запрос подключится заново. Иную ошибку MCP
-        вызывающий поднимает как есть."""
+        закрывается, следующий запрос подключится заново. Отказ во входе
+        (HTTP 401/403) уходит McpAuthRequired. Иную ошибку MCP вызывающий
+        поднимает как есть."""
         if refusal.forgotten():
             await connection.close()
             msg = (
@@ -2755,6 +2784,15 @@ class McpToolServer(McpToolPort):
                 f"request opens a new session: {refusal.text(error)}"
             )
             raise McpUnansweredError(msg, "the server forgot the session") from error
+
+        if refusal.denied():
+            await connection.close()
+            msg = (
+                f"{self._label}: {action} was refused, the server denied the "
+                f"sign-in of the client after every attempt: {refusal.text(error)}"
+            )
+            brief = refusal.brief(Silence.DENIED.value)
+            raise McpAuthRequired(msg, brief) from error
 
         if reason := refusal.foreign():
             await connection.close()
@@ -3215,3 +3253,45 @@ class McpServers:
             await evicted.retire()
 
         return server
+
+    def config_of(self, name: str) -> McpServerConfig:
+        """Запись сервера name из [mcp.servers]; секреты способа входа в неё
+        укрыты (SecretStr): наружу отдаётся только адрес и транспорт.
+
+        Ошибки:
+        McpClientError — имя не названо в [mcp.servers].
+        """
+        config = self._configs.get(name)
+        if config is None:
+            msg = f"mcp servers: server {name!r} is not declared in [mcp.servers]"
+            raise McpClientError(msg)
+
+        return config
+
+    async def reconnect(self, name: str, caller: McpCaller) -> None:
+        """Порт сервера name для пользователя caller закрывается и забывается:
+        следующий port() подключится заново. Идущие через порт вызовы не
+        обрываются — retire() ждёт их конца.
+
+        Ошибки:
+        McpClientError — имя не названо в [mcp.servers].
+        """
+        config = self._configs.get(name)
+        if config is None:
+            msg = (
+                f"mcp servers of {caller.login!r}: server {name!r} is not "
+                f"declared in [mcp.servers], declared: {sorted(self._configs)}"
+            )
+            raise McpClientError(msg)
+
+        if not config.endpoint.personal():
+            shared = self._shared.pop(name, None)
+            if shared is not None:
+                await shared.retire()
+
+            return
+
+        key = (name, caller)
+        personal = self._personal.pop(key, None)
+        if personal is not None:
+            await personal.retire()

@@ -50,7 +50,7 @@ from acp.exceptions import RequestError
 from acp.experimental.v2 import Client, schema
 from mcp_types.jsonrpc import ErrorData
 from mcp_types.methods import parse_client_request
-from pydantic import AnyUrl, BaseModel, ConfigDict
+from pydantic import AnyUrl, BaseModel, ConfigDict, TypeAdapter
 
 from boba.agent.records import (
     NoticeLevel,
@@ -5125,16 +5125,23 @@ class TestClientCommands:
         conn: ClientConnection,
         session_id: str,
         text: str,
-        outcome: CommandOutcome,
+        outcome: CommandOutcome | Mapping[str, Any],
     ) -> str:
-        """Запись команды; возвращает её messageId."""
+        """Запись команды; возвращает её messageId. Итог — моделью клиента
+        либо словарём в его форме, как его шлёт клиент."""
+        body: Mapping[str, Any]
+        if isinstance(outcome, Mapping):
+            body = outcome
+        else:
+            body = outcome.model_dump(mode="json", by_alias=True, exclude_none=True)
+
         message_id = str(uuid4())
         request = SessionRecordRequest(
             session_id=session_id,
             message_id=message_id,
             command=text.removeprefix("/").split(" ")[0],
             text=text,
-            outcome=outcome,
+            outcome=dict(body),
         )
         params = request.model_dump(mode="json", by_alias=True, exclude_none=True)
         answer = await conn.send_extension_request(
@@ -5146,7 +5153,10 @@ class TestClientCommands:
 
     @staticmethod
     def commands(updates: Sequence[Any]) -> list[tuple[str, str, Any]]:
-        """Строки вызовов и итоги команд по порядку: (вид, messageId, тело)."""
+        """Строки вызовов и итоги команд по порядку: (вид, messageId, тело).
+        Итог идёт по проводу словарём и разбирается здесь — так же, как его
+        разбирает клиент, который итог и построил."""
+        adapter: TypeAdapter[CommandOutcome] = TypeAdapter(CommandOutcome)
         seen: list[tuple[str, str, Any]] = []
         for update in updates:
             if isinstance(update, schema.UserMessageUpdate):
@@ -5163,7 +5173,8 @@ class TestClientCommands:
 
             dumped = update.model_dump(mode="json", by_alias=True)
             outcome = CommandOutcomeUpdate.model_validate(dumped)
-            seen.append(("outcome", outcome.message_id, outcome.outcome))
+            body = adapter.validate_python(outcome.outcome)
+            seen.append(("outcome", outcome.message_id, body))
 
         return seen
 
@@ -5332,3 +5343,45 @@ class TestClientCommands:
         assert "outcome" in json.dumps(bad.value.data), bad.value.data
         assert unknown.value.code == AcpErrorCode.RESOURCE_NOT_FOUND
         assert foreign.value.code == AcpErrorCode.METHOD_NOT_FOUND
+
+    async def test_an_outcome_of_an_unknown_kind_passes_the_agent(
+        self,
+        boba: AcpProcess,
+        registration: StandRegistration,
+        tmp_path: Path,
+    ) -> None:
+        """Итог вида, которого агент не знает, проходит насквозь: агент его
+        не разбирает, а хранит и отдаёт как пришёл. Так новое приложение
+        чата появляется в клиенте без правки агента."""
+        client = AcpClient()
+        conn = await boba.start(client, registration)
+        try:
+            await handshake(conn)
+            session = await conn.new_session(
+                cwd=str(tmp_path), mcp_servers=[StandRegistration.STAND]
+            )
+            session_id = session.session_id
+            before = len(client.updates_of(session_id))
+            recorded = await self.record(
+                conn,
+                session_id,
+                "/future",
+                {"kind": "future", "payload": {"rows": [1, 2]}},
+            )
+            between = client.updates_of(session_id)[before:]
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+        outcomes: list[Any] = []
+        for update in between:
+            if not isinstance(update, schema.OtherSessionUpdate):
+                continue
+
+            dumped = update.model_dump(mode="json", by_alias=True)
+            outcome = CommandOutcomeUpdate.model_validate(dumped)
+            if outcome.message_id == recorded:
+                outcomes.append(outcome.outcome)
+
+        assert outcomes == [{"kind": "future", "payload": {"rows": [1, 2]}}], outcomes

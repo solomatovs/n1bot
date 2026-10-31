@@ -686,6 +686,34 @@ class StandardServer:
         )
 
 
+class DeniedAuth:
+    """ASGI-обёртка, отвечающая 401 на каждый POST: сервер, которому нужен
+    вход. Запросы до неё не доходят — руки у клиента связывает SharedToken
+    только через свой способ входа, а здесь входа нет вовсе."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self._app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or scope["method"] != "POST":
+            await self._app(scope, receive, send)
+            return
+
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 401,
+                "headers": [(b"content-type", b"application/json")],
+            }
+        )
+        await send(
+            {
+                "type": "http.response.body",
+                "body": b'{"error": {"code": -32000, "message": "sign in required"}}',
+            }
+        )
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("transport")
@@ -694,14 +722,25 @@ if __name__ == "__main__":
     parser.add_argument("--retired", default="")
     parser.add_argument("--workspace", default="")
     parser.add_argument("--commands", action="store_true")
+    parser.add_argument("--denied", action="store_true")
     args = parser.parse_args()
 
     extended = args.transport == "stdio-extended"
-    StandardServer(
+    server = StandardServer(
         args.port,
         extended,
         args.ttl_ms,
         args.retired,
         args.workspace,
         args.commands,
-    ).run(args.transport)
+    )
+    if args.transport.startswith("stdio"):
+        server.run(args.transport)
+    else:
+        app = server._mcp.streamable_http_app(host="127.0.0.1")
+        server._switch = ModernSwitch(app, server._retired)
+        app = server._switch
+        if args.denied:
+            app = DeniedAuth(app)
+
+        uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")

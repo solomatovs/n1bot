@@ -105,3 +105,55 @@ class TestQuestionLabels:
                 node = node[part]
 
             assert node, f"{language}: empty label {key}"
+
+
+class TestMcpAppLabels:
+    """Каждый ключ aid.mcp, который берёт элемент McpServers, есть в
+    переводах chainlit en-US и ru-RU: подписи приложения и состояний сервера
+    собираются из значений по месту, динамические ключи добавляются явно."""
+
+    PACKAGE: ClassVar[Path] = Path(__file__).resolve().parents[1]
+    TRANSLATIONS: ClassVar[Path] = PACKAGE / "assets" / ".chainlit" / "translations"
+    SOURCE: ClassVar[Path] = (
+        PACKAGE / "assets" / "public" / "elements" / "McpServers.jsx"
+    )
+    USED: ClassVar[re.Pattern[str]] = re.compile(
+        r"\$\{TEXT\}\.([A-Za-z]+(?:\.[A-Za-z]+)*)"
+    )
+    STATES: ClassVar[tuple[str, ...]] = (
+        "state.connected",
+        "state.failed",
+        "state.needs_auth",
+        "state.disabled",
+        "state.pending",
+    )
+    """Состояния сервера: элемент берёт их подстановкой, не строкой."""
+    ORIGINS: ClassVar[tuple[str, ...]] = ("profile", "yours")
+    """Откуда сервер: элемент выбирает из двух по row.origin."""
+
+    def _used(self) -> set[str]:
+        keys = set(self.USED.findall(self.SOURCE.read_text(encoding="utf-8")))
+        keys.update(self.STATES)
+        keys.update(self.ORIGINS)
+
+        keys.discard("state")
+        return keys
+
+    def _labels(self, language: str) -> dict[str, Any]:
+        path = self.TRANSLATIONS / f"{language}.json"
+        return json.loads(path.read_text(encoding="utf-8"))["aid"]["mcp"]
+
+    @pytest.mark.parametrize("language", ["en-US", "ru-RU"])
+    def test_every_used_label_is_translated(self, language: str) -> None:
+        labels = self._labels(language)
+        used = self._used()
+        assert {"title", "issue"} <= used, used
+
+        for key in sorted(used):
+            node: Any = labels
+            for part in key.split("."):
+                assert isinstance(node, dict), f"{language}: {key} at {part}"
+                assert part in node, f"{language}: no label {key}"
+                node = node[part]
+
+            assert node, f"{language}: empty label {key}"

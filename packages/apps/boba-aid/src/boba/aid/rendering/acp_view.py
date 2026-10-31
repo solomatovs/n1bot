@@ -33,8 +33,9 @@
 её итог — шаг хода. Команда, которую исполнила вкладка (команда чата,
 приложение сервера), приходит записью агента: `user_message` с набранным
 текстом и уведомление расширения `_boba/command_outcome` с итогом — текстом,
-приложением целиком (карточка, итог вызова, ресурс приложения) или отказом;
-лента рисует его из уведомления, без запросов к серверу.
+приложением сервера целиком (карточка, итог вызова, ресурс приложения),
+приложением чата (имя элемента ленты и props) или отказом; лента рисует его
+из уведомления, без запросов к серверу.
 
 Ошибки:
 ValidationError — тело уведомления из шины не по схеме ACP v2.
@@ -85,7 +86,9 @@ from boba.toolkit.wire import ResultWire
 from boba.transport.acp.protocol import (
     BobaExtension,
     CommandApp,
+    CommandElement,
     CommandFailure,
+    CommandOutcome,
     CommandOutcomeUpdate,
     CommandText,
     ElicitationRound,
@@ -901,6 +904,7 @@ class UpdateView:
         self._thread_id = thread_id
         self._parts = CallParts(view, thread_id, journals, media)
         self._media = media
+        self._outcomes: TypeAdapter[CommandOutcome] = TypeAdapter(CommandOutcome)
         self._turn_key: str | None = None
         self._thought_id: str | None = None
         self._answer_id: str | None = None
@@ -1017,17 +1021,17 @@ class UpdateView:
 
         dumped = update.model_dump(mode="json", by_alias=True, exclude_none=True)
         command = CommandOutcomeUpdate.model_validate(dumped)
-        outcome = command.outcome
+        outcome = self._outcomes.validate_python(command.outcome)
         key = command.message_id
-        if isinstance(outcome, CommandText):
-            await self._view.command_text(outcome.text, key)
-            return
-
-        if isinstance(outcome, CommandFailure):
-            await self._view.error(outcome.error, key)
-            return
-
-        await self._command_app(command.command, outcome, key)
+        match outcome:
+            case CommandText():
+                await self._view.command_text(outcome.text, key)
+            case CommandFailure():
+                await self._view.error(outcome.error, key)
+            case CommandElement():
+                await self._view.command_element(outcome.element, outcome.props, key)
+            case CommandApp():
+                await self._command_app(command.command, outcome, key)
 
     async def _command_app(self, name: str, outcome: CommandApp, key: str) -> None:
         """Приложение команды name из её записи: карточка, итог и ресурс —

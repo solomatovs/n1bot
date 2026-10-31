@@ -144,6 +144,7 @@ class ElementName(StrEnum):
 
     APP = "ToolApp"
     QUESTION = "Question"
+    MCP = "McpServers"
 
 
 class ChatElements:
@@ -177,6 +178,9 @@ class ChatElements:
 
     def question(self, props: Mapping[str, Any]) -> cl.CustomElement:
         """Вопрос агента: панель висящего вопроса либо запись ответа."""
-        return cl.CustomElement(
-            name=ElementName.QUESTION.value, props=dict(props), display="inline"
-        )
+        return self.named(ElementName.QUESTION.value, props)
+
+    def named(self, name: str, props: Mapping[str, Any]) -> cl.CustomElement:
+        """Элемент ленты по имени его jsx-компонента и props: так лента
+        рисует приложение чата, которое открыла команда вкладки."""
+        return cl.CustomElement(name=name, props=dict(props), display="inline")

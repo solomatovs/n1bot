@@ -591,6 +591,31 @@ def standard() -> McpServerConfig:
     )
 
 
+class ClosedEndpoint:
+    """Сервер MCP стенда на закрытом порту: соединение отказывает всегда,
+    поэтому в панели он failed. Секцию [mcp.servers.<имя>] даёт section;
+    поднимают его стенды чата, которым нужно состояние «ошибка»."""
+
+    def section(self) -> dict[str, Any]:
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+
+        return {
+            "limits": {"connect_timeout_sec": 5.0, "call_timeout_sec": 20.0},
+            "endpoint": {
+                "transport": "streamable-http",
+                "service": {
+                    "scheme": "http",
+                    "host": "127.0.0.1",
+                    "port": port,
+                    "path": "",
+                },
+                "path": "/mcp",
+            },
+        }
+
+
 class SandboxHost:
     """Песочница MCP Apps одного сервера стенда: порт, на котором её
     страницу-прокси отдаёт сам чат стенда. Чат и песочница на одном хосте

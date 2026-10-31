@@ -2044,7 +2044,9 @@ class TestTabCommands:
             message_id=COMMAND, content=[schema.TextContentBlock(text=f"/{command}")]
         )
         wire = CommandOutcomeUpdate(
-            message_id=COMMAND, command=command, outcome=outcome
+            message_id=COMMAND,
+            command=command,
+            outcome=outcome.model_dump(mode="json", by_alias=True, exclude_none=True),
         ).wire()
         await updates.apply(codec.decode(codec.encode(line)))
         await updates.apply(codec.decode(codec.encode(wire)))

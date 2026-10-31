@@ -5,7 +5,9 @@
 `_boba/session/record`, агент отдаёт итог команды уведомлением
 `session/update` вида `_boba/command_outcome`, а все команды сессии из
 истории целиком (вид, владелец, аргументы, приложение) — видом
-`_boba/commands`.
+`_boba/commands`. Итог команды агент не разбирает: он идёт словарём в форме
+клиента, поэтому новый вид итога (новое приложение чата) появляется в
+клиенте без правки агента.
 Расширение источника вызова: агент спрашивает клиента запросом
 `_boba/tool_source`, что сохранить в истории для показа вызова инструмента
 сервера клиента, и отдаёт ответ содержимым вызова вида `_boba/tool_source`.
@@ -68,9 +70,11 @@ __all__ = [
     "BobaExtension",
     "ClientConnection",
     "CommandApp",
+    "CommandElement",
     "CommandFailure",
     "CommandKind",
     "CommandOutcome",
+    "CommandOutcomeDict",
     "CommandOutcomeUpdate",
     "CommandOwner",
     "CommandText",
@@ -246,10 +250,13 @@ class BobaExtension(StrEnum):
 
 
 class CommandKind(StrEnum):
-    """Виды итога команды клиента."""
+    """Виды итога команды клиента. Вид называет клиент: агент итог не
+    разбирает, а хранит и отдаёт как пришёл, поэтому новый вид итога
+    появляется в клиенте без правки агента."""
 
     TEXT = "text"
     APP = "app"
+    ELEMENT = "element"
     FAILED = "failed"
 
 
@@ -281,10 +288,23 @@ class CommandFailure(BaseModel):
     error: str = Field(min_length=1)
 
 
+class CommandElement(BaseModel):
+    """Приложение чата, которое открыла команда клиента: имя его элемента
+    ленты и props на момент вызова. Элемент живёт во вкладке и работает
+    действиями чата; серверу MCP лента ничего не шлёт."""
+
+    kind: Literal[CommandKind.ELEMENT] = CommandKind.ELEMENT
+    element: str = Field(min_length=1)
+    props: dict[str, Any] = Field(default_factory=dict)
+
+
 CommandOutcome: TypeAlias = Annotated[
-    CommandText | CommandApp | CommandFailure, Field(discriminator="kind")
+    CommandText | CommandApp | CommandElement | CommandFailure,
+    Field(discriminator="kind"),
 ]
-"""Итог команды клиента по виду kind."""
+"""Итог команды клиента по виду kind. Форма итога принадлежит клиенту: на
+проводе он идёт словарём (CommandOutcomeDict), а разбирает его только клиент,
+который итог и построил."""
 
 
 class RecordedKind(StrEnum):
@@ -292,6 +312,12 @@ class RecordedKind(StrEnum):
 
     COMMAND = "command"
     COMMANDS = "commands"
+
+
+CommandOutcomeDict: TypeAlias = dict[str, Any]
+"""Итог команды клиента так, как он идёт по проводу и лежит в истории
+сессии: словарь в форме клиента. Агент его не разбирает — ни на записи, ни
+при отдаче уведомлением, — поэтому новый вид итога не требует правки агента."""
 
 
 class SessionRecordRequest(BaseModel):
@@ -305,7 +331,7 @@ class SessionRecordRequest(BaseModel):
     message_id: Annotated[str, Field(alias="messageId", min_length=1)]
     command: Annotated[str, Field(min_length=1)]
     text: str
-    outcome: CommandOutcome
+    outcome: CommandOutcomeDict
 
 
 class CommandType(StrEnum):
@@ -434,7 +460,7 @@ class CommandOutcomeUpdate(BaseModel):
     ] = BobaExtension.COMMAND_OUTCOME
     message_id: Annotated[str, Field(alias="messageId", min_length=1)]
     command: Annotated[str, Field(min_length=1)]
-    outcome: CommandOutcome
+    outcome: CommandOutcomeDict
 
     def wire(self) -> schema.OtherSessionUpdate:
         """Уведомление видом расширения в общем конверте схемы SDK."""

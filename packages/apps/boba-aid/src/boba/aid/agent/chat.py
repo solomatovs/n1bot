@@ -1257,12 +1257,15 @@ class ThreadAgent:
     def _record_request(
         session_id: str, executed: ExecutedCommand, message_id: str
     ) -> SessionRecordRequest:
+        outcome = executed.outcome.model_dump(
+            mode="json", by_alias=True, exclude_none=True
+        )
         return SessionRecordRequest(
             session_id=session_id,
             message_id=message_id,
             command=executed.call.name,
             text=executed.call.text(),
-            outcome=executed.outcome,
+            outcome=outcome,
         )
 
     async def _declare(self, session_id: str) -> None:

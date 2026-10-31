@@ -58,6 +58,7 @@ from boba.aid.infra.providers import (
     chainlit_data_layer,
     chat_profiles_registry,
     get_app_config,
+    mcp_directory,
     mcp_relay,
     mcp_servers,
     remote_journals,
@@ -75,6 +76,16 @@ from boba.aid.infra.thread_room import (
     ThreadLive,
     ThreadRoom,
     UserRoom,
+)
+from boba.aid.mcp_servers import McpAction
+from boba.aid.mcp_servers.directory import (
+    McpAppError,
+    McpDirectory,
+    McpServerDetail,
+    McpServerList,
+    McpServerRequest,
+    McpServerStatus,
+    McpViewer,
 )
 from boba.aid.rendering.errors import chainlit_error_ctx_handler
 from boba.cancellation import StopReason
@@ -798,6 +809,115 @@ async def on_agent_retry(
 ) -> None:
     """Кнопка повтора на полосе недоступного агента вкладки."""
     await TabAgent(agents, registry).retry(current_session())
+
+
+class McpViewerFactory:
+    """Сборка зрителя приложения MCP-серверов из сессии вкладки и её профиля."""
+
+    def __init__(self, session: ChainlitSession, profile: SelectedProfile) -> None:
+        self._session = session
+        self._profile = profile
+
+    def viewer(self) -> McpViewer:
+        return McpViewer(
+            login=self._session.identifier,
+            roles=self._session.roles,
+            profile=self._profile,
+        )
+
+
+def _mcp_answer(
+    answer: McpServerList | McpServerStatus | McpServerDetail,
+) -> dict[str, Any]:
+    return answer.model_dump(mode="json")
+
+
+def _mcp_app_error(exc: Exception) -> dict[str, Any]:
+    """Ответ с ошибкой приложения: фронт показывает её строкой."""
+    if isinstance(exc, McpAppError):
+        return {"error": str(exc)}
+
+    msg = f"the MCP servers app did not answer: {exc}"
+    raise RuntimeError(msg) from exc
+
+
+@cl.action_callback(McpAction.LIST)
+@chainlit_error_ctx_handler
+@di_inject
+async def on_mcp_list(
+    action: cl.Action,
+    directory: Annotated[McpDirectory, Depends(mcp_directory)],
+    selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
+) -> dict[str, Any]:
+    """Список серверов профиля зрителя."""
+    try:
+        return _mcp_answer(
+            await directory.listed(
+                McpViewerFactory(current_session(), selected).viewer()
+            )
+        )
+    except McpAppError as exc:
+        return _mcp_app_error(exc)
+
+
+@cl.action_callback(McpAction.STATUS)
+@chainlit_error_ctx_handler
+@di_inject
+async def on_mcp_status(
+    action: cl.Action,
+    directory: Annotated[McpDirectory, Depends(mcp_directory)],
+    selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
+) -> dict[str, Any]:
+    """Состояние одного сервера приложения."""
+    request = McpServerRequest.model_validate(action.payload)
+    try:
+        return _mcp_answer(
+            await directory.status(
+                McpViewerFactory(current_session(), selected).viewer(), request.name
+            )
+        )
+    except McpAppError as exc:
+        return _mcp_app_error(exc)
+
+
+@cl.action_callback(McpAction.DETAIL)
+@chainlit_error_ctx_handler
+@di_inject
+async def on_mcp_detail(
+    action: cl.Action,
+    directory: Annotated[McpDirectory, Depends(mcp_directory)],
+    selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
+) -> dict[str, Any]:
+    """Карточка сервера приложения с инструментами."""
+    request = McpServerRequest.model_validate(action.payload)
+    try:
+        return _mcp_answer(
+            await directory.detail(
+                McpViewerFactory(current_session(), selected).viewer(), request.name
+            )
+        )
+    except McpAppError as exc:
+        return _mcp_app_error(exc)
+
+
+@cl.action_callback(McpAction.RECONNECT)
+@chainlit_error_ctx_handler
+@di_inject
+async def on_mcp_reconnect(
+    action: cl.Action,
+    directory: Annotated[McpDirectory, Depends(mcp_directory)],
+    selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
+) -> dict[str, Any]:
+    """Кнопка Reconnect карточки: переподключение и новое состояние."""
+    request = McpServerRequest.model_validate(action.payload)
+    try:
+        return _mcp_answer(
+            await directory.reconnect(
+                McpViewerFactory(current_session(), selected).viewer(), request.name
+            )
+        )
+    except McpAppError as exc:
+        return _mcp_app_error(exc)
 
 
 @cl.on_chat_resume

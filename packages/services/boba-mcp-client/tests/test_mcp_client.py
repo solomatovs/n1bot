@@ -49,6 +49,7 @@ from boba.mcp_client.client import (
     BearerAuth,
     HttpEndpoint,
     HttpLocation,
+    McpAuthRequired,
     McpCaller,
     McpClientError,
     McpClientIdentity,
@@ -566,6 +567,48 @@ class TestUnreachableServer:
         assert caught.value.brief == "no connection", caught.value
         assert f"127.0.0.1:{port}" in str(caught.value), caught.value
 
+    async def test_sign_in_required_is_auth_required(self) -> None:
+        """Сервер отвечает 401 на каждый POST: порт поднимает
+        McpAuthRequired с короткой причиной отказа HTTP."""
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+
+        # тест запускает свой сервер, отвечающий 401
+        # nosemgrep: subprocess-injection
+        process = subprocess.Popen(
+            [sys.executable, str(SERVER), "streamable-http", str(port), "--denied"]
+        )
+        try:
+            endpoint = HttpEndpoint(
+                service=HttpLocation(
+                    scheme="http", host="127.0.0.1", port=port, path=""
+                ),
+                path="/mcp",
+            )
+            server = McpToolServer("standard", _config(endpoint))
+            refused: McpAuthRequired | None = None
+            for _ in range(100):
+                try:
+                    await server.described(OWN)
+                except McpAuthRequired as exc:
+                    refused = exc
+                    break
+                except McpUnansweredError:
+                    await asyncio.sleep(0.1)
+            else:
+                raise AssertionError("the server never answered with a 401")
+        finally:
+            process.terminate()
+            process.wait(timeout=10)
+
+        if refused is None:
+            raise AssertionError(
+                "the server answers with 401, expected McpAuthRequired"
+            )
+        assert refused.brief == "HTTP 401 Unauthorized", refused.brief
+        assert "401" in str(refused), refused
+
     async def test_lost_session_fails_the_call_and_the_next_call_reconnects(
         self, http_port: int, http: McpToolServer
     ) -> None:
@@ -731,6 +774,29 @@ class TestServersOfASession:
         try:
             with pytest.raises(McpClientError, match="not declared"):
                 await servers.port("typo", CALLER)
+        finally:
+            await servers.stop()
+
+    async def test_reconnect_of_the_named_server_gives_a_new_port(self) -> None:
+        servers = self._servers()
+        try:
+            first = await servers.port("standard", CALLER)
+            await servers.reconnect("standard", CALLER)
+            second = await servers.port("standard", CALLER)
+            names = sorted(tool.name for tool in (await second.tools(OWN)).tools)
+        finally:
+            await servers.stop()
+
+        if names != TestFailureStand.STANDARD_TOOLS:
+            raise AssertionError(f"the reconnect port serves its tools: {names}")
+        if first is second:
+            raise AssertionError("the reconnect did not forget the old port")
+
+    async def test_reconnect_of_the_undeclared_server_name_is_an_error(self) -> None:
+        servers = self._servers()
+        try:
+            with pytest.raises(McpClientError, match="not declared"):
+                await servers.reconnect("typo", CALLER)
         finally:
             await servers.stop()
 

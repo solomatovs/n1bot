@@ -398,6 +398,36 @@
             "expand": "Expand",
             "close": "Close"
         },
+        "mcp": {
+            "title": "MCP servers",
+            "profile": "profile",
+            "yours": "yours",
+            "state": {
+                "connected": "Connected",
+                "failed": "Failed",
+                "needs_auth": "Needs sign-in",
+                "disabled": "Disabled",
+                "pending": "Connecting…"
+            },
+            "back": "Back to list",
+            "reconnect": "Reconnect",
+            "reconnecting": "Reconnecting…",
+            "transport": "Transport",
+            "address": "Address",
+            "tools": "Tools",
+            "toolCount": "tools: {{number}}",
+            "issue": "Couldn't connect",
+            "issueAuth": "The server needs sign-in",
+            "actionFailed": "The action failed",
+            "showTools": "Show tools",
+            "hideTools": "Hide tools",
+            "readOnly": "read-only",
+            "destructive": "destructive",
+            "noTools": "The server names no tools.",
+            "empty": "No MCP servers are declared for your chat profile.",
+            "listFailed": "The list of MCP servers didn't load",
+            "retry": "Retry"
+        },
         "history": {
             "loading": "Loading the conversation…"
         }
