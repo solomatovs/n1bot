@@ -49,6 +49,8 @@ class McpAction(StrEnum):
     STATUS = "mcp_status"
     DETAIL = "mcp_detail"
     RECONNECT = "mcp_reconnect"
+    OAUTH_START = "mcp_oauth_start"
+    OAUTH_DISCONNECT = "mcp_oauth_disconnect"
 
 
 class McpAuthChoice(StrEnum):
@@ -56,6 +58,7 @@ class McpAuthChoice(StrEnum):
 
     NONE = "none"
     BEARER = "bearer"
+    OAUTH = "oauth"
 
 
 class ReservedHeader(StrEnum):

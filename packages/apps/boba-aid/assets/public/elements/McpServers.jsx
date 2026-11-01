@@ -79,6 +79,9 @@ function useLabels() {
     auth: t(`${TEXT}.auth`),
     authNone: t(`${TEXT}.authNone`),
     authBearer: t(`${TEXT}.authBearer`),
+    authOAuth: t(`${TEXT}.authOAuth`),
+    oauthConnect: t(`${TEXT}.oauthConnect`),
+    oauthDisconnect: t(`${TEXT}.oauthDisconnect`),
     authLocal: t(`${TEXT}.authLocal`),
     authProxy: t(`${TEXT}.authProxy`),
     token: t(`${TEXT}.token`),
@@ -396,6 +399,18 @@ function ServerCard({ name, labels, onBack, onEdit }) {
   };
 
   const reconnect = () => change("mcp_reconnect", { name });
+  const disconnectOAuth = () => change("mcp_oauth_disconnect", { name });
+  const connectOAuth = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const response = await ask("mcp_oauth_start", { name });
+      window.location.assign(response.url);
+    } catch (failed) {
+      setError(failed.message);
+      setBusy(false);
+    }
+  };
   const toggle = () => change("mcp_toggle", { name, enabled: !detail.row.enabled });
 
   const back = (
@@ -468,6 +483,16 @@ function ServerCard({ name, labels, onBack, onEdit }) {
               {reconnectLabel}
             </Button>
           ) : null}
+          {detail.row.auth === "oauth" && detail.row.enabled && detail.state !== "connected" ? (
+            <Button variant="default" size="sm" className="h-8" onClick={connectOAuth} disabled={busy} data-mcp-oauth-connect>
+              <KeyRound />{labels.oauthConnect}
+            </Button>
+          ) : null}
+          {detail.row.auth === "oauth" && detail.state === "connected" ? (
+            <Button variant="outline" size="sm" className="h-8" onClick={disconnectOAuth} disabled={busy} data-mcp-oauth-disconnect>
+              <KeyRound />{labels.oauthDisconnect}
+            </Button>
+          ) : null}
         </div>
         <Separator />
         <div className="flex flex-col gap-4 px-4 py-3">
@@ -477,7 +502,7 @@ function ServerCard({ name, labels, onBack, onEdit }) {
             <dt className="text-muted-foreground">{labels.address}</dt>
             <dd className="break-all font-mono text-xs leading-5">{detail.row.address}</dd>
             <dt className="text-muted-foreground">{labels.auth}</dt>
-            <dd>{({ none: labels.authNone, bearer: labels.authBearer, local: labels.authLocal, proxy: labels.authProxy })[detail.row.auth]}</dd>
+            <dd>{({ none: labels.authNone, bearer: labels.authBearer, oauth: labels.authOAuth, local: labels.authLocal, proxy: labels.authProxy })[detail.row.auth]}</dd>
             <dt className="text-muted-foreground">{labels.limits}</dt>
             <dd>{detail.row.connect_timeout_sec} s / {detail.row.call_timeout_sec} s</dd>
             <dt className="text-muted-foreground">{labels.headers}</dt>
@@ -565,7 +590,8 @@ function ServerForm({ current, startRemoving, labels, onBack, onSaved, onRemoved
     if (!editable) return;
     setBusy(true);
     setError("");
-    const clean = { ...form, headers: form.headers.map(({ name, value }) => ({ name, value })) };
+    const clean = { ...form, token: form.auth === "bearer" ? form.token : "",
+      headers: form.headers.map(({ name, value }) => ({ name, value })) };
     try {
       const action = current ? "mcp_update" : "mcp_add";
       const payload = current ? { current, form: clean } : { form: clean };
@@ -599,7 +625,8 @@ function ServerForm({ current, startRemoving, labels, onBack, onSaved, onRemoved
   const authOptions = editable ? [
     { value: "none", label: labels.authNone },
     { value: "bearer", label: labels.authBearer },
-  ] : [{ value: form.auth, label: ({ none: labels.authNone, bearer: labels.authBearer, local: labels.authLocal, proxy: labels.authProxy })[form.auth] || form.auth }];
+    { value: "oauth", label: labels.authOAuth },
+  ] : [{ value: form.auth, label: ({ none: labels.authNone, bearer: labels.authBearer, oauth: labels.authOAuth, local: labels.authLocal, proxy: labels.authProxy })[form.auth] || form.auth }];
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open && !busy) onBack(); }}>

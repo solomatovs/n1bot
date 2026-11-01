@@ -43,6 +43,8 @@ from boba.aid.infra.session import (
 from boba.aid.mcp_servers import McpAppError
 from boba.aid.mcp_servers.directory import McpDirectory
 from boba.aid.mcp_servers.form import McpForms
+from boba.aid.mcp_servers.oauth import McpBrowserOAuth
+from boba.aid.mcp_servers.oauth_store import McpOAuthStore
 from boba.aid.mcp_servers.sources import ServerSource, StoredServers
 from boba.aid.mcp_servers.store import McpServerStore
 from boba.aid.rendering.renderer import TabSurfaces
@@ -238,12 +240,29 @@ def mcp_server_store(
     return McpServerStore(pool, app_config.db_schema, cipher)
 
 
+def mcp_oauth_store(
+    app_config: Annotated[AppConfig, Depends(get_app_config)],
+    pool: Annotated[AsyncPostgresPool, Depends(runtime.postgres_pool)],
+    cipher: Annotated[SecretCipher, Depends(runtime.secret_cipher)],
+) -> McpOAuthStore:
+    return McpOAuthStore(pool, app_config.db_schema, cipher)
+
+
+def mcp_browser_oauth(
+    app_config: Annotated[AppConfig, Depends(get_app_config)],
+    store: Annotated[McpOAuthStore, Depends(mcp_oauth_store)],
+) -> McpBrowserOAuth:
+    redirect_uri = str(app_config.aid.chat_url).rstrip("/") + "/api/mcp/oauth/callback"
+    return McpBrowserOAuth(store, redirect_uri)
+
+
 def server_source(
     store: Annotated[McpServerStore, Depends(mcp_server_store)],
     users: Annotated[UsersTable, Depends(runtime.users_table)],
+    oauth: Annotated[McpBrowserOAuth, Depends(mcp_browser_oauth)],
 ) -> ServerSource:
     """Источник серверов зрителя: набор по выдаче и конфиги для клиента."""
-    return StoredServers(store, users)
+    return StoredServers(store, users, oauth)
 
 
 async def mcp_servers(

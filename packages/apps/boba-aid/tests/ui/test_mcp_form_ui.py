@@ -15,6 +15,34 @@ pytestmark = [pytest.mark.ui, pytest.mark.xdist_group("mcp-app-ui")]
 
 
 class TestMcpForm:
+    def test_user_can_select_browser_oauth(
+        self,
+        mcp_stand: StandProcess,
+        open_chat: OpenChat,
+        app_texts: UiText,
+    ) -> None:
+        view = McpAppPage(open_chat(mcp_stand, ""), app_texts)
+        view.run()
+        view.app().locator("[data-mcp-add]").click()
+        form = view.page.locator("[data-mcp-form]").last
+        form.locator('[name="mcp-name"]').fill("user-oauth")
+        form.locator('[name="mcp-url"]').fill("http://127.0.0.1:9/mcp")
+        form.locator('[data-mcp-choice="auth"] button[value="oauth"]').click()
+        expect(form.locator('[name="mcp-token"]')).to_have_count(0)
+        form.get_by_role("button", name=view.label("create"), exact=True).click()
+        card = view.card("user-oauth")
+        expect(card.locator("[data-mcp-oauth-connect]")).to_be_visible()
+        card.locator("[data-mcp-edit]").click()
+        form = view.page.locator("[data-mcp-form]").last
+        selected = form.locator('[data-mcp-choice="auth"] button[value="oauth"]')
+        expect(selected).to_have_attribute("aria-pressed", "true")
+        form.get_by_role("button", name=view.label("back"), exact=True).click()
+        card.get_by_role("button", name=view.label("back"), exact=True).click()
+        view.app().locator('[data-mcp-row-remove="user-oauth"]').click()
+        confirm = view.page.locator("[data-mcp-remove-confirm]").last
+        confirm.get_by_role("textbox").fill("user-oauth")
+        confirm.get_by_role("button", name=view.label("remove"), exact=True).click()
+
     def test_role_connection_has_disabled_settings(
         self,
         mcp_stand: StandProcess,

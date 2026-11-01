@@ -131,6 +131,12 @@ class TestStoredServers:
         forms = McpForms(McpUserConfig())
         server = forms.server(self._form())
         server_id = await stored.store.add("personal", server, stored.owner.user_id)
+        tokens = sql.SQL(
+            "insert into {}.mcp_tokens (server_id, user_id, token_data) "
+            "values (%s, %s, %s)"
+        ).format(sql.Identifier(stored.schema))
+        async with stored.pool.connection() as conn:
+            await conn.execute(tokens, (server_id, stored.owner.user_id, "old-token"))
         await stored.store.set_enabled(server_id, False)
         with pytest.raises(McpServerNameTaken):
             await stored.store.add("personal", server, stored.other.user_id)
@@ -140,6 +146,13 @@ class TestStoredServers:
             server,
         )
         await stored.store.replace(server_id, "renamed", changed)
+        remaining = sql.SQL(
+            "select count(*) from {}.mcp_tokens where server_id = %s"
+        ).format(sql.Identifier(stored.schema))
+        async with stored.pool.connection() as conn:
+            token_count = await (await conn.execute(remaining, (server_id,))).fetchone()
+        assert token_count is not None
+        assert token_count[0] == 0
         record = await stored.source.record(stored.owner, "renamed")
         assert record.server_id == server_id
         assert record.editable

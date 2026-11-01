@@ -25,6 +25,7 @@ from boba.aid.mcp_servers.store import StoredServer
 from boba.core.mcp_names import McpToolNames
 from boba.mcp_client.client import (
     BearerAuth,
+    BrowserOAuthAuth,
     HttpEndpoint,
     HttpLocation,
     HttpRoute,
@@ -90,7 +91,7 @@ class McpServerFormView(BaseModel):
     name: str
     transport: Literal["streamable-http", "sse"]
     url: str
-    auth: Literal["none", "bearer", "local", "proxy"]
+    auth: Literal["none", "bearer", "oauth", "local", "proxy"]
     editable: bool
     has_token: bool
     headers: Sequence[str]
@@ -144,6 +145,14 @@ class McpForms:
     ) -> StoredServer:
         self._check_name(form.name)
         route = self._address(form.url)
+        if (
+            form.auth is McpAuthChoice.OAUTH
+            and route.service.scheme != "https"
+            and route.service.host not in ("localhost", "127.0.0.1", "::1")
+        ):
+            raise McpAppError(
+                "Saving MCP server: OAuth requires HTTPS outside loopback"
+            )
         auth = self._auth(form, stored)
         headers = self._headers(form.headers, stored)
         limits = self._limits
@@ -276,9 +285,11 @@ class McpForms:
 
     def _auth(
         self, form: McpServerForm, stored: StoredServer | None
-    ) -> NoAuth | BearerAuth:
+    ) -> NoAuth | BearerAuth | BrowserOAuthAuth:
         if form.auth is McpAuthChoice.NONE:
             return NoAuth()
+        if form.auth is McpAuthChoice.OAUTH:
+            return BrowserOAuthAuth()
 
         token = form.token
         if not token.get_secret_value():

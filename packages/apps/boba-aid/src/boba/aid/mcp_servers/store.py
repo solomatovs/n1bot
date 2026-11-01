@@ -183,6 +183,14 @@ class McpServerStore(PostgresTable):
             )
             .build()
         )
+        clear_oauth = (
+            self._query()
+            .add(
+                "delete from {schema}.mcp_tokens where server_id = %(id)s",
+                id=server_id,
+            )
+            .build()
+        )
 
         async with self._transaction(f"replacing the row #{server_id}") as cur:
             try:
@@ -196,6 +204,9 @@ class McpServerStore(PostgresTable):
                 raise McpServerStoreError(
                     f"Replacing MCP server {name!r}: row {server_id} no longer exists"
                 )
+
+            # An edited address must never receive a token for the old address.
+            await cur.execute(clear_oauth.text, clear_oauth.params)
 
     async def set_enabled(self, server_id: UUID, enabled: bool) -> None:
         query = (

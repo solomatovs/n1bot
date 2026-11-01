@@ -23,6 +23,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.aid.mcp_servers import McpAppError, McpOrigin
+from boba.aid.mcp_servers.oauth import McpBrowserOAuth
 from boba.aid.mcp_servers.store import (
     McpServerStore,
     McpServerStoreError,
@@ -32,6 +33,7 @@ from boba.aid.mcp_servers.store import (
 from boba.identity.api import UserRows
 from boba.identity.session import Login
 from boba.mcp_client.client import (
+    BrowserOAuthAuth,
     McpCaller,
     McpClientError,
     McpServerConfig,
@@ -149,9 +151,15 @@ class StoredServers(ServerSource):
     можно лишь выданный лично.
     """
 
-    def __init__(self, store: McpServerStore, users: UserRows) -> None:
+    def __init__(
+        self,
+        store: McpServerStore,
+        users: UserRows,
+        oauth: McpBrowserOAuth | None = None,
+    ) -> None:
         self._store = store
         self._users = users
+        self._oauth = oauth
 
     async def visible(self, viewer: McpViewer) -> Sequence[ServerRecord]:
         """Серверы, выданные зрителю лично или через его роли, в порядке имён.
@@ -223,7 +231,7 @@ class StoredServers(ServerSource):
         if not stored.enabled:
             return None
 
-        return self._config(stored.server)
+        return self._config(stored.server, stored.id, user_id)
 
     async def add(
         self, viewer: McpViewer, name: str, server: StoredServer
@@ -263,7 +271,11 @@ class StoredServers(ServerSource):
         """
         record = await self._own(viewer, current)
         try:
-            await self._store.replace(record.server_id, name, server)
+            if self._oauth is None:
+                await self._store.replace(record.server_id, name, server)
+            else:
+                async with self._oauth.editing(record.server_id):
+                    await self._store.replace(record.server_id, name, server)
         except McpServerStoreError as exc:
             msg = (
                 f"the MCP servers app of {viewer.login!r} did not replace the "
@@ -363,5 +375,18 @@ class StoredServers(ServerSource):
             config=self._config(stored.server),
         )
 
-    def _config(self, server: StoredServer) -> McpServerConfig:
-        return McpServerConfig(endpoint=server.endpoint, limits=server.limits)
+    def _config(
+        self,
+        server: StoredServer,
+        server_id: UUID | None = None,
+        user_id: UUID | None = None,
+    ) -> McpServerConfig:
+        endpoint = server.endpoint
+        auth = endpoint.auth
+        if isinstance(auth, BrowserOAuthAuth) and server_id and user_id:
+            if self._oauth is None:
+                raise McpClientError("browser OAuth provider is not configured")
+            endpoint = endpoint.model_copy(
+                update={"auth": auth.bound(self._oauth, server_id, user_id)}
+            )
+        return McpServerConfig(endpoint=endpoint, limits=server.limits)

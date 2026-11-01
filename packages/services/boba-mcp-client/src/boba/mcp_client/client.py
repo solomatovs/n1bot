@@ -57,7 +57,7 @@ from functools import partial
 from http import HTTPStatus
 from typing import Annotated, Any, ClassVar, Literal, Protocol, Self, TypeVar
 from urllib.parse import quote
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import anyio
 import anyio.abc
@@ -126,6 +126,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    PrivateAttr,
     SecretStr,
     TypeAdapter,
     ValidationError,
@@ -749,8 +750,43 @@ class StatedAssertions:
         )
 
 
+class BrowserOAuthRuntime(Protocol):
+    """Провайдер браузерного OAuth, который предоставляет хозяин клиента."""
+
+    def provider(
+        self, server_id: UUID, user_id: UUID, resource: str
+    ) -> httpx2.Auth: ...
+
+
+class BrowserOAuthAuth(McpAuthEntry):
+    """Личный OAuth-вход: токены живут у хозяина клиента, не в записи сервера."""
+
+    PERSONAL: ClassVar[bool] = True
+    auth: Literal["oauth"] = "oauth"
+    _runtime: BrowserOAuthRuntime | None = PrivateAttr(default=None)
+    _server_id: UUID | None = PrivateAttr(default=None)
+    _user_id: UUID | None = PrivateAttr(default=None)
+
+    def bound(
+        self, runtime: BrowserOAuthRuntime, server_id: UUID, user_id: UUID
+    ) -> BrowserOAuthAuth:
+        bound = self.model_copy()
+        bound._runtime = runtime
+        bound._server_id = server_id
+        bound._user_id = user_id
+        return bound
+
+    def httpx_auth(self, resource: str) -> httpx2.Auth:
+        if self._runtime is None or self._server_id is None or self._user_id is None:
+            raise McpClientError(
+                "browser OAuth server has no user-bound token provider"
+            )
+        return self._runtime.provider(self._server_id, self._user_id, resource)
+
+
 McpAuth = Annotated[
-    NoAuth | BearerAuth | LocalAuth | ProxyAuth, Field(discriminator="auth")
+    NoAuth | BearerAuth | LocalAuth | ProxyAuth | BrowserOAuthAuth,
+    Field(discriminator="auth"),
 ]
 
 

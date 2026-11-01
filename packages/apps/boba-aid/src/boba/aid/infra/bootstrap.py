@@ -182,6 +182,7 @@ async def _run_container(app: FastAPI) -> AsyncGenerator[None, None]:
     # роуты и колбэк входа ставятся до первого запроса: сервис входа живёт в контейнере
     _use_auth(container)
     _use_thread_deletion(container)
+    _use_mcp_oauth_callback(container)
 
     try:
         yield
@@ -299,6 +300,35 @@ def _use_stream_journal() -> None:
     serving = StreamServing(providers.remote_journals_ref, providers.mcp_servers_ref)
     chainlit_app.add_api_route(
         StreamUrl.ROUTE, serving.serve, methods=["GET"], include_in_schema=False
+    )
+    chainlit_app.router.routes.insert(0, chainlit_app.router.routes.pop())
+
+
+def _use_mcp_oauth_callback(container: Container) -> None:
+    """Register the authenticated browser return after OAuth is ready."""
+    from chainlit.server import app as chainlit_app  # noqa: PLC0415
+
+    from boba.aid.mcp_servers.oauth import (  # noqa: PLC0415
+        McpOAuthCallback,
+        McpOAuthClientDocument,
+    )
+
+    config = container.resolved(providers.get_app_config)
+    oauth = container.resolved(providers.mcp_browser_oauth)
+    tokens = container.resolved(runtime.session_tokens)
+    callback = McpOAuthCallback(
+        oauth, tokens, config.session.cookie, str(config.aid.chat_url)
+    )
+    chainlit_app.add_api_route(
+        McpOAuthCallback.ROUTE, callback.serve, methods=["GET"], include_in_schema=False
+    )
+    chainlit_app.router.routes.insert(0, chainlit_app.router.routes.pop())
+    metadata = McpOAuthClientDocument(oauth)
+    chainlit_app.add_api_route(
+        McpOAuthClientDocument.ROUTE,
+        metadata.serve,
+        methods=["GET"],
+        include_in_schema=False,
     )
     chainlit_app.router.routes.insert(0, chainlit_app.router.routes.pop())
 

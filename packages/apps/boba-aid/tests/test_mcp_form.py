@@ -6,7 +6,7 @@ from pydantic import SecretStr
 from boba.aid.mcp_servers import McpAppError, McpAuthChoice
 from boba.aid.mcp_servers.config import McpUserConfig
 from boba.aid.mcp_servers.form import HeaderField, McpForms, McpServerAdd, McpServerForm
-from boba.mcp_client.client import BearerAuth
+from boba.mcp_client.client import BearerAuth, BrowserOAuthAuth
 
 
 @pytest.fixture(autouse=True)
@@ -93,6 +93,24 @@ class TestMcpForms:
         assert changed.endpoint.headers["x-key"].get_secret_value() == "header-secret"
         with pytest.raises(McpAppError, match="bearer token is required"):
             forms.server(empty)
+
+    def test_browser_oauth_is_personal_and_needs_no_entered_token(self) -> None:
+        forms = McpForms(McpUserConfig())
+        form = self._form().model_copy(update={"auth": McpAuthChoice.OAUTH})
+        server = forms.server(form)
+
+        assert isinstance(server.endpoint.auth, BrowserOAuthAuth)
+        assert server.endpoint.personal()
+        view = forms.view(form.name, server, editable=True)
+        assert view.auth == "oauth"
+        assert not view.has_token
+
+    def test_browser_oauth_requires_tls_outside_loopback(self) -> None:
+        form = self._form("http://remote.example/mcp").model_copy(
+            update={"auth": McpAuthChoice.OAUTH}
+        )
+        with pytest.raises(McpAppError, match="HTTPS outside loopback"):
+            McpForms(McpUserConfig()).server(form)
 
     @pytest.mark.parametrize(
         "headers",

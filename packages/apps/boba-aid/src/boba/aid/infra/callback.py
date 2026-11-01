@@ -59,6 +59,7 @@ from boba.aid.infra.providers import (
     chainlit_data_layer,
     chat_profiles_registry,
     get_app_config,
+    mcp_browser_oauth,
     mcp_directory,
     mcp_forms,
     mcp_relay,
@@ -98,6 +99,7 @@ from boba.aid.mcp_servers.form import (
     McpServerToggle,
     McpServerUpdate,
 )
+from boba.aid.mcp_servers.oauth import McpBrowserOAuth
 from boba.aid.mcp_servers.sources import ServerSource
 from boba.aid.rendering.errors import chainlit_error_ctx_handler
 from boba.cancellation import StopReason
@@ -110,7 +112,14 @@ from boba.identity.locks import LockBusyError
 from boba.identity.run import Runs
 from boba.identity.session import Login
 from boba.identity.token import CookieSpec
-from boba.mcp_client.client import FilesHost, McpCaller, McpClientError, McpServers
+from boba.mcp_client.client import (
+    BrowserOAuthAuth,
+    FilesHost,
+    HttpAddress,
+    McpCaller,
+    McpClientError,
+    McpServers,
+)
 from boba.messaging import (
     MessageBus,
     StopRequested,
@@ -1062,6 +1071,62 @@ async def on_mcp_toggle(
         await updates.changed(viewer.user_id, (request.name,))
 
         return _mcp_answer(answer)
+    except McpAppError as exc:
+        return _mcp_app_error(exc)
+
+
+@cl.action_callback(McpAction.OAUTH_START)
+@chainlit_error_ctx_handler
+@di_inject
+async def on_mcp_oauth_start(
+    action: cl.Action,
+    source: Annotated[ServerSource, Depends(server_source)],
+    oauth: Annotated[McpBrowserOAuth, Depends(mcp_browser_oauth)],
+    forms: Annotated[McpForms, Depends(mcp_forms)],
+) -> dict[str, Any]:
+    """Begin authorization only for an OAuth server granted to this user."""
+    try:
+        request = forms.parse(McpServerRequest, action.payload)
+        viewer = McpViewerFactory(current_session()).viewer()
+        record = await source.record(viewer, request.name)
+        endpoint = record.config.endpoint
+        if not record.enabled or not isinstance(endpoint, HttpAddress):
+            raise McpAppError("MCP OAuth server must be an enabled remote server")
+        if not isinstance(endpoint.auth, BrowserOAuthAuth):
+            raise McpAppError("MCP server does not use browser OAuth")
+        url = await oauth.begin(
+            record.server_id, viewer.user_id, viewer.login, endpoint.url()
+        )
+        return {"url": url}
+    except McpAppError as exc:
+        return _mcp_app_error(exc)
+
+
+@cl.action_callback(McpAction.OAUTH_DISCONNECT)
+@chainlit_error_ctx_handler
+@di_inject
+async def on_mcp_oauth_disconnect(
+    action: cl.Action,
+    source: Annotated[ServerSource, Depends(server_source)],
+    oauth: Annotated[McpBrowserOAuth, Depends(mcp_browser_oauth)],
+    servers: Annotated[McpServers, Depends(mcp_servers)],
+    forms: Annotated[McpForms, Depends(mcp_forms)],
+) -> dict[str, Any]:
+    """Remove only this user's OAuth credentials, including role servers."""
+    try:
+        request = forms.parse(McpServerRequest, action.payload)
+        viewer = McpViewerFactory(current_session()).viewer()
+        record = await source.record(viewer, request.name)
+        endpoint = record.config.endpoint
+        if not isinstance(endpoint, HttpAddress):
+            raise McpAppError("MCP server does not use browser OAuth")
+        if not isinstance(endpoint.auth, BrowserOAuthAuth):
+            raise McpAppError("MCP server does not use browser OAuth")
+        await oauth.disconnect(record.server_id, viewer.user_id)
+        await servers.reconnect(record.name, viewer.caller())
+        return {}
+    except McpClientError as exc:
+        return _mcp_app_error(McpAppError(str(exc)))
     except McpAppError as exc:
         return _mcp_app_error(exc)
 
