@@ -32,8 +32,11 @@ class TestMcpForm:
         form = view.page.locator("[data-mcp-readonly]").last
         expect(form.locator('[name="mcp-name"]')).to_have_value("live")
         expect(form.locator('[name="mcp-url"]')).to_have_value(live_address)
-        for name in ("mcp-name", "mcp-url", "mcp-transport", "mcp-auth"):
+        for name in ("mcp-name", "mcp-url"):
             expect(form.locator(f'[name="{name}"]')).to_be_disabled()
+        for kind in ("transport", "auth"):
+            for button in form.locator(f'[data-mcp-choice="{kind}"] button').all():
+                expect(button).to_be_disabled()
 
         expect(form.locator("[data-mcp-role-managed]")).to_contain_text(
             view.label("roleManaged")
@@ -56,10 +59,10 @@ class TestMcpForm:
         form = view.page.locator("[data-mcp-form]").last
         form.locator('[name="mcp-name"]').fill("user-live")
         form.locator('[name="mcp-url"]').fill("ftp://invalid.example/mcp")
-        form.get_by_role("button", name=view.label("save"), exact=True).click()
+        form.get_by_role("button", name=view.label("create"), exact=True).click()
         expect(form.locator("[data-mcp-issue]")).to_contain_text("http or https")
         form.locator('[name="mcp-url"]').fill(live_address)
-        form.get_by_role("button", name=view.label("save"), exact=True).click()
+        form.get_by_role("button", name=view.label("create"), exact=True).click()
         card = view.card("user-live")
         expect(card).to_contain_text(view.label("state.connected"), timeout=60_000)
         expect(card).to_contain_text(view.label("yours"))
@@ -75,9 +78,9 @@ class TestMcpForm:
         expect(card).to_contain_text(view.label("state.disabled"))
         card.locator("[data-mcp-toggle]").click()
         expect(card).to_contain_text(view.label("state.failed"), timeout=60_000)
-        card.locator("[data-mcp-edit]").click()
+        card.get_by_role("button", name=view.label("back"), exact=True).click()
+        view.app().locator('[data-mcp-row-remove="user-renamed"]').click()
         form = view.page.locator("[data-mcp-form]").last
-        form.locator("[data-mcp-remove]").click()
         confirm = form.locator("[data-mcp-remove-confirm]")
         remove = confirm.get_by_role("button", name=view.label("remove"), exact=True)
         expect(remove).to_be_disabled()

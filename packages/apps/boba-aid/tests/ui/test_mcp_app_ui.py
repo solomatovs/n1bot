@@ -176,6 +176,14 @@ class TestMcpApp:
         expect(app).to_contain_text(view.label("title"))
         expect(view.server(LIVE)).to_contain_text(view.label("state.connected"))
         expect(view.server(GONE)).to_contain_text(view.label("state.failed"))
+        expect(app.locator(f'[data-mcp-row-reconnect="{LIVE}"]')).to_be_visible()
+        expect(app.locator(f'[data-mcp-row-remove="{LIVE}"]')).to_have_count(0)
+
+        search = app.locator("[data-mcp-search]")
+        search.fill(LIVE)
+        expect(app.locator(f'[data-mcp-server="{GONE}"]')).to_have_count(0)
+        search.fill("")
+        expect(view.server(GONE)).to_be_visible()
 
         questions = view.chat.steps_of(StepKind.USER.value)
         expect(questions).to_have_count(1)

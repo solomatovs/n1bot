@@ -40,6 +40,7 @@ import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from importlib.resources import files
 from typing import Any, ClassVar, Self, TypeVar
 from urllib.parse import urlencode, urlsplit
 from uuid import uuid4
@@ -894,6 +895,19 @@ class LoginVisit:
         )
 
 
+class LoginTemplates:
+    """HTML и CSS страниц входа из данных пакета boba-oauth."""
+
+    def __init__(self) -> None:
+        resources = files("boba.oauth").joinpath("templates")
+        self.page = resources.joinpath("login.html").read_text(encoding="utf-8")
+        self.client = resources.joinpath("client.html").read_text(encoding="utf-8")
+        self.form = resources.joinpath("form.html").read_text(encoding="utf-8")
+        self.sso = resources.joinpath("sso.html").read_text(encoding="utf-8")
+        self.error = resources.joinpath("error.html").read_text(encoding="utf-8")
+        self.css = resources.joinpath("login.css").read_text(encoding="utf-8")
+
+
 class LoginPages:
     """Страницы входа человека на шаге authorize: форма логина и пароля
     (local, ldap) и обмен SPNEGO (kerberos).
@@ -906,27 +920,7 @@ class LoginPages:
     принимается.
     """
 
-    PAGE: ClassVar[str] = (
-        '<!doctype html><html><head><meta charset="utf-8">'
-        "<title>{service} sign-in</title></head><body>"
-        "<h1>Sign in to {service}</h1>{error}{client}{form}{sso}</body></html>"
-    )
-    CLIENT: ClassVar[str] = (
-        "<p>Application <b>{name}</b> asks to sign in to {service} as you. "
-        "After the sign-in this browser is sent to <b>{redirect}</b>. "
-        "Continue only if you started this sign-in yourself.</p>"
-    )
     UNNAMED: ClassVar[str] = "without a name"
-    FORM: ClassVar[str] = (
-        '<form method="post" action="{action}">'
-        '<input type="hidden" name="txn" value="{txn}">'
-        '<input type="hidden" name="proof" value="{proof}">'
-        '<p><label>Login <input name="login" autofocus></label></p>'
-        '<p><label>Password <input name="password" type="password"></label></p>'
-        '<p><button type="submit">Sign in</button></p></form>'
-    )
-    SSO: ClassVar[str] = '<p><a href="{url}">Sign in with Kerberos</a></p>'
-    ERROR: ClassVar[str] = '<p role="alert">{text}</p>'
     NO_TICKET: ClassVar[str] = (
         "kerberos sign-in needs a ticket of your domain session: the browser sent none"
     )
@@ -954,6 +948,7 @@ class LoginPages:
         self._cookie_secure = public.scheme == "https"
         self._requests = SsoRequests()
         self._responses = SsoResponses()
+        self._templates = LoginTemplates()
 
     def routes(self) -> list[Route]:
         routes = [
@@ -1044,7 +1039,7 @@ class LoginPages:
 
         shown = ""
         if error:
-            shown = self.ERROR.format(text=html.escape(error))
+            shown = self._templates.error.format(text=html.escape(error))
 
         proof = visit.cookie
         if not proof:
@@ -1052,7 +1047,7 @@ class LoginPages:
 
         form = ""
         if providers.password:
-            form = self.FORM.format(
+            form = self._templates.form.format(
                 action=html.escape(f"{self._public_url}{AuthServer.LOGIN_PATH}"),
                 txn=html.escape(visit.txn),
                 proof=html.escape(proof),
@@ -1064,15 +1059,16 @@ class LoginPages:
                 {AuthServer.TXN: visit.txn, LoginField.PROOF.value: proof}
             )
             url = f"{self._public_url}{LoginField.SSO.value}?{query}"
-            sso = self.SSO.format(url=html.escape(url))
+            sso = self._templates.sso.format(url=html.escape(url))
 
         sent = dict(self.HEADERS)
         if headers is not None:
             sent.update(headers)
 
         response = HTMLResponse(
-            self.PAGE.format(
+            self._templates.page.format(
                 service=self._service,
+                css=self._templates.css,
                 error=shown,
                 client=await self._client(visit.held),
                 form=form,
@@ -1104,7 +1100,7 @@ class LoginPages:
         if not name:
             name = self.UNNAMED
 
-        return self.CLIENT.format(
+        return self._templates.client.format(
             service=self._service,
             name=html.escape(name),
             redirect=html.escape(str(held.params.redirect_uri)),
@@ -1116,9 +1112,10 @@ class LoginPages:
         )
 
         return HTMLResponse(
-            self.PAGE.format(
+            self._templates.page.format(
                 service=self._service,
-                error=self.ERROR.format(text=text),
+                css=self._templates.css,
+                error=self._templates.error.format(text=text),
                 client="",
                 form="",
                 sso="",

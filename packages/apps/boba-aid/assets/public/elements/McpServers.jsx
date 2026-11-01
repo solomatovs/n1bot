@@ -7,7 +7,11 @@ import {
   ChevronDown,
   ChevronRight,
   KeyRound,
+  Plug,
   Plus,
+  Search,
+  Server,
+  Settings2,
   Trash2,
   Pencil,
   RefreshCw,
@@ -15,11 +19,18 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
 import { useTranslation } from "@/components/i18n";
 
 // Приложение MCP-серверов чата: команда /mcp выводит его в ленту сообщением
-// с двумя экранами — список серверов и карточка сервера. Состояние экрана
+// со списком серверов, карточкой и диалогом правки. Состояние экрана
 // живёт в компоненте; данные приходят действиями чата (mcp_list, mcp_status,
 // mcp_detail, mcp_reconnect), после переподключения сокета список читается
 // заново — как подписка на connect в CanvasView.
@@ -52,6 +63,9 @@ function useLabels() {
   return {
     title: t(`${TEXT}.title`),
     add: t(`${TEXT}.add`),
+    create: t(`${TEXT}.create`),
+    search: t(`${TEXT}.search`),
+    noMatches: t(`${TEXT}.noMatches`),
     edit: t(`${TEXT}.edit`),
     save: t(`${TEXT}.save`),
     saving: t(`${TEXT}.saving`),
@@ -79,7 +93,11 @@ function useLabels() {
     enable: t(`${TEXT}.enable`),
     limits: t(`${TEXT}.limits`),
     formTitle: t(`${TEXT}.formTitle`),
+    formHelp: t(`${TEXT}.formHelp`),
     editTitle: t(`${TEXT}.editTitle`),
+    advanced: t(`${TEXT}.advanced`),
+    urlHint: t(`${TEXT}.urlHint`),
+    urlLabel: t(`${TEXT}.urlLabel`),
     settings: t(`${TEXT}.settings`),
     roleManaged: t(`${TEXT}.roleManaged`),
 
@@ -112,11 +130,11 @@ function useLabels() {
   };
 }
 
-function StateDot({ state }) {
+function StateDot({ state, large = false }) {
   let color = PENDING_DOT;
   if (DOTS[state]) color = DOTS[state];
 
-  return <span className={`size-2 shrink-0 rounded-full ${color}`} aria-hidden="true" />;
+  return <span className={`inline-block ${large ? "size-3" : "size-2"} shrink-0 rounded-full ${color}`} aria-hidden="true" />;
 }
 
 function OriginBadge({ origin, labels }) {
@@ -159,14 +177,31 @@ async function ask(name, payload) {
   return response;
 }
 
-function ListHeading({ labels, count, onAdd }) {
+function ListHeading({ labels, count, query, onQuery, onAdd }) {
   return (
-    <div className="flex flex-wrap items-center gap-2 font-semibold">
-      {labels.title}
-      {count !== undefined ? <span className="font-normal text-muted-foreground">{count}</span> : null}
-      <Button variant="outline" size="sm" className="ml-auto h-8" onClick={onAdd} data-mcp-add>
-        <Plus />{labels.add}
-      </Button>
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center gap-2 text-base font-semibold">
+        <Plug className="size-4 text-muted-foreground" aria-hidden="true" />
+        <span>{labels.title}</span>
+        {count !== undefined ? <Badge variant="secondary" className="font-normal">{count}</Badge> : null}
+      </div>
+      <div className="flex items-center gap-2">
+        <label className="relative min-w-0 flex-1">
+          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+          <span className="sr-only">{labels.search}</span>
+          <input
+            className="h-10 w-full rounded-md border border-input bg-background pl-9 pr-3 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            type="search"
+            value={query}
+            onChange={(event) => onQuery(event.target.value)}
+            placeholder={labels.search}
+            data-mcp-search
+          />
+        </label>
+        <Button variant="outline" size="icon" className="size-10 shrink-0" onClick={onAdd} aria-label={labels.add} title={labels.add} data-mcp-add>
+          <Plus className="size-5" />
+        </Button>
+      </div>
     </div>
   );
 }
@@ -178,6 +213,9 @@ function ServerList({ labels }) {
   const [error, setError] = useState("");
   const [selected, setSelected] = useState(null);
   const [editing, setEditing] = useState(null);
+  const [query, setQuery] = useState("");
+  const [busyName, setBusyName] = useState("");
+  const [actionError, setActionError] = useState("");
 
   const load = useCallback(async () => {
     setError("");
@@ -219,97 +257,110 @@ function ServerList({ labels }) {
     }
   }
   const sorted = [...first, ...rest];
-
-  if (editing) {
-    return <ServerForm current={editing.current} labels={labels}
-      onBack={() => setEditing(null)}
-      onSaved={(name) => { setSelected(name); setEditing(null); }}
-      onRemoved={() => { setSelected(null); setEditing(null); }} />;
-  }
-
-  if (selected) {
-    return <ServerCard name={selected} labels={labels} onBack={() => setSelected(null)}
-      onEdit={() => setEditing({ current: selected })} />;
-  }
+  const visible = sorted.filter((row) => row.name.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
+  const reconnect = async (name) => {
+    setBusyName(name);
+    setActionError("");
+    try {
+      await ask("mcp_reconnect", { name });
+      const status = await ask("mcp_status", { name });
+      setStatuses((was) => ({ ...was, [name]: status }));
+    } catch (failed) {
+      setActionError(failed.message);
+    } finally {
+      setBusyName("");
+    }
+  };
 
   const heading = <ListHeading labels={labels} count={rows ? rows.length : undefined}
-    onAdd={() => setEditing({ current: null })} />;
+    query={query} onQuery={setQuery} onAdd={() => setEditing({ current: null, removing: false })} />;
 
-  if (error) {
-    return (
-      <div className="flex w-full flex-col gap-2 text-sm" data-mcp-servers>
-        {heading}
-        <Note tone="failure" title={labels.listFailed} text={error}>
-          <Button variant="outline" size="sm" className="h-8 w-fit" onClick={load}>
-            <RefreshCw />
-            {labels.retry}
-          </Button>
-        </Note>
-      </div>
-    );
-  }
-
-  if (rows === null) {
-    return (
-      <div className="flex w-full items-center gap-2 text-sm" data-mcp-servers-loading>
-        <StateDot state="pending" />
-        <span className="font-semibold">{labels.title}</span>
-      </div>
-    );
-  }
-
-  if (!sorted.length) {
-    return (
-      <div className="flex w-full flex-col gap-2 text-sm" data-mcp-servers-empty>
-        {heading}
-        <div className="text-muted-foreground">{labels.empty}</div>
-      </div>
-    );
+  let content;
+  if (selected) {
+    content = <ServerCard name={selected} labels={labels} onBack={() => setSelected(null)}
+      onEdit={() => setEditing({ current: selected, removing: false })} />;
+  } else if (error) {
+    content = <Note tone="failure" title={labels.listFailed} text={error}>
+      <Button variant="outline" size="sm" className="h-8 w-fit" onClick={load}>
+        <RefreshCw />{labels.retry}
+      </Button>
+    </Note>;
+  } else if (rows === null) {
+    content = <div className="flex items-center gap-2 text-muted-foreground" data-mcp-servers-loading>
+      <StateDot state="pending" />{labels.state("pending")}
+    </div>;
+  } else if (!visible.length) {
+    content = <div className="rounded-lg border border-dashed px-4 py-6 text-center text-muted-foreground" data-mcp-servers-empty>
+      {sorted.length ? labels.noMatches : labels.empty}
+    </div>;
+  } else {
+    content = <div className="flex flex-col gap-2">
+      {visible.map((row) => (
+        <ServerRow
+          key={row.name}
+          row={row}
+          status={statuses[row.name]}
+          labels={labels}
+          busy={busyName === row.name}
+          onOpen={() => setSelected(row.name)}
+          onReconnect={() => reconnect(row.name)}
+          onEdit={() => setEditing({ current: row.name, removing: false })}
+          onRemove={() => setEditing({ current: row.name, removing: true })}
+        />
+      ))}
+    </div>;
   }
 
   return (
-    <div className="flex w-full flex-col gap-2 text-sm" data-mcp-servers>
-      {heading}
-      <Card className="divide-y overflow-hidden">
-        {sorted.map((row) => (
-          <ServerRow
-            key={row.name}
-            row={row}
-            status={statuses[row.name]}
-            labels={labels}
-            onOpen={() => setSelected(row.name)}
-          />
-        ))}
-      </Card>
-    </div>
+    <>
+      {selected ? content : <div className="flex w-full flex-col gap-3 text-sm" data-mcp-servers>
+        {heading}
+        {actionError ? <Note tone="failure" title={labels.actionFailed} text={actionError} /> : null}
+        {content}
+      </div>}
+      {editing ? <ServerForm current={editing.current} startRemoving={editing.removing} labels={labels}
+        onBack={() => setEditing(null)}
+        onSaved={(name) => { setSelected(name); setEditing(null); }}
+        onRemoved={() => { setSelected(null); setEditing(null); }} /> : null}
+    </>
   );
 }
 
-// Строка списка: состояние и число инструментов — одной подписью справа,
-// чтобы концы строк стояли ровно при любом наборе полей.
-function ServerRow({ row, status, labels, onOpen }) {
+// Строка списка: открытие карточки и действия — отдельные кнопки без вложенности.
+function ServerRow({ row, status, labels, busy, onOpen, onReconnect, onEdit, onRemove }) {
   let state = "pending";
   if (status) state = status.state;
 
   let summary = labels.state(state);
   if (status && status.tools) summary = `${summary} · ${labels.toolCount(status.tools)}`;
 
-  return (
-    <button
-      type="button"
-      className="grid w-full grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-accent"
-      data-mcp-server={row.name}
-      onClick={onOpen}
-    >
-      <StateDot state={state} />
-      <span className="flex min-w-0 items-center gap-2">
-        <span className="truncate font-medium">{row.name}</span>
-        <OriginBadge origin={row.origin} labels={labels} />
+  return <Card className="flex min-w-0 items-center gap-1 overflow-hidden px-2 py-2" data-mcp-server-card={row.name}>
+    <button type="button" className="flex min-w-0 flex-1 items-center gap-3 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      data-mcp-server={row.name} onClick={onOpen}>
+      <span className="relative flex size-10 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground" aria-hidden="true">
+        <Server className="size-5" />
+        <span className="absolute -bottom-1 -right-1 inline-flex rounded-full border-2 border-card bg-card"><StateDot state={state} large /></span>
       </span>
-      <span className="whitespace-nowrap text-right text-muted-foreground">{summary}</span>
-      <ChevronRight className="size-4 text-muted-foreground" aria-hidden="true" />
+      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <span className="flex min-w-0 items-center gap-2"><span className="truncate font-semibold">{row.name}</span><OriginBadge origin={row.origin} labels={labels} /></span>
+        <span className="truncate text-xs text-muted-foreground">{summary}</span>
+      </span>
     </button>
-  );
+    <div className="flex shrink-0 items-center gap-0.5">
+      {row.enabled ? <Button variant="ghost" size="icon" className="size-8 text-muted-foreground" onClick={onReconnect} disabled={busy}
+        aria-label={`${labels.reconnect}: ${row.name}`} title={labels.reconnect} data-mcp-row-reconnect={row.name}>
+        <RefreshCw className={`size-4 ${busy ? "animate-spin" : ""}`} />
+      </Button> : null}
+      <Button variant="ghost" size="icon" className="size-8 text-muted-foreground" onClick={onEdit}
+        aria-label={`${row.editable ? labels.edit : labels.settings}: ${row.name}`} title={row.editable ? labels.edit : labels.settings} data-mcp-row-edit={row.name}>
+        {row.editable ? <Pencil className="size-4" /> : <Settings2 className="size-4" />}
+      </Button>
+      {row.editable ? <Button variant="ghost" size="icon" className="size-8 text-destructive hover:text-destructive" onClick={onRemove}
+        aria-label={`${labels.remove}: ${row.name}`} title={labels.remove} data-mcp-row-remove={row.name}>
+        <Trash2 className="size-4" />
+      </Button> : null}
+    </div>
+  </Card>;
 }
 
 // Карточка сервера: адрес, транспорт, состояние, Reconnect и инструменты.
@@ -459,16 +510,29 @@ function ServerCard({ name, labels, onBack, onEdit }) {
   );
 }
 
-function ServerForm({ current, labels, onBack, onSaved, onRemoved }) {
+function ChoiceGroup({ label, value, options, onChange, disabled, kind }) {
+  return <div className="flex flex-col gap-2">
+    <span className="font-medium">{label}</span>
+    <div role="group" aria-label={label} className={`grid gap-1 rounded-lg bg-muted p-1 ${options.length === 1 ? "grid-cols-1" : "grid-cols-2"} ${disabled ? "opacity-70" : ""}`} data-mcp-choice={kind}>
+      {options.map((option) => <button key={option.value} type="button" name={`mcp-${kind}`} value={option.value}
+        className={`min-h-9 rounded-md px-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:text-muted-foreground ${disabled ? "bg-transparent text-muted-foreground" : value === option.value ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+        aria-pressed={value === option.value} onClick={() => onChange(option.value)} disabled={disabled}>
+        {option.label}
+      </button>)}
+    </div>
+  </div>;
+}
+
+function ServerForm({ current, startRemoving, labels, onBack, onSaved, onRemoved }) {
   const [form, setForm] = useState({ name: "", transport: "streamable-http", url: "", auth: "none", token: "", headers: [] });
   const [ready, setReady] = useState(!current);
   const [editable, setEditable] = useState(!current);
   const [hasToken, setHasToken] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [removing, setRemoving] = useState(false);
+  const [removing, setRemoving] = useState(startRemoving);
   const [confirmation, setConfirmation] = useState("");
-  const inputClass = "w-full rounded-md border border-input bg-background px-3 py-2 text-sm disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground";
+  const inputClass = "h-10 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground";
 
   useEffect(() => {
     if (!current) return;
@@ -515,7 +579,7 @@ function ServerForm({ current, labels, onBack, onSaved, onRemoved }) {
   };
 
   const remove = async () => {
-    if (!editable) return;
+    if (!ready || !editable) return;
     setBusy(true);
     setError("");
     try {
@@ -528,96 +592,89 @@ function ServerForm({ current, labels, onBack, onSaved, onRemoved }) {
     }
   };
 
-  if (removing) {
-    return (
-      <div className="flex w-full flex-col gap-2 pb-12 text-sm" data-mcp-form>
-        <Button variant="ghost" size="sm" className="-ml-3 h-8 w-fit text-muted-foreground" onClick={() => setRemoving(false)} disabled={busy}>
-          <ArrowLeft />{labels.cancel}
-        </Button>
-        <Card className="flex flex-col gap-3 p-4" data-mcp-remove-confirm>
-          <span className="text-base font-semibold">{labels.removeTitle}</span>
-          {error ? <Note tone="failure" title={labels.actionFailed} text={error} /> : null}
-          <span className="text-muted-foreground">{labels.removeHelp} <strong>{current}</strong></span>
-          <input className={inputClass} aria-label={labels.confirmName} value={confirmation} onChange={(event) => setConfirmation(event.target.value)} disabled={busy} autoComplete="off" />
-          <div className="flex flex-wrap gap-2">
-            <Button variant="destructive" size="sm" disabled={busy || confirmation !== current} onClick={remove}>{labels.remove}</Button>
-            <Button variant="outline" size="sm" disabled={busy} onClick={() => setRemoving(false)}>{labels.cancel}</Button>
-          </div>
-        </Card>
-      </div>
-    );
-  }
+  const transportOptions = editable ? [
+    { value: "streamable-http", label: "Streamable HTTP" },
+    { value: "sse", label: "SSE" },
+  ] : [{ value: form.transport, label: form.transport === "streamable-http" ? "Streamable HTTP" : form.transport.toUpperCase() }];
+  const authOptions = editable ? [
+    { value: "none", label: labels.authNone },
+    { value: "bearer", label: labels.authBearer },
+  ] : [{ value: form.auth, label: ({ none: labels.authNone, bearer: labels.authBearer, local: labels.authLocal, proxy: labels.authProxy })[form.auth] || form.auth }];
 
   return (
-    <div className="flex w-full flex-col gap-2 pb-12 text-sm" data-mcp-form data-mcp-readonly={ready && !editable || undefined}>
-      <Button variant="ghost" size="sm" className="-ml-3 h-8 w-fit text-muted-foreground" onClick={onBack} disabled={busy}>
-        <ArrowLeft />{labels.back}
-      </Button>
-      <Card className="p-4">
-        {ready && !editable ? <p className="mb-4 text-sm text-muted-foreground" data-mcp-role-managed>{labels.roleManaged}</p> : null}
-        <form onSubmit={save}>
-          <fieldset disabled={busy || !ready || !editable} className={`flex min-w-0 flex-col gap-4 ${ready && !editable ? "text-muted-foreground" : ""}`}>
-            <div className="text-base font-semibold">{current ? (editable ? labels.editTitle : labels.settings) : labels.formTitle}</div>
-            {error ? <Note tone="failure" title={labels.actionFailed} text={error} /> : null}
-            <label className="flex flex-col gap-1.5">
-              {labels.name}
-              <input className={inputClass} name="mcp-name" value={form.name} onChange={(event) => field("name", event.target.value)} maxLength={64} required />
-              <span className="text-xs text-muted-foreground">{labels.nameHint}</span>
-            </label>
-            <label className="flex flex-col gap-1.5">
-              {labels.transport}
-              <select className={inputClass} name="mcp-transport" value={form.transport} onChange={(event) => field("transport", event.target.value)}>
-                <option value="streamable-http">HTTP</option><option value="sse">SSE</option>
-              </select>
-            </label>
-            <label className="flex flex-col gap-1.5">
-              {labels.address}
-              <input className={inputClass} name="mcp-url" value={form.url} onChange={(event) => field("url", event.target.value)} required autoComplete="off" spellCheck={false} />
-            </label>
-            <label className="flex flex-col gap-1.5">
-              {labels.auth}
-              <select className={inputClass} name="mcp-auth" value={form.auth} onChange={(event) => field("auth", event.target.value)}>
-                <option value="none">{labels.authNone}</option><option value="bearer">{labels.authBearer}</option>
-                {!editable && form.auth === "local" ? <option value="local">{labels.authLocal}</option> : null}
-                {!editable && form.auth === "proxy" ? <option value="proxy">{labels.authProxy}</option> : null}
-              </select>
-            </label>
-            {form.auth === "bearer" ? (
-              <label className="flex flex-col gap-1.5">
+    <Dialog open onOpenChange={(open) => { if (!open && !busy) onBack(); }}>
+      <DialogContent className="max-h-[90vh] w-[calc(100%-2rem)] max-w-2xl overflow-y-auto p-0" data-mcp-form data-mcp-readonly={ready && !editable || undefined}>
+        {removing ? <div className="flex flex-col gap-5 p-6" data-mcp-remove-confirm>
+          <DialogHeader>
+            <DialogTitle>{labels.removeTitle}</DialogTitle>
+            <DialogDescription>{labels.removeHelp} <strong>{current}</strong></DialogDescription>
+          </DialogHeader>
+          {error ? <Note tone="failure" title={labels.actionFailed} text={error} /> : null}
+          <input className={inputClass} aria-label={labels.confirmName} value={confirmation} onChange={(event) => setConfirmation(event.target.value)} disabled={busy || !ready} autoComplete="off" />
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button variant="destructive" disabled={busy || !ready || !editable || confirmation !== current} onClick={remove}><Trash2 />{labels.remove}</Button>
+            <Button variant="outline" disabled={busy} onClick={() => setRemoving(false)}>{labels.cancel}</Button>
+          </div>
+        </div> : <div className="flex flex-col gap-4 p-5 sm:gap-5 sm:p-6">
+          <Button variant="ghost" size="sm" className="-ml-3 h-8 w-fit text-muted-foreground" onClick={onBack} disabled={busy}>
+            <ArrowLeft />{labels.back}
+          </Button>
+          <DialogHeader>
+            <div className="flex items-center gap-3">
+              <span className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-muted text-muted-foreground"><Server className="size-5" /></span>
+              <div className="text-left"><DialogTitle>{current ? (editable ? labels.editTitle : labels.settings) : labels.formTitle}</DialogTitle>
+                <DialogDescription className="mt-1">{labels.formHelp}</DialogDescription></div>
+            </div>
+          </DialogHeader>
+          {ready && !editable ? <p className="rounded-lg border bg-muted/70 p-3 text-sm text-muted-foreground" data-mcp-role-managed>{labels.roleManaged}</p> : null}
+          {error ? <Note tone="failure" title={labels.actionFailed} text={error} /> : null}
+          <form onSubmit={save} className="flex flex-col gap-4 sm:gap-5">
+            <fieldset disabled={busy || !ready || !editable} className={`flex min-w-0 flex-col gap-4 sm:gap-5 ${ready && !editable ? "text-muted-foreground" : ""}`}>
+              <label className="flex flex-col gap-2 font-medium">
+                {labels.name} <input className={inputClass} name="mcp-name" value={form.name} onChange={(event) => field("name", event.target.value)} maxLength={64} required />
+                <span className="text-xs font-normal text-muted-foreground">{labels.nameHint}</span>
+              </label>
+              <label className="flex flex-col gap-2 font-medium">
+                {labels.urlLabel} <input className={inputClass} name="mcp-url" type="url" value={form.url} onChange={(event) => field("url", event.target.value)} required autoComplete="off" spellCheck={false} placeholder="https://mcp.example.com/mcp" />
+                <span className="text-xs font-normal text-muted-foreground">{labels.urlHint}</span>
+              </label>
+              <ChoiceGroup kind="transport" label={labels.transport} value={form.transport} options={transportOptions}
+                onChange={(value) => field("transport", value)} disabled={busy || !ready || !editable} />
+              <ChoiceGroup kind="auth" label={labels.auth} value={form.auth} options={authOptions}
+                onChange={(value) => field("auth", value)} disabled={busy || !ready || !editable} />
+              {form.auth === "bearer" ? <label className="flex flex-col gap-2 font-medium">
                 {labels.token}
                 <input className={inputClass} name="mcp-token" type="password" autoComplete="new-password" value={form.token}
                   onChange={(event) => field("token", event.target.value)} placeholder={hasToken ? labels.tokenSaved : ""} />
-              </label>
-            ) : null}
-            <div className="flex flex-col gap-2">
-              <span>{labels.headers}</span>
-              {form.headers.map((row, index) => (
-                <div key={index} className="flex flex-wrap items-center gap-2" data-mcp-header>
-                  <input className={inputClass} aria-label={labels.headerName} value={row.name} onChange={(event) => header(index, "name", event.target.value)} maxLength={64} required />
-                  <input className={inputClass} type="password" aria-label={labels.headerValue} autoComplete="new-password" value={row.value}
-                    onChange={(event) => header(index, "value", event.target.value)} placeholder={row.saved ? labels.tokenSaved : ""} />
-                  <Button type="button" variant="ghost" size="sm" onClick={() => field("headers", form.headers.filter((_, at) => at !== index))} aria-label={labels.headerRemove}>
-                    <Trash2 />{labels.headerRemove}
+              </label> : null}
+              <details className="rounded-lg border p-3" data-mcp-advanced>
+                <summary className="cursor-pointer font-medium">{labels.advanced} · {labels.headers} {form.headers.length ? `(${form.headers.length})` : ""}</summary>
+                <div className="mt-4 flex flex-col gap-3">
+                  {form.headers.map((row, index) => <div key={index} className="flex flex-wrap items-center gap-2" data-mcp-header>
+                    <input className={`${inputClass} min-w-32 flex-1`} aria-label={labels.headerName} value={row.name} onChange={(event) => header(index, "name", event.target.value)} maxLength={64} required />
+                    <input className={`${inputClass} min-w-32 flex-1`} type="password" aria-label={labels.headerValue} autoComplete="new-password" value={row.value}
+                      onChange={(event) => header(index, "value", event.target.value)} placeholder={row.saved ? labels.tokenSaved : ""} />
+                    <Button type="button" variant="ghost" size="icon" onClick={() => field("headers", form.headers.filter((_, at) => at !== index))} aria-label={labels.headerRemove} title={labels.headerRemove}>
+                      <Trash2 className="size-4" />
+                    </Button>
+                  </div>)}
+                  <Button type="button" variant="outline" size="sm" className="w-fit" onClick={() => field("headers", [...form.headers, { name: "", value: "" }])}>
+                    <Plus className="size-4" />{labels.headerAdd}
                   </Button>
                 </div>
-              ))}
-              <Button type="button" variant="outline" size="sm" className="h-8 w-fit" onClick={() => field("headers", [...form.headers, { name: "", value: "" }])}>
-                <Plus />{labels.headerAdd}
-              </Button>
-            </div>
-            {editable ? <div className="flex flex-wrap gap-2">
-              <Button type="submit" size="sm">{busy ? labels.saving : labels.save}</Button>
-              <Button type="button" variant="outline" size="sm" onClick={onBack}>{labels.cancel}</Button>
-            </div> : null}
-          </fieldset>
-        </form>
-        {current && ready && editable ? (
-          <div className="mt-4 border-t pt-4">
-            <Button variant="destructive" size="sm" className="w-fit" disabled={busy} onClick={() => setRemoving(true)} data-mcp-remove><Trash2 />{labels.remove}</Button>
-          </div>
-        ) : null}
-      </Card>
-    </div>
+              </details>
+              {editable ? <div className="flex flex-wrap justify-end gap-2 border-t pt-4">
+                <Button type="button" variant="outline" onClick={onBack}>{labels.cancel}</Button>
+                <Button type="submit" disabled={busy}>{busy ? labels.saving : current ? labels.save : labels.create}</Button>
+              </div> : null}
+            </fieldset>
+          </form>
+          {current && ready && editable ? <div className="border-t pt-4">
+            <Button variant="ghost" className="text-destructive hover:text-destructive" disabled={busy} onClick={() => setRemoving(true)} data-mcp-remove><Trash2 />{labels.remove}</Button>
+          </div> : null}
+        </div>}
+      </DialogContent>
+    </Dialog>
   );
 }
 
