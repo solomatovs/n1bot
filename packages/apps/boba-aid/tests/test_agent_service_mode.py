@@ -22,7 +22,7 @@ from uuid import UUID, uuid4
 import pytest
 from acp.experimental.v2 import schema
 from acp_stand import AgentHistoryStand, AgentStand, FakeModel, RecordingUpdates
-from aid_stand import NoConnectionStore, RelayStand, TabSession
+from aid_stand import FixedServers, NoConnectionStore, RelayStand, TabSession
 from pydantic import SecretStr
 
 from boba.aid.agent.chat import (
@@ -49,7 +49,7 @@ from boba.mcp_client.client import (
     HttpLocation,
     HttpRoute,
     McpServers,
-    McpServersConfig,
+    FixedServerConfigs,
     ProxyAuth,
 )
 from boba.runtime.config import ProcessConfig
@@ -71,7 +71,7 @@ from boba.transport.http import HttpTransportConfig
 pytestmark = pytest.mark.anyio
 
 SCHEMA = StandNames().of_tree("agent_service_mode")
-NO_SERVERS = McpServersConfig(servers={})
+NO_SERVERS = FixedServerConfigs(servers={})
 MODEL = "fake-model"
 FOREIGN_PROFILE = "absent"
 
@@ -192,7 +192,7 @@ class ServiceModeStand:
         """Запуск агента конфигом config при профилях чата profiles."""
         return AgentLauncher(
             config,
-            NO_SERVERS,
+            FixedServers(NO_SERVERS.servers),
             profiles,
             self._users,
             self._relays.registrations,

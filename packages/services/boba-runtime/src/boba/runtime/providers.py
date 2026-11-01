@@ -373,13 +373,21 @@ def connection_types() -> ConnectionTypes:
     return ConnectionTypes.discover()
 
 
+def secret_cipher(
+    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
+) -> SecretCipher:
+    """Шифр секретов хранилищ процесса ключом [connections].cipher: общий у
+    соединений и MCP-серверов."""
+    return SecretCipher(config.connections.cipher.get_secret_value())
+
+
 async def connection_store(
     config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
     types: Annotated[ConnectionTypes, Depends(connection_types)],
     pool: Annotated[AsyncPostgresPool, Depends(postgres_pool)],
+    cipher: Annotated[SecretCipher, Depends(secret_cipher)],
 ) -> ConnectionStore:
     """Хранилище соединений; роли из [roles] попадают в таблицу roles на старте."""
-    cipher = SecretCipher(config.connections.cipher.get_secret_value())
     store = ConnectionStore(pool, config.db_schema, cipher, types)
 
     await store.sync_roles(config.roles)

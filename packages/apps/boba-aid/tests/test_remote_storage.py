@@ -13,12 +13,12 @@ from uuid import UUID
 
 import mcp_types as mt
 import pytest
-from aid_stand import NoTabs, OwnerRows, ServiceProcess
+from aid_stand import FixedServers, NoTabs, OwnerRows, ServiceProcess
 
 from boba.aid.data.remote_storage import FileOwners, RemoteStorageClient
+from boba.aid.mcp_servers.sources import ServerSource
 from boba.canvas.keys import ObjectKey, ScopeDir
 from boba.canvas.storage import StorageError, StorageNotFoundError
-from boba.chat.profiles import ChatProfileConfig, ChatProfiles
 from boba.identity.api import StoredUser
 from boba.identity.session import Login, UserMetadataField
 from boba.mcp_client.client import McpCaller, McpServers, McpToolServer
@@ -52,17 +52,21 @@ async def servers(service: ServiceProcess) -> AsyncIterator[McpServers]:
         await opened.stop()
 
 
-def _storage(servers: McpServers, meta: Mapping[str, Any]) -> RemoteStorageClient:
-    profiles = ChatProfiles(
-        {
-            "files": ChatProfileConfig.model_construct(
-                mcp=["boba"], roles=["*"], default=True
-            ),
-            "bare": ChatProfileConfig.model_construct(
-                mcp=[], roles=["*"], default=False
-            ),
-        }
-    )
+@pytest.fixture
+def granted(service: ServiceProcess) -> FixedServers:
+    """Сервер сервиса стенда, выданный владельцу файлов."""
+    return FixedServers(service.servers().servers)
+
+
+@pytest.fixture
+def nothing_granted() -> FixedServers:
+    """Источник без серверов: владельцу файлов не выдан ни один."""
+    return FixedServers({})
+
+
+def _storage(
+    servers: McpServers, source: ServerSource, meta: Mapping[str, Any]
+) -> RemoteStorageClient:
     sessions = NoTabs()
     users = OwnerRows(
         StoredUser(
@@ -72,16 +76,13 @@ def _storage(servers: McpServers, meta: Mapping[str, Any]) -> RemoteStorageClien
             meta=meta,
         )
     )
-    owners = FileOwners(lambda: sessions, lambda: users, profiles)
+    owners = FileOwners(lambda: sessions, lambda: users, lambda: source)
 
     return RemoteStorageClient("/workspace", owners, lambda: servers)
 
 
-def _signed_in(*profiles: str) -> dict[str, Any]:
-    return {
-        UserMetadataField.ROLES: ["dev"],
-        UserMetadataField.PROFILES: list(profiles),
-    }
+def _signed_in() -> dict[str, Any]:
+    return {UserMetadataField.ROLES: ["dev"]}
 
 
 async def _source(payload: bytes) -> AsyncIterator[bytes]:
@@ -91,9 +92,9 @@ async def _source(payload: bytes) -> AsyncIterator[bytes]:
 
 class TestRemoteStorage:
     async def test_file_goes_to_the_server_and_back_as_a_stream(
-        self, servers: McpServers
+        self, servers: McpServers, granted: FixedServers
     ) -> None:
-        storage = _storage(servers, _signed_in("files"))
+        storage = _storage(servers, granted, _signed_in())
         payload = bytes(range(256)) * 1000
         key = ObjectKey(user_id=str(USER), scope_id=THREAD, name="data.bin")
 
@@ -111,8 +112,10 @@ class TestRemoteStorage:
         if not await storage.delete_file(key.render()):
             raise AssertionError("the file is deleted on the server")
 
-    async def test_missing_file_is_not_found(self, servers: McpServers) -> None:
-        storage = _storage(servers, _signed_in("files"))
+    async def test_missing_file_is_not_found(
+        self, servers: McpServers, granted: FixedServers
+    ) -> None:
+        storage = _storage(servers, granted, _signed_in())
         key = ObjectKey(
             user_id=str(USER), scope_id=THREAD, name="ghost.mmd", dir=ScopeDir.MERMAID
         )
@@ -121,16 +124,20 @@ class TestRemoteStorage:
             await storage.stat(key.render())
 
     async def test_user_without_a_files_server_has_no_storage(
-        self, servers: McpServers
+        self, servers: McpServers, nothing_granted: FixedServers
     ) -> None:
-        storage = _storage(servers, _signed_in("bare"))
+        """Ни один сервер не выдан пользователю строкой таблицы: хранилища
+        файлов у него нет."""
+        storage = _storage(servers, nothing_granted, _signed_in())
         key = ObjectKey(user_id=str(USER), scope_id=THREAD, name="data.bin")
 
-        with pytest.raises(StorageError, match="names an mcp server"):
+        with pytest.raises(StorageError, match="no mcp server is granted"):
             await storage.stat(key.render())
 
-    async def test_unknown_owner_is_refused(self, servers: McpServers) -> None:
-        storage = _storage(servers, _signed_in("files"))
+    async def test_unknown_owner_is_refused(
+        self, servers: McpServers, granted: FixedServers
+    ) -> None:
+        storage = _storage(servers, granted, _signed_in())
         stranger = "99999999-2222-4333-8444-555555555555"
         key = ObjectKey(user_id=stranger, scope_id=THREAD, name="data.bin")
 
@@ -138,11 +145,11 @@ class TestRemoteStorage:
             await storage.stat(key.render())
 
     async def test_deleting_the_thread_removes_its_files_and_call_journals(
-        self, servers: McpServers, service: ServiceProcess
+        self, servers: McpServers, service: ServiceProcess, granted: FixedServers
     ) -> None:
         """Тред удаляется одной операцией сервиса: файлы его каталогов и
         журналы вызовов, которые шли в нём; журналы другого треда целы."""
-        storage = _storage(servers, _signed_in("files"))
+        storage = _storage(servers, granted, _signed_in())
         key = ObjectKey(user_id=str(USER), scope_id=THREAD, name="gone.bin")
         await storage.upload_stream(key.render(), _source(b"gone"))
         caller = McpCaller(login="alice", roles=frozenset({"dev"}))

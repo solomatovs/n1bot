@@ -31,7 +31,7 @@ from boba.aid.agent.client import AgentProcess
 from boba.mcp_client.client import (
     McpServerConfig,
     McpServerLimits,
-    McpServersConfig,
+    FixedServerConfigs,
     StdioCommand,
 )
 from boba.stand.signin import SignInStand
@@ -64,7 +64,7 @@ class DriftingState:
     def up(self) -> None:
         (self.root / DriftingFile.DOWN).unlink()
 
-    def servers(self) -> McpServersConfig:
+    def servers(self) -> FixedServerConfigs:
         endpoint = StdioCommand(
             command=sys.executable, args=(str(SCRIPT), str(self.root))
         )
@@ -73,7 +73,7 @@ class DriftingState:
             limits=McpServerLimits(connect_timeout_sec=20.0, call_timeout_sec=60.0),
         )
 
-        return McpServersConfig(servers={SERVER: config})
+        return FixedServerConfigs(servers={SERVER: config})
 
 
 class DriftingTexts:

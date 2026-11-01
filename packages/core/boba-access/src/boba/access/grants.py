@@ -14,9 +14,10 @@ connection_list/connection_search (каталог для модели) счит�
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from enum import StrEnum
 from typing import Any, ClassVar, LiteralString
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
@@ -26,6 +27,7 @@ from boba.identity.context import Subject
 __all__ = [
     "ConnectionFilter",
     "FilterParam",
+    "GrantedIds",
     "LikePattern",
     "ProfileKey",
     "SubjectGrantsQuery",
@@ -157,13 +159,13 @@ class ConnectionFilter(BaseModel):
             yield LikePattern.contains(word)
 
 
-class SubjectGrantsQuery:
-    """Строки connections, выданные субъекту лично или любой его роли.
+class GrantedIds:
+    """Идентификаторы строк одной таблицы-источника, выданные субъекту лично
+    или любой его роли, из таблицы grants.
 
-    Выдача — колонки SubjectRowColumn: id, name, data, kind и copies — сколько
-    строк субъекта носят это имя внутри вида (copies > 1 — дубль). Дубли
-    считаются по всем строкам субъекта, фильтры отбирают строки из них.
-    Исполнитель подставляет схему таблиц именем {schema} и биндит params().
+    CTE subject_roles и granted общие у соединений и MCP-серверов: выдача
+    любого вида решается одним SQL. Текст собирается частями литералов:
+    сначала GrantedIds.TEXT, затем своя проекция и фильтры хозяина.
     """
 
     TEXT: ClassVar[LiteralString] = """
@@ -178,7 +180,7 @@ class SubjectGrantsQuery:
         ),
         granted as (
             select
-                g.src_kind_id as connection_id
+                g.src_kind_id as src_id
             from
                 {schema}.grants g
             where 1=1
@@ -187,22 +189,50 @@ class SubjectGrantsQuery:
                 and g.tgt_kind_id = %(user_id)s
             union
             select
-                g.src_kind_id as connection_id
+                g.src_kind_id as src_id
             from
                 {schema}.grants g
                 inner join subject_roles sr on g.tgt_kind_id = sr.id
             where 1=1
                 and g.src_kind = %(src_kind)s
                 and g.tgt_kind = %(roles_kind)s
-        ),
-        copies as (
+        )
+    """
+
+    def params(
+        self, user_id: UUID, roles: Iterable[str], src_kind: GrantKind
+    ) -> dict[str, Any]:
+        """Параметры CTE: src_kind задаёт вид выдачи, user_id и roles — кому
+        она считается."""
+        return {
+            "src_kind": src_kind.value,
+            "users_kind": GrantKind.USERS.value,
+            "roles_kind": GrantKind.ROLES.value,
+            "user_id": user_id,
+            "roles": sorted(roles),
+        }
+
+
+class SubjectGrantsQuery:
+    """Строки connections, выданные субъекту лично или любой его роли.
+
+    Выдача — колонки SubjectRowColumn: id, name, data, kind и copies — сколько
+    строк субъекта носят это имя внутри вида (copies > 1 — дубль). Дубли
+    считаются по всем строкам субъекта, фильтры отбирают строки из них.
+    Исполнитель подставляет схему таблиц именем {schema} и биндит params().
+    """
+
+    TEXT: ClassVar[LiteralString] = (
+        GrantedIds.TEXT
+        + """
+        , copies as (
             select
                 c.name as name,
                 c.data ->> %(kind_key)s as kind,
                 count(*) as copies
             from
                 {schema}.connections c
-                inner join granted on granted.connection_id = c.id
+                inner join granted on granted.src_id = c.id
             group by
                 c.name,
                 c.data ->> %(kind_key)s
@@ -215,7 +245,7 @@ class SubjectGrantsQuery:
             cp.copies as copies
         from
             {schema}.connections c
-            inner join granted on granted.connection_id = c.id
+            inner join granted on granted.src_id = c.id
             inner join copies cp on 1=1
                 and cp.name = c.name
                 and cp.kind is not distinct from c.data ->> %(kind_key)s
@@ -225,10 +255,12 @@ class SubjectGrantsQuery:
             cp.kind,
             c.name
     """
+    )
 
     FILTERS: ClassVar[LiteralString] = "{filters}"
 
     def __init__(self, subject: Subject, flt: ConnectionFilter) -> None:
+        self._grants = GrantedIds()
         self._subject = subject
         self._filter = flt
 
@@ -237,16 +269,16 @@ class SubjectGrantsQuery:
         return self.TEXT.replace(self.FILTERS, self._filter.clauses())
 
     def params(self) -> dict[str, Any]:
-        params: dict[str, Any] = {
-            "src_kind": GrantKind.CONNECTIONS.value,
-            "users_kind": GrantKind.USERS.value,
-            "roles_kind": GrantKind.ROLES.value,
-            "user_id": self._subject.user_id,
-            "roles": sorted(self._subject.roles),
-            "kind_key": ProfileKey.KIND.value,
-            "host_key": ProfileKey.HOST.value,
-            "description_key": ProfileKey.DESCRIPTION.value,
-        }
+        params: dict[str, Any] = self._grants.params(
+            self._subject.user_id, self._subject.roles, GrantKind.CONNECTIONS
+        )
+        params.update(
+            {
+                "kind_key": ProfileKey.KIND.value,
+                "host_key": ProfileKey.HOST.value,
+                "description_key": ProfileKey.DESCRIPTION.value,
+            }
+        )
         params.update(self._filter.params())
 
         return params

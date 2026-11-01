@@ -307,7 +307,7 @@ class TestConnectionKind:
 
 class TestGrantTarget:
     def test_kinds_are_table_names(self) -> None:
-        if {k.value for k in GrantKind} != {"connections", "roles", "users"}:
+        if {k.value for k in GrantKind} != {"connections", "mcp_servers", "roles", "users"}:
             raise AssertionError("grant kinds must name the linked tables")
 
     def test_user_target(self) -> None:
@@ -325,6 +325,12 @@ class TestGrantTarget:
             ValueError, match="expected 'users' or 'roles', got 'connections'"
         ):
             GrantTarget(kind=GrantKind.CONNECTIONS, id=UUID(int=1))
+
+    def test_mcp_server_is_not_a_target(self) -> None:
+        with pytest.raises(
+            ValueError, match="expected 'users' or 'roles', got 'mcp_servers'"
+        ):
+            GrantTarget(kind=GrantKind.MCP_SERVERS, id=UUID(int=1))
 
     def test_unknown_kind_rejected(self) -> None:
         with pytest.raises(ValidationError, match="kind"):

@@ -49,7 +49,7 @@ from boba.core.commands import (
     CommandLines,
 )
 from boba.identity.errors import AuthenticationError
-from boba.mcp_client.client import McpClientError, McpServers
+from boba.mcp_client.client import McpClientError
 from boba.toolkit.result import MarkdownTable, NoteLine, TableResult
 from boba.transport.acp.protocol import (
     CommandApp,
@@ -385,19 +385,18 @@ class AppRoute(CommandRoute):
 class CommandRoutes:
     """Фабрика маршрутов команд вкладки: из объявления агента
     (`_boba/commands`) — маршрут по виду команды, из стандартного списка
-    агента без расширения — вопрос агенту. Интерфейс сервера, приложения
-    которого чат не рисует или которого нет у профиля треда, в меню не
-    попадает (причина — в логе). Создаёт фабрика CommandMenus на вкладку."""
+    агента без расширения — вопрос агенту. Интерфейс сервера, которого нет у
+    профиля треда, в меню не попадает (причина — в логе); интерфейс сервера,
+    который приложений не объявил, отказывает при вызове (ретранслятор).
+    Создаёт фабрика CommandMenus на вкладку."""
 
     def __init__(
         self,
         registration: McpRegistration,
-        servers: McpServers,
         relay: McpRelay,
         harness: HarnessCommands,
     ) -> None:
         self._registration = registration
-        self._servers = servers
         self._relay = relay
         self._harness = harness
         self._lines = CommandLines()
@@ -419,11 +418,7 @@ class CommandRoutes:
 
     def declared(self, commands: Sequence[DeclaredCommand]) -> Iterator[CommandRoute]:
         for declared in commands:
-            route = self._route(declared)
-            if route is None:
-                continue
-
-            yield route
+            yield self._route(declared)
 
     def listed(self, update: schema.AvailableCommandsUpdate) -> Iterator[CommandRoute]:
         for command in update.available_commands:
@@ -441,7 +436,7 @@ class CommandRoutes:
                 )
             )
 
-    def _route(self, declared: DeclaredCommand) -> CommandRoute | None:
+    def _route(self, declared: DeclaredCommand) -> CommandRoute:
         arguments = self._arguments(declared.arguments)
         hint = self._lines.hint(arguments)
         match declared:
@@ -458,26 +453,8 @@ class CommandRoutes:
 
     def _app(
         self, declared: DeclaredApp, arguments: Sequence[CommandArgument], hint: str
-    ) -> AppRoute | None:
+    ) -> AppRoute:
         owner = declared.owner
-        if owner not in self._registration.servers:
-            logger.warning(
-                "commands: /%s opens an app of the MCP server %s, which the profile "
-                "of thread %s does not give; it is left out of the menu",
-                declared.name,
-                owner,
-                self._registration.thread_id,
-            )
-            return None
-
-        if self._servers.apps(owner) is None:
-            logger.warning(
-                "commands: /%s opens an app of the MCP server %s, and the chat draws "
-                "no apps of it; it is left out of the menu",
-                declared.name,
-                owner,
-            )
-            return None
 
         return AppRoute(
             self._menu(declared, hint, CommandIcon.MCP),
@@ -613,8 +590,7 @@ class CommandMenus:
     MCP, ретранслятора и хранилища соединений чата; реестр создаёт агент
     треда."""
 
-    def __init__(self, servers: McpServers, relay: McpRelay, store: StoreRef) -> None:
-        self._servers = servers
+    def __init__(self, relay: McpRelay, store: StoreRef) -> None:
         self._relay = relay
         self._store = store
 
@@ -622,6 +598,6 @@ class CommandMenus:
         """Реестр вкладки регистрации registration (пользователь, тред,
         серверы профиля) над вкладкой board."""
         harness = HarnessCommands(registration, self._store)
-        routes = CommandRoutes(registration, self._servers, self._relay, harness)
+        routes = CommandRoutes(registration, self._relay, harness)
 
         return CommandMenu(board, routes, harness)

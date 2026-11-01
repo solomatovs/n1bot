@@ -49,6 +49,7 @@ class GrantKind(StrEnum):
     """Стороны связи в grants: значение — имя таблицы, kind_id — id в ней."""
 
     CONNECTIONS = "connections"
+    MCP_SERVERS = "mcp_servers"
     ROLES = "roles"
     USERS = "users"
 
@@ -115,7 +116,7 @@ class GrantTarget(BaseModel):
     @field_validator("kind")
     @classmethod
     def _target_only(cls, value: GrantKind) -> GrantKind:
-        if value is GrantKind.CONNECTIONS:
+        if value in (GrantKind.CONNECTIONS, GrantKind.MCP_SERVERS):
             msg = (
                 f"grant target kind: expected {GrantKind.USERS.value!r} or "
                 f"{GrantKind.ROLES.value!r}, got {value.value!r}"

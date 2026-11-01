@@ -153,9 +153,9 @@ class RemoteStreams:
         self, address: JournalAddress, channel: JournalChannel
     ) -> tuple[McpToolServer, str] | None:
         """Порт сервера журнала и uri канала для подписки; None — сервер не
-        объявил журнал, не назван в [mcp.servers] либо не ответил (причина в
+        объявил журнал, не выдан вызывающему либо не ответил (причина в
         логе)."""
-        if not self._servers.served(address.server):
+        if not await self._servers.served(address.server, self._caller):
             return None
 
         port = await self._servers.port(address.server, self._caller)

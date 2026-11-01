@@ -23,7 +23,7 @@ from boba.aid.infra.session import (
     current_session,
     session_source_ref,
 )
-from boba.aid.rendering.acp_view import ServerApps, ToolMedia, UpdateView
+from boba.aid.rendering.acp_view import ToolMedia, UpdateView
 from boba.aid.rendering.chat_view import ChatView, LiveSink
 from boba.aid.rendering.renderer import (
     ChatRenderers,
@@ -40,6 +40,7 @@ from boba.messaging import (
     CanvasChanged,
     Envelope,
     LockToken,
+    McpServersChanged,
     SignInRefreshRequested,
     ThreadActive,
     ThreadChanged,
@@ -277,8 +278,8 @@ class ChatRoomSurface(RenderSurface):
         journals = root.resolved(providers.remote_journals)
         storage = root.resolved(providers.storage_provider)
         texts = root.resolved(providers.feed_text)
-        servers = root.resolved(providers.mcp_servers)
-        media = ToolMedia(ServerApps(servers))
+        sandbox = root.resolved(providers.sandbox_links)
+        media = ToolMedia(sandbox.app_url())
         view = ChatView(thread_id, LiveSink(), str(owner), storage, texts)
 
         return ChatRenderers.ensure(
@@ -337,6 +338,11 @@ class UserRoom:
     @classmethod
     async def deliver(cls, user_id: UUID, envelope: Envelope) -> None:
         message = envelope.message
+        if isinstance(message, McpServersChanged):
+            root = Container.require_root("MCP server changes")
+            await root.resolved(providers.mcp_updates).received(user_id, envelope)
+            return
+
         if isinstance(message, SignInRefreshRequested):
             await cls._refresh_requested(user_id)
             return

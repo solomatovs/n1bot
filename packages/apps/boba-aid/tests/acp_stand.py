@@ -22,9 +22,9 @@ from collections.abc import (
     Mapping,
     Sequence,
 )
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 from uuid import uuid4
 
 import pytest
@@ -72,10 +72,10 @@ from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.connection.auth import PasswordAuth
 from boba.identity.context import CallContexts
 from boba.mcp_client.client import (
+    FixedServerConfigs,
     McpServerConfig,
     McpServerLimits,
     McpServers,
-    McpServersConfig,
     StdioCommand,
 )
 from boba.stand.names import StandNames
@@ -168,6 +168,7 @@ class FakeModel:
                 reasoning_return=ReasoningReturn.NEVER,
             ),
             system_prompt=system_prompt,
+            servers=(),
             mcp=None,
         )
 
@@ -504,13 +505,13 @@ class Agents:
     TURN_TIMEOUT_SEC: float = 60.0
 
     def __init__(
-        self, root: Path, model: FakeModel, stand: Stand, servers: McpServersConfig
+        self, root: Path, model: FakeModel, stand: Stand, servers: FixedServerConfigs
     ) -> None:
         self._root = root
         self._model = model
         history = AgentHistoryStand(stand)
         self._stand = AgentStand(root, history.history())
-        self._builder = SettingsFileBuilder(self._stand.config(), servers)
+        self._builder = SettingsFileBuilder(self._stand.config())
         self._servers = McpServers(servers)
         credentials = KerberosCredentialSource(None, NoRefresh())
         relay = RelayStand(NoConnectionStore(), lambda: credentials, CallContexts())
@@ -533,7 +534,7 @@ class Agents:
         workdir.write(document, launch.system_prompt)
         tab = TabSession()
         registration = tab.registration(uuid4(), SignInStand.PROFILE)
-        alone = replace(registration, servers=frozenset())
+        alone = registration
         menu = self.menus.menu(alone, updates)
         questions = AskedQuestions(updates, menu)
         process = AgentProcess(
@@ -642,7 +643,6 @@ class SandboxHost:
                 "service": {"scheme": "http", "host": host, "port": port, "path": ""},
                 "path": "/mcp",
             },
-            "apps": self.apps(),
         }
 
 
@@ -659,14 +659,19 @@ class AppsHost:
     BOOT_SEC: ClassVar[float] = 60.0
     STOP_SEC: ClassVar[float] = 10.0
 
-    def __init__(self, flags: Sequence[str]) -> None:
+    def __init__(
+        self,
+        flags: Sequence[str],
+        transport: Literal["streamable-http", "sse"] = "streamable-http",
+    ) -> None:
+        self._transport = transport
         self._sandbox = SandboxHost()
         self._mcp_port = StandPorts().free()
         self._server = subprocess.Popen(
             [
                 sys.executable,
                 str(self.SCRIPT),
-                "streamable-http",
+                self._transport,
                 str(self._mcp_port),
                 *flags,
             ]
@@ -694,14 +699,16 @@ class AppsHost:
 
     def plain(self) -> dict[str, Any]:
         """Секция [mcp.servers.<имя>] стандартного сервера без секции apps."""
-        drawn = self.drawn()
-        del drawn["apps"]
-
-        return drawn
+        return self.drawn()
 
     def drawn(self) -> dict[str, Any]:
         """Та же секция с песочницей приложений этого хоста."""
-        return self._sandbox.drawn(self.HOST, self._mcp_port)
+        config = self._sandbox.drawn(self.HOST, self._mcp_port)
+        config["endpoint"]["transport"] = self._transport
+        if self._transport == "sse":
+            config["endpoint"]["path"] = "/sse"
+
+        return config
 
     def stop(self) -> None:
         self.stop_server()

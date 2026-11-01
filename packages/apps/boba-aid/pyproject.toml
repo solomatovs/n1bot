@@ -79,6 +79,9 @@ boba-db-clickhouse = "entry points boba.addresses: адреса clickhouse в с
 boba-db-oracle = "entry points boba.connections и boba.addresses: тип соединения oracle"
 
 
+[tool.setuptools.package-data]
+"boba.aid.mcp_servers" = ["schema/*.sql"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["boba*"]

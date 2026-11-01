@@ -169,6 +169,7 @@ def second(
         llm_port=llm_port,
         db_name=stand_database,
         generation=GENERATION,
+        seed_servers=False,
         messaging=MESSAGING,
     )
     process = StandProcess(config=config, log_path=workdir / "second.log")
@@ -197,6 +198,7 @@ def foreign_app(
         llm_port=llm_port,
         db_name=stand_database,
         generation=GENERATION,
+        seed_servers=False,
         agent_process={"command": sys.executable, "args": [str(FOREIGN_AGENT)]},
     )
     process = StandProcess(config=config, log_path=workdir / "foreign.log")
@@ -212,18 +214,19 @@ def sandboxed(
     tmp_path_factory: pytest.TempPathFactory,
     llm_port: int,
     fake_llm: None,
-    stand_database: str,
     app: StandProcess,
 ) -> Iterator[StandProcess]:
-    """Инстанс aid над той же базой с песочницей, как в бою: файлы
-    вложений и инструментов — один workspace пользователя."""
+    """Отдельная база и сервис с песочницей: файлы вложений и инструментов
+    лежат в одном workspace пользователя."""
     workdir = tmp_path_factory.mktemp("acp-chat-sandbox")
     config = StandConfig(
         workdir=workdir,
         app=StandApp.AID,
         app_port=StandPorts().free(),
         llm_port=llm_port,
-        db_name=stand_database,
+        db_name=StandDatabase(
+            StandApp.AID, StandNames().tree_database(DB_NAME + "_sandbox")
+        ).prepare(),
         generation=GENERATION,
         sandbox=True,
     )
@@ -240,11 +243,9 @@ def ghosted(
     tmp_path_factory: pytest.TempPathFactory,
     llm_port: int,
     fake_llm: None,
-    stand_database: str,
     app: StandProcess,
 ) -> Iterator[StandProcess]:
-    """Инстанс aid над той же базой, профили которого называют сервер MCP,
-    который не отвечает: на его порту никто не слушает."""
+    """Отдельная база с выданным сервером, на порту которого никто не слушает."""
     workdir = tmp_path_factory.mktemp("acp-chat-ghost")
     ghost = {
         "limits": {"connect_timeout_sec": 5.0, "call_timeout_sec": 5.0},
@@ -264,7 +265,9 @@ def ghosted(
         app=StandApp.AID,
         app_port=StandPorts().free(),
         llm_port=llm_port,
-        db_name=stand_database,
+        db_name=StandDatabase(
+            StandApp.AID, StandNames().tree_database(DB_NAME + "_ghost")
+        ).prepare(),
         generation=GENERATION,
         mcp_servers={"ghost": ghost},
     )

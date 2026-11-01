@@ -53,11 +53,10 @@ from boba.mcp_client.client import (
     McpCaller,
     McpClientError,
     McpClientIdentity,
-    McpServerApps,
     McpServerConfig,
     McpServerLimits,
     McpServers,
-    McpServersConfig,
+    FixedServerConfigs,
     McpToolServer,
     McpUnansweredError,
     ProxyAuth,
@@ -719,7 +718,7 @@ class TestServerNames:
         endpoint = StdioCommand(command=sys.executable, args=(str(SERVER), "stdio"))
 
         with pytest.raises(ValidationError) as refused:
-            McpServersConfig(servers={name: _config(endpoint)})
+            FixedServerConfigs(servers={name: _config(endpoint)})
 
         if name not in str(refused.value) or complaint not in str(refused.value):
             raise AssertionError(f"the refusal names the server and why: {refused}")
@@ -731,7 +730,7 @@ class TestServersOfASession:
     @staticmethod
     def _servers(**extra: McpServerConfig) -> McpServers:
         endpoint = StdioCommand(command=sys.executable, args=(str(SERVER), "stdio"))
-        config = McpServersConfig(servers={"standard": _config(endpoint), **extra})
+        config = FixedServerConfigs(servers={"standard": _config(endpoint), **extra})
 
         return McpServers(config)
 
@@ -769,10 +768,10 @@ class TestServersOfASession:
         if not came_up.tools:
             raise AssertionError("the next request connects the server that came up")
 
-    async def test_undeclared_server_name_is_an_error(self) -> None:
+    async def test_ungranted_server_name_is_an_error(self) -> None:
         servers = self._servers()
         try:
-            with pytest.raises(McpClientError, match="not declared"):
+            with pytest.raises(McpClientError, match="not granted"):
                 await servers.port("typo", CALLER)
         finally:
             await servers.stop()
@@ -795,59 +794,49 @@ class TestServersOfASession:
     async def test_reconnect_of_the_undeclared_server_name_is_an_error(self) -> None:
         servers = self._servers()
         try:
-            with pytest.raises(McpClientError, match="not declared"):
+            with pytest.raises(McpClientError, match="not granted"):
                 await servers.reconnect("typo", CALLER)
         finally:
             await servers.stop()
 
 
 class TestServerApps:
-    """Секция apps: расширение MCP Apps объявляется только её серверу, ресурс
-    приложения читается с его CSP, песочницы серверов не делят источник."""
+    """Приложения MCP Apps: клиент объявляет серверу расширение, а сервер
+    сам решает, что его инструменты рисует приложение; ресурс приложения
+    читается с его CSP."""
 
     ORDERS: ClassVar[str] = "ui://standard/orders.html"
     ROWS: ClassVar[list[dict[str, object]]] = [
         {"id": 7, "customer": "Acme", "status": "new", "total": 120.5}
     ]
-    SANDBOX: ClassVar[McpServerApps] = McpServerApps.model_validate(
-        {"chat_url": "http://localhost:8122/aid/", "port": 8123}
-    )
 
-    async def _open(
-        self, endpoint: HttpEndpoint | StdioCommand, apps: McpServerApps | None
-    ) -> McpToolServer:
-        config = _config(endpoint).model_copy(update={"apps": apps})
-        server = McpToolServer("standard", config)
+    async def _open(self, endpoint: HttpEndpoint | StdioCommand) -> McpToolServer:
+        server = McpToolServer("standard", _config(endpoint))
         await server.described(OWN)
 
         return server
 
-    async def test_ui_is_declared_only_to_a_server_with_apps(
+    async def test_ui_is_the_extension_the_client_declares(
         self, edition_endpoint: HttpEndpoint | StdioCommand
     ) -> None:
-        drawn = await self._open(edition_endpoint, self.SANDBOX)
-        plain = await self._open(edition_endpoint, None)
+        """Сервер видит у клиента расширение приложений и отдаёт итог
+        инструмента приложению, а не блоками."""
+        server = await self._open(edition_endpoint)
         try:
-            by_app = await drawn.call(
-                OWN, _call("orders", rows=self.ROWS), None, None, None, None
-            )
-            by_blocks = await plain.call(
+            result = await server.call(
                 OWN, _call("orders", rows=self.ROWS), None, None, None, None
             )
         finally:
-            await drawn.close()
-            await plain.close()
+            await server.close()
 
-        app_text = McpResults().result("orders", "c1", by_app).llm_view()
-        block_text = McpResults().result("orders", "c2", by_blocks).llm_view()
+        by_app = McpResults().result("orders", "c1", result).llm_view()
 
-        assert app_text == "1 orders are shown by their app"
-        assert block_text == "1 orders:\n#7 Acme new 120.50"
+        assert by_app == "1 orders are shown by their app"
 
     async def test_app_resource_is_read_with_its_csp(
         self, edition_endpoint: HttpEndpoint | StdioCommand
     ) -> None:
-        server = await self._open(edition_endpoint, self.SANDBOX)
+        server = await self._open(edition_endpoint)
         try:
             read = await server.read_resource(
                 OWN, mt.ReadResourceRequestParams(uri=self.ORDERS), None
@@ -872,41 +861,6 @@ class TestServerApps:
         with pytest.raises(MCPError):
             await served.read_resource(OWN, missing, None)
 
-    def test_sandboxes_of_two_servers_on_one_origin_are_refused(self) -> None:
-        endpoint = StdioCommand(command=sys.executable, args=(str(SERVER), "stdio"))
-        first = McpServerConfig.model_validate(
-            {
-                "endpoint": endpoint,
-                "limits": {"connect_timeout_sec": 1.0, "call_timeout_sec": 1.0},
-                "apps": {"chat_url": "https://boba.example.com/aid/", "port": 8443},
-            }
-        )
-        second = first.model_copy(
-            update={
-                "apps": McpServerApps.model_validate(
-                    {"chat_url": "https://boba.example.com:443/other/", "port": 8443}
-                )
-            }
-        )
-
-        with pytest.raises(ValidationError) as refused:
-            McpServersConfig(servers={"one": first, "two": second})
-
-        assert "'one'" in str(refused.value)
-        assert "[mcp.servers.two.apps] port 8443" in str(refused.value)
-        assert "https://boba.example.com:8443" in str(refused.value)
-
-    def test_sandbox_is_the_host_of_the_chat_on_its_own_port(self) -> None:
-        signed = McpServerApps.model_validate(
-            {"chat_url": "https://u:p@boba.example.com/aid/", "port": 443}
-        )
-
-        assert self.SANDBOX.sandbox_url() == "http://localhost:8123/"
-        assert self.SANDBOX.origin() == "http://localhost:8123"
-        assert self.SANDBOX.chat_origin() == "http://localhost:8122"
-        assert signed.origin() == "https://boba.example.com"
-        assert signed.chat_origin() == "https://boba.example.com"
-
     async def test_prefab_tool_names_its_renderer_and_structured_view(
         self, apps_slot: AppsSlot
     ) -> None:
@@ -914,7 +868,7 @@ class TestServerApps:
         _meta.ui.resourceUri рендерера, ресурс читается типом приложения с
         CSP только на источник статики стенда — ни CDN, ни шрифтов извне, —
         итог вызова несёт view в structuredContent и текст для модели."""
-        server = await self._open(_legacy(apps_slot, AppServer.PREFAB), self.SANDBOX)
+        server = await self._open(_legacy(apps_slot, AppServer.PREFAB))
         try:
             listed = await server.tools(OWN)
             sales = next(tool for tool in listed.tools if tool.name == "sales")
@@ -1343,7 +1297,7 @@ class TestSignInAsTheUser:
         auth = self._auth(process, secret, client_secret)
         wide = process.endpoint().model_copy(update={"auth": auth})
         narrow = wide.model_copy(update={"path": "/narrow"})
-        config = McpServersConfig(
+        config = FixedServerConfigs(
             servers={"boba": _config(wide), "narrow": _config(narrow)}
         )
 
@@ -1472,7 +1426,7 @@ class TestSignInAsTheUser:
 
         auth = self._auth(boba_mcp_stand, self.SECRET, self.CLIENT_SECRET)
         endpoint = boba_mcp_stand.endpoint().model_copy(update={"auth": auth})
-        servers = Few(McpServersConfig(servers={"boba": _config(endpoint)}))
+        servers = Few(FixedServerConfigs(servers={"boba": _config(endpoint)}))
         owner = McpCaller(login="ivanov", roles=frozenset({"dev"}))
         other = McpCaller(login="petrov", roles=frozenset({"dev"}))
         try:
@@ -2360,7 +2314,7 @@ class TestStandardEdition:
         процессом stdio-сервера, и сервер видит у каждого его clientInfo и
         возможности, а расширения чата — поверх них."""
         endpoint = StdioCommand(command=sys.executable, args=(str(SERVER), "stdio"))
-        config = McpServersConfig(servers={"standard": _config(endpoint)})
+        config = FixedServerConfigs(servers={"standard": _config(endpoint)})
         agent = McpClientIdentity(
             info=mt.Implementation(name="boba-cli", version="9.9"),
             capabilities=mt.ClientCapabilities(
@@ -2390,7 +2344,13 @@ class TestStandardEdition:
         assert declared["info"] == {"name": "boba-cli", "version": "9.9"}
         assert declared["capabilities"]["elicitation"] == {"form": {}}
         assert sorted(declared["capabilities"]["extensions"]) == sorted(
-            [JournalFeature.ID, SealFeature.ID, ScopeFeature.ID, CommandsFeature.ID]
+            [
+                JournalFeature.ID,
+                SealFeature.ID,
+                ScopeFeature.ID,
+                CommandsFeature.ID,
+                "io.modelcontextprotocol/ui",
+            ]
         )
         assert mine["info"] == McpServers.OWN.info.model_dump(exclude_none=True)
         assert "elicitation" not in mine["capabilities"]
@@ -2525,7 +2485,7 @@ class TestHandshakeEdition:
         агента из _meta запроса до сервера не доходят, свои ключи запроса
         доходят."""
         endpoint = _legacy(apps_slot, AppServer.LEGACY)
-        config = McpServersConfig(servers={"legacy": _config(endpoint)})
+        config = FixedServerConfigs(servers={"legacy": _config(endpoint)})
         meta = mt.RequestParamsMeta()
         for key, value in self.ENVELOPE.items():
             meta[key] = value
@@ -2549,7 +2509,13 @@ class TestHandshakeEdition:
         assert sorted(declared["capabilities"]) == ["elicitation", "extensions"]
         assert declared["capabilities"]["elicitation"] == {"form": {}}
         assert sorted(declared["capabilities"]["extensions"]) == sorted(
-            [JournalFeature.ID, SealFeature.ID, ScopeFeature.ID, CommandsFeature.ID]
+            [
+                JournalFeature.ID,
+                SealFeature.ID,
+                ScopeFeature.ID,
+                CommandsFeature.ID,
+                "io.modelcontextprotocol/ui",
+            ]
         )
         assert sorted(declared["meta"]) == sorted(["progressToken", self.TRACE])
         assert "expected one such call open on the session, got 0" in str(unasked.value)
@@ -2672,13 +2638,13 @@ class TestHandshakeEdition:
     ) -> None:
         """Пример MCP Apps из npm (без сессии): инструмент со ссылкой на
         приложение, ресурс приложения его вида и вызов."""
-        config = _config(_legacy(apps_slot, app)).model_copy(
-            update={"apps": TestServerApps.SANDBOX}
-        )
+        config = _config(_legacy(apps_slot, app))
         server = McpToolServer("example", config)
         await server.described(OWN)
         try:
-            versions = (await server.described(OWN)).result.supported_versions
+            described = await server.described(OWN)
+            assert described.legacy(), described
+            versions = described.result.supported_versions
             listed = next(
                 item for item in (await server.tools(OWN)).tools if item.name == tool
             )

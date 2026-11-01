@@ -11,6 +11,7 @@ import time
 import tomllib
 from collections.abc import (
     AsyncIterator,
+    Collection,
     Iterator,
     Mapping,
     Sequence,
@@ -53,7 +54,9 @@ from boba.aid.infra.session import (
     current_session,
 )
 from boba.aid.infra.thread_room import ThreadSurfaces
-from boba.aid.rendering.acp_view import AppSections
+from boba.aid.mcp_servers import McpAppError, McpOrigin
+from boba.aid.mcp_servers.sources import McpViewer, ServerRecord, ServerSource
+from boba.aid.mcp_servers.store import StoredServer
 from boba.aid.rendering.chat_view import ChatSink, ChatView, StepRole
 from boba.aid.rendering.renderer import NoSurface, RenderSurface, TabSurfaces
 from boba.aid.rendering.tool import AppMeta, AppSource, AppUnread, ToolSource
@@ -86,11 +89,11 @@ from boba.identity.token import SessionClaims, TokenReader
 from boba.kerberos import DelegationMode, SignInTicket
 from boba.krb.seal import SsoTickets, TicketSealer
 from boba.mcp_client.client import (
+    FixedServerConfigs,
     McpCaller,
     McpDescription,
-    McpServerApps,
+    McpServerConfig,
     McpServers,
-    McpServersConfig,
 )
 from boba.messaging import MemoryMessageBus, MemoryPayloadStore
 from boba.runtime.elements import FeedbacksTable
@@ -168,7 +171,6 @@ class TabSession:
             profile=profile,
             session=self.live,
             server=self.SERVER,
-            servers=frozenset({self.SERVER}),
         )
 
 
@@ -211,7 +213,7 @@ class ServiceProcess:
 
         raise AssertionError(f"the service did not listen on port {self.port}")
 
-    def servers(self) -> McpServersConfig:
+    def servers(self) -> FixedServerConfigs:
         service = {"scheme": "http", "host": "127.0.0.1", "port": self.port, "path": ""}
         endpoint = {
             "transport": "streamable-http",
@@ -230,9 +232,9 @@ class ServiceProcess:
             "limits": {"connect_timeout_sec": 30.0, "call_timeout_sec": 60.0},
         }
 
-        return McpServersConfig.model_validate({"servers": {"boba": server}})
+        return FixedServerConfigs.model_validate({"servers": {"boba": server}})
 
-    def token_servers(self, name: str) -> McpServersConfig:
+    def token_servers(self, name: str) -> FixedServerConfigs:
         """Секция [mcp.servers] с одним сервером name: вход токеном
         пользователя alice с ролью dev."""
         path = "/service"
@@ -252,7 +254,7 @@ class ServiceProcess:
             "limits": {"connect_timeout_sec": 30.0, "call_timeout_sec": 60.0},
         }
 
-        return McpServersConfig.model_validate({"servers": {name: server}})
+        return FixedServerConfigs.model_validate({"servers": {name: server}})
 
     def stop(self) -> None:
         self._process.terminate()
@@ -313,11 +315,11 @@ class ToolService:
     def stop(self) -> None:
         self._process.stop()
 
-    def servers(self) -> McpServersConfig:
+    def servers(self) -> FixedServerConfigs:
         """Секция [mcp.servers] чата с одним сервером — этим сервисом."""
         servers = {self.server_name: self._config.server(self.ENDPOINT)}
 
-        return McpServersConfig.model_validate({"servers": servers})
+        return FixedServerConfigs.model_validate({"servers": servers})
 
     def tail(self) -> str:
         return self._process.tail()
@@ -360,9 +362,9 @@ class RelayStand:
         return self.relay_with(servers, self.chat, self.canvas)
 
     def menus(self, servers: McpServers) -> CommandMenus:
-        """Реестры команд вкладок над серверами servers и хранилищем
-        соединений стенда."""
-        return CommandMenus(servers, self.relay(servers), self._store)
+        """Реестры команд вкладок над ретранслятором серверов servers и
+        хранилищем соединений стенда."""
+        return CommandMenus(self.relay(servers), self._store)
 
     def relay_with(
         self, servers: McpServers, chat: ChatTools, canvas: CanvasOpener
@@ -491,7 +493,6 @@ class ServiceTools:
             profile=profile,
             session=session,
             server=server,
-            servers=frozenset({server}),
         )
         registrations = self._stand.registrations
         registered = registrations.register(registration, [server])[0]
@@ -585,35 +586,107 @@ class OwnerRows(UserRows):
         raise NotImplementedError
 
 
-class KnownSources(AppSections):
+class FixedServers(ServerSource):
+    """Серверы стендов, заданные кодом: записи видны любому зрителю и не
+    меняются. Заменяет таблицу mcp_servers там, где тесту серверы не нужны
+    как строки БД: у всех происхождение role, выключенных нет, правка
+    отвергается отказом McpAppError."""
+
+    def __init__(self, servers: Mapping[str, McpServerConfig]) -> None:
+        self._records: list[ServerRecord] = []
+        for name in sorted(servers):
+            self._records.append(self._record(name, servers[name]))
+
+    async def visible(self, viewer: McpViewer) -> Sequence[ServerRecord]:
+        return list(self._records)
+
+    async def record(self, viewer: McpViewer, name: str) -> ServerRecord:
+        """Ошибки:
+        McpAppError — сервера name в наборе стенда нет.
+        """
+        for record in self._records:
+            if record.name == name:
+                return record
+
+        names: list[str] = []
+        for record in self._records:
+            names.append(record.name)
+
+        msg = (
+            f"the MCP servers app of {viewer.login!r} did not find the server "
+            f"{name!r}: the stand has no server granted to this user, the servers "
+            f"of the stand are {names or ['none']}"
+        )
+        raise McpAppError(msg)
+
+    async def config_of(self, name: str, caller: McpCaller) -> McpServerConfig | None:
+        for record in self._records:
+            if record.name == name:
+                return record.config
+
+        return None
+
+    async def add(
+        self, viewer: McpViewer, name: str, server: StoredServer
+    ) -> ServerRecord:
+        raise McpAppError(f"MCP stand: cannot add server {name!r}; source is read-only")
+
+    async def replace(
+        self, viewer: McpViewer, current: str, name: str, server: StoredServer
+    ) -> ServerRecord:
+        raise McpAppError(
+            f"MCP stand: cannot replace server {current!r}; source is read-only"
+        )
+
+    async def set_enabled(
+        self, viewer: McpViewer, name: str, enabled: bool
+    ) -> ServerRecord:
+        raise McpAppError(
+            f"MCP stand: cannot toggle server {name!r}; source is read-only"
+        )
+
+    async def remove(self, viewer: McpViewer, name: str) -> None:
+        raise McpAppError(
+            f"MCP stand: cannot remove server {name!r}; source is read-only"
+        )
+
+    @staticmethod
+    def _record(name: str, config: McpServerConfig) -> ServerRecord:
+        return ServerRecord(
+            server_id=uuid5(NAMESPACE_URL, f"boba-mcp-stand:{name}"),
+            name=name,
+            origin=McpOrigin.ROLE,
+            editable=False,
+            enabled=True,
+            config=config,
+        )
+
+
+class KnownSources:
     """Серверы тестов ленты: карточки инструментов, расширения описаний,
-    ресурсы приложений и секции apps заданы тестом. Как реализация
-    AppSections даёт ленте секции apps; call собирает первое уведомление
-    вызова с источником (ToolSource) так, как его собрал бы ретранслятор:
-    карточка инструмента (у незнакомого инструмента известного сервера —
-    пустая схема), описание сервера, карточки инструментов узлов вложенного
-    вызова и ресурс приложения. Вызов инструмента незнакомого сервера
-    источника не несёт."""
+    ресурсы приложений и имена серверов, объявивших приложения MCP Apps,
+    заданы тестом. call собирает первое уведомление вызова с источником
+    (ToolSource) так, как его собрал бы ретранслятор: карточка инструмента
+    (у незнакомого инструмента известного сервера — пустая схема), описание
+    сервера, карточки инструментов узлов вложенного вызова и ресурс
+    приложения. Вызов инструмента незнакомого сервера источника не несёт."""
 
     def __init__(
         self,
         tools: Mapping[str, Sequence[mt.Tool]],
         described: Mapping[str, mt.ServerCapabilities],
-        apps: Mapping[str, McpServerApps],
+        apps: Collection[str],
         resources: Mapping[str, AppSource] | None = None,
     ) -> None:
         self._tools = tools
         self._described = described
-        self._apps = apps
+        self._apps = frozenset(apps)
         self._resources: Mapping[str, AppSource] = {}
         if resources is not None:
             self._resources = resources
 
         self._names = McpToolNames()
         self._app_meta = AppMeta()
-
-    def apps(self, server: str) -> McpServerApps | None:
-        return self._apps.get(server)
 
     def call(
         self, call_id: str, name: str, args: Mapping[str, Any]
@@ -718,10 +791,10 @@ class PerCallStreams(RemoteStreams):
     """
 
     def __init__(self, journals: RemoteJournals, caller: McpCaller) -> None:
-        self._config = McpServersConfig(servers={})
+        self._config = FixedServerConfigs(servers={})
         super().__init__(journals, self._client(), caller)
 
-    def serve(self, config: McpServersConfig) -> None:
+    def serve(self, config: FixedServerConfigs) -> None:
         """Серверы, с которых дальше читаются журналы."""
         self._config = config
 
@@ -1158,6 +1231,7 @@ def di_root(
         feed_text,
         mcp_servers,
         remote_journals,
+        sandbox_links,
         session_source,
         storage_provider,
         thread_agents_index,
@@ -1178,7 +1252,8 @@ def di_root(
     root.provide(runtime.runs, runtime_stand.runs)
     root.provide(runtime.call_journals, runtime_stand.journals)
     root.provide(remote_journals, RemoteJournals())
-    root.provide(mcp_servers, McpServers(McpServersConfig(servers={})))
+    root.provide(sandbox_links, sandbox_links(app_config))
+    root.provide(mcp_servers, McpServers(FixedServerConfigs(servers={})))
     root.provide(storage_provider, storage)
     root.provide(thread_agents_index, ThreadAgentsIndex())
     root.provide(feed_text, UiText(AppLanguage.ASSETS, UiText.DEFAULT_LANGUAGE))

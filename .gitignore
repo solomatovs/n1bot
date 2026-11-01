@@ -8,6 +8,7 @@ __pycache__
 *.egg-info/
 /docs/*
 !/docs/admin-guide.md
+!/docs/mcp-servers-user.md
 !/docs/developer-guide.md
 !/docs/migration-from-dev.md
 !/docs/knowledge-graph-plan.md
@@ -16,6 +17,7 @@ __pycache__
 !/docs/migrations/
 /docs/psql-queries/*.log
 .claude
+.codex
 CLAUDE.md
 
 /release/

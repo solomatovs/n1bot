@@ -7,6 +7,9 @@ import {
   ChevronDown,
   ChevronRight,
   KeyRound,
+  Plus,
+  Trash2,
+  Pencil,
   RefreshCw,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -48,9 +51,41 @@ function useLabels() {
   const plain = { interpolation: { escapeValue: false } };
   return {
     title: t(`${TEXT}.title`),
+    add: t(`${TEXT}.add`),
+    edit: t(`${TEXT}.edit`),
+    save: t(`${TEXT}.save`),
+    saving: t(`${TEXT}.saving`),
+    cancel: t(`${TEXT}.cancel`),
+    remove: t(`${TEXT}.remove`),
+    removeTitle: t(`${TEXT}.removeTitle`),
+    removeHelp: t(`${TEXT}.removeHelp`),
+    confirmName: t(`${TEXT}.confirmName`),
+    name: t(`${TEXT}.name`),
+    nameHint: t(`${TEXT}.nameHint`),
+    auth: t(`${TEXT}.auth`),
+    authNone: t(`${TEXT}.authNone`),
+    authBearer: t(`${TEXT}.authBearer`),
+    authLocal: t(`${TEXT}.authLocal`),
+    authProxy: t(`${TEXT}.authProxy`),
+    token: t(`${TEXT}.token`),
+    tokenSaved: t(`${TEXT}.tokenSaved`),
+    headers: t(`${TEXT}.headers`),
+    headerName: t(`${TEXT}.headerName`),
+    headerValue: t(`${TEXT}.headerValue`),
+    headerAdd: t(`${TEXT}.headerAdd`),
+    headerRemove: t(`${TEXT}.headerRemove`),
+    enabled: t(`${TEXT}.enabled`),
+    disable: t(`${TEXT}.disable`),
+    enable: t(`${TEXT}.enable`),
+    limits: t(`${TEXT}.limits`),
+    formTitle: t(`${TEXT}.formTitle`),
+    editTitle: t(`${TEXT}.editTitle`),
+    settings: t(`${TEXT}.settings`),
+    roleManaged: t(`${TEXT}.roleManaged`),
+
     origin: (origin) => {
       if (origin === "user") return t(`${TEXT}.yours`);
-      return t(`${TEXT}.profile`);
+      return t(`${TEXT}.role`);
     },
     state: (state) => {
       if (STATES.includes(state)) return t(`${TEXT}.state.${state}`);
@@ -116,44 +151,58 @@ function Note({ tone, title, text, children }) {
   );
 }
 
+async function ask(name, payload) {
+  const answer = await callAction({ name, payload });
+  const response = answer && answer.response;
+  if (!response) throw new Error(`${name}: the chat gave no answer`);
+  if (response.error) throw new Error(response.error);
+  return response;
+}
+
+function ListHeading({ labels, count, onAdd }) {
+  return (
+    <div className="flex flex-wrap items-center gap-2 font-semibold">
+      {labels.title}
+      {count !== undefined ? <span className="font-normal text-muted-foreground">{count}</span> : null}
+      <Button variant="outline" size="sm" className="ml-auto h-8" onClick={onAdd} data-mcp-add>
+        <Plus />{labels.add}
+      </Button>
+    </div>
+  );
+}
+
 // Список серверов: mcp_list, затем mcp_status по каждому серверу.
 function ServerList({ labels }) {
   const [rows, setRows] = useState(null);
   const [statuses, setStatuses] = useState({});
   const [error, setError] = useState("");
   const [selected, setSelected] = useState(null);
+  const [editing, setEditing] = useState(null);
 
   const load = useCallback(async () => {
     setError("");
-    const answer = await callAction({ name: "mcp_list", payload: {} });
-    const response = answer && answer.response;
-    if (!response) {
-      setError("mcp_list: the chat gave no answer");
-      return;
+    try {
+      const response = await ask("mcp_list", {});
+      setRows(response.servers);
+      setStatuses({});
+      await Promise.all(response.servers.map(async (row) => {
+        let status;
+        try {
+          status = await ask("mcp_status", { name: row.name });
+        } catch (failed) {
+          status = { name: row.name, state: "failed", issue: failed.message };
+        }
+        setStatuses((was) => ({ ...was, [row.name]: status }));
+      }));
+    } catch (failed) {
+      setError(failed.message);
     }
-    if (response.error) {
-      setError(response.error);
-      return;
-    }
-    setRows(response.servers);
-    const next = {};
-    await Promise.all(
-      response.servers.map(async (row) => {
-        const status = await callAction({
-          name: "mcp_status",
-          payload: { name: row.name },
-        });
-        const state = status && status.response;
-        if (state && !state.error) next[row.name] = state;
-      }),
-    );
-    setStatuses(next);
   }, []);
 
   useEffect(() => {
-    if (selected) return;
+    if (selected || editing) return;
     load();
-  }, [load, selected]);
+  }, [load, selected, editing]);
 
   // Сначала серверы, которым нужен вход, — они стоят первыми, как в Claude
   // Code; остальные остаются в порядке профиля, как их отдал mcp_list.
@@ -171,14 +220,25 @@ function ServerList({ labels }) {
   }
   const sorted = [...first, ...rest];
 
-  if (selected) {
-    return <ServerCard name={selected} labels={labels} onBack={() => setSelected(null)} />;
+  if (editing) {
+    return <ServerForm current={editing.current} labels={labels}
+      onBack={() => setEditing(null)}
+      onSaved={(name) => { setSelected(name); setEditing(null); }}
+      onRemoved={() => { setSelected(null); setEditing(null); }} />;
   }
+
+  if (selected) {
+    return <ServerCard name={selected} labels={labels} onBack={() => setSelected(null)}
+      onEdit={() => setEditing({ current: selected })} />;
+  }
+
+  const heading = <ListHeading labels={labels} count={rows ? rows.length : undefined}
+    onAdd={() => setEditing({ current: null })} />;
 
   if (error) {
     return (
       <div className="flex w-full flex-col gap-2 text-sm" data-mcp-servers>
-        <div className="font-semibold">{labels.title}</div>
+        {heading}
         <Note tone="failure" title={labels.listFailed} text={error}>
           <Button variant="outline" size="sm" className="h-8 w-fit" onClick={load}>
             <RefreshCw />
@@ -201,7 +261,7 @@ function ServerList({ labels }) {
   if (!sorted.length) {
     return (
       <div className="flex w-full flex-col gap-2 text-sm" data-mcp-servers-empty>
-        <div className="font-semibold">{labels.title}</div>
+        {heading}
         <div className="text-muted-foreground">{labels.empty}</div>
       </div>
     );
@@ -209,10 +269,7 @@ function ServerList({ labels }) {
 
   return (
     <div className="flex w-full flex-col gap-2 text-sm" data-mcp-servers>
-      <div className="flex items-baseline gap-2 font-semibold">
-        {labels.title}
-        <span className="font-normal text-muted-foreground">{sorted.length}</span>
-      </div>
+      {heading}
       <Card className="divide-y overflow-hidden">
         {sorted.map((row) => (
           <ServerRow
@@ -256,47 +313,39 @@ function ServerRow({ row, status, labels, onOpen }) {
 }
 
 // Карточка сервера: адрес, транспорт, состояние, Reconnect и инструменты.
-function ServerCard({ name, labels, onBack }) {
+function ServerCard({ name, labels, onBack, onEdit }) {
   const [detail, setDetail] = useState(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [showTools, setShowTools] = useState(false);
 
   const load = useCallback(async () => {
-    const answer = await callAction({ name: "mcp_detail", payload: { name } });
-    const response = answer && answer.response;
-    if (!response) {
-      setError("mcp_detail: the chat gave no answer");
-      return;
+    try {
+      const response = await ask("mcp_detail", { name });
+      setDetail(response);
+      setError("");
+    } catch (failed) {
+      setError(failed.message);
     }
-    if (response.error) {
-      setError(response.error);
-      return;
-    }
-    setDetail(response);
-    setError("");
   }, [name]);
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  useEffect(() => { load(); }, [load]);
 
-  const reconnect = async () => {
+  const change = async (action, payload) => {
     setBusy(true);
     setError("");
-    const answer = await callAction({ name: "mcp_reconnect", payload: { name } });
-    const response = answer && answer.response;
-    setBusy(false);
-    if (!response) {
-      setError("mcp_reconnect: the chat gave no answer");
-      return;
+    try {
+      await ask(action, payload);
+      await load();
+    } catch (failed) {
+      setError(failed.message);
+    } finally {
+      setBusy(false);
     }
-    if (response.error) {
-      setError(response.error);
-      return;
-    }
-    await load();
   };
+
+  const reconnect = () => change("mcp_reconnect", { name });
+  const toggle = () => change("mcp_toggle", { name, enabled: !detail.row.enabled });
 
   const back = (
     <Button
@@ -337,7 +386,7 @@ function ServerCard({ name, labels, onBack }) {
     spin = "animate-spin";
   }
 
-  const reconnectable = detail.state === "connected" || detail.state === "failed";
+  const reconnectable = detail.row.enabled;
   const connected = detail.state === "connected";
   const tools = detail.tools || [];
 
@@ -352,6 +401,10 @@ function ServerCard({ name, labels, onBack }) {
             <StateDot state={detail.state} />
             {labels.state(detail.state)}
           </Badge>
+          <Button variant="outline" size="sm" className={`ml-auto h-8 ${detail.row.editable ? "" : "text-muted-foreground"}`} onClick={onEdit} disabled={busy}
+            data-mcp-edit={detail.row.editable || undefined} data-mcp-settings={!detail.row.editable || undefined}>
+            <Pencil />{detail.row.editable ? labels.edit : labels.settings}
+          </Button>
           {reconnectable ? (
             <Button
               variant="outline"
@@ -367,11 +420,17 @@ function ServerCard({ name, labels, onBack }) {
         </div>
         <Separator />
         <div className="flex flex-col gap-4 px-4 py-3">
-          <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-6 gap-y-1.5">
+          <dl className="grid grid-cols-1 gap-y-1.5 sm:grid-cols-[max-content_minmax(0,1fr)] sm:gap-x-6">
             <dt className="text-muted-foreground">{labels.transport}</dt>
             <dd>{detail.row.transport}</dd>
             <dt className="text-muted-foreground">{labels.address}</dt>
             <dd className="break-all font-mono text-xs leading-5">{detail.row.address}</dd>
+            <dt className="text-muted-foreground">{labels.auth}</dt>
+            <dd>{({ none: labels.authNone, bearer: labels.authBearer, local: labels.authLocal, proxy: labels.authProxy })[detail.row.auth]}</dd>
+            <dt className="text-muted-foreground">{labels.limits}</dt>
+            <dd>{detail.row.connect_timeout_sec} s / {detail.row.call_timeout_sec} s</dd>
+            <dt className="text-muted-foreground">{labels.headers}</dt>
+            <dd className="break-all">{(detail.row.headers || []).join(", ") || "—"}</dd>
             {connected ? (
               <>
                 <dt className="text-muted-foreground">{labels.tools}</dt>
@@ -379,6 +438,11 @@ function ServerCard({ name, labels, onBack }) {
               </>
             ) : null}
           </dl>
+          {detail.row.editable ? (
+            <Button variant="outline" size="sm" className="h-8 w-fit" onClick={toggle} disabled={busy} data-mcp-toggle>
+              {detail.row.enabled ? labels.disable : labels.enable}
+            </Button>
+          ) : null}
           {issue}
           {error ? <Note tone="failure" title={labels.actionFailed} text={error} /> : null}
           {connected ? (
@@ -390,6 +454,168 @@ function ServerCard({ name, labels, onBack }) {
             />
           ) : null}
         </div>
+      </Card>
+    </div>
+  );
+}
+
+function ServerForm({ current, labels, onBack, onSaved, onRemoved }) {
+  const [form, setForm] = useState({ name: "", transport: "streamable-http", url: "", auth: "none", token: "", headers: [] });
+  const [ready, setReady] = useState(!current);
+  const [editable, setEditable] = useState(!current);
+  const [hasToken, setHasToken] = useState(false);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const [confirmation, setConfirmation] = useState("");
+  const inputClass = "w-full rounded-md border border-input bg-background px-3 py-2 text-sm disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground";
+
+  useEffect(() => {
+    if (!current) return;
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const view = await ask("mcp_form", { name: current });
+        if (cancelled) return;
+        setForm({ name: view.name, transport: view.transport, url: view.url, auth: view.auth,
+          token: "", headers: view.headers.map((name) => ({ name, value: "", saved: true })) });
+        setHasToken(view.has_token);
+        setEditable(view.editable === true);
+        setReady(true);
+      } catch (failed) {
+        if (!cancelled) setError(failed.message);
+      }
+    };
+    load();
+    return () => { cancelled = true; };
+  }, [current]);
+
+  const field = (key, value) => setForm((was) => ({ ...was, [key]: value }));
+  const header = (at, key, value) => field("headers", form.headers.map((row, index) => {
+    if (index !== at) return row;
+    return { ...row, [key]: value };
+  }));
+
+  const save = async (event) => {
+    event.preventDefault();
+    if (!editable) return;
+    setBusy(true);
+    setError("");
+    const clean = { ...form, headers: form.headers.map(({ name, value }) => ({ name, value })) };
+    try {
+      const action = current ? "mcp_update" : "mcp_add";
+      const payload = current ? { current, form: clean } : { form: clean };
+      const detail = await ask(action, payload);
+      onSaved(detail.row.name);
+    } catch (failed) {
+      setError(failed.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async () => {
+    if (!editable) return;
+    setBusy(true);
+    setError("");
+    try {
+      await ask("mcp_remove", { name: current });
+      onRemoved();
+    } catch (failed) {
+      setError(failed.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (removing) {
+    return (
+      <div className="flex w-full flex-col gap-2 pb-12 text-sm" data-mcp-form>
+        <Button variant="ghost" size="sm" className="-ml-3 h-8 w-fit text-muted-foreground" onClick={() => setRemoving(false)} disabled={busy}>
+          <ArrowLeft />{labels.cancel}
+        </Button>
+        <Card className="flex flex-col gap-3 p-4" data-mcp-remove-confirm>
+          <span className="text-base font-semibold">{labels.removeTitle}</span>
+          {error ? <Note tone="failure" title={labels.actionFailed} text={error} /> : null}
+          <span className="text-muted-foreground">{labels.removeHelp} <strong>{current}</strong></span>
+          <input className={inputClass} aria-label={labels.confirmName} value={confirmation} onChange={(event) => setConfirmation(event.target.value)} disabled={busy} autoComplete="off" />
+          <div className="flex flex-wrap gap-2">
+            <Button variant="destructive" size="sm" disabled={busy || confirmation !== current} onClick={remove}>{labels.remove}</Button>
+            <Button variant="outline" size="sm" disabled={busy} onClick={() => setRemoving(false)}>{labels.cancel}</Button>
+          </div>
+        </Card>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex w-full flex-col gap-2 pb-12 text-sm" data-mcp-form data-mcp-readonly={ready && !editable || undefined}>
+      <Button variant="ghost" size="sm" className="-ml-3 h-8 w-fit text-muted-foreground" onClick={onBack} disabled={busy}>
+        <ArrowLeft />{labels.back}
+      </Button>
+      <Card className="p-4">
+        {ready && !editable ? <p className="mb-4 text-sm text-muted-foreground" data-mcp-role-managed>{labels.roleManaged}</p> : null}
+        <form onSubmit={save}>
+          <fieldset disabled={busy || !ready || !editable} className={`flex min-w-0 flex-col gap-4 ${ready && !editable ? "text-muted-foreground" : ""}`}>
+            <div className="text-base font-semibold">{current ? (editable ? labels.editTitle : labels.settings) : labels.formTitle}</div>
+            {error ? <Note tone="failure" title={labels.actionFailed} text={error} /> : null}
+            <label className="flex flex-col gap-1.5">
+              {labels.name}
+              <input className={inputClass} name="mcp-name" value={form.name} onChange={(event) => field("name", event.target.value)} maxLength={64} required />
+              <span className="text-xs text-muted-foreground">{labels.nameHint}</span>
+            </label>
+            <label className="flex flex-col gap-1.5">
+              {labels.transport}
+              <select className={inputClass} name="mcp-transport" value={form.transport} onChange={(event) => field("transport", event.target.value)}>
+                <option value="streamable-http">HTTP</option><option value="sse">SSE</option>
+              </select>
+            </label>
+            <label className="flex flex-col gap-1.5">
+              {labels.address}
+              <input className={inputClass} name="mcp-url" value={form.url} onChange={(event) => field("url", event.target.value)} required autoComplete="off" spellCheck={false} />
+            </label>
+            <label className="flex flex-col gap-1.5">
+              {labels.auth}
+              <select className={inputClass} name="mcp-auth" value={form.auth} onChange={(event) => field("auth", event.target.value)}>
+                <option value="none">{labels.authNone}</option><option value="bearer">{labels.authBearer}</option>
+                {!editable && form.auth === "local" ? <option value="local">{labels.authLocal}</option> : null}
+                {!editable && form.auth === "proxy" ? <option value="proxy">{labels.authProxy}</option> : null}
+              </select>
+            </label>
+            {form.auth === "bearer" ? (
+              <label className="flex flex-col gap-1.5">
+                {labels.token}
+                <input className={inputClass} name="mcp-token" type="password" autoComplete="new-password" value={form.token}
+                  onChange={(event) => field("token", event.target.value)} placeholder={hasToken ? labels.tokenSaved : ""} />
+              </label>
+            ) : null}
+            <div className="flex flex-col gap-2">
+              <span>{labels.headers}</span>
+              {form.headers.map((row, index) => (
+                <div key={index} className="flex flex-wrap items-center gap-2" data-mcp-header>
+                  <input className={inputClass} aria-label={labels.headerName} value={row.name} onChange={(event) => header(index, "name", event.target.value)} maxLength={64} required />
+                  <input className={inputClass} type="password" aria-label={labels.headerValue} autoComplete="new-password" value={row.value}
+                    onChange={(event) => header(index, "value", event.target.value)} placeholder={row.saved ? labels.tokenSaved : ""} />
+                  <Button type="button" variant="ghost" size="sm" onClick={() => field("headers", form.headers.filter((_, at) => at !== index))} aria-label={labels.headerRemove}>
+                    <Trash2 />{labels.headerRemove}
+                  </Button>
+                </div>
+              ))}
+              <Button type="button" variant="outline" size="sm" className="h-8 w-fit" onClick={() => field("headers", [...form.headers, { name: "", value: "" }])}>
+                <Plus />{labels.headerAdd}
+              </Button>
+            </div>
+            {editable ? <div className="flex flex-wrap gap-2">
+              <Button type="submit" size="sm">{busy ? labels.saving : labels.save}</Button>
+              <Button type="button" variant="outline" size="sm" onClick={onBack}>{labels.cancel}</Button>
+            </div> : null}
+          </fieldset>
+        </form>
+        {current && ready && editable ? (
+          <div className="mt-4 border-t pt-4">
+            <Button variant="destructive" size="sm" className="w-fit" disabled={busy} onClick={() => setRemoving(true)} data-mcp-remove><Trash2 />{labels.remove}</Button>
+          </div>
+        ) : null}
       </Card>
     </div>
   );

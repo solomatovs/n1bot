@@ -35,7 +35,7 @@ from acp_stand import (
     RecordingUpdates,
     TlsFiles,
 )
-from aid_stand import NoConnectionStore, RelayStand, TabSession
+from aid_stand import FixedServers, NoConnectionStore, RelayStand, TabSession
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -88,7 +88,7 @@ from boba.identity.context import CallContexts
 from boba.kerberos import KeytabAuth
 from boba.krb.credentials import KerberosEnv
 from boba.llm.onnx import OnnxProvider
-from boba.mcp_client.client import McpServerConfig, McpServers, McpServersConfig
+from boba.mcp_client.client import McpServerConfig, McpServers, FixedServerConfigs
 from boba.runtime.threads import ThreadsTable
 from boba.runtime.users import UsersTable
 from boba.stand.names import StandNames
@@ -106,7 +106,7 @@ from boba.transport.http import HttpTransportConfig
 pytestmark = pytest.mark.anyio
 
 SCHEMA = StandNames().of_tree("acp_settings")
-NO_SERVERS = McpServersConfig(servers={})
+NO_SERVERS = FixedServerConfigs(servers={})
 
 
 @pytest.fixture(autouse=True)
@@ -213,7 +213,7 @@ class TestSettingsFile:
         config = AgentStand(tmp_path / "agents", history).config(
             "http://127.0.0.1:8000/boba"
         )
-        builder = SettingsFileBuilder(config, NO_SERVERS)
+        builder = SettingsFileBuilder(config)
         launch = model.launch("Answer briefly")
 
         document = builder.build(launch.profile, launch.model, None, {})
@@ -255,7 +255,7 @@ class TestAgentHandshake:
         history = AgentHistoryStand(stand)
         agent_stand = AgentStand(tmp_path / "agents", history.history())
         launch = model.launch()
-        builder = SettingsFileBuilder(agent_stand.config(), NO_SERVERS)
+        builder = SettingsFileBuilder(agent_stand.config())
         document = builder.build(launch.profile, launch.model, None, {})
         workdir = AgentWorkdirs(tmp_path / "agents").create("thread-2")
         workdir.write(document, launch.system_prompt)
@@ -263,7 +263,7 @@ class TestAgentHandshake:
         client = AgentClient(RecordingUpdates())
         credentials = KerberosCredentialSource(None, NoRefresh())
         relays = RelayStand(NoConnectionStore(), lambda: credentials, CallContexts())
-        servers = McpServers(McpServersConfig(servers={}))
+        servers = McpServers(FixedServerConfigs(servers={}))
         relay = relays.relay(servers)
         process = AgentProcess(agent_stand.command(), workdir, client, relay, (), "0.0")
         try:
@@ -320,14 +320,14 @@ class TestRetiredServers:
     ) -> None:
         credentials = KerberosCredentialSource(None, NoRefresh())
         relays = RelayStand(NoConnectionStore(), lambda: credentials, CallContexts())
-        servers_config = McpServersConfig(servers={"standard": standard})
+        servers_config = FixedServerConfigs(servers={"standard": standard})
         servers = McpServers(servers_config)
         relay = relays.relay(servers)
         history = AgentHistoryStand(stand)
         agent_stand = AgentStand(tmp_path / "agents", history.history())
         launcher = AgentLauncher(
             agent_stand.config(),
-            servers_config,
+            FixedServers(servers_config.servers),
             SignInStand.profiles(),
             users,
             relays.registrations,
@@ -434,7 +434,7 @@ class TestForkCut:
     ) -> None:
         credentials = KerberosCredentialSource(None, NoRefresh())
         relays = RelayStand(NoConnectionStore(), lambda: credentials, CallContexts())
-        servers = McpServers(McpServersConfig(servers={}))
+        servers = McpServers(FixedServerConfigs(servers={}))
         relay = relays.relay(servers)
         history = AgentHistoryStand(stand)
         agent_stand = AgentStand(tmp_path / "agents", history.history())
@@ -444,7 +444,7 @@ class TestForkCut:
         )
         launcher = AgentLauncher(
             config.model_copy(update={"process": foreign}),
-            NO_SERVERS,
+            FixedServers(NO_SERVERS.servers),
             SignInStand.profiles(),
             users,
             relays.registrations,
@@ -523,8 +523,8 @@ class ChatLaunch:
     def agent(
         self,
         profile: ChatProfileConfig,
-        filed: McpServersConfig,
-        relayed: McpServersConfig,
+        filed: FixedServerConfigs,
+        relayed: FixedServerConfigs,
         updates: RecordingUpdates,
     ) -> ThreadAgent:
         servers = McpServers(relayed)
@@ -532,7 +532,7 @@ class ChatLaunch:
         agent_stand = AgentStand(self._root / "agents", self._history.history())
         launcher = AgentLauncher(
             agent_stand.config(),
-            filed,
+            FixedServers(filed.servers),
             SignInStand.profiles(),
             self._users,
             self._relays.registrations,
@@ -640,7 +640,7 @@ class TestLaunchConfig:
     чата и [agent] доходят до настоящего `boba --stdio` файлом настроек и
     действуют на его запросы к модели и серверам."""
 
-    NO_SERVERS: ClassVar[McpServersConfig] = McpServersConfig(servers={})
+    NO_SERVERS: ClassVar[FixedServerConfigs] = FixedServerConfigs(servers={})
 
     def _profile(
         self,
@@ -807,8 +807,8 @@ class TestLaunchConfig:
     ) -> None:
         limits = standard.limits.model_copy(update={"call_timeout_sec": 1.0})
         brief = standard.model_copy(update={"limits": limits})
-        filed = McpServersConfig(servers={"standard": brief})
-        relayed = McpServersConfig(servers={"standard": standard})
+        filed = FixedServerConfigs(servers={"standard": brief})
+        relayed = FixedServerConfigs(servers={"standard": standard})
         name = McpToolNames().full("standard", "sleep_for")
         spec = {"name": name, "arguments": {"seconds": 5}}
         updates = RecordingUpdates()
@@ -862,7 +862,7 @@ class TestFailedLaunch:
         servers = McpServers(NO_SERVERS)
         launcher = AgentLauncher(
             config.model_copy(update={"process": missing}),
-            NO_SERVERS,
+            FixedServers(NO_SERVERS.servers),
             SignInStand.profiles(),
             users,
             relays.registrations,
@@ -882,7 +882,7 @@ class TestFailedLaunch:
                 name=SignInStand.PROFILE, config=SignInStand.profile()
             ),
         )
-        launch = launcher.prepare(identity)
+        launch = await launcher.prepare(identity)
         try:
             with pytest.raises(AgentProcessError) as refused:
                 await launcher.launch(identity, launch, AgentClient(RecordingUpdates()))
@@ -980,7 +980,7 @@ class ForeignProcessStand:
             request_timeout_sec=self.REQUEST_TIMEOUT_SEC,
             stop_timeout_sec=5.0,
         )
-        builder = SettingsFileBuilder(agent_stand.config(), NO_SERVERS)
+        builder = SettingsFileBuilder(agent_stand.config())
         launch = FakeModel().launch()
         document = builder.build(launch.profile, launch.model, None, {})
         workdir = AgentWorkdirs(tmp_path / "agents").create("thread-foreign")
@@ -1046,7 +1046,7 @@ class DeletionStand:
     def launcher(self, profiles: ChatProfiles) -> AgentLauncher:
         return AgentLauncher(
             self._config,
-            NO_SERVERS,
+            FixedServers(NO_SERVERS.servers),
             profiles,
             self._users,
             self._relays.registrations,

@@ -2,7 +2,7 @@
 серверов в трёх состояниях и карточка сервера — в обеих темах и обоих
 размерах окна.
 
-Стенд вида поднимается с тремя серверами профиля: стандартный сервер по
+Стенд вида поднимается с тремя серверами, выданными роли: стандартный сервер по
 HTTP (AppsHost), сервер на закрытом порту и сервер с отказом авторизации.
 Список показывает разом все три состояния: «Требуется вход», «Подключён» и
 «Ошибка». Карточка живого сервера называет транспорт, адрес и происхождение
@@ -25,7 +25,7 @@ from aid_look import (
     LookState,
     LookTheme,
 )
-from playwright.sync_api import Error, Locator, Page
+from playwright.sync_api import Error, Locator, Page, expect
 
 from boba.stand.ui.fake_llm import ScenarioName
 from boba.stand.ui.stand import StandProcess
@@ -35,7 +35,7 @@ pytestmark = [pytest.mark.ui, pytest.mark.look]
 LIVE = "live"
 GONE = "gone"
 DENIED = "denied"
-"""Серверы профиля стенда: живой, закрытый порт и отказ авторизации."""
+"""Серверы роли стенда: живой, закрытый порт и отказ авторизации."""
 
 
 class ServersLook:
@@ -45,9 +45,9 @@ class ServersLook:
     SERVER_LIST: ClassVar[LookState] = LookState(
         GROUP,
         "ms1-list",
-        "Приложение в ленте: список серверов профиля в трёх состояниях",
+        "Приложение в ленте: список серверов роли в трёх состояниях",
         "сообщение ленты: «MCP-серверы» с числом серверов и карточка со "
-        "строками через разделитель — цветная точка, имя, пометка «профиль», "
+        "строками через разделитель — цветная точка, имя, пометка «От роли», "
         "справа состояние и стрелка; denied — «Требуется вход» и стоит "
         "первой, live — «Подключён · инструментов: N», gone — «Ошибка»; "
         "подписи справа выровнены по правому краю",
@@ -56,12 +56,18 @@ class ServersLook:
     LIVE_CARD: ClassVar[LookState] = LookState(
         GROUP,
         "ms2-card",
-        "Карточка сервера: транспорт, адрес, инструменты",
-        "«← К списку»; карточка: в шапке имя live, пометка «профиль», "
+        "Карточка сервера: транспорт, адрес, вход и сроки",
+        "«← К списку»; карточка: в шапке имя live, пометка «От роли», "
         "значок «Подключён» и справа небольшая кнопка «Переподключить»; под "
         "разделителем пары «Транспорт / streamable-http», «Адрес» моноширинным "
-        "и «Инструменты» с числом; кнопка «Скрыть инструменты» и список "
-        "инструментов в рамке с разделителями, у add — пометка «чтение»",
+        "и «Инструменты» с числом; кнопка «Показать инструменты»",
+        (),
+    )
+    LIVE_TOOLS: ClassVar[LookState] = LookState(
+        GROUP,
+        "ms2-tools",
+        "Инструменты подключённого сервера",
+        "список в рамке с разделителями, описаниями и пометкой «чтение» у add",
         (),
     )
     FAILED_CARD: ClassVar[LookState] = LookState(
@@ -72,6 +78,35 @@ class ServersLook:
         "и адреса закрытого порта; красная плашка «Не удалось подключиться» "
         "со значком и текстом ошибки соединения моноширинным; списка "
         "инструментов нет",
+        (),
+    )
+
+    ADD_FORM: ClassVar[LookState] = LookState(
+        GROUP,
+        "ms4-add",
+        "Форма нового MCP-сервера",
+        "поля имени, транспорта, адреса, входа и заголовков; кнопки сохранения и отмены",
+        (),
+    )
+    EDIT_FORM: ClassVar[LookState] = LookState(
+        GROUP,
+        "ms5-edit",
+        "Форма своего MCP-сервера",
+        "сохранённые имя и адрес; значения секретов пустые; кнопка удаления",
+        (),
+    )
+    REMOVE_FORM: ClassVar[LookState] = LookState(
+        GROUP,
+        "ms6-remove",
+        "Подтверждение удаления MCP-сервера",
+        "поле подтверждения имени, неактивная кнопка удаления и отмена",
+        (),
+    )
+    ROLE_FORM: ClassVar[LookState] = LookState(
+        GROUP,
+        "ms7-role",
+        "Параметры MCP-сервера роли",
+        "серые заблокированные поля, пояснение о выдаче роли, нет сохранения и удаления",
         (),
     )
 
@@ -210,15 +245,77 @@ def test_mcp_servers_app_of_the_chat(
             look.frame(shown, ServersLook.SERVER_LIST, theme, size)
 
             card = tab.open_card(LIVE)
-            tab.show_tools(card)
             look_pages.settle(page)
             look.frame(shown, ServersLook.LIVE_CARD, theme, size)
+
+            tab.show_tools(card)
+            look_pages.settle(page)
+            look.frame(
+                card.locator(ServersLook.TOOLS), ServersLook.LIVE_TOOLS, theme, size
+            )
 
             tab.back()
             failed = tab.open_card(GONE)
             failed.locator(ServersLook.ISSUE).wait_for(timeout=ServersLook.WAIT_MS)
             look_pages.settle(page)
             look.frame(shown, ServersLook.FAILED_CARD, theme, size)
+            tab.check_clean()
+
+    look.verify()
+
+
+def test_mcp_server_forms(
+    look: LookCheck,
+    look_pages: LookPages,
+    servers_stand: StandProcess,
+    live_host: AppsHost,
+) -> None:
+    endpoint = live_host.plain()["endpoint"]
+    location = endpoint["service"]
+    url = f"{location['scheme']}://{location['host']}:{location['port']}{endpoint['path']}"
+    for size in LookSize:
+        for theme in LookTheme:
+            page = look_pages.open(theme, size)
+            tab = ServersTab(page)
+            look_pages.sign_in(page, servers_stand, ServersLook.LOGIN_USER)
+            tab.turn()
+            tab.run()
+            tab.list()
+            role_card = tab.open_card(LIVE)
+            role_card.locator("[data-mcp-settings]").click()
+            role_form = page.locator("[data-mcp-readonly]").last
+            expect(role_form.locator('[name="mcp-name"]')).to_have_value(LIVE)
+            expect(role_form.locator('[name="mcp-url"]')).to_be_disabled()
+            role_form.scroll_into_view_if_needed()
+            look_pages.settle(page)
+            # Chainlit проверяет прокрутку с задержкой 500 мс после изменения вида.
+            page.wait_for_timeout(1000)
+            role_fields = role_form.locator("form").locator("..")
+            look.frame(role_fields, ServersLook.ROLE_FORM, theme, size)
+            role_form.get_by_role("button", name=ServersLook.BACK, exact=True).click()
+            tab.back()
+            tab.list().locator("[data-mcp-add]").click()
+            form = page.locator("[data-mcp-form]").last
+            form.locator('[name="mcp-name"]').fill("personal")
+            form.locator('[name="mcp-url"]').fill("https://mcp.example.com/mcp")
+            look_pages.settle(page)
+            look.frame(form, ServersLook.ADD_FORM, theme, size)
+            form.locator('[name="mcp-url"]').fill(url)
+            form.locator('button[type="submit"]').click()
+            card = page.locator('[data-mcp-card="personal"]').last
+            card.locator("[data-mcp-edit]").click()
+            form = page.locator("[data-mcp-form]").last
+            form.locator('[name="mcp-name"][value="personal"]').wait_for()
+            form.locator('[name="mcp-url"]').fill("https://mcp.example.com/mcp")
+            look_pages.settle(page)
+            look.frame(form, ServersLook.EDIT_FORM, theme, size)
+            form.locator("[data-mcp-remove]").click()
+            confirm = form.locator("[data-mcp-remove-confirm]")
+            look_pages.settle(page)
+            look.frame(form, ServersLook.REMOVE_FORM, theme, size)
+            confirm.get_by_role("textbox").fill("personal")
+            confirm.locator("button").first.click()
+            tab.list().wait_for()
             tab.check_clean()
 
     look.verify()

@@ -34,7 +34,7 @@ import hashlib
 import json
 import logging
 import time
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from collections import OrderedDict
 from collections.abc import (
     AsyncGenerator,
@@ -56,7 +56,7 @@ from enum import StrEnum
 from functools import partial
 from http import HTTPStatus
 from typing import Annotated, Any, ClassVar, Literal, Protocol, Self, TypeVar
-from urllib.parse import quote, urlsplit, urlunsplit
+from urllib.parse import quote
 from uuid import uuid4
 
 import anyio
@@ -126,11 +126,11 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    HttpUrl,
     SecretStr,
     TypeAdapter,
     ValidationError,
     field_validator,
+    model_validator,
 )
 from pydantic.alias_generators import to_camel
 
@@ -162,6 +162,7 @@ from boba.workspace.launcher import ReadWindow
 __all__ = [
     "BearerAuth",
     "FilesHost",
+    "FixedServerConfigs",
     "HttpEndpoint",
     "HttpLocation",
     "HttpRoute",
@@ -174,11 +175,9 @@ __all__ = [
     "McpCaller",
     "McpClientError",
     "McpClientIdentity",
-    "McpServerApps",
     "McpServerConfig",
     "McpServerLimits",
     "McpServers",
-    "McpServersConfig",
     "McpToolPort",
     "McpToolServer",
     "McpUnansweredError",
@@ -186,6 +185,7 @@ __all__ = [
     "ProgressHeard",
     "ProxyAuth",
     "QuestionHeard",
+    "ServerConfigs",
     "SseEndpoint",
     "StdioCommand",
 ]
@@ -308,8 +308,8 @@ class McpAuthEntry(BaseModel):
     """Базовый класс способов входа на MCP-сервер; его наследуют NoAuth,
     BearerAuth, LocalAuth и ProxyAuth.
 
-    Способ входа — секция auth записи сервера в конфиге хозяина клиента
-    ([mcp.servers.<имя>.endpoint]). Наследник отдаёт транспорту авторизацию
+    Способ входа — поле auth адреса сервера из ServerConfigs.
+    Наследник отдаёт транспорту авторизацию
     запросов (httpx_auth) и, если входит от имени пользователя, подставляет
     его в себя (on_behalf_of).
     """
@@ -1041,9 +1041,46 @@ class HttpRefusals(HttpWatch):
 
 
 class HttpAddress(HttpRoute):
-    """Адрес HTTP-сервера MCP: маршрут на сервисе и способ авторизации."""
+    """Адрес HTTP-сервера MCP: маршрут на сервисе, способ авторизации и
+    заголовки запросов.
+
+    Заголовки — дополнение к способу входа: сервер может требовать свой
+    ключ рядом с токеном. Значения — SecretStr, наружу они выходят только
+    в момент подключения (request_headers). Заголовком Authorization
+    распоряжается способ входа bearer, поэтому вместе с ним он запрещён.
+    """
+
+    AUTH_HEADER: ClassVar[str] = "Authorization"
 
     auth: McpAuth = NoAuth()
+    headers: Mapping[str, SecretStr] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _auth_header_is_the_tokens(self) -> Self:
+        if not isinstance(self.auth, BearerAuth):
+            return self
+
+        for name in self.headers:
+            if name.lower() != self.AUTH_HEADER.lower():
+                continue
+
+            msg = (
+                f"endpoint {self.url()}: header {name!r} is set together with a "
+                "bearer token, expected other header names: the Authorization "
+                "header carries the token itself"
+            )
+            raise ValueError(msg)
+
+        return self
+
+    def request_headers(self) -> dict[str, str]:
+        """Заголовки запросов значениями: секреты раскрываются только здесь,
+        в момент подключения."""
+        headers: dict[str, str] = {}
+        for name, value in self.headers.items():
+            headers[name] = value.get_secret_value()
+
+        return headers
 
     def personal(self) -> bool:
         """Подключение своё у каждого пользователя: токен выдаётся ему."""
@@ -1068,7 +1105,10 @@ class HttpEndpoint(HttpAddress):
         timeout = httpx2.Timeout(MCP_DEFAULT_TIMEOUT, read=MCP_DEFAULT_SSE_READ_TIMEOUT)
         transport = WatchedTransport(httpx2.AsyncHTTPTransport(), watch)
         async with httpx2.AsyncClient(
-            auth=auth, timeout=timeout, transport=transport
+            auth=auth,
+            headers=self.request_headers(),
+            timeout=timeout,
+            transport=transport,
         ) as http:
             http.event_hooks["response"].append(watch.seen)
             async with streamable_http_client(self.url(), http_client=http) as streams:
@@ -1088,7 +1128,9 @@ class SseEndpoint(HttpAddress):
     @asynccontextmanager
     async def opened(self, watch: HttpWatch) -> AsyncGenerator[Streams, None]:
         auth = self.auth.httpx_auth(self.url())
-        async with sse_client(self.url(), auth=auth) as streams:
+        async with sse_client(
+            self.url(), headers=self.request_headers(), auth=auth
+        ) as streams:
             yield streams
 
 
@@ -1131,91 +1173,28 @@ McpEndpoint = Annotated[
 ]
 
 
-class McpServerApps(BaseModel):
-    """Секция [mcp.servers.<имя>.apps]: серверу разрешено показывать свой
-    интерфейс (MCP Apps) в браузере пользователя.
-
-    Страницу-прокси песочницы, в которой чат рисует приложения сервера,
-    отдаёт сам чат на своём порту port: тот же хост, что у страницы чата
-    chat_url, но другой источник — отдельный от чата и от песочниц других
-    серверов. chat_url — адрес чата в браузере пользователя; только его
-    источник может встроить песочницу. Запись сервера с этой секцией
-    объявляет серверу расширение io.modelcontextprotocol/ui; источники
-    проверяют McpServersConfig и конфиг хоста приложений.
-    """
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    chat_url: HttpUrl
-    port: int = Field(gt=0, le=65535)
-
-    def sandbox_url(self) -> str:
-        """Адрес страницы-прокси в браузере: схема и хост страницы чата,
-        порт песочницы, корень пути."""
-        chat = self.chat_url
-        host = self._host(chat)
-        sandbox = HttpUrl.build(scheme=chat.scheme, host=host, port=self.port)
-
-        return str(sandbox)
-
-    def origin(self) -> str:
-        """Источник страницы-прокси в форме браузера."""
-        return self._origin(HttpUrl(self.sandbox_url()))
-
-    def chat_origin(self) -> str:
-        """Источник страницы чата в форме браузера: единственный, кому
-        разрешено встраивать песочницу."""
-        return self._origin(self.chat_url)
-
-    def settings(self) -> dict[str, Any]:
-        """Настройки расширения MCP Apps в возможностях клиента: клиент
-        рисует ресурсы приложений этого вида."""
-        return {"mimeTypes": [APP_MIME_TYPE]}
-
-    @staticmethod
-    def _host(url: HttpUrl) -> str:
-        host = url.host
-        if host is None:
-            msg = f"[apps] chat_url {url} expects a host, got none"
-            raise ValueError(msg)
-
-        return host
-
-    def _origin(self, url: HttpUrl) -> str:
-        """Схема, хост и порт, если он не порт схемы по умолчанию; учётные
-        данные адреса в источник не входят."""
-        bare = HttpUrl.build(scheme=url.scheme, host=self._host(url), port=url.port)
-        parts = urlsplit(str(bare))
-
-        return urlunsplit((parts.scheme, parts.netloc, "", "", ""))
-
-
 class McpServerLimits(BaseModel):
-    """Сроки сервера MCP: подключение с инициализацией и один вызов. Секция
-    [mcp_limits.<имя>] конфига, общая у серверов одного сервиса: записи
-    [mcp.servers.*] берут её целиком ссылкой."""
+    """Сроки сервера MCP: подключение с инициализацией и один вызов."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    connect_timeout_sec: float = Field(gt=0)
-    call_timeout_sec: float = Field(gt=0)
+    connect_timeout_sec: float = Field(gt=0, allow_inf_nan=False)
+    call_timeout_sec: float = Field(gt=0, allow_inf_nan=False)
 
 
 class McpServerConfig(BaseModel):
-    """Один MCP-сервер в конфиге клиента: секция [mcp.servers.<имя>].
+    """Один MCP-сервер в записи клиента: адрес, способ авторизации и сроки.
 
-    Адрес сервера (endpoint) и способ авторизации в нём. Сервер подключён
-    тем сессиям, чей профиль клиента его называет; набор инструментов решает
+    Сервер подключают сессии, которым он выдан; набор инструментов решает
     сам сервер. Сроки (limits) — на подключение с инициализацией и на один
-    вызов. Секция apps есть только у сервера, чьи приложения клиент рисует;
-    без неё сервер показывает итоги блоками content.
+    вызов. Приложения MCP Apps сервер объявляет сам при подключении, в
+    записи их нет.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     endpoint: McpEndpoint
     limits: McpServerLimits
-    apps: McpServerApps | None = None
 
     def on_behalf_of(self, caller: McpCaller) -> McpServerConfig:
         """Та же запись со входом от имени пользователя клиента: способ
@@ -1223,9 +1202,34 @@ class McpServerConfig(BaseModel):
         return self.model_copy(update={"endpoint": self.endpoint.on_behalf_of(caller)})
 
 
-class McpServersConfig(BaseModel):
-    """Секция [mcp]: MCP-серверы клиента по именам. Имя сервера входит в
-    полные имена его инструментов (McpToolNames) и проверяется их формой."""
+class ServerConfigs(ABC):
+    """Откуда клиент берёт записи серверов: единственный источник конфигов.
+
+    Реализуется хозяином клиента (чат aid — своим хранилищем, в котором
+    серверы выданы пользователю лично или через его роли) и стендами, где
+    серверы заданы кодом (FixedServerConfigs). config_of отвечает за
+    доступ: None означает, что серверу вызывающего не выдан, и клиент
+    отказывает ему по имени.
+    """
+
+    @abstractmethod
+    async def config_of(self, name: str, caller: McpCaller) -> McpServerConfig | None:
+        """Запись сервера name для вызывающего caller; None — сервер ему не
+        выдан либо такого сервера нет.
+
+        Ошибки:
+        McpClientError — запись сервера не прочитана (хранилище недоступно
+            или строка не разбирается).
+        """
+
+
+class FixedServerConfigs(BaseModel, ServerConfigs):
+    """Серверы из готового словаря имён и записей: стенды и тесты, где
+    серверы заданы кодом, и хозяева клиента без своего хранилища.
+
+    Записи видны любому вызывающему. Имя сервера входит в полные имена его
+    инструментов (McpToolNames) и проверяется их формой.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -1242,33 +1246,8 @@ class McpServersConfig(BaseModel):
 
         return value
 
-    @field_validator("servers")
-    @classmethod
-    def _sandboxes_apart(
-        cls, value: Mapping[str, McpServerConfig]
-    ) -> Mapping[str, McpServerConfig]:
-        """У песочниц разных серверов разные источники: иначе приложения
-        одного сервера достают до приложений другого."""
-        held: dict[str, str] = {}
-        for name, server in value.items():
-            apps = server.apps
-            if apps is None:
-                continue
-
-            origin = apps.origin()
-            other = held.get(origin)
-            if other is not None:
-                msg = (
-                    f"[mcp.servers.{name}.apps] port {apps.port} puts the sandbox on "
-                    f"origin {origin}, which is already the sandbox origin of server "
-                    f"{other!r}; give every server with apps a port of its own, so "
-                    "that the apps of one server cannot reach another"
-                )
-                raise ValueError(msg)
-
-            held[origin] = name
-
-        return value
+    async def config_of(self, name: str, caller: McpCaller) -> McpServerConfig | None:
+        return self.servers.get(name)
 
 
 @dataclass(frozen=True)
@@ -2114,6 +2093,23 @@ class McpDescription:
         """Расширение журнала вызовов; None — сервер его не объявил."""
         return self._feature(JournalFeature)
 
+    def legacy(self) -> bool:
+        """Описание получено сервером прежней редакции, без server/discover."""
+        for version in self.result.supported_versions:
+            if version in MODERN_PROTOCOL_VERSIONS:
+                return False
+
+        return True
+
+    def apps(self) -> bool:
+        """Объявил ли сервер приложения MCP Apps: клиент рисует их, только
+        если сервер пообещал их в своём ответе."""
+        extensions = self.result.capabilities.extensions
+        if not extensions:
+            return False
+
+        return EXTENSION_ID in extensions
+
     def files(self) -> FilesFeature | None:
         """Расширение файлов workspace; None — сервер его не объявил."""
         return self._feature(FilesFeature)
@@ -2259,12 +2255,14 @@ class McpToolServer(McpToolPort):
         CommandsFeature.ID: CommandsFeature(
             version=CommandsVersion.V2026_10_24
         ).settings(),
+        EXTENSION_ID: {"mimeTypes": [APP_MIME_TYPE]},
     }
     """Расширения, которые чат объявляет любому серверу: журнал вызовов он
     читает и слушает сам, соединения пользователя запечатывает ключом
     сервера, и сервер по этому предлагает их, область вызова ставит в
     помеченный сервером параметр сам, команды, открывающие приложение
-    сервера, исполняет сам."""
+    сервера, исполняет сам, а приложения MCP Apps рисует в песочнице чата,
+    если сервер объявил их в ответе."""
     NOT_FOUND: ClassVar[frozenset[int]] = frozenset({mt.INVALID_PARAMS, -32002})
     """Коды «ресурса нет» resources/read: -32602 и прежний -32002, которого
     в константах SDK нет."""
@@ -2297,9 +2295,6 @@ class McpToolServer(McpToolPort):
         self._config = config
         self._label = f"mcp server {name!r} ({config.endpoint.label()})"
         extensions = dict(self.OWN_EXTENSIONS)
-        if config.apps is not None:
-            extensions[EXTENSION_ID] = config.apps.settings()
-
         self._extensions = extensions
         self._own = McpServers.OWN.with_extensions(extensions)
         self._refusals = HttpRefusals(self._label)
@@ -3093,8 +3088,12 @@ class McpToolServer(McpToolPort):
 class McpServers:
     """MCP-серверы клиента: порты по имени сервера и пользователю.
 
-    Создаётся сборкой приложения из секции [mcp]. Порт сервера с общей
-    авторизацией — один на процесс, сервера с личной (proxy) — свой у
+    Создаётся сборкой приложения из источника записей серверов
+    (ServerConfigs): чат aid берёт их из своего хранилища с выдачами, стенды
+    — из готового словаря (FixedServerConfigs). Клиент записей не хранит:
+    каждая операция спрашивает их у источника, поэтому изменение или
+    удаление сервера действует на следующее же подключение. Порт сервера с
+    общей авторизацией — один на процесс, сервера с личной (proxy) — свой у
     каждого пользователя: кэши ответов с cacheScope private не делятся
     между контекстами авторизации. Личность клиента порт принимает каждым
     запросом: собственные запросы чата идут от личности OWN, ретранслятор —
@@ -3114,8 +3113,8 @@ class McpServers:
     )
     """Личность чата для его собственных запросов: панель, приложения, лента."""
 
-    def __init__(self, config: McpServersConfig) -> None:
-        self._configs = dict(config.servers)
+    def __init__(self, configs: ServerConfigs) -> None:
+        self._configs = configs
         self._shared: dict[str, McpToolServer] = {}
         self._personal: OrderedDict[tuple[str, McpCaller], McpToolServer]
         self._personal = OrderedDict()
@@ -3127,18 +3126,16 @@ class McpServers:
         for server in self._personal.values():
             await server.close()
 
-    def served(self, name: str) -> bool:
-        """Сервер name назван в [mcp.servers]."""
-        return name in self._configs
+    async def served(self, name: str, caller: McpCaller) -> bool:
+        """Сервер name выдан вызывающему: по этому чат решает, спрашивать
+        ли сервер о журнале.
 
-    def apps(self, name: str) -> McpServerApps | None:
-        """Секция apps сервера name; None — сервер не назван либо
-        показывает итоги блоками, приложения его не рисуются."""
-        config = self._configs.get(name)
-        if config is None:
-            return None
+        Ошибки:
+        McpClientError — запись сервера не прочитана.
+        """
+        config = await self._configs.config_of(name, caller)
 
-        return config.apps
+        return config is not None
 
     async def journal(
         self, server: str, caller: McpCaller, request: JournalRead
@@ -3149,24 +3146,26 @@ class McpServers:
         Ошибки:
         McpClientError — сервер недоступен или ответил не окном журнала.
         """
-        if server not in self._configs:
+        config = await self._configs.config_of(server, caller)
+        if config is None:
             return None
 
-        port = await self.port(server, caller)
+        port = await self._port(server, caller, config)
 
         return await port.journal(request)
 
     async def files(self, server: str, caller: McpCaller) -> McpFiles | None:
         """Файлы workspace на сервере server от имени caller; None — сервер
-        не назван в [mcp.servers] или файлов не объявил.
+        не выдан вызывающему или файлов не объявил.
 
         Ошибки:
         McpClientError — сервер недоступен.
         """
-        if server not in self._configs:
+        config = await self._configs.config_of(server, caller)
+        if config is None:
             return None
 
-        port = await self.port(server, caller)
+        port = await self._port(server, caller, config)
 
         return await port.files()
 
@@ -3174,17 +3173,18 @@ class McpServers:
         self, servers: Sequence[str], caller: McpCaller
     ) -> FilesHost | None:
         """Первый из серверов servers, объявивший расширение файлов, как
-        хранилище файлов caller; None — ни один не назван в [mcp.servers]
-        либо ни один файлов не объявил.
+        хранилище файлов caller; None — ни один не выдан вызывающему либо
+        ни один файлов не объявил.
 
         Ошибки:
         McpClientError — сервер из списка недоступен.
         """
         for server in servers:
-            if server not in self._configs:
+            config = await self._configs.config_of(server, caller)
+            if config is None:
                 continue
 
-            port = await self.port(server, caller)
+            port = await self._port(server, caller, config)
             host = await port.files_host()
             if host is not None:
                 return host
@@ -3193,29 +3193,31 @@ class McpServers:
 
     async def workspace(self, server: str, caller: McpCaller) -> str | None:
         """Каталог workspace сервера server для caller; None — сервер не
-        назван в [mcp.servers] или файлов не объявил.
+        выдан вызывающему или файлов не объявил.
 
         Ошибки:
         McpClientError — сервер недоступен.
         """
-        if server not in self._configs:
+        config = await self._configs.config_of(server, caller)
+        if config is None:
             return None
 
-        port = await self.port(server, caller)
+        port = await self._port(server, caller, config)
 
         return await port.workspace()
 
     async def journal_files(self, server: str, caller: McpCaller) -> McpFiles | None:
         """Журналы вызовов сервера server целыми файлами от имени caller;
-        None — сервер не назван или такого не объявил.
+        None — сервер не выдан вызывающему или такого не объявил.
 
         Ошибки:
         McpClientError — сервер недоступен.
         """
-        if server not in self._configs:
+        config = await self._configs.config_of(server, caller)
+        if config is None:
             return None
 
-        port = await self.port(server, caller)
+        port = await self._port(server, caller, config)
 
         return await port.journal_files()
 
@@ -3223,16 +3225,88 @@ class McpServers:
         """Порт сервера name для пользователя caller: общий либо его личный.
 
         Ошибки:
-        McpClientError — имя не названо в [mcp.servers].
+        McpClientError — сервер name не выдан вызывающему caller.
         """
-        config = self._configs.get(name)
+        config = await self._configs.config_of(name, caller)
         if config is None:
             msg = (
                 f"mcp servers of {caller.login!r}: server {name!r} is not "
-                f"declared in [mcp.servers], declared: {sorted(self._configs)}"
+                "granted to this user, expected a server granted to them "
+                "personally or to one of their roles"
             )
             raise McpClientError(msg)
 
+        return await self._port(name, caller, config)
+
+    async def config_of(self, name: str, caller: McpCaller) -> McpServerConfig:
+        """Запись сервера name для вызывающего caller; секреты способа входа
+        и заголовков в ней укрыты (SecretStr): наружу отдаётся только адрес
+        и транспорт.
+
+        Ошибки:
+        McpClientError — сервер name не выдан вызывающему caller.
+        """
+        config = await self._configs.config_of(name, caller)
+        if config is None:
+            msg = f"mcp servers of {caller.login!r}: server {name!r} is not granted"
+            raise McpClientError(msg)
+
+        return config
+
+    async def reconnect(self, name: str, caller: McpCaller) -> None:
+        """Порт сервера name для пользователя caller закрывается и забывается:
+        следующий port() подключится заново. Идущие через порт вызовы не
+        обрываются — retire() ждёт их конца.
+
+        Ошибки:
+        McpClientError — сервер name не выдан вызывающему caller.
+        """
+        config = await self._configs.config_of(name, caller)
+        if config is None:
+            msg = (
+                f"mcp servers of {caller.login!r}: server {name!r} is not "
+                "granted to this user, expected a server granted to them "
+                "personally or to one of their roles"
+            )
+            raise McpClientError(msg)
+
+        if not config.endpoint.personal():
+            shared = self._shared.pop(name, None)
+            if shared is not None:
+                await shared.retire()
+
+            return
+
+        key = (name, caller)
+        personal = self._personal.pop(key, None)
+        if personal is not None:
+            await personal.retire()
+
+    async def invalidate(self, name: str) -> None:
+        """Забывает все порты изменённой записи, включая прежний способ входа.
+
+        Вызывается владельцем источника после проверки прав на изменение;
+        запись уже может быть переименована, удалена или выключена.
+        """
+        retired: list[McpToolServer] = []
+        shared = self._shared.pop(name, None)
+        if shared is not None:
+            retired.append(shared)
+
+        for key in tuple(self._personal):
+            if key[0] != name:
+                continue
+
+            retired.append(self._personal.pop(key))
+
+        for port in retired:
+            await port.retire()
+
+    async def _port(
+        self, name: str, caller: McpCaller, config: McpServerConfig
+    ) -> McpToolServer:
+        """Порт сервера name по уже прочитанной записи config: общий на
+        процесс либо личный у пользователя."""
         if not config.endpoint.personal():
             shared = self._shared.get(name)
             if shared is None:
@@ -3253,45 +3327,3 @@ class McpServers:
             await evicted.retire()
 
         return server
-
-    def config_of(self, name: str) -> McpServerConfig:
-        """Запись сервера name из [mcp.servers]; секреты способа входа в неё
-        укрыты (SecretStr): наружу отдаётся только адрес и транспорт.
-
-        Ошибки:
-        McpClientError — имя не названо в [mcp.servers].
-        """
-        config = self._configs.get(name)
-        if config is None:
-            msg = f"mcp servers: server {name!r} is not declared in [mcp.servers]"
-            raise McpClientError(msg)
-
-        return config
-
-    async def reconnect(self, name: str, caller: McpCaller) -> None:
-        """Порт сервера name для пользователя caller закрывается и забывается:
-        следующий port() подключится заново. Идущие через порт вызовы не
-        обрываются — retire() ждёт их конца.
-
-        Ошибки:
-        McpClientError — имя не названо в [mcp.servers].
-        """
-        config = self._configs.get(name)
-        if config is None:
-            msg = (
-                f"mcp servers of {caller.login!r}: server {name!r} is not "
-                f"declared in [mcp.servers], declared: {sorted(self._configs)}"
-            )
-            raise McpClientError(msg)
-
-        if not config.endpoint.personal():
-            shared = self._shared.pop(name, None)
-            if shared is not None:
-                await shared.retire()
-
-            return
-
-        key = (name, caller)
-        personal = self._personal.pop(key, None)
-        if personal is not None:
-            await personal.retire()

@@ -76,12 +76,7 @@ from boba.aid.chat.feed import TurnFeed
 from boba.aid.chat.ui_text import UiText
 from boba.aid.data.data_layer import FeedRows
 from boba.aid.domain.fields import StepField
-from boba.aid.rendering.acp_view import (
-    ServerApps,
-    SessionUpdate,
-    ToolMedia,
-    UpdateView,
-)
+from boba.aid.rendering.acp_view import SessionUpdate, ToolMedia, UpdateView
 from boba.aid.rendering.chat_view import ChatView, LiveSink
 from boba.aid.rendering.question import QuestionCards
 from boba.aid.rendering.renderer import RenderSurface, SignalType, TabSurfaces
@@ -90,7 +85,6 @@ from boba.cancellation import RunCancellation
 from boba.identity.context import Scope
 from boba.identity.errors import InternalServiceError
 from boba.identity.locks import LiveLocks, LockKeeper, LockMode, LockPurpose
-from boba.mcp_client.client import McpServers
 from boba.messaging import MessageBus, PayloadStore, TurnOutcome
 from boba.runtime.storage import StorageClient
 from boba.transport.acp.protocol import ErrorDataKey
@@ -738,8 +732,8 @@ class AgentFeeds(TurnRenderers):
     """Фабрика приёмников потока: на агента треда — переводчик воспроизведения
     во вкладке, поверхность рассылки треда и шина инстанса. Вызовы
     инструментов переводчик рисует по их источникам из истории агента, без
-    запросов к серверам; из настроек чата он берёт только секции apps
-    серверов (ServerApps).
+    запросов к серверам; из настроек чата он берёт только адрес песочницы
+    приложений — один на процесс.
     Срок ответа на вопрос агента — из [agent].
     Создаётся провайдером процесса.
     """
@@ -748,7 +742,7 @@ class AgentFeeds(TurnRenderers):
         self,
         parts: BusParts,
         journals: RemoteJournals,
-        servers: McpServers,
+        sandbox_url: str,
         rows: FeedRows,
         surfaces: TabSurfaces,
         storage: StorageClient,
@@ -758,7 +752,7 @@ class AgentFeeds(TurnRenderers):
         self._parts = parts
         self._texts = texts
         self._journals = journals
-        self._servers = servers
+        self._sandbox_url = sandbox_url
         self._rows = rows
         self._surfaces = surfaces
         self._storage = storage
@@ -768,7 +762,7 @@ class AgentFeeds(TurnRenderers):
         """Ошибки:
         InternalServiceError — у текущей сессии chainlit нет сокета.
         """
-        media = ToolMedia(ServerApps(self._servers))
+        media = ToolMedia(self._sandbox_url)
         anchor = self._surfaces.anchor()
         view = ChatView(
             identity.thread_id,

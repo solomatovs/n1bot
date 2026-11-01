@@ -51,7 +51,6 @@ from boba.canvas.canvas import CanvasAction, CanvasElement, CanvasRegistry
 from boba.canvas.keys import ObjectKey, ScopeDir, WorkspaceKey
 from boba.identity.context import Scope
 from boba.mcp_adapter import JournalUris
-from boba.mcp_client.client import McpServerApps
 from boba.messaging import (
     JournalOpened,
     LockToken,
@@ -380,8 +379,11 @@ def _declared(*features: ServerFeature) -> mt.ServerCapabilities:
     return mt.ServerCapabilities(extensions=extensions)
 
 
-STAND = KnownSources({}, {"boba": _declared(JOURNAL)}, {})
+STAND = KnownSources({}, {"boba": _declared(JOURNAL)}, set())
 """Серверы ленты по умолчанию: boba с журналом вызовов."""
+
+SANDBOX_URL = "http://127.0.0.1:8123/"
+"""Адрес песочницы приложений стенда: один на процесс."""
 
 
 def _labels(recorded: FakeEmitter) -> list[str]:
@@ -401,7 +403,7 @@ def _view(
     runtime_stand: StandRefs, storage: LocalStorageClient, journals: RemoteJournals
 ) -> UpdateView:
     view = ChatView(THREAD, LiveSink(), "u-1", storage, TEXTS, user_name="alice")
-    return UpdateView(view, THREAD, journals, ToolMedia(STAND))
+    return UpdateView(view, THREAD, journals, ToolMedia(SANDBOX_URL))
 
 
 class TestUpdateViewIds:
@@ -546,8 +548,8 @@ class TestUpdateViewIds:
             },
         }
         query = mt.Tool(name="pg_query", input_schema=arguments)
-        cards = KnownSources({"boba": [query]}, {}, {})
-        media = ToolMedia(cards)
+        cards = KnownSources({"boba": [query]}, {}, set())
+        media = ToolMedia(SANDBOX_URL)
         view = ChatView(
             THREAD,
             LiveSink(),
@@ -887,11 +889,11 @@ class TestCompactionStep:
 
 
 class TestToolApps:
-    """Инструмент с приложением MCP Apps у сервера с секцией apps: карточка
+    """Инструмент с приложением MCP Apps у сервера, объявившего расширение: карточка
     приложения — своё сообщение основной ленты под контейнером хода с
     элементом ToolApp, сразу с аргументами вызова; итог или отмена
     дописываются в тот же элемент. Шаг вызова — только факт вызова: в нём
-    приложения нет. У сервера без секции — только блоки."""
+    приложения нет. У сервера без расширения — только блоки."""
 
     ORDERS: ClassVar[mt.Tool] = mt.Tool.model_validate(
         {
@@ -899,9 +901,6 @@ class TestToolApps:
             "inputSchema": {"type": "object"},
             "_meta": {"ui": {"resourceUri": "ui://standard/orders.html"}},
         }
-    )
-    SANDBOX: ClassVar[McpServerApps] = McpServerApps.model_validate(
-        {"chat_url": "http://127.0.0.1:8122/aid/", "port": 8123}
     )
     URI: ClassVar[str] = "ui://standard/orders.html"
     RESOURCE: ClassVar[AppResource] = AppResource(
@@ -931,16 +930,16 @@ class TestToolApps:
         self,
         runtime_stand: StandRefs,
         storage: LocalStorageClient,
-        apps: McpServerApps | None,
+        drawn: bool,
     ) -> UpdateView:
-        known: dict[str, McpServerApps] = {}
-        if apps is not None:
-            known["standard"] = apps
+        known: set[str] = set()
+        if drawn:
+            known.add("standard")
 
         resources: dict[str, AppSource] = {self.URI: self.RESOURCE}
         cards = KnownSources({"standard": [self.ORDERS]}, {}, known, resources)
         view = ChatView(THREAD, LiveSink(), "u-1", storage, TEXTS, user_name="a")
-        updates = UpdateView(view, THREAD, RemoteJournals(), ToolMedia(cards))
+        updates = UpdateView(view, THREAD, RemoteJournals(), ToolMedia(SANDBOX_URL))
         updates.begin_turn(QUESTION)
 
         args = {"rows": self.ROWS, "intent": "Заказы магазина"}
@@ -959,7 +958,7 @@ class TestToolApps:
         storage: LocalStorageClient,
         recorded: FakeEmitter,
     ) -> None:
-        await self._started(runtime_stand, storage, self.SANDBOX)
+        await self._started(runtime_stand, storage, True)
 
         apps = self._apps(recorded)
         message = recorded.last()[_id(CALL, StepRole.APP_MESSAGE)]
@@ -976,7 +975,7 @@ class TestToolApps:
             "resource": self.RESOURCE.model_dump(
                 mode="json", by_alias=True, exclude_none=True
             ),
-            "sandbox_url": "http://127.0.0.1:8123/",
+            "sandbox_url": SANDBOX_URL,
             "call_id": CALL,
             "input": {"rows": self.ROWS},
         }
@@ -992,7 +991,7 @@ class TestToolApps:
         storage: LocalStorageClient,
         recorded: FakeEmitter,
     ) -> None:
-        updates = await self._started(runtime_stand, storage, self.SANDBOX)
+        updates = await self._started(runtime_stand, storage, True)
 
         await updates.apply(_done(CALL, "shown", self.REPLY))
 
@@ -1013,7 +1012,7 @@ class TestToolApps:
         storage: LocalStorageClient,
         recorded: FakeEmitter,
     ) -> None:
-        updates = await self._started(runtime_stand, storage, self.SANDBOX)
+        updates = await self._started(runtime_stand, storage, True)
 
         await updates.finish_turn()
 
@@ -1031,7 +1030,7 @@ class TestToolApps:
     ) -> None:
         """Агент кончает оборванный вызов статусом cancelled без rawOutput:
         приложение получает отмену остановкой, а не итог."""
-        updates = await self._started(runtime_stand, storage, self.SANDBOX)
+        updates = await self._started(runtime_stand, storage, True)
         text = schema.TextContentBlock(text="The user doesn't want to proceed")
         cancelled = schema.SessionToolCallUpdate(
             tool_call_id=CALL,
@@ -1055,7 +1054,7 @@ class TestToolApps:
         storage: LocalStorageClient,
         recorded: FakeEmitter,
     ) -> None:
-        updates = await self._started(runtime_stand, storage, None)
+        updates = await self._started(runtime_stand, storage, False)
         await updates.apply(_done(CALL, "shown", self.REPLY))
 
         step = recorded.last()[_id(CALL, StepRole.TOOL)]
@@ -1082,7 +1081,7 @@ class TestToolApps:
         """Агент стримит аргументы вызова: ожидающие (pending) обновления с
         растущим rawInput дописывают карточке prop input_partial, по которому
         мост шлёт приложению ui/notifications/tool-input-partial."""
-        updates = await self._started(runtime_stand, storage, self.SANDBOX)
+        updates = await self._started(runtime_stand, storage, True)
         grown = {"rows": [*self.ROWS, {"id": 8, "customer": "Globex"}]}
         partial = schema.SessionToolCallUpdate(
             tool_call_id=CALL, status="pending", raw_input=grown
@@ -1148,7 +1147,7 @@ class TestQuestionRecords:
         self, storage: LocalStorageClient, media: ToolMedia | None = None
     ) -> UpdateView:
         if media is None:
-            media = ToolMedia(KnownSources({}, {}, {}))
+            media = ToolMedia(SANDBOX_URL)
 
         view = ChatView(THREAD, LiveSink(), "u-1", storage, TEXTS, user_name="a")
         updates = UpdateView(view, THREAD, RemoteJournals(), media)
@@ -1409,11 +1408,7 @@ class TestNestedCallSteps:
         runtime_stand: StandRefs,
         storage: LocalStorageClient,
         journals: RemoteJournals,
-        nested: bool,
     ) -> UpdateView:
-        media = ToolMedia(STAND)
-        if nested:
-            media = ToolMedia(self.NESTED)
         view = ChatView(
             THREAD,
             LiveSink(),
@@ -1423,7 +1418,7 @@ class TestNestedCallSteps:
             user_name="alice",
         )
 
-        return UpdateView(view, THREAD, journals, media)
+        return UpdateView(view, THREAD, journals, ToolMedia(SANDBOX_URL))
 
     @staticmethod
     def _workflow() -> WorkflowResult:
@@ -1463,7 +1458,7 @@ class TestNestedCallSteps:
         storage: LocalStorageClient,
         recorded: FakeEmitter,
     ) -> None:
-        updates = self._updates(runtime_stand, storage, RemoteJournals(), True)
+        updates = self._updates(runtime_stand, storage, RemoteJournals())
         updates.begin_turn(QUESTION)
 
         await updates.apply(
@@ -1485,7 +1480,7 @@ class TestNestedCallSteps:
         storage: LocalStorageClient,
         recorded: FakeEmitter,
     ) -> None:
-        updates = self._updates(runtime_stand, storage, RemoteJournals(), True)
+        updates = self._updates(runtime_stand, storage, RemoteJournals())
         updates.begin_turn(QUESTION)
         await updates.apply(
             self.NESTED.call(CALL, "mcp__boba__workflow", {"nodes": self.NODES})
@@ -1515,7 +1510,7 @@ class TestNestedCallSteps:
     ) -> None:
         """Узлы связки встают разом: текущий — первый, затем узел, о котором
         сервер сообщил ход работы или журнал."""
-        updates = self._updates(runtime_stand, storage, RemoteJournals(), True)
+        updates = self._updates(runtime_stand, storage, RemoteJournals())
         updates.begin_turn(QUESTION)
         await updates.view.await_model()
         await updates.apply(
@@ -1546,7 +1541,7 @@ class TestNestedCallSteps:
         recorded: FakeEmitter,
     ) -> None:
         journals = RemoteJournals()
-        updates = self._updates(runtime_stand, storage, journals, True)
+        updates = self._updates(runtime_stand, storage, journals)
         updates.begin_turn(QUESTION)
         await updates.apply(
             self.NESTED.call(CALL, "mcp__boba__workflow", {"nodes": self.NODES})
@@ -1568,7 +1563,7 @@ class TestNestedCallSteps:
         recorded: FakeEmitter,
     ) -> None:
         journals = RemoteJournals()
-        updates = self._updates(runtime_stand, storage, journals, True)
+        updates = self._updates(runtime_stand, storage, journals)
         updates.begin_turn(QUESTION)
         await updates.apply(
             self.NESTED.call(CALL, "mcp__boba__workflow", {"nodes": self.NODES})
@@ -1596,7 +1591,7 @@ class TestNestedCallSteps:
         storage: LocalStorageClient,
         recorded: FakeEmitter,
     ) -> None:
-        updates = self._updates(runtime_stand, storage, RemoteJournals(), True)
+        updates = self._updates(runtime_stand, storage, RemoteJournals())
         updates.begin_turn(QUESTION)
         await updates.apply(
             self.NESTED.call(CALL, "mcp__boba__workflow", {"nodes": self.NODES})
@@ -1620,7 +1615,7 @@ class TestNestedCallSteps:
         storage: LocalStorageClient,
         recorded: FakeEmitter,
     ) -> None:
-        updates = self._updates(runtime_stand, storage, RemoteJournals(), False)
+        updates = self._updates(runtime_stand, storage, RemoteJournals())
         updates.begin_turn(QUESTION)
         await updates.apply(_call(CALL, "mcp__boba__workflow", {"nodes": self.NODES}))
 
@@ -1856,7 +1851,7 @@ class TestResultsFromRawOutput:
                     view,
                     thread_id,
                     RemoteJournals(),
-                    ToolMedia(KnownSources({}, {}, {})),
+                    ToolMedia(SANDBOX_URL),
                 ),
                 payloads,
                 NoSurface(),
@@ -1880,7 +1875,7 @@ class TestResultsFromRawOutput:
         try:
             view = ChatView(thread_id, LiveSink(), seeded.user.id, storage, TEXTS)
             replay = UpdateView(
-                view, thread_id, RemoteJournals(), ToolMedia(KnownSources({}, {}, {}))
+                view, thread_id, RemoteJournals(), ToolMedia(SANDBOX_URL)
             )
             await replay.apply(_question())
             for update in self._updates(thread_id):
@@ -2036,7 +2031,7 @@ class TestTabCommands:
         self, storage: LocalStorageClient, command: str, outcome: CommandOutcome
     ) -> None:
         """Строка вызова и итог — через кодек шины, как у другой вкладки."""
-        media = ToolMedia(KnownSources({}, {}, {"standard": TestToolApps.SANDBOX}))
+        media = ToolMedia(SANDBOX_URL)
         view = ChatView(THREAD, LiveSink(), "u-1", storage, TEXTS, user_name="a")
         updates = UpdateView(view, THREAD, RemoteJournals(), media)
         codec = SessionUpdateCodec()
@@ -2081,7 +2076,7 @@ class TestTabCommands:
         assert props["tool"] == TestToolApps.TOOL
         assert props["input"] == {"status": "new"}
         assert props["call_id"] == COMMAND
-        assert props["sandbox_url"] == TestToolApps.SANDBOX.sandbox_url()
+        assert props["sandbox_url"] == SANDBOX_URL
         assert props["result"] == self.APP.result.model_dump(
             mode="json", by_alias=True, exclude_none=True
         )
@@ -2304,7 +2299,7 @@ class TestBlockDrawings:
     ) -> None:
         view = ChatView(THREAD, LiveSink(), "u-1", storage, TEXTS)
         updates = UpdateView(
-            view, THREAD, RemoteJournals(), ToolMedia(KnownSources({}, {}, {}))
+            view, THREAD, RemoteJournals(), ToolMedia(SANDBOX_URL)
         )
         await updates.apply(_question())
         await updates.apply(_call(CALL, name, {}))

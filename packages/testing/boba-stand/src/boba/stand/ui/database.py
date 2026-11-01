@@ -19,6 +19,7 @@ from uuid import UUID, uuid4
 from omegaconf import OmegaConf
 from psycopg import sql
 from psycopg.errors import InsufficientPrivilege
+from psycopg.types.json import Jsonb
 
 from boba.config import ConfigLoader, bind
 from boba.connection_broker.store import ConnectionStore
@@ -27,6 +28,7 @@ from boba.connections.secrets import SecretCipher
 from boba.connections.stored import (
     ConnectionBase,
     ConnectionTable,
+    GrantKind,
     GrantTarget,
     StoredRole,
 )
@@ -36,12 +38,20 @@ from boba.db.postgres import AsyncPostgresPool, PgQuery, PgQueryBuilder
 from boba.db.postgres.connection.config import PostgresConfig
 from boba.ix_core.database import IxDatabase
 from boba.krb import KerberosWorkspaceConfig
+from boba.mcp_client.client import McpServerConfig, StdioCommand
 from boba.runtime.config import InstanceConfig, RuntimeConfig
 from boba.stand.database import TestDatabase
 from boba.stand.edm import EdmDataset, EdmSource, EdmSources
 from boba.stand.ix_index import IxPage, IxPages, SharedIndexers, StandIxStack
 from boba.stand.stream_sinks import SinkSources, StreamSinks
-from boba.stand.ui.stand import StandApp, StandConfig, StandError, StandUrl
+from boba.stand.ui.stand import (
+    ServerSeed,
+    ServerSeedSpec,
+    StandApp,
+    StandConfig,
+    StandError,
+    StandUrl,
+)
 from boba.transport.http.connection import HttpConnection, UrlScheme
 
 
@@ -126,6 +136,8 @@ class StandOracle:
 class StandDatabase:
     """База стенда приложения: готовится до старта процесса, сеется после него."""
 
+    MCP_TABLE: ClassVar[str] = "mcp_servers"
+
     KB_SCHEMA: ClassVar[str] = "tool.kb.db_schema"
     EMBEDDING_CACHE: ClassVar[str] = "ix_stand.embedding_cache_dir"
     EDM_DATABASE: ClassVar[str] = "edm_ui_stand"
@@ -180,6 +192,16 @@ class StandDatabase:
                     .build()
                 )
                 await cur.execute(query.text, query.params)
+
+            query = (
+                PgQueryBuilder()
+                .add(
+                    "drop table if exists {table} cascade",
+                    table=sql.Identifier(self._schema, self.MCP_TABLE),
+                )
+                .build()
+            )
+            await cur.execute(query.text, query.params)
 
     async def _ensure_database(self) -> None:
         maintenance = AsyncPostgresPool(self._maintenance)
@@ -589,3 +611,76 @@ class _OpenedPool:
 
     async def __aexit__(self, *error: object) -> None:
         await self._pool.close()
+
+
+class StandServerSeed(ServerSeed):
+    """Сеет серверы чата стенда в mcp_servers и выдаёт их его ролям.
+
+    Создаётся StandProcess; после старта таблицы и роли уже существуют.
+    В конфиг приложения серверы не попадают.
+    """
+
+    def __init__(self, config: ServerSeedSpec) -> None:
+        self._config = config
+        self._records = config.server_records()
+
+    def run(self) -> None:
+        run_blocking(self._seed())
+
+    async def _seed(self) -> None:
+        built = ConfigLoader(self._config.files.paths(self._config.app)).load()
+        runtime = bind(built, RuntimeConfig.SECTION, RuntimeConfig)
+        cipher = SecretCipher(runtime.connections.cipher.get_secret_value())
+        pool = AsyncPostgresPool(runtime.postgres)
+        await pool.open()
+        try:
+            async with pool.connection() as conn, conn.transaction():
+                for name, raw in self._records.items():
+                    config = McpServerConfig.model_validate(raw)
+                    if isinstance(config.endpoint, StdioCommand):
+                        raise StandError(
+                            f"Seeding MCP server {name!r}: expected HTTP or SSE, got stdio"
+                        )
+
+                    server_id = uuid4()
+                    query = (
+                        PgQueryBuilder(schema=sql.Identifier(runtime.db_schema))
+                        .add(
+                            """
+                            insert into {schema}.mcp_servers (id, name, data)
+                            values (%(id)s, %(name)s, %(data)s)
+                            on conflict (name) do update set data = excluded.data
+                            returning id
+                            """,
+                            id=server_id,
+                            name=name,
+                            data=Jsonb(cipher.encrypt(config)),
+                        )
+                        .build()
+                    )
+                    cur = await conn.execute(query.text, query.params)
+                    row = await cur.fetchone()
+                    if row is None:
+                        raise StandError(
+                            f"Seeding MCP server {name!r}: insert returned no id"
+                        )
+
+                    grant = (
+                        PgQueryBuilder(schema=sql.Identifier(runtime.db_schema))
+                        .add(
+                            """
+                            insert into {schema}.grants
+                                (src_kind, src_kind_id, tgt_kind, tgt_kind_id)
+                            select %(src_kind)s, %(id)s, %(tgt_kind)s, r.id
+                            from {schema}.roles r
+                            on conflict do nothing
+                            """,
+                            src_kind=GrantKind.MCP_SERVERS.value,
+                            id=row[0],
+                            tgt_kind=GrantKind.ROLES.value,
+                        )
+                        .build()
+                    )
+                    await conn.execute(grant.text, grant.params)
+        finally:
+            await pool.close()

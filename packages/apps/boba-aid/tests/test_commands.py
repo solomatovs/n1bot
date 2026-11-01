@@ -46,7 +46,7 @@ from acp_stand import (
     ModelRequests,
     RecordingUpdates,
 )
-from aid_stand import RelayStand, TabSession
+from aid_stand import FixedServers, RelayStand, TabSession
 from pydantic import TypeAdapter
 
 from boba.aid.agent.chat import (
@@ -70,11 +70,10 @@ from boba.identity.context import CallContexts
 from boba.mcp_client.client import (
     HttpEndpoint,
     McpCaller,
-    McpServerApps,
     McpServerConfig,
     McpServerLimits,
     McpServers,
-    McpServersConfig,
+    FixedServerConfigs,
 )
 from boba.runtime.threads import ThreadsTable
 from boba.runtime.users import UsersTable
@@ -99,9 +98,9 @@ pytestmark = pytest.mark.anyio
 SCHEMA = StandNames().of_tree("commands")
 CONNECTIONS_SCHEMA = StandNames().of_tree("commands_conn")
 EXTENDED = "cmds"
-"""Сервер с расширением com.boba/commands и секцией apps."""
+"""Сервер с расширением com.boba/commands."""
 PLAIN = "plain"
-"""Тот же сервер без расширения, тоже с секцией apps."""
+"""Стандартный сервер без расширения commands."""
 CONSOLE = "orders_console"
 """Промпт сервера с пометкой «открыть приложение» и его инструмент."""
 ORDERS_APP = "ui://standard/orders.html"
@@ -162,8 +161,8 @@ class HttpStandard:
             process.kill()
             process.wait(timeout=self.STOP_SEC)
 
-    def config(self, sandbox: int) -> McpServerConfig:
-        """Запись сервера с секцией apps и песочницей на порту sandbox."""
+    def config(self) -> McpServerConfig:
+        """Запись сервера по HTTP: приложения он объявляет сам при подключении."""
         endpoint = HttpEndpoint.model_validate(
             {
                 "transport": "streamable-http",
@@ -180,9 +179,6 @@ class HttpStandard:
         return McpServerConfig(
             endpoint=endpoint,
             limits=McpServerLimits(connect_timeout_sec=20.0, call_timeout_sec=60.0),
-            apps=McpServerApps.model_validate(
-                {"chat_url": "http://127.0.0.1:8122/aid/", "port": sandbox}
-            ),
         )
 
 
@@ -242,7 +238,7 @@ class CommandsTab:
         users: UsersTable,
         threads: ThreadsTable,
         model: FakeModel,
-        servers: McpServersConfig,
+        servers: FixedServerConfigs,
         store: ConnectionStore,
         thread_id: str,
     ) -> None:
@@ -253,7 +249,7 @@ class CommandsTab:
         agent_stand = AgentStand(root / "agents", self.history.history())
         launcher = AgentLauncher(
             agent_stand.config(),
-            servers,
+            FixedServers(servers.servers),
             SignInStand.profiles(),
             users,
             relays.registrations,
@@ -340,16 +336,8 @@ async def tab(  # noqa: PLR0913 — вкладка собирается из ф�
 ) -> AsyncIterator[CommandsTab]:
     """Вкладка с запущенным агентом; auth_token — секрет входа стенда: им
     подписан вход вкладки."""
-    plain = standard.model_copy(
-        update={
-            "apps": McpServerApps.model_validate(
-                {"chat_url": "http://127.0.0.1:8122/aid/", "port": 8124}
-            )
-        }
-    )
-    sandbox = 8123
-    servers = McpServersConfig(
-        servers={EXTENDED: extended.config(sandbox), PLAIN: plain}
+    servers = FixedServerConfigs(
+        servers={EXTENDED: extended.config(), PLAIN: standard}
     )
     opened = CommandsTab(
         tmp_path, stand, users, threads, model, servers, store, str(uuid4())
@@ -856,7 +844,6 @@ class TestRenamedServer:
         вкладка открывает ту же сессию, и при подключении агент пишет одну
         запись команд — снятые старые имена и новые команды; меню и запрос
         модели знают только новое имя, а беседа до переименования на месте."""
-        sandbox = StandPorts().free()
         thread_id = str(uuid4())
         first = CommandsTab(
             tmp_path / "old",
@@ -864,7 +851,7 @@ class TestRenamedServer:
             users,
             threads,
             model,
-            McpServersConfig(servers={self.OLD: extended.config(sandbox)}),
+            FixedServerConfigs(servers={self.OLD: extended.config()}),
             store,
             thread_id,
         )
@@ -883,7 +870,7 @@ class TestRenamedServer:
             users,
             threads,
             model,
-            McpServersConfig(servers={self.NEW: extended.config(sandbox)}),
+            FixedServerConfigs(servers={self.NEW: extended.config()}),
             store,
             thread_id,
         )

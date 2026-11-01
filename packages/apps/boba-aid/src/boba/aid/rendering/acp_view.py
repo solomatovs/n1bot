@@ -20,7 +20,8 @@
 объявил несущим вложенные вызовы (NestedCallsFeature), рисуется шагами его
 узлов: ход узла приходит с ключом узла в `_meta`, итог узла — его блоки по
 записи списка узлов в structuredContent (NestedCallsOutput). У инструмента
-с приложением MCP Apps (секция apps сервера и _meta.ui.resourceUri) под
+с приложением MCP Apps (сервер объявил расширение приложений и у
+инструмента _meta.ui.resourceUri) под
 контейнером хода встаёт карточка приложения с аргументами и итогом
 вызова, а шаг остаётся фактом вызова. Вызов, который агент пометил
 вопросом пользователю (`_meta` MetaKey.QUESTION первого уведомления), —
@@ -68,8 +69,6 @@ from boba.core.mcp_names import McpToolNames
 from boba.mcp_client.client import (
     JournalLinks,
     McpDescription,
-    McpServerApps,
-    McpServers,
 )
 from boba.messaging import JournalOpened, TurnOutcome
 from boba.toolkit.calls import CallViews
@@ -99,14 +98,12 @@ from boba.transport.acp.protocol import (
 )
 
 __all__ = [
-    "AppSections",
     "CallPainter",
     "CallParts",
     "JournalRegistry",
     "NestedCall",
     "PlainCall",
     "QuestionCall",
-    "ServerApps",
     "SessionUpdate",
     "SessionUpdateCodec",
     "ToolMedia",
@@ -164,43 +161,22 @@ class SessionUpdateCodec:
         return self._adapter.validate_python(raw)
 
 
-class AppSections(Protocol):
-    """Какие серверы профиля рисуют приложения MCP Apps: секции apps
-    настроек чата. Реализация — ServerApps над McpServers чата."""
-
-    @abstractmethod
-    def apps(self, server: str) -> McpServerApps | None:
-        """Секция apps сервера server; None — его приложения не рисуются."""
-
-
-class ServerApps(AppSections):
-    """Реализация AppSections секциями apps серверов McpServers чата.
-    Создаётся на тред тем, кто рисует его ленту (приёмник агента вкладки,
-    рендерер шины треда)."""
-
-    def __init__(self, servers: McpServers) -> None:
-        self._servers = servers
-
-    def apps(self, server: str) -> McpServerApps | None:
-        return self._servers.apps(server)
-
-
 class ToolMedia:
     """Что лента треда знает о вызове инструмента сервера по его источнику
     (ToolSource) — снимку на момент вызова в первом уведомлении: типы
     содержимого аргументов (по ним рисуется вход шага: sql, bash, json),
     вложенные вызовы, которые объявил сервер (по ним вызов рисуется шагами
     узлов), адреса каналов журнала вызовов сервера (по ним у шага кнопка
-    журнала) и приложение MCP Apps инструмента сервера с секцией apps (по
-    нему у вызова карточка). Сервер лента не спрашивает: вызов без
-    источника рисуется одним шагом без карточки.
+    журнала) и приложение MCP Apps инструмента сервера, объявившего
+    расширение приложений (по нему у вызова карточка). Сервер лента не
+    спрашивает: вызов без источника рисуется одним шагом без карточки.
 
-    Создаётся на тред вместе с его лентой (UpdateView); секции apps даёт
-    AppSections треда.
+    Создаётся на тред вместе с его лентой (UpdateView); адрес песочницы
+    приложений один на процесс, его даёт сборка чата.
     """
 
-    def __init__(self, apps: AppSections) -> None:
-        self._apps = apps
+    def __init__(self, sandbox_url: str) -> None:
+        self._sandbox_url = sandbox_url
         self._views = CallViews()
         self._names = McpToolNames()
         self._app_meta = AppMeta()
@@ -237,13 +213,9 @@ class ToolMedia:
         self, server: str, card: mt.Tool, resource: AppSource | None
     ) -> ToolAppView | None:
         """Приложение MCP Apps инструмента card сервера server с ресурсом
-        на момент вызова; None — ресурса нет, у сервера нет секции apps либо
-        у инструмента нет _meta.ui.resourceUri."""
+        на момент вызова; None — ресурса нет (в том числе сервер не объявил
+        приложений) либо у инструмента нет _meta.ui.resourceUri."""
         if resource is None:
-            return None
-
-        apps = self._apps.apps(server)
-        if apps is None:
             return None
 
         try:
@@ -269,7 +241,7 @@ class ToolMedia:
             tool=card,
             resource_uri=config.resource_uri,
             resource=resource,
-            sandbox_url=apps.sandbox_url(),
+            sandbox_url=self._sandbox_url,
         )
 
     def nested(self, source: ToolSource) -> NestedCallsFeature | None:
@@ -1035,15 +1007,15 @@ class UpdateView:
 
     async def _command_app(self, name: str, outcome: CommandApp, key: str) -> None:
         """Приложение команды name из её записи: карточка, итог и ресурс —
-        снимок на момент вызова, у сервера ничего не спрашивается. Чат
-        больше не рисует приложений сервера (нет секции apps) — пометка
-        с причиной."""
+        снимок на момент вызова, у сервера ничего не спрашивается. Карточки
+        без _meta.ui.resourceUri приложения не дают — пометка с причиной."""
         resource = AppResource(resource=outcome.resource)
         app = self._media.app(outcome.server, outcome.tool, resource)
         if app is None:
             text = (
-                f"The app of /{name} is not shown: the chat no longer draws the "
-                f"apps of the MCP server {outcome.server!r}."
+                f"The app of /{name} is not shown: the tool "
+                f"{outcome.tool.name!r} of the MCP server {outcome.server!r} "
+                "declares no ui resource."
             )
             await self._view.error(text, key)
             return

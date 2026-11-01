@@ -53,15 +53,19 @@ from boba.aid.domain.fields import ThreadField, ThreadMetaField
 from boba.aid.infra.config import AppConfig
 from boba.aid.infra.notices import FailureText, TabAction, TabEvent, TabNotices
 from boba.aid.infra.providers import (
+    McpUpdates,
     agent_config,
     canvas_opener,
     chainlit_data_layer,
     chat_profiles_registry,
     get_app_config,
     mcp_directory,
+    mcp_forms,
     mcp_relay,
     mcp_servers,
+    mcp_updates,
     remote_journals,
+    server_source,
     session_profile,
     thread_agents,
     thread_agents_index,
@@ -87,10 +91,18 @@ from boba.aid.mcp_servers.directory import (
     McpServerStatus,
     McpViewer,
 )
+from boba.aid.mcp_servers.form import (
+    McpForms,
+    McpServerAdd,
+    McpServerFormView,
+    McpServerToggle,
+    McpServerUpdate,
+)
+from boba.aid.mcp_servers.sources import ServerSource
 from boba.aid.rendering.errors import chainlit_error_ctx_handler
 from boba.cancellation import StopReason
 from boba.canvas.canvas import CanvasAction, CanvasFileRequest, RenderVerdicts
-from boba.chat.profiles import ChatProfileConfig, ChatProfiles, SelectedProfile
+from boba.chat.profiles import ChatProfiles, SelectedProfile
 from boba.chat.threads import DataLayerError
 from boba.identity.context import Scope
 from boba.identity.errors import RefusalError
@@ -136,6 +148,7 @@ class TabAgent:
     FAILURES: ClassVar[tuple[type[Exception], ...]] = (
         AcpClientError,
         AgentSettingsError,
+        McpAppError,
         McpClientError,
         LockBusyError,
         CommandError,
@@ -384,12 +397,14 @@ async def set_chat_profiles(
     language: str | None,
     registry: Annotated[ChatProfiles, Depends(chat_profiles_registry)],
     servers: Annotated[McpServers, Depends(mcp_servers)],
+    source: Annotated[ServerSource, Depends(server_source)],
 ) -> list[cl.ChatProfile]:
     """Профили, выданные входу пользователя; выбор профиля обязателен.
-    Загрузка файлов включена в профиле, чей первый MCP-сервер объявил
-    хранилище файлов: своего хранилища у чата нет."""
+    Загрузка файлов включена, если среди выданных пользователю серверов
+    есть объявивший хранилище файлов: своего хранилища у чата нет."""
     granted = ChainlitSession.profiles_of(user)
-    uploads = ProfileUploads(servers, user)
+    uploads = ProfileUploads(servers, source, user)
+    overrides = await uploads.overrides()
 
     profiles: list[cl.ChatProfile] = []
     for name, profile in registry.visible_for(granted).items():
@@ -404,7 +419,7 @@ async def set_chat_profiles(
                 markdown_description=profile.description,
                 icon=icon,
                 default=profile.default,
-                config_overrides=await uploads.overrides(profile),
+                config_overrides=overrides,
             )
         )
 
@@ -412,58 +427,83 @@ async def set_chat_profiles(
 
 
 class ProfileUploads:
-    """Доступность загрузки файлов в профиле для пользователя.
+    """Доступность загрузки файлов для пользователя.
 
     Создаётся обработчиком set_chat_profiles на один запрос настроек и
-    on_chat_start на старт вкладки. Файлы пользователя лежат на первом
-    MCP-сервере профиля, объявившем расширение файлов; если такого сервера
-    нет или сервер профиля недоступен, кнопка загрузки в этом профиле
-    скрыта, а недоступность сервера вкладка узнаёт уведомлением (explain).
+    on_chat_start на старт вкладки. Файлы пользователя лежат на первом из
+    выданных ему серверов, объявившем расширение файлов; если такого нет или
+    сервер недоступен, кнопка загрузки скрыта, а недоступность сервера
+    вкладка узнаёт уведомлением (explain).
     """
 
-    def __init__(self, servers: McpServers, user: cl.User | None) -> None:
+    def __init__(
+        self, servers: McpServers, source: ServerSource, user: cl.User | None
+    ) -> None:
         self._servers = servers
+        self._source = source
         self._user = user
 
-    async def overrides(self, profile: ChatProfileConfig) -> ChainlitConfigOverrides:
-        upload = SpontaneousFileUploadFeature(enabled=await self.enabled(profile))
+    async def overrides(self) -> ChainlitConfigOverrides:
+        upload = SpontaneousFileUploadFeature(enabled=await self.enabled())
 
         return ChainlitConfigOverrides(
             features=FeaturesSettings(spontaneous_file_upload=upload)
         )
 
-    async def enabled(self, profile: ChatProfileConfig) -> bool:
+    async def enabled(self) -> bool:
         try:
-            host = await self._host(profile)
-        except McpClientError as exc:
+            host = await self._host()
+        except (McpClientError, McpAppError) as exc:
             logger.warning("file upload is hidden: %s", exc)
             return False
 
         return host is not None
 
-    async def explain(self, profile: ChatProfileConfig, notices: TabNotices) -> None:
-        """Кнопка загрузки скрыта недоступным сервером профиля — вкладке
-        уведомление с причиной; доступный сервер или профиль без файлов
+    async def explain(self, notices: TabNotices) -> None:
+        """Кнопка загрузки скрыта недоступным сервером — вкладке уведомление
+        с причиной; доступный сервер или отсутствие серверов с файлами
         молчат."""
         try:
-            await self._host(profile)
+            await self._host()
         except McpClientError as exc:
             logger.warning("file upload is hidden: %s", exc)
             await notices.uploads_off(exc)
 
-    async def _host(self, profile: ChatProfileConfig) -> FilesHost | None:
+    async def _host(self) -> FilesHost | None:
         user = self._user
         if user is None:
             return None
 
-        if not profile.mcp:
+        try:
+            viewer = self._viewer(user)
+            names = await self._source.enabled_names(viewer)
+        except McpAppError as exc:
+            raise McpClientError(
+                f"Looking up file servers of {user.identifier!r} failed: {exc}"
+            ) from exc
+
+        if not names:
             return None
 
-        caller = McpCaller(
-            login=Login(user.identifier), roles=ChainlitSession.roles_of(user)
-        )
+        return await self._servers.files_host(names, viewer.caller())
 
-        return await self._servers.files_host(profile.mcp, caller)
+    def _viewer(self, user: cl.User) -> McpViewer:
+        """Ошибки:
+        McpAppError — у входа нет строки users: серверы ему не выданы.
+        """
+        user_id = getattr(user, "id", None)
+        if not user_id:
+            msg = (
+                f"the file upload of {user.identifier!r} is unknown: the sign-in "
+                "has no users row"
+            )
+            raise McpAppError(msg)
+
+        return McpViewer(
+            user_id=UUID(str(user_id)),
+            login=Login(user.identifier),
+            roles=ChainlitSession.roles_of(user),
+        )
 
 
 @cl.on_chat_start
@@ -473,6 +513,7 @@ async def on_chat_start(
     registry: Annotated[ChatProfiles, Depends(chat_profiles_registry)],
     agents: Annotated[ThreadAgents, Depends(thread_agents, scope="session")],
     servers: Annotated[McpServers, Depends(mcp_servers)],
+    source: Annotated[ServerSource, Depends(server_source)],
 ):
     session = current_session()
 
@@ -504,13 +545,14 @@ async def on_chat_start(
     if session.thread_id:
         await TabAgent(agents, registry).start(session)
 
+    # профиль, недоступный ролям входа, вкладке не открылся: про загрузку молчим
     try:
-        selected = registry.resolve(session.chat_profile, session.sign_in)
+        registry.resolve(session.chat_profile, session.sign_in)
     except RefusalError:
         return
 
-    uploads = ProfileUploads(servers, session.user)
-    await uploads.explain(selected.config, TabNotices())
+    uploads = ProfileUploads(servers, source, session.user)
+    await uploads.explain(TabNotices())
 
 
 @cl.on_chat_end
@@ -814,20 +856,35 @@ async def on_agent_retry(
 class McpViewerFactory:
     """Сборка зрителя приложения MCP-серверов из сессии вкладки и её профиля."""
 
-    def __init__(self, session: ChainlitSession, profile: SelectedProfile) -> None:
+    def __init__(self, session: ChainlitSession) -> None:
         self._session = session
-        self._profile = profile
 
     def viewer(self) -> McpViewer:
-        return McpViewer(
-            login=self._session.identifier,
-            roles=self._session.roles,
-            profile=self._profile,
-        )
+        """Ошибки:
+        McpAppError — у сессии нет строки users: свой сервер заводить не на кого.
+        """
+        user_id = self._session.user_id
+        if not user_id:
+            msg = (
+                f"the MCP servers app of session {self._session.id!r} was not "
+                f"opened: the sign-in {self._session.label!r} has no users row"
+            )
+            raise McpAppError(msg)
+
+        try:
+            return McpViewer(
+                user_id=UUID(user_id),
+                login=self._session.identifier,
+                roles=self._session.roles,
+            )
+        except ValueError:
+            raise McpAppError(
+                "Opening MCP panel: the signed-in session has no valid user id or login"
+            ) from None
 
 
 def _mcp_answer(
-    answer: McpServerList | McpServerStatus | McpServerDetail,
+    answer: McpServerList | McpServerStatus | McpServerDetail | McpServerFormView,
 ) -> dict[str, Any]:
     return answer.model_dump(mode="json")
 
@@ -847,14 +904,12 @@ def _mcp_app_error(exc: Exception) -> dict[str, Any]:
 async def on_mcp_list(
     action: cl.Action,
     directory: Annotated[McpDirectory, Depends(mcp_directory)],
-    selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
+    forms: Annotated[McpForms, Depends(mcp_forms)],
 ) -> dict[str, Any]:
     """Список серверов профиля зрителя."""
     try:
         return _mcp_answer(
-            await directory.listed(
-                McpViewerFactory(current_session(), selected).viewer()
-            )
+            await directory.listed(McpViewerFactory(current_session()).viewer())
         )
     except McpAppError as exc:
         return _mcp_app_error(exc)
@@ -866,14 +921,14 @@ async def on_mcp_list(
 async def on_mcp_status(
     action: cl.Action,
     directory: Annotated[McpDirectory, Depends(mcp_directory)],
-    selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
+    forms: Annotated[McpForms, Depends(mcp_forms)],
 ) -> dict[str, Any]:
     """Состояние одного сервера приложения."""
-    request = McpServerRequest.model_validate(action.payload)
     try:
+        request = forms.parse(McpServerRequest, action.payload)
         return _mcp_answer(
             await directory.status(
-                McpViewerFactory(current_session(), selected).viewer(), request.name
+                McpViewerFactory(current_session()).viewer(), request.name
             )
         )
     except McpAppError as exc:
@@ -886,14 +941,14 @@ async def on_mcp_status(
 async def on_mcp_detail(
     action: cl.Action,
     directory: Annotated[McpDirectory, Depends(mcp_directory)],
-    selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
+    forms: Annotated[McpForms, Depends(mcp_forms)],
 ) -> dict[str, Any]:
     """Карточка сервера приложения с инструментами."""
-    request = McpServerRequest.model_validate(action.payload)
     try:
+        request = forms.parse(McpServerRequest, action.payload)
         return _mcp_answer(
             await directory.detail(
-                McpViewerFactory(current_session(), selected).viewer(), request.name
+                McpViewerFactory(current_session()).viewer(), request.name
             )
         )
     except McpAppError as exc:
@@ -905,17 +960,126 @@ async def on_mcp_detail(
 @di_inject
 async def on_mcp_reconnect(
     action: cl.Action,
+    updates: Annotated[McpUpdates, Depends(mcp_updates)],
     directory: Annotated[McpDirectory, Depends(mcp_directory)],
-    selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
+    forms: Annotated[McpForms, Depends(mcp_forms)],
 ) -> dict[str, Any]:
     """Кнопка Reconnect карточки: переподключение и новое состояние."""
-    request = McpServerRequest.model_validate(action.payload)
     try:
-        return _mcp_answer(
-            await directory.reconnect(
-                McpViewerFactory(current_session(), selected).viewer(), request.name
-            )
-        )
+        request = forms.parse(McpServerRequest, action.payload)
+        viewer = McpViewerFactory(current_session()).viewer()
+        status = await directory.reconnect(viewer, request.name)
+        listed = await directory.listed(viewer)
+        for row in listed.servers:
+            if row.name != request.name:
+                continue
+
+            if row.editable:
+                await updates.changed(viewer.user_id, (request.name,))
+
+        return _mcp_answer(status)
+    except McpAppError as exc:
+        return _mcp_app_error(exc)
+
+
+@cl.action_callback(McpAction.ADD)
+@chainlit_error_ctx_handler
+@di_inject
+async def on_mcp_add(
+    action: cl.Action,
+    directory: Annotated[McpDirectory, Depends(mcp_directory)],
+    forms: Annotated[McpForms, Depends(mcp_forms)],
+    updates: Annotated[McpUpdates, Depends(mcp_updates)],
+) -> dict[str, Any]:
+    """Действие add панели MCP-серверов текущего пользователя."""
+    try:
+        request = forms.parse(McpServerAdd, action.payload)
+        viewer = McpViewerFactory(current_session()).viewer()
+        answer = await directory.save(viewer, request.form)
+        await updates.changed(viewer.user_id, (request.form.name,))
+
+        return _mcp_answer(answer)
+    except McpAppError as exc:
+        return _mcp_app_error(exc)
+
+
+@cl.action_callback(McpAction.UPDATE)
+@chainlit_error_ctx_handler
+@di_inject
+async def on_mcp_update(
+    action: cl.Action,
+    directory: Annotated[McpDirectory, Depends(mcp_directory)],
+    forms: Annotated[McpForms, Depends(mcp_forms)],
+    updates: Annotated[McpUpdates, Depends(mcp_updates)],
+) -> dict[str, Any]:
+    """Действие update панели MCP-серверов текущего пользователя."""
+    try:
+        request = forms.parse(McpServerUpdate, action.payload)
+        viewer = McpViewerFactory(current_session()).viewer()
+        answer = await directory.save(viewer, request.form, request.current)
+        await updates.changed(viewer.user_id, (request.current, request.form.name))
+
+        return _mcp_answer(answer)
+    except McpAppError as exc:
+        return _mcp_app_error(exc)
+
+
+@cl.action_callback(McpAction.REMOVE)
+@chainlit_error_ctx_handler
+@di_inject
+async def on_mcp_remove(
+    action: cl.Action,
+    directory: Annotated[McpDirectory, Depends(mcp_directory)],
+    forms: Annotated[McpForms, Depends(mcp_forms)],
+    updates: Annotated[McpUpdates, Depends(mcp_updates)],
+) -> dict[str, Any]:
+    """Действие remove панели MCP-серверов текущего пользователя."""
+    try:
+        request = forms.parse(McpServerRequest, action.payload)
+        viewer = McpViewerFactory(current_session()).viewer()
+        answer = await directory.remove(viewer, request.name)
+        await updates.changed(viewer.user_id, (request.name,))
+
+        return _mcp_answer(answer)
+    except McpAppError as exc:
+        return _mcp_app_error(exc)
+
+
+@cl.action_callback(McpAction.TOGGLE)
+@chainlit_error_ctx_handler
+@di_inject
+async def on_mcp_toggle(
+    action: cl.Action,
+    directory: Annotated[McpDirectory, Depends(mcp_directory)],
+    forms: Annotated[McpForms, Depends(mcp_forms)],
+    updates: Annotated[McpUpdates, Depends(mcp_updates)],
+) -> dict[str, Any]:
+    """Действие toggle панели MCP-серверов текущего пользователя."""
+    try:
+        request = forms.parse(McpServerToggle, action.payload)
+        viewer = McpViewerFactory(current_session()).viewer()
+        answer = await directory.set_enabled(viewer, request.name, request.enabled)
+        await updates.changed(viewer.user_id, (request.name,))
+
+        return _mcp_answer(answer)
+    except McpAppError as exc:
+        return _mcp_app_error(exc)
+
+
+@cl.action_callback(McpAction.FORM)
+@chainlit_error_ctx_handler
+@di_inject
+async def on_mcp_form(
+    action: cl.Action,
+    directory: Annotated[McpDirectory, Depends(mcp_directory)],
+    forms: Annotated[McpForms, Depends(mcp_forms)],
+) -> dict[str, Any]:
+    """Действие form панели MCP-серверов текущего пользователя."""
+    try:
+        request = forms.parse(McpServerRequest, action.payload)
+        viewer = McpViewerFactory(current_session()).viewer()
+        answer = await directory.form(viewer, request.name)
+        return _mcp_answer(answer)
     except McpAppError as exc:
         return _mcp_app_error(exc)
 

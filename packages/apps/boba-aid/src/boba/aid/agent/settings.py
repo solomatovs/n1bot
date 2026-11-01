@@ -47,10 +47,10 @@ from boba.aid.agent.config import (
     MemoryAgentHistory,
     PostgresAgentHistory,
 )
+from boba.aid.mcp_servers.sources import ServerRecord
 from boba.chat.profiles import ChatProfileConfig, ReasoningReturn
 from boba.core.secrets import SecretReveal
 from boba.db.postgres.connection import LibpqConnection
-from boba.mcp_client.client import McpServersConfig
 from boba.transport.http import HttpTransportConfig
 from boba.transport.http.connection import HttpConnection, NegotiateAuth, WebAuth
 
@@ -294,16 +294,14 @@ class SettingsFileBuilder:
     """Файл настроек агента из профиля модели и конфига: к профилю модели чата
     добавляются политика запуска `allowBypass` (режим сессии чат выставляет
     по ACP), история, инструменты «всегда загружать» [agent.tools], пределы
-    хода [agent.limits], срок
-    вызова инструментов — наибольший
-    `limits.call_timeout_sec` серверов профиля [mcp.servers.*] — и окружение
-    libkrb5 истории ключом `env`. Строка подключения истории — её собственное
+    хода [agent.limits], срок вызова инструментов — наибольший
+    `limits.call_timeout_sec` серверов, выданных треду, — и окружение libkrb5
+    истории ключом `env`. Строка подключения истории — её собственное
     подключение [agent.history].postgres. Файл — единственный канал настроек
     запуска агента: argv называет только его, окружение ребёнка — минимальный
     набор SDK."""
 
-    def __init__(self, config: AgentConfig, servers: McpServersConfig) -> None:
-        self._servers = servers
+    def __init__(self, config: AgentConfig) -> None:
         self._history = self._history_file(config.history)
         self._tools = ToolsFile(always_load=config.tools.always_load)
         self._limits = LimitsFile(
@@ -332,26 +330,13 @@ class SettingsFileBuilder:
             system_prompt_file=WorkdirFile.SYSTEM_PROMPT.value,
         )
 
-    def mcp(self, names: Sequence[str]) -> McpFile | None:
+    def mcp(self, servers: Sequence[ServerRecord]) -> McpFile | None:
         """Сроки серверов MCP агента: вызов не обрывается раньше, чем его
-        оборвал бы ретранслятор чата у самого терпеливого сервера профиля;
-        None — у профиля нет серверов [mcp.servers.*].
-
-        Ошибки:
-        AgentSettingsError — профиль называет сервер, которого нет в [mcp.servers].
-        """
+        оборвал бы ретранслятор чата у самого терпеливого сервера набора;
+        None — серверов у треда нет."""
         limits: list[float] = []
-        for name in names:
-            server = self._servers.servers.get(name)
-            if server is None:
-                msg = (
-                    f"MCP server {name!r} of the profile has no section "
-                    f"[mcp.servers.{name}], expected one of "
-                    f"{sorted(self._servers.servers)}"
-                )
-                raise AgentSettingsError(msg)
-
-            limits.append(server.limits.call_timeout_sec)
+        for server in servers:
+            limits.append(server.config.limits.call_timeout_sec)
 
         if not limits:
             return None

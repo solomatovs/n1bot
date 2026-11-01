@@ -41,8 +41,9 @@ import anyio
 import mcp_types as mt
 from acp.exceptions import RequestError
 from acp.experimental.v2 import schema
+from fastmcp.apps.config import AppConfig as ToolAppConfig
 from fastmcp.utilities.json_schema import compress_schema
-from mcp.server.apps import Visibility
+from mcp.server.apps import EXTENSION_ID, Visibility
 from mcp.server.connection import Connection, NotifyOnlyOutbound
 from mcp.server.context import ServerRequestContext
 from mcp.server.lowlevel import Server
@@ -269,9 +270,9 @@ class McpRegistration:
     на каждый сервер, который процесс получает объявлением type "acp".
     profile — профиль треда: по нему сервер chat выбирает набор
     инструментов. session — живой вход пользователя вкладки. server — имя
-    сервера профиля либо ChatTools.NAME; servers — серверы, которые профиль
-    даёт треду: приложение зовёт только их. Контекст вызова от агента
-    ретранслятор строит из регистрации (context).
+    сервера либо ChatTools.NAME; выдачу сервера пользователю проверяет
+    клиент в момент подключения, а не регистрация. Контекст вызова от
+    агента ретранслятор строит из регистрации (context).
     """
 
     user_id: UUID
@@ -280,7 +281,6 @@ class McpRegistration:
     profile: str
     session: LiveSignIn
     server: str
-    servers: frozenset[str]
 
     def context(self) -> CallContext:
         """Контекст вызова от агента пользователя: роли и секреты входа из
@@ -1062,8 +1062,8 @@ class McpRelay:
                 f"tools/call of {params.name!r} on server {registration.server!r}: "
                 f"requestState {state!r} names no call the relay holds open for "
                 "an answer of the user; the call to the server ended before the "
-                "answer came: it was stopped or ran out of call_timeout_sec of "
-                f"[mcp.servers.{registration.server}].limits; call the tool again"
+                "answer came: it was stopped or ran out of the call timeout of "
+                f"the MCP server {registration.server!r}; call the tool again"
             )
             raise MCPError(code=mt.INVALID_PARAMS, message=msg)
 
@@ -1349,7 +1349,7 @@ class McpRelay:
             raise MCPError(code=mt.INVALID_PARAMS, message=msg)
 
         nodes = list(self._node_cards(described, request, cards))
-        app = await self._app_resource(registration, card)
+        app = await self._app_resource(registration, card, described)
 
         return ToolSource(
             server=registration.server,
@@ -1393,26 +1393,22 @@ class McpRelay:
                 yield card
 
     async def _app_resource(
-        self, registration: McpRegistration, card: mt.Tool
+        self,
+        registration: McpRegistration,
+        card: mt.Tool,
+        described: McpDescription,
     ) -> AppSource | None:
-        """Ресурс приложения инструмента card на момент вызова; None — чат не
-        рисует приложений сервера либо у инструмента приложения нет.
+        """Ресурс приложения инструмента card на момент вызова; None — сервер
+        не объявил приложений либо у инструмента приложения нет.
 
         Ошибки:
         MCPError — _meta.ui карточки не по форме MCP Apps.
         """
-        if self._servers.apps(registration.server) is None:
-            return None
+        if not described.apps():
+            if not described.legacy():
+                return None
 
-        try:
-            config = self._apps.of(card)
-        except ValidationError as exc:
-            msg = (
-                f"mcp server {registration.server!r}: tool {card.name!r} carries "
-                f"_meta.ui that is not an MCP Apps tool config: "
-                f"{ValidationText.of(exc)}"
-            )
-            raise MCPError(code=mt.INTERNAL_ERROR, message=msg) from exc
+        config = self._app_config(registration.server, card)
 
         if config is None:
             return None
@@ -1716,23 +1712,13 @@ class McpRelay:
         self, registration: McpRegistration, context: CallContext
     ) -> McpToolServer:
         """Порт сервера регистрации, чьи приложения рисует чат: сервер
-        профиля с секцией apps; приложения зовут его от личности самого
-        чата.
+        профиля, объявивший при инициализации расширение приложений MCP
+        Apps; приложения зовут его от личности самого чата.
 
         Ошибки:
-        MCPError — сервер chat, сервер не из профиля треда или сервер без
-            секции apps.
-        McpClientError — сервер недоступен.
+        MCPError — сервер chat или сервер не объявил приложений.
+        McpClientError — сервер недоступен или не выдан вызывающему.
         """
-        if registration.server not in registration.servers:
-            msg = (
-                f"mcp server {registration.server!r} is not a server of profile "
-                f"{registration.profile!r} of the thread, its servers are "
-                f"{sorted(registration.servers)}; an app may call only the server "
-                "that gave it"
-            )
-            raise MCPError(code=mt.INVALID_PARAMS, message=msg)
-
         if registration.server == ChatTools.NAME:
             msg = (
                 f"server {ChatTools.NAME!r} is the chat itself and has no apps; "
@@ -1743,15 +1729,39 @@ class McpRelay:
         subject = context.subject
         user = McpCaller(login=subject.login, roles=subject.roles)
         port = await self._servers.port(registration.server, user)
-        if self._servers.apps(registration.server) is None:
-            msg = (
-                f"mcp server {registration.server!r} has no section "
-                f"[mcp.servers.{registration.server}.apps], so the chat draws no "
-                "apps of it and takes no app requests for it"
-            )
-            raise MCPError(code=mt.INVALID_PARAMS, message=msg)
 
-        return port
+        described = await port.described(McpServers.OWN)
+        if described.apps():
+            return port
+
+        if described.legacy():
+            listed = await port.tools(McpServers.OWN)
+            for card in listed.tools:
+                config = self._app_config(registration.server, card)
+                if config is None:
+                    continue
+
+                if config.resource_uri:
+                    return port
+
+        msg = (
+            f"mcp server {registration.server!r} declares no "
+            f"{EXTENSION_ID} extension or legacy app resource, so the chat "
+            "draws no apps of it and takes no app requests for it"
+        )
+        raise MCPError(code=mt.INVALID_PARAMS, message=msg)
+
+    def _app_config(self, server: str, card: mt.Tool) -> ToolAppConfig | None:
+        """Разбирает метаданные приложения карточки; отказы выпускает как MCPError."""
+        try:
+            return self._apps.of(card)
+        except ValidationError as exc:
+            msg = (
+                f"mcp server {server!r}: tool {card.name!r} carries "
+                "_meta.ui that is not an MCP Apps tool config: "
+                f"{ValidationText.of(exc)}"
+            )
+            raise MCPError(code=mt.INTERNAL_ERROR, message=msg) from exc
 
     def _offered(
         self, tools: Sequence[mt.Tool], server: str, audience: Visibility
@@ -1768,15 +1778,7 @@ class McpRelay:
             if self._task_only(tool, server):
                 continue
 
-            try:
-                config = self._apps.of(tool)
-            except ValidationError as exc:
-                msg = (
-                    f"mcp server {server!r}: tool {tool.name!r} carries _meta.ui "
-                    "that is not an MCP Apps tool config, so its visibility to "
-                    f"the {audience} is unknown: {ValidationText.of(exc)}"
-                )
-                raise MCPError(code=mt.INTERNAL_ERROR, message=msg) from exc
+            config = self._app_config(server, tool)
 
             if config is None:
                 yield tool

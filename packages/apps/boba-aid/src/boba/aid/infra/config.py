@@ -4,19 +4,21 @@
 """
 
 from typing import Annotated, Any, Self
+from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    HttpUrl,
     model_validator,
 )
 
 from boba.access import RoleConfig
 from boba.aid.agent.config import AgentConfig
+from boba.aid.mcp_servers.config import McpUserConfig
 from boba.auth.config import AuthConfig
 from boba.chat.profiles import ChatProfileConfig
-from boba.mcp_client.client import McpServersConfig
 from boba.runtime.config import RuntimeConfig
 
 LOGGING_CONFIG: dict[str, Any] = {
@@ -66,9 +68,10 @@ LOGGING_CONFIG: dict[str, Any] = {
 
 class AidSection(BaseModel):
     """Секция [aid]: HTTP-сервер чата — адрес, TLS, префикс приложения,
-    пульс сокетов и остановка uvicorn. Модель собирает AppConfig; bootstrap
-    поднимает по ней uvicorn и ставит префикс. Статику chainlit точка входа
-    берёт из share/ каталога программы, вложения — из files/ каталога данных
+    пульс сокетов, остановка uvicorn и песочница приложений MCP Apps. Модель
+    собирает AppConfig; bootstrap поднимает по ней uvicorn и ставит префикс,
+    AidListeners открывает её сокеты. Статику chainlit точка входа берёт из
+    share/ каталога программы, вложения — из files/ каталога данных
     экземпляра."""
 
     host: str = Field(default="127.0.0.1")
@@ -77,6 +80,24 @@ class AidSection(BaseModel):
     ssl_key: str | None = Field(default=None)
     ssl_ca_certs: str | None = Field(default=None)
     url_prefix: str = Field(default="")
+
+    chat_url: HttpUrl = Field(
+        description=(
+            "Адрес страницы чата в браузере пользователя: схема, хост, порт и "
+            "префикс, ровно как его открывают. Только его источник может "
+            "встроить страницу песочницы приложений MCP Apps."
+        ),
+    )
+
+    sandbox_port: int = Field(
+        gt=0,
+        le=65535,
+        description=(
+            "Порт страницы-прокси песочницы приложений MCP Apps: одна на "
+            "процесс, открывается при старте. Адрес её страницы в браузере — "
+            "схема и хост chat_url с этим портом."
+        ),
+    )
 
     ping_interval: int = Field(
         default=300,
@@ -149,8 +170,46 @@ class AidSection(BaseModel):
     )
 
 
+    def sandbox_url(self) -> str:
+        """Адрес страницы-прокси песочницы в браузере: схема и хост страницы
+        чата, порт песочницы, корень пути."""
+        host = self.chat_url.host
+        if host is None:
+            msg = f"[aid].chat_url {self.chat_url} names no host"
+            raise ValueError(msg)
+
+        sandbox = HttpUrl.build(
+            scheme=self.chat_url.scheme, host=host, port=self.sandbox_port
+        )
+
+        return str(sandbox)
+
+    def sandbox_origin(self) -> str:
+        """Источник страницы-прокси песочницы в форме браузера."""
+        return self._origin(HttpUrl(self.sandbox_url()))
+
+    def chat_origin(self) -> str:
+        """Источник страницы чата в форме браузера: единственный, кому
+        разрешено встраивать песочницу."""
+        return self._origin(self.chat_url)
+
+    @staticmethod
+    def _origin(url: HttpUrl) -> str:
+        """Схема, хост и порт, если он не порт схемы по умолчанию; учётные
+        данные адреса в источник не входят."""
+        host = url.host
+        if host is None:
+            msg = f"[aid]: address {url} expects a host, got none"
+            raise ValueError(msg)
+
+        bare = HttpUrl.build(scheme=url.scheme, host=host, port=url.port)
+        parts = urlsplit(str(bare))
+
+        return urlunsplit((parts.scheme, parts.netloc, "", "", ""))
+
+
 class AppConfig(RuntimeConfig):
-    """Секции процесса aid поверх общих: [aid], профили, MCP-серверы, агент."""
+    """Секции процесса aid поверх общих: [aid], профили, роли и агент."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -158,6 +217,8 @@ class AppConfig(RuntimeConfig):
         AidSection,
         Field(description="Секция [aid]: HTTP-сервер чата; ${aid.<name>}."),
     ]
+
+    mcp_user: McpUserConfig = Field(default_factory=McpUserConfig)
 
     profiles: Annotated[
         dict[str, ChatProfileConfig],
@@ -178,59 +239,30 @@ class AppConfig(RuntimeConfig):
         ),
     ]
 
-    mcp: Annotated[
-        McpServersConfig,
-        Field(description="Секция [mcp]: MCP-серверы, чьи инструменты видит модель."),
-    ]
-
     @model_validator(mode="after")
-    def _profiles_name_declared_servers(self) -> Self:
-        """Профиль называет только серверы из [mcp.servers]: опечатка в имени
-        — отказ на старте, а не профиль без инструментов."""
-        declared = sorted(self.mcp.servers)
-        for name, profile in self.profiles.items():
-            for server in profile.mcp:
-                if server in self.mcp.servers:
-                    continue
-
-                msg = (
-                    f"[profiles.{name}].mcp names server {server!r} that is not "
-                    f"declared in [mcp.servers], declared: {declared}"
-                )
-                raise ValueError(msg)
-
-        return self
-
-    @model_validator(mode="after")
-    def _sandboxes_off_the_chat(self) -> Self:
-        """Песочница приложений сервера не на источнике чата и не на его
-        порту: иначе скрипт приложения достаёт до страницы чата, а сокет
-        песочницы не поднимется рядом с сокетом чата."""
-        for name, server in self.mcp.servers.items():
-            apps = server.apps
-            if apps is None:
-                continue
-
-            if apps.port == self.aid.port:
-                msg = (
-                    f"[mcp.servers.{name}.apps] port {apps.port} is the port the "
-                    f"chat itself listens on ([aid].port {self.aid.port}); give the "
-                    "sandbox of the server a port of its own"
-                )
-                raise ValueError(msg)
-
-            if apps.origin() != apps.chat_origin():
-                continue
-
+    def _sandbox_off_the_chat(self) -> Self:
+        """Песочница приложений не на источнике чата и не на его порту:
+        иначе скрипт приложения достаёт до страницы чата, а сокет песочницы
+        не поднимется рядом с сокетом чата."""
+        if self.aid.sandbox_port == self.aid.port:
             msg = (
-                f"[mcp.servers.{name}.apps] port {apps.port} puts the sandbox on "
-                f"origin {apps.origin()} of the chat page itself (chat_url "
-                f"{apps.chat_url}); give the sandbox a port other than the port "
-                "of the chat in the browser, so that the apps cannot reach the chat"
+                f"[aid].sandbox_port {self.aid.sandbox_port} is the port the chat "
+                f"itself listens on ([aid].port {self.aid.port}); give the app "
+                "sandbox a port of its own"
             )
             raise ValueError(msg)
 
-        return self
+        if self.aid.sandbox_origin() != self.aid.chat_origin():
+            return self
+
+        msg = (
+            f"[aid].sandbox_port {self.aid.sandbox_port} puts the app sandbox on "
+            f"origin {self.aid.sandbox_origin()} of the chat page itself "
+            f"(chat_url {self.aid.chat_url}); give the sandbox a port other than "
+            "the port of the chat in the browser, so that the apps cannot reach "
+            "the chat"
+        )
+        raise ValueError(msg)
 
     auth: Annotated[
         list[AuthConfig],

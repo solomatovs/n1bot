@@ -5,13 +5,15 @@
 Общие для процессов провайдеры (реестр, сторы) — boba.runtime.providers.
 """
 
-from collections.abc import AsyncIterator
+import logging
+from collections.abc import AsyncIterator, Sequence
 from datetime import timedelta
 from enum import StrEnum
 from importlib.metadata import version
 from importlib.resources import files
 from pathlib import Path
 from typing import Annotated
+from uuid import UUID
 
 from chainlit.config import config as chainlit_config
 
@@ -32,25 +34,38 @@ from boba.aid.chat.ui_text import UiText
 from boba.aid.data import PostgresDataLayer
 from boba.aid.data.remote_storage import FileOwners, RemoteStorageClient
 from boba.aid.infra.config import AppConfig
+from boba.aid.infra.sandbox import SandboxLinks
 from boba.aid.infra.session import (
     ChainlitSessions,
     current_session,
     session_source_ref,
 )
+from boba.aid.mcp_servers import McpAppError
 from boba.aid.mcp_servers.directory import McpDirectory
+from boba.aid.mcp_servers.form import McpForms
+from boba.aid.mcp_servers.sources import ServerSource, StoredServers
+from boba.aid.mcp_servers.store import McpServerStore
 from boba.aid.rendering.renderer import TabSurfaces
 from boba.auth import JwtTokens
 from boba.chat.profiles import ChatProfiles, SelectedProfile
 from boba.connection_broker.sealing import CallSealing
 from boba.connection_broker.user_connections import ArmedConnections
+from boba.connections.secrets import SecretCipher
 from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.identity.api import UserRows
-from boba.identity.context import CallContexts
+from boba.identity.context import CallContexts, Scope
 from boba.identity.locks import LiveLocks
 from boba.identity.run import Runs
 from boba.identity.session import SessionSource
 from boba.mcp_client.client import McpServers
-from boba.messaging import MessageBus, PayloadStore
+from boba.messaging import (
+    Envelope,
+    LockToken,
+    McpServersChanged,
+    MessageBus,
+    MessageBusError,
+    PayloadStore,
+)
 from boba.runtime import providers as runtime
 from boba.runtime.config import InstanceData, RuntimeConfig
 from boba.runtime.di import Container, Depends
@@ -76,6 +91,14 @@ def chat_profiles_registry(
     return ChatProfiles(app_config.profiles)
 
 
+def sandbox_links(
+    app_config: Annotated[AppConfig, Depends(get_app_config)],
+) -> SandboxLinks:
+    """Песочница приложений MCP Apps процесса: адрес с токеном для ленты и
+    токен для страницы-прокси. Одна на процесс."""
+    return SandboxLinks(app_config.aid)
+
+
 def mcp_servers_ref() -> McpServers:
     """MCP-серверы процесса из корневого контейнера; зовётся на каждую
     операцию с файлами."""
@@ -92,11 +115,16 @@ def user_rows_ref() -> UserRows:
     return Container.require_root("chat providers").resolved(runtime.users_table)
 
 
-def file_owners(
-    profiles: Annotated[ChatProfiles, Depends(chat_profiles_registry)],
-) -> FileOwners:
-    """Владельцы файлов: по ключу объекта — пользователь и его сервер файлов."""
-    return FileOwners(session_source_ref, user_rows_ref, profiles)
+def server_source_ref() -> ServerSource:
+    """Источник серверов зрителя из корневого контейнера; зовётся на каждую
+    операцию с файлами."""
+    return Container.require_root("chat providers").resolved(server_source)
+
+
+def file_owners() -> FileOwners:
+    """Владельцы файлов: по ключу объекта — пользователь и выданные ему
+    серверы."""
+    return FileOwners(session_source_ref, user_rows_ref, server_source_ref)
 
 
 def storage_provider(
@@ -159,10 +187,11 @@ def remote_journals() -> RemoteJournals:
 
 class HarnessSchema(StrEnum):
     """Пакеты, чьи файлы schema/*.sql чат применяет в схеме приложения на
-    старте: таблицы чата и шины, соединения и гранты."""
+    старте: таблицы чата и шины, соединения и гранты, серверы MCP."""
 
     RUNTIME = "boba.runtime"
     CONNECTIONS = "boba.connection_broker"
+    MCP_SERVERS = "boba.aid.mcp_servers"
 
 
 async def harness_storage(
@@ -200,13 +229,31 @@ async def chainlit_data_layer(  # noqa: PLR0913 — слой данных соб
     )
 
 
+def mcp_server_store(
+    app_config: Annotated[AppConfig, Depends(get_app_config)],
+    pool: Annotated[AsyncPostgresPool, Depends(runtime.postgres_pool)],
+    cipher: Annotated[SecretCipher, Depends(runtime.secret_cipher)],
+) -> McpServerStore:
+    """Хранилище MCP-серверов процесса: таблица mcp_servers и выдачи grants."""
+    return McpServerStore(pool, app_config.db_schema, cipher)
+
+
+def server_source(
+    store: Annotated[McpServerStore, Depends(mcp_server_store)],
+    users: Annotated[UsersTable, Depends(runtime.users_table)],
+) -> ServerSource:
+    """Источник серверов зрителя: набор по выдаче и конфиги для клиента."""
+    return StoredServers(store, users)
+
+
 async def mcp_servers(
-    c: Annotated[AppConfig, Depends(get_app_config)],
+    source: Annotated[ServerSource, Depends(server_source)],
+    ready: Annotated[None, Depends(harness_storage)],
 ) -> AsyncIterator[McpServers]:
     """MCP-серверы процесса: подключаются при первом обращении, закрываются
     на остановке. Через них идут вызовы агента (ретранслятор), файлы
     серверов, журналы вызовов и инструменты для ленты."""
-    servers = McpServers(c.mcp)
+    servers = McpServers(source)
     try:
         yield servers
     finally:
@@ -266,37 +313,114 @@ def mcp_relay(  # noqa: PLR0913 — ретранслятор собираетс�
 
 
 def command_menus(
-    servers: Annotated[McpServers, Depends(mcp_servers)],
     relay: Annotated[McpRelay, Depends(mcp_relay)],
 ) -> CommandMenus:
-    """Реестры команд «/» вкладок: серверы MCP профиля, их приложения через
-    ретранслятор и соединения пользователя из хранилища чата; команды чата
-    выводят в ленту свои приложения."""
-    return CommandMenus(servers, relay, runtime.connection_store_ref)
+    """Реестры команд «/» вкладок: приложения серверов через ретранслятор и
+    соединения пользователя из хранилища чата; команды чата выводят в ленту
+    свои приложения."""
+    return CommandMenus(relay, runtime.connection_store_ref)
+
+
+def thread_agents_index() -> ThreadAgentsIndex:
+    """Агенты всех вкладок инстанса по тредам: один реестр на процесс."""
+    return ThreadAgentsIndex()
+
+
+logger = logging.getLogger(__name__)
+
+
+class McpUpdates:
+    """Доставляет изменение своих MCP-серверов агентам на всех узлах aid.
+
+    Обработчики панели помечают местных агентов и публикуют имена в область
+    пользователя; UserRoom принимает событие на остальных экземплярах.
+    """
+
+    def __init__(
+        self,
+        bus: MessageBus,
+        index: ThreadAgentsIndex,
+        servers: McpServers,
+        instance: str,
+    ) -> None:
+        self._bus = bus
+        self._index = index
+        self._servers = servers
+        self._instance = instance
+
+    async def changed(self, user_id: UUID, names: Sequence[str]) -> None:
+        self._index.mcp_changed(user_id)
+        changed = McpServersChanged(servers=tuple(names))
+        try:
+            await self._bus.publish(Scope.user(user_id), changed, LockToken.local())
+        except MessageBusError as exc:
+            raise McpAppError(
+                f"MCP server change was saved for user {user_id}, but notifying other chats failed: {exc}"
+            ) from exc
+
+    async def received(self, user_id: UUID, envelope: Envelope) -> None:
+        if envelope.origin == self._instance:
+            return
+
+        message = envelope.message
+        if not isinstance(message, McpServersChanged):
+            return
+
+        self._index.mcp_changed(user_id)
+        for name in message.servers:
+            await self._servers.invalidate(name)
+
+        logger.info(
+            "MCP server update for user %s from %s: %s",
+            user_id,
+            envelope.origin,
+            message.servers,
+        )
+
+
+def mcp_updates(
+    bus: Annotated[MessageBus, Depends(runtime.message_bus)],
+    index: Annotated[ThreadAgentsIndex, Depends(thread_agents_index)],
+    servers: Annotated[McpServers, Depends(mcp_servers)],
+    instance: Annotated[str, Depends(runtime.instance_name)],
+) -> McpUpdates:
+    """Изменения MCP-серверов между агентами пользователя на узлах чата."""
+    return McpUpdates(bus, index, servers, instance)
+
+
+def mcp_forms(
+    app_config: Annotated[AppConfig, Depends(get_app_config)],
+) -> McpForms:
+    """Разбор запросов панели и сроки новых серверов из настроек aid."""
+    return McpForms(app_config.mcp_user)
 
 
 def mcp_directory(
+    app_config: Annotated[AppConfig, Depends(get_app_config)],
+    source: Annotated[ServerSource, Depends(server_source)],
     servers: Annotated[McpServers, Depends(mcp_servers)],
 ) -> McpDirectory:
     """Операции приложения MCP-серверов над клиентом MCP: один на процесс."""
-    return McpDirectory(servers)
+    return McpDirectory(source, servers, app_config.mcp_user)
 
 
 def agent_launcher(  # noqa: PLR0913 — запуск собирается всеми входами процесса
     app_config: Annotated[AppConfig, Depends(get_app_config)],
     config: Annotated[AgentConfig, Depends(agent_config)],
+    source: Annotated[ServerSource, Depends(server_source)],
     profiles: Annotated[ChatProfiles, Depends(chat_profiles_registry)],
     users: Annotated[UsersTable, Depends(runtime.users_table)],
     registrations: Annotated[McpRegistrations, Depends(mcp_registrations)],
     relay: Annotated[McpRelay, Depends(mcp_relay)],
 ) -> AgentLauncher:
-    """Запуск процессов агента: регистрации серверов профиля и чата, файл
-    настроек по текущему профилю, рукопожатие; mcp/message процессов отвечает
-    ретранслятор. Профили конфига и строки users нужны удалению сессии треда.
-    Приватные каталоги процессов агента — agents/ данных экземпляра."""
+    """Запуск процессов агента: регистрации серверов, выданных пользователю
+    треда, и сервера чата, файл настроек по текущему профилю, рукопожатие;
+    mcp/message процессов отвечает ретранслятор. Профили конфига и строки
+    users нужны удалению сессии треда. Приватные каталоги процессов агента —
+    agents/ данных экземпляра."""
     return AgentLauncher(
         config,
-        app_config.mcp,
+        source,
         profiles,
         users,
         registrations,
@@ -312,11 +436,6 @@ def agent_session_meta(
     return AgentSessionMeta(threads)
 
 
-def thread_agents_index() -> ThreadAgentsIndex:
-    """Агенты всех вкладок инстанса по тредам: один реестр на процесс."""
-    return ThreadAgentsIndex()
-
-
 def thread_deleter(
     launcher: Annotated[AgentLauncher, Depends(agent_launcher)],
     index: Annotated[ThreadAgentsIndex, Depends(thread_agents_index)],
@@ -330,7 +449,7 @@ def agent_feeds(  # noqa: PLR0913 — фабрика собирается все
     payloads: Annotated[PayloadStore, Depends(runtime.payload_store)],
     locks: Annotated[LiveLocks, Depends(runtime.live_locks)],
     journals: Annotated[RemoteJournals, Depends(remote_journals)],
-    servers: Annotated[McpServers, Depends(mcp_servers)],
+    sandbox: Annotated[SandboxLinks, Depends(sandbox_links)],
     data_layer: Annotated[PostgresDataLayer, Depends(chainlit_data_layer)],
     surfaces: Annotated[TabSurfaces, Depends(thread_surfaces)],
     storage: Annotated[StorageClient, Depends(storage_provider)],
@@ -350,7 +469,7 @@ def agent_feeds(  # noqa: PLR0913 — фабрика собирается все
     return AgentFeeds(
         parts,
         journals,
-        servers,
+        sandbox.app_url(),
         data_layer,
         surfaces,
         storage,

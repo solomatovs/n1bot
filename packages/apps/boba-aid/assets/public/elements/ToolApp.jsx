@@ -404,6 +404,25 @@ export default function ToolApp() {
     return () => browser.unlisten("keydown", pressed);
   }, [mode]);
 
+  useEffect(() => {
+    const win = browser.win;
+    if (!win) return;
+    const expected = new URL(props.sandbox_url).searchParams.get("token");
+    const verify = (event) => {
+      const frame = bodyRef.current && bodyRef.current.querySelector("iframe");
+      if (!frame || event.source !== frame.contentWindow) return;
+      const data = event.data;
+      if (!expected || !data || data._bobaSandboxToken !== expected) {
+        event.stopImmediatePropagation();
+        setError("The sandbox message has no valid proxy token");
+        return;
+      }
+      delete data._bobaSandboxToken;
+    };
+    win.addEventListener("message", verify, true);
+    return () => win.removeEventListener("message", verify, true);
+  }, [props.sandbox_url]);
+
   const sandbox = useMemo(() => {
     if (!app) return null;
     return { url: new URL(props.sandbox_url), csp: app.csp };

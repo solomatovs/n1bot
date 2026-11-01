@@ -41,7 +41,7 @@ from boba.canvas.canvas import CanvasAction, CanvasElement, CanvasKind
 from boba.config import ConfigLoader, bind
 from boba.core.mcp_names import McpToolNames
 from boba.db.postgres.connection import PostgresConfig
-from boba.mcp_client.client import McpServerConfig, McpServersConfig
+from boba.mcp_client.client import McpServerConfig, FixedServerConfigs
 from boba.runtime.config import RuntimeConfig, SessionConfig, TokenConfig
 from boba.runtime.http import RequestTokens
 from boba.stand.names import StandNames
@@ -429,23 +429,27 @@ def local_app(
     tmp_path_factory: pytest.TempPathFactory,
     llm_port: int,
     fake_llm: None,
-    db_name: str,
+    probe: PostgresConfig,
 ) -> Iterator[StandProcess]:
-    """Второй стенд чата над той же базой: на сервис он и его агент входят
-    учёткой агента (local), а токен сервиса живёт несколько секунд."""
+    """Отдельная база со входом local на сервис учёткой агента и коротким токеном."""
     workdir = tmp_path_factory.mktemp("acp-tools-local")
+    database = StandDatabase(
+        StandApp.AID, StandNames().tree_database(DB_NAME + "_local")
+    )
+    name = database.prepare()
     config = StandConfig(
         workdir=workdir,
         app=StandApp.AID,
         app_port=StandPorts().free(),
         llm_port=llm_port,
-        db_name=db_name,
+        db_name=name,
         service_plugins=SERVICE_PLUGINS,
         agent_auth=StandAgentAuth.LOCAL,
         service_token_ttl_sec=SHORT_TOKEN_SEC,
     )
     process = StandProcess(config=config, log_path=workdir / "app.log")
     process.start(boot_timeout_sec=BOOT_TIMEOUT_SEC)
+    database.add_stored_connection(CONNECTION, probe)
     try:
         yield process
     finally:
@@ -708,7 +712,7 @@ class TestRelayAcceptance:
         servers = dict(service_process.servers().servers)
         servers["standard"] = standard
         made = Agents(
-            tmp_path / "agents", model, stand, McpServersConfig(servers=servers)
+            tmp_path / "agents", model, stand, FixedServerConfigs(servers=servers)
         )
         try:
             yield made

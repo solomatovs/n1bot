@@ -25,6 +25,7 @@ __all__ = [
     "CommandKind",
     "FeedbackChanged",
     "JournalOpened",
+    "McpServersChanged",
     "LockLost",
     "Message",
     "MessageKind",
@@ -62,6 +63,7 @@ class MessageKind(StrEnum):
     RUN_FINISHED = "run_finished"
     CANVAS_CHANGED = "canvas_changed"
     JOURNAL_OPENED = "journal_opened"
+    MCP_SERVERS_CHANGED = "mcp_servers_changed"
     SIGNIN_REFRESH_REQUESTED = "signin_refresh_requested"
     NOTICE = "notice"
     LOCK_LOST = "lock_lost"
@@ -298,6 +300,13 @@ class ThreadRewound(Message):
     session_id: str = Field(min_length=1)
 
 
+class McpServersChanged(Message):
+    """Личные серверы пользователя изменены; подключения по именам устарели."""
+
+    kind: Literal[MessageKind.MCP_SERVERS_CHANGED] = MessageKind.MCP_SERVERS_CHANGED
+    servers: tuple[str, ...] = Field(min_length=1)
+
+
 class ThreadChanged(Message):
     """Тред thread_id пользователя создан, переименован или удалён."""
 
@@ -366,6 +375,7 @@ AnyMessage = Annotated[
     | RunListChanged
     | ThreadRewound
     | ThreadChanged
+    | McpServersChanged
     | ThreadActive
     | WorkflowDraftChanged
     | FeedbackChanged

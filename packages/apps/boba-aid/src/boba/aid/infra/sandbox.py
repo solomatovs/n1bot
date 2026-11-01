@@ -1,26 +1,29 @@
-"""Порты процесса aid: чат и страницы-прокси песочниц MCP Apps.
+"""Порты процесса aid: чат и страница-прокси песочницы MCP Apps.
 
 Ошибки:
 ConfigError — в app_root нет страницы-прокси или шрифта песочницы.
 ServerStartError — порт чата или песочницы не удалось занять.
 """
 
+import hmac
 import logging
+import secrets
 import socket
 from enum import StrEnum
 from pathlib import Path
+from typing import ClassVar
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from starlette.applications import Starlette
 from starlette.datastructures import MutableHeaders
 from starlette.requests import Request
-from starlette.responses import FileResponse
+from starlette.responses import FileResponse, Response
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from boba.aid.infra.config import AppConfig
+from boba.aid.infra.config import AidSection, AppConfig
 from boba.config import ConfigError
-from boba.mcp_client.client import McpServerApps
 from boba.runtime.http import ServerStartError
 
 logger = logging.getLogger(__name__)
@@ -62,9 +65,72 @@ class ListenScheme(StrEnum):
     TLS = "https"
 
 
+class SandboxToken:
+    """Токен страницы-прокси песочницы: пропуск к ней из страницы чата.
+
+    Порт песочницы открыт всем, кто до него дотянется, и защищён только
+    токеном, а не источником запроса: страница чата передаёт его в адресе
+    iframe, страница-прокси читает и сразу убирает из адреса, а приложения
+    сервера его не видят — они живут в непрозрачном источнике внутреннего
+    iframe. Создаёт провайдер процесса один раз на процесс; страницу-прокси
+    пускает по нему SandboxSite, адрес с токеном строит url().
+    """
+
+    PARAM: ClassVar[str] = "token"
+
+    def __init__(self, secret: str) -> None:
+        self._secret = secret
+
+    def admits(self, presented: str | None) -> bool:
+        """Токен непуст и совпадает с выданным."""
+        if not presented:
+            return False
+
+        if not presented.isascii():
+            return False
+
+        return hmac.compare_digest(presented, self._secret)
+
+    def url(self, base: str) -> str:
+        """Адрес страницы-прокси base с токеном в запросе."""
+        parts = urlsplit(base)
+        query = parse_qsl(parts.query, keep_blank_values=True)
+        query.append((self.PARAM, self._secret))
+
+        return urlunsplit(
+            (parts.scheme, parts.netloc, parts.path, urlencode(query), "")
+        )
+
+
+class SandboxLinks:
+    """Песочница приложений процесса: её адрес для страницы чата и токен
+    пропуска к странице-прокси.
+
+    Одна на процесс: токен выдаётся при старте и живёт, пока жив процесс.
+    Создаёт run_app по секции [aid] и кладёт в контейнер до старта приложения;
+    адрес с токеном (app_url) уезжает ленте в карточку приложения, токен
+    (token) получает AidListeners для страницы-прокси.
+    """
+
+    BYTES: ClassVar[int] = 32
+
+    def __init__(self, section: AidSection) -> None:
+        self._token = SandboxToken(secrets.token_urlsafe(self.BYTES))
+        self._base = section.sandbox_url()
+
+    def app_url(self) -> str:
+        """Адрес страницы-прокси с токеном: его страница чата кладёт в iframe
+        приложения."""
+        return self._token.url(self._base)
+
+    @property
+    def token(self) -> SandboxToken:
+        return self._token
+
+
 class SandboxHeaders:
-    """Заголовки ответов порта песочницы одного сервера: встроить страницу
-    может только страница чата (frame-ancestors), формы приложения никуда не
+    """Заголовки ответов порта песочницы: встроить страницу может только
+    страница чата (frame-ancestors), формы приложения никуда не
     отправляются (form-action; политику страницы наследует iframe приложения
     из srcdoc), шрифт открыт непрозрачному источнику приложения (CORS *:
     на порту лежит только открытая статика без данных пользователя).
@@ -79,7 +145,7 @@ class SandboxHeaders:
             SandboxHeader.CORS: "*",
             SandboxHeader.NOSNIFF: "nosniff",
             SandboxHeader.REFERRER: "no-referrer",
-            SandboxHeader.CACHE: "no-cache",
+            SandboxHeader.CACHE: "no-store",
         }
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
@@ -95,14 +161,18 @@ class SandboxHeaders:
 
 
 class SandboxSite:
-    """Сайт порта песочницы одного сервера с секцией apps: страница-прокси
-    в корне и шрифт чата. Других маршрутов нет — ни входа, ни API, ни
-    cookie, ни сокетов: скрипт приложения, дотянувшийся до своего порта,
-    находит там только статику. Создаёт AidListeners на каждый такой
-    сервер."""
+    """Сайт порта песочницы процесса: страница-прокси в корне и шрифт чата.
 
-    def __init__(self, apps: McpServerApps, root: Path) -> None:
+    Других маршрутов нет — ни входа, ни API, ни cookie, ни сокетов: скрипт
+    приложения, дотянувшийся до своего порта, находит там только статику.
+    Страница отдаётся лишь по токену чата (SandboxToken), остальным ответ
+    404: без токена порт не выдаёт даже страницу-прокси. Создаёт AidListeners
+    один на процесс.
+    """
+
+    def __init__(self, root: Path, chat_origin: str, token: SandboxToken) -> None:
         self._page = SandboxFile.PAGE.under(root)
+        self._token = token
         fonts = StaticFiles(directory=SandboxFile.FONTS.under(root))
         site = Starlette(
             routes=[
@@ -110,43 +180,46 @@ class SandboxSite:
                 Mount(SandboxRoute.FONTS, app=fonts),
             ]
         )
-        self.app = SandboxHeaders(site, apps.chat_origin())
+        self.app = SandboxHeaders(site, chat_origin)
 
-    async def _page_response(self, request: Request) -> FileResponse:
+    async def _page_response(self, request: Request) -> Response:
+        presented = request.query_params.get(SandboxToken.PARAM)
+        request.scope["query_string"] = b""
+        if not self._token.admits(presented):
+            return Response(status_code=404)
+
         return FileResponse(self._page, media_type="text/html")
 
 
 class AidListeners:
-    """ASGI-вход процесса aid и его сокеты: порт чата и по порту на
-    песочницу каждого сервера с секцией apps.
+    """ASGI-вход процесса aid и его сокеты: порт чата и порт песочницы.
 
-    Один сервер uvicorn слушает все сокеты; запрос раскладывается по
+    Один сервер uvicorn слушает оба сокета; запрос раскладывается по
     локальному порту сокета, на который пришёл (scope["server"]), а не по
-    заголовку Host: на порт песочницы отвечает её SandboxSite, на порт
-    чата — приложение чата, ему же уходит lifespan. Так песочница живёт на
-    своём источнике без внешнего веб-сервера. Создаёт run_app по конфигу,
-    приложению чата и корню статики chainlit (root), где лежат страницы
-    песочницы MCP Apps.
+    заголовку Host: на порт песочницы отвечает её SandboxSite, на порт чата —
+    приложение чата, ему же уходит lifespan. Так песочница живёт на своём
+    источнике без внешнего веб-сервера. Создаёт run_app по конфигу,
+    приложению чата, корню статики chainlit (root) и токену песочницы.
     """
 
-    def __init__(self, config: AppConfig, chat: ASGIApp, root: Path) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        chat: ASGIApp,
+        root: Path,
+        token: SandboxToken,
+    ) -> None:
         self._chat = chat
         self._host = config.aid.host
         self._chat_port = config.aid.port
+        self._sandbox_port = config.aid.sandbox_port
         self._scheme = ListenScheme.PLAIN
         if config.aid.ssl_cert:
             self._scheme = ListenScheme.TLS
 
-        self._sites: dict[int, ASGIApp] = {}
-        self._servers: dict[int, str] = {}
-        for name, server in config.mcp.servers.items():
-            apps = server.apps
-            if apps is None:
-                continue
-
-            self._check(name, root)
-            self._sites[apps.port] = SandboxSite(apps, root).app
-            self._servers[apps.port] = name
+        self._check(root)
+        site = SandboxSite(root, config.aid.chat_origin(), token)
+        self._sites: dict[int, ASGIApp] = {self._sandbox_port: site.app}
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         site = self._site(scope)
@@ -157,16 +230,19 @@ class AidListeners:
         await site(scope, receive, send)
 
     def sockets(self) -> list[socket.socket]:
-        """Занятые сокеты: чат первым, затем песочницы.
+        """Занятые сокеты: чат первым, затем песочница.
 
         Ошибки:
         ServerStartError — порт занят или адрес не годится.
         """
-        bound = [self._bound(self._chat_port, "the chat")]
-        for port, name in self._servers.items():
-            bound.append(self._bound(port, f"the app sandbox of MCP server {name!r}"))
+        chat = self._bound(self._chat_port, "the chat")
+        try:
+            sandbox = self._bound(self._sandbox_port, "the app sandbox")
+        except ServerStartError:
+            chat.close()
+            raise
 
-        return bound
+        return [chat, sandbox]
 
     def _site(self, scope: Scope) -> ASGIApp | None:
         if scope["type"] == "lifespan":
@@ -200,7 +276,7 @@ class AidListeners:
 
         return sock
 
-    def _check(self, name: str, root: Path) -> None:
+    def _check(self, root: Path) -> None:
         """Ошибки:
         ConfigError — страницы или шрифта песочницы нет в app_root.
         """
@@ -210,9 +286,9 @@ class AidListeners:
                 continue
 
             msg = (
-                f"[mcp.servers.{name}.apps]: the chat serves the app sandbox from "
-                f"share/ of the program {root}, but {path} is missing; install "
-                "the chat with its assets (in the sources make -C build build "
-                "APP=runtime puts them into the assets of boba-aid)"
+                f"[aid]: the chat serves the app sandbox from share/ of the "
+                f"program {root}, but {path} is missing; install the chat with "
+                "its assets (in the sources make -C build build APP=runtime puts "
+                "them into the assets of boba-aid)"
             )
             raise ConfigError(msg)

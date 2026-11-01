@@ -47,11 +47,11 @@ from boba.identity.errors import AuthenticationError, RefusalError
 from boba.mcp_client.client import (
     HttpEndpoint,
     HttpLocation,
-    McpServerApps,
+    McpClientError,
     McpServerConfig,
     McpServerLimits,
     McpServers,
-    McpServersConfig,
+    FixedServerConfigs,
     StdioCommand,
 )
 from boba.messaging import Envelope, JournalOpened
@@ -112,7 +112,7 @@ class TestMcpRelay:
     async def relay(
         self, relay_stand: RelayStand, standard: McpServerConfig
     ) -> AsyncIterator[McpRelay]:
-        servers = McpServers(McpServersConfig(servers={"standard": standard}))
+        servers = McpServers(FixedServerConfigs(servers={"standard": standard}))
         try:
             yield relay_stand.relay(servers)
         finally:
@@ -159,7 +159,7 @@ class TestMcpRelay:
             ),
         )
 
-        return McpServers(McpServersConfig(servers={"legacy": legacy}))
+        return McpServers(FixedServerConfigs(servers={"legacy": legacy}))
 
     def _loading(self, rows: int, confirm: bool) -> dict[str, Any]:
         return {
@@ -533,7 +533,7 @@ class TestMcpRelay:
         assert isinstance(late, McpErrorOutcome), late
         assert late.error.code == mt.INVALID_PARAMS
         assert "names no call the relay holds open" in late.error.message
-        assert "call_timeout_sec of [mcp.servers.legacy]" in late.error.message
+        assert "call timeout of the MCP server 'legacy'" in late.error.message
         assert answers == [
             {"rows": 33, "step": "target", "action": "cancel", "content": None}
         ]
@@ -673,7 +673,7 @@ class TestMcpRelay:
         агент получает isError с причиной в том же вызове. Путь файла
         разбирается по каталогу workspace, который объявил сервер."""
         shows = self._flagged(standard, "--workspace", "/workspace")
-        servers = McpServers(McpServersConfig(servers={"standard": shows}))
+        servers = McpServers(FixedServerConfigs(servers={"standard": shows}))
         canvas = CanvasOpener(HolderSurface(context_var.get()))
         relay = relay_stand.relay_with(servers, relay_stand.chat, canvas)
         registration = tab.registration(uuid4(), SignInStand.PROFILE)
@@ -735,7 +735,7 @@ class TestMcpRelay:
         """Подсказки кэша сервера доходят до агента: описание и список — с
         оставшимся сроком свежести и областью кэша сервера, а не с нулём."""
         cached = self._cached(standard, 60_000)
-        servers = McpServers(McpServersConfig(servers={"standard": cached}))
+        servers = McpServers(FixedServerConfigs(servers={"standard": cached}))
         try:
             relay = relay_stand.relay(servers)
             server_id = self._server_id(relay_stand, tab, "standard")
@@ -763,7 +763,7 @@ class TestMcpRelay:
         """Сервер сменил инструкции: после срока свежести ретранслятор
         перечитывает server/discover и отдаёт агенту новые."""
         cached = self._cached(standard, 1000)
-        servers = McpServers(McpServersConfig(servers={"standard": cached}))
+        servers = McpServers(FixedServerConfigs(servers={"standard": cached}))
         try:
             relay = relay_stand.relay(servers)
             server_id = self._server_id(relay_stand, tab, "standard")
@@ -797,7 +797,7 @@ class TestMcpRelay:
             endpoint=endpoint,
             limits=McpServerLimits(connect_timeout_sec=5.0, call_timeout_sec=5.0),
         )
-        servers = McpServers(McpServersConfig(servers={"ghost": ghost}))
+        servers = McpServers(FixedServerConfigs(servers={"ghost": ghost}))
         try:
             relay = relay_stand.relay(servers)
             server_id = self._server_id(relay_stand, tab, "ghost")
@@ -871,38 +871,37 @@ class TestMcpRelay:
 
 class TestAppRequests:
     """Запросы приложения MCP Apps: инструменты только своего сервера с "app"
-    в visibility, ресурсы своего сервера; сервер без секции apps и сервер
-    chat приложению отказывают, отказ уходит приложению ошибкой JSON-RPC."""
+    в visibility, ресурсы своего сервера; сервер, не объявивший приложений,
+    и сервер chat приложению отказывают, отказ уходит приложению ошибкой
+    JSON-RPC."""
 
-    SANDBOX: ClassVar[McpServerApps] = McpServerApps.model_validate(
-        {"chat_url": "http://127.0.0.1:8122/aid/", "port": 8123}
-    )
+    NO_APPS: ClassVar[str] = "--no-apps"
+    """Флаг обычного сервера стенда без объявления приложений."""
 
     @pytest.fixture
     async def relay(
         self, relay_stand: RelayStand, standard: McpServerConfig
     ) -> AsyncIterator[McpRelay]:
-        drawn = standard.model_copy(update={"apps": self.SANDBOX})
-        config = McpServersConfig(servers={"apps": drawn, "standard": standard})
+        """Ретранслятор над обычным сервером стенда с приложениями (apps) и
+        без них (standard)."""
+        plain = TestMcpRelay._flagged(standard, self.NO_APPS)
+        config = FixedServerConfigs(servers={"apps": standard, "standard": plain})
         servers = McpServers(config)
         try:
             yield relay_stand.relay(servers)
         finally:
             await servers.stop()
 
-    PROFILE_SERVERS: ClassVar[frozenset[str]] = frozenset({"apps", "standard"})
-    """Серверы профиля треда регистрации приложения."""
-
     @staticmethod
-    def _of(tab: TabSession, server: str, servers: frozenset[str]) -> McpRegistration:
+    def _of(tab: TabSession, server: str) -> McpRegistration:
         registration = tab.registration(uuid4(), SignInStand.PROFILE)
 
-        return replace(registration, server=server, servers=servers)
+        return replace(registration, server=server)
 
     async def test_app_calls_the_tools_for_the_app(
         self, relay: McpRelay, tab: TabSession
     ) -> None:
-        registration = self._of(tab, "apps", self.PROFILE_SERVERS)
+        registration = self._of(tab, "apps")
         refresh = mt.CallToolRequestParams(name="refresh_orders", arguments={})
         orders = mt.CallToolRequestParams(name="orders", arguments={"rows": []})
 
@@ -916,7 +915,7 @@ class TestAppRequests:
     async def test_tool_for_the_model_is_refused_to_the_app(
         self, relay: McpRelay, tab: TabSession
     ) -> None:
-        registration = self._of(tab, "apps", self.PROFILE_SERVERS)
+        registration = self._of(tab, "apps")
         archive = mt.CallToolRequestParams(name="archive_orders", arguments={})
 
         with pytest.raises(MCPError) as refused:
@@ -933,7 +932,7 @@ class TestAppRequests:
     async def test_server_without_apps_refuses_the_app(
         self, relay: McpRelay, tab: TabSession, server: str
     ) -> None:
-        registration = self._of(tab, server, self.PROFILE_SERVERS)
+        registration = self._of(tab, server)
         orders = mt.CallToolRequestParams(name="orders", arguments={"rows": []})
         read = mt.ReadResourceRequestParams(uri="ui://standard/orders.html")
 
@@ -947,30 +946,30 @@ class TestAppRequests:
         assert f"{server!r}" in called.value.error.message
         assert reading.value.error.code == mt.INVALID_PARAMS
 
-    async def test_server_outside_the_profile_of_the_thread_refuses_the_app(
+    async def test_server_not_granted_to_the_user_refuses_the_app(
         self, relay: McpRelay, tab: TabSession
     ) -> None:
-        """Сервер с секцией apps, которого профиль треда не даёт: приложение
+        """Сервер, которого клиент не выдал пользователю вкладки: приложение
         и любой код вкладки его не зовут и не читают."""
-        registration = self._of(tab, "apps", frozenset({"standard"}))
+        registration = self._of(tab, "ghost")
         orders = mt.CallToolRequestParams(name="orders", arguments={"rows": []})
         read = mt.ReadResourceRequestParams(uri="ui://standard/orders.html")
 
-        with pytest.raises(MCPError) as called:
+        with pytest.raises(McpClientError) as called:
             await relay.app_call(registration, orders)
 
-        with pytest.raises(MCPError) as reading:
+        with pytest.raises(McpClientError) as reading:
             await relay.app_read(registration, read)
 
-        assert called.value.error.code == mt.INVALID_PARAMS
-        assert "is not a server of profile" in called.value.error.message
-        assert reading.value.error.code == mt.INVALID_PARAMS
+        assert "'ghost'" in str(called.value)
+        assert "not granted" in str(called.value)
+        assert "'ghost'" in str(reading.value)
 
     def _request(
         self, stand: RelayStand, tab: TabSession, server: str, name: str
     ) -> ToolSourceRequest:
         """Запрос источника вызова name сервера server от агента вкладки."""
-        registration = self._of(tab, server, self.PROFILE_SERVERS)
+        registration = self._of(tab, server)
         server_id = stand.registrations.register(registration, [server])[0].server_id
 
         return ToolSourceRequest(
@@ -1009,12 +1008,12 @@ class TestAppRequests:
     async def test_source_of_a_server_without_apps_has_no_resource(
         self, relay: McpRelay, relay_stand: RelayStand, tab: TabSession
     ) -> None:
-        request = self._request(relay_stand, tab, "standard", "orders")
+        request = self._request(relay_stand, tab, "standard", "add")
 
         reply = await relay.source(request)
 
         source = ToolSource.model_validate(reply.source)
-        assert source.tool.name == "orders"
+        assert source.tool.name == "add"
         assert source.app is None
 
     async def test_source_of_an_unknown_tool_or_server_is_an_external_error(
@@ -1036,7 +1035,7 @@ class TestAppRequests:
     async def test_app_reads_the_resources_of_its_server(
         self, relay: McpRelay, tab: TabSession
     ) -> None:
-        registration = self._of(tab, "apps", self.PROFILE_SERVERS)
+        registration = self._of(tab, "apps")
         read = mt.ReadResourceRequestParams(uri="ui://standard/orders.html")
 
         answered = await relay.app_answer(relay.app_read(registration, read))
@@ -1052,7 +1051,7 @@ class TestAppRequests:
         self, relay_stand: RelayStand, apps_slot: AppsSlot
     ) -> AsyncIterator[McpRelay]:
         """Ретранслятор над сервером notes контейнера boba-testapps —
-        FastMCPApp на fastmcp[apps] с секцией apps."""
+        FastMCPApp на fastmcp[apps], объявляющий приложения сам."""
         endpoint = HttpEndpoint(
             service=HttpLocation(
                 scheme="http", host=apps_slot.host, port=AppServer.NOTES.value, path=""
@@ -1062,9 +1061,8 @@ class TestAppRequests:
         notes = McpServerConfig(
             endpoint=endpoint,
             limits=McpServerLimits(connect_timeout_sec=20.0, call_timeout_sec=60.0),
-            apps=self.SANDBOX,
         )
-        servers = McpServers(McpServersConfig(servers={"notes": notes}))
+        servers = McpServers(FixedServerConfigs(servers={"notes": notes}))
         try:
             yield relay_stand.relay(servers)
         finally:
@@ -1127,7 +1125,7 @@ class TestAppRequests:
         assert len(actions) == 1, board.structured_content
         save = actions.pop()
 
-        app = replace(registration, server="notes", servers=frozenset({"notes"}))
+        app = replace(registration, server="notes")
         saved = await notes_relay.app_call(
             app, mt.CallToolRequestParams(name=save, arguments={"text": "eggs"})
         )
@@ -1347,7 +1345,7 @@ class TestRelaySealing:
 
     async def _called(  # noqa: PLR0913 — вызов собирается фикстурами стендов
         self,
-        config: McpServersConfig,
+        config: FixedServerConfigs,
         store: ConnectionStore,
         call_stand: CallStand,
         tab: TabSession,
@@ -1638,7 +1636,7 @@ class TestChatServer:
     ) -> None:
         credentials = KerberosCredentialSource(None, NoRefresh())
         stand = RelayStand(lambda: store, lambda: credentials, call_stand.contexts)
-        relay = stand.relay(McpServers(McpServersConfig(servers={})))
+        relay = stand.relay(McpServers(FixedServerConfigs(servers={})))
         registration = tab.registration(uuid4(), SignInStand.PROFILE)
         server_id = stand.registrations.register(registration, [ChatTools.NAME])[
             0
@@ -1715,7 +1713,7 @@ class TestChatServer:
         stand = RelayStand(
             NoConnectionStore(), lambda: credentials, call_stand.contexts
         )
-        servers = McpServers(McpServersConfig(servers={}))
+        servers = McpServers(FixedServerConfigs(servers={}))
         relay = stand.relay_with(servers, chat, stand.canvas)
         registration = tab.registration(uuid4(), SignInStand.PROFILE)
         server_id = stand.registrations.register(registration, [ChatTools.NAME])[

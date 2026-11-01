@@ -35,7 +35,6 @@ from boba.aid.agent.settings import (
 from boba.chat.profiles import ReasoningReturn
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.connection.auth import PasswordAuth
-from boba.mcp_client.client import McpServersConfig
 from boba.transport.http.connection import BearerAuth
 
 PROFILE = "general"
@@ -117,7 +116,7 @@ def _written(
     tmp_path: Path, config: AgentConfig, mcp: McpFile | None
 ) -> dict[str, Any]:
     """Документ файла настроек, как его записал бы запуск агента треда."""
-    builder = SettingsFileBuilder(config, McpServersConfig(servers={}))
+    builder = SettingsFileBuilder(config)
     env = {"KRB5CCNAME": "FILE:/run/boba/krb5cc", "KRB5_CONFIG": "/etc/boba/krb5.conf"}
     workdir = AgentWorkdirs(tmp_path / "agents").create("thread-contract")
     workdir.write(builder.build(PROFILE, _model(), mcp, env), "Answer briefly")

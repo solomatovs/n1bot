@@ -128,7 +128,7 @@ class TestMcpAppLabels:
         "state.pending",
     )
     """Состояния сервера: элемент берёт их подстановкой, не строкой."""
-    ORIGINS: ClassVar[tuple[str, ...]] = ("profile", "yours")
+    ORIGINS: ClassVar[tuple[str, ...]] = ("role", "yours")
     """Откуда сервер: элемент выбирает из двух по row.origin."""
 
     def _used(self) -> set[str]:

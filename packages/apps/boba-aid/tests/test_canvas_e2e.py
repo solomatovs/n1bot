@@ -28,7 +28,7 @@ from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 from urllib.parse import urlencode
 
 import httpx
@@ -36,12 +36,26 @@ import pytest
 from aid_stand import AppLanguage, FakeUrl
 from playwright.async_api import Locator, Page, async_playwright
 from playwright.async_api import TimeoutError as PlaywrightTimeout
+from pydantic import BaseModel, ConfigDict, SecretStr
 
 from boba.aid.canvas.panel import CanvasNote
-from boba.config import ConfigError
+from boba.aid.infra.config import AppConfig
+from boba.aid.mcp_servers.sources import McpViewer, StoredServers
+from boba.aid.mcp_servers.store import McpServerStore
+from boba.config import ConfigError, ConfigLoader, bind
+from boba.connections.secrets import SecretCipher
+from boba.mcp_client.client import (
+    HttpEndpoint,
+    HttpLocation,
+    McpServerConfig,
+    McpServerLimits,
+    ProxyAuth,
+)
+from boba.runtime.users import UsersTable
 from boba.stand.names import StandNames
-from boba.stand.ui.database import StandDatabase
+from boba.stand.ui.database import StandDatabase, StandServerSeed
 from boba.stand.ui.stand import (
+    ServerSeedSpec,
     StandApp,
     StandError,
     StandFiles,
@@ -68,7 +82,16 @@ class E2eTexts:
         return AppLanguage().texts().text(key).split(self.PLACEHOLDER)[0]
 
 
-class E2eStand:
+class E2eKeys(BaseModel):
+    """Ключи входа proxy сервиса из конфигурации стенда."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    mcp_proxy: SecretStr
+    mcp_client: SecretStr
+
+
+class E2eStand(ServerSeedSpec):
     """Адреса, каталоги и база стенда e2e поверх конфигов отладки.
 
     Конфиги отладки называют порты, данные и базу интерактивной отладки; стенд
@@ -81,7 +104,7 @@ class E2eStand:
 
     SERVICE_PORT: ClassVar[int] = StandPorts().free()
     SERVICE_HOST: ClassVar[str] = "localhost"
-    SERVICE_SCHEME: ClassVar[str] = "http"
+    SERVICE_SCHEME: ClassVar[Literal["http"]] = "http"
     SERVICE_PREFIX: ClassVar[str] = "/mcp"
     APP_PREFIX: ClassVar[str] = "/aid"
     INSTANCE: ClassVar[str] = "e2e"
@@ -93,8 +116,43 @@ class E2eStand:
 
     def __init__(self, root: Path) -> None:
         self._root = root
+        self.app = StandApp.AID
+        self._sandbox_port = StandPorts().free()
         self._app_data = root / StandApp.AID.value / self.DATA
         self._service_data = root / StandApp.MCP.value / self.DATA
+
+    @property
+    def files(self) -> StandFiles:
+        return self._files(StandApp.AID)
+
+    def server_records(self) -> Mapping[str, Mapping[str, Any]]:
+        raw = ConfigLoader(self.paths(StandApp.AID)).load()
+        keys = bind(raw, "keys", E2eKeys)
+        location = HttpLocation(
+            scheme=self.SERVICE_SCHEME,
+            host=self.SERVICE_HOST,
+            port=self.SERVICE_PORT,
+            path=self.SERVICE_PREFIX,
+        )
+        endpoint = HttpEndpoint(
+            service=location,
+            path="/all",
+            auth=ProxyAuth(
+                issuer=location,
+                client_id="boba-chat",
+                client_secret=keys.mcp_client,
+                secret=keys.mcp_proxy,
+            ),
+        )
+        server = McpServerConfig(
+            endpoint=endpoint,
+            limits=McpServerLimits(
+                connect_timeout_sec=20,
+                call_timeout_sec=86400,
+            ),
+        )
+
+        return {"e2e_all": server.model_dump()}
 
     def prepare(self) -> None:
         for data in (self._app_data, self._service_data):
@@ -137,6 +195,8 @@ class E2eStand:
         overlay.set(("postgres", "dbname"), database)
         overlay.set(("postgres_history", "dbname"), database)
         overlay.set(("env", "port"), PORT)
+        overlay.set(("aid", "chat_url"), BASE)
+        overlay.set(("aid", "sandbox_port"), self._sandbox_port)
         overlay.set(("env", "url_prefix"), self.APP_PREFIX)
         overlay.set(("env", "instance_id"), self.INSTANCE)
         overlay.set(("instance", "data_dir"), str(self._app_data))
@@ -457,6 +517,7 @@ def app_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[E2eProcesse
     try:
         service.start()
         app.start()
+        StandServerSeed(stand).run()
         yield E2eProcesses(app=app, service=service, stand=stand)
     finally:
         app.stop()
@@ -472,15 +533,14 @@ async def _cookie_header(context: Any) -> str:
     return "; ".join(pairs)
 
 
-def _app_config(stand: E2eStand) -> Any:
-    from boba.aid.infra.config import AppConfig
-    from boba.config import ConfigLoader, bind
-
+def _app_config(stand: E2eStand) -> AppConfig:
     raw = ConfigLoader(stand.paths(StandApp.AID)).load()
     return bind(raw, path="app", model=AppConfig)
 
 
-async def _user_row(config: Any, identifier: str) -> tuple[str, Mapping[str, Any]]:
+async def _user_row(
+    config: AppConfig, identifier: str
+) -> tuple[str, Mapping[str, Any]]:
     """Строка users пользователя стенда по логину: id и metadata входа.
 
     Пул свой и закрывается здесь же: общий пул процесса привязан к циклу
@@ -519,7 +579,10 @@ async def _user_row(config: Any, identifier: str) -> tuple[str, Mapping[str, Any
 async def _store(thread_id: str, files: Mapping[str, bytes], stand: E2eStand) -> None:
     """Кладёт файлы в workspace пользователя стенда на сервисе boba-mcp тем
     же путём, каким их кладёт чат: клиентом MCP от имени пользователя."""
+    from uuid import UUID
+
     from boba.canvas.keys import ObjectKey
+    from boba.db.postgres import AsyncPostgresPool
     from boba.identity.signin import SignInMetadata
     from boba.mcp_client.client import McpCaller, McpServers
     from boba.stand.storage import StorageSeed
@@ -527,8 +590,18 @@ async def _store(thread_id: str, files: Mapping[str, bytes], stand: E2eStand) ->
     config = _app_config(stand)
     owner, meta = await _user_row(config, LOGIN[0])
     caller = McpCaller(login=LOGIN[0], roles=SignInMetadata.parse(meta).roles)
-    server = config.profiles[FILES_PROFILE].mcp[0]
-    servers = McpServers(config.mcp)
+    pool = AsyncPostgresPool(config.postgres)
+    await pool.open()
+    cipher = SecretCipher(config.connections.cipher.get_secret_value())
+    source = StoredServers(
+        McpServerStore(pool, config.db_schema, cipher),
+        UsersTable(config.postgres, config.db_schema, pool),
+    )
+    viewer = McpViewer(user_id=UUID(owner), login=caller.login, roles=caller.roles)
+    names = await source.enabled_names(viewer)
+    assert names, "the file owner has no granted MCP servers"
+    server = names[0]
+    servers = McpServers(source)
     try:
         remote = await servers.files(server, caller)
         if remote is None:
@@ -539,6 +612,7 @@ async def _store(thread_id: str, files: Mapping[str, bytes], stand: E2eStand) ->
             await asyncio.wait_for(remote.upload(key, StorageSeed().chunks(blob)), 120)
     finally:
         await servers.stop()
+        await pool.close()
 
 
 async def _upload(thread_id: str, stand: E2eStand) -> None:

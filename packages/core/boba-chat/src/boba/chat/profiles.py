@@ -18,7 +18,6 @@ from boba.access import ProfileGrant, RoleConfig
 from boba.identity.errors import RefusalError
 from boba.identity.signin import ProfileCatalog, SignInMetadata
 from boba.llm.providers import ChatModelConfig
-from boba.toolkit.types import StringList
 
 __all__ = [
     "ChatProfileConfig",
@@ -98,15 +97,6 @@ class ChatProfileConfig(ChatSettings, ProfileGrant):
     default: bool = Field(
         default=False,
         description="Профиль, предвыбранный в интерфейсе; ровно один в конфиге.",
-    )
-
-    mcp: StringList = Field(
-        default=[],
-        description=(
-            "MCP-серверы профиля: имена секций [mcp.servers.<имя>]. Они "
-            "подключаются сессии при выборе профиля, и отключить их "
-            "пользователь не может; набор инструментов решает сам сервер."
-        ),
     )
 
 

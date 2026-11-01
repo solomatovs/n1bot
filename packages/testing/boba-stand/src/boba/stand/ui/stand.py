@@ -115,8 +115,8 @@ class StandUrl(StrEnum):
 
 
 class StandAgentAuth(StrEnum):
-    """Способ входа агента чата на сервис boba-mcp стенда: значение ключа
-    auth секции [mcp.servers.<имя>.endpoint] чата."""
+    """Способ входа агента чата на сервис boba-mcp стенда: поле auth
+    адреса сервера, сохраняемого в таблицу MCP-серверов чата."""
 
     PROXY = "proxy"
     LOCAL = "local"
@@ -510,6 +510,19 @@ class StandFiles:
         return self.paths(app)
 
 
+class ServerSeedSpec(Protocol):
+    """Файлы конфигурации чата стенда и серверы для посева в таблицу."""
+
+    app: StandApp
+
+    @property
+    @abstractmethod
+    def files(self) -> StandFiles: ...
+
+    @abstractmethod
+    def server_records(self) -> Mapping[str, Mapping[str, Any]]: ...
+
+
 @dataclass
 class ServiceStand(StandService):
     """Сервис boba-mcp стенда: исполняет инструменты и держит файлы чата.
@@ -600,11 +613,11 @@ class ServiceStand(StandService):
         return None
 
     def server_name(self, endpoint: str) -> str:
-        """Имя сервера endpoint'а в секции [mcp.servers] чата."""
+        """Имя MCP-сервера endpoint'а в таблице чата."""
         return StandServerName.SERVICE.of(endpoint)
 
     def server(self, endpoint: str) -> dict[str, Any]:
-        """Секция [mcp.servers.<имя>] чата для endpoint'а сервиса."""
+        """Описание MCP-сервера для endpoint'а сервиса."""
         service = {
             "scheme": StandUrl.SCHEME.value,
             "host": StandUrl.HOST.value,
@@ -798,7 +811,7 @@ class StandPlugins:
 
 
 @dataclass
-class StandConfig(StandService):
+class StandConfig(StandService, ServerSeedSpec):
     """Конфиг стенда: пишет свой config.toml и env для дочернего процесса."""
 
     workdir: Path
@@ -821,9 +834,14 @@ class StandConfig(StandService):
     sso_roles: dict[str, list[str]] = field(default_factory=dict)
     """Роли SSO-входа по принципалу: без них вход отклоняется как безролевой."""
 
+    seed_servers: bool = True
+    """False — второй узел использует уже посеянные в общей базе серверы."""
+
     mcp_servers: dict[str, dict[str, Any]] = field(default_factory=dict)
-    """MCP-серверы стенда по именам, как секции [mcp.servers.<имя>]; внешние
-    серверы рабочего конфига стенд не наследует."""
+    """MCP-серверы стенда по именам для записи в таблицу чата; внешние
+    серверы рабочей базы стенд не наследует."""
+
+    sandbox_port: int = field(default_factory=StandPorts().free)
 
     service_port: int = field(default_factory=StandPorts().free)
     """Порт сервиса boba-mcp стенда чата."""
@@ -1147,38 +1165,25 @@ class StandConfig(StandService):
             overlay.set(("storage", "files_dir"), str(files_dir))
 
     def _without_mcp_servers(self, overlay: StandOverlay) -> None:
-        """Внешние MCP-серверы рабочего конфига стенду не нужны: набор
-        инструментов сессии не должен зависеть от сети. Остаются только
-        серверы, заданные самим стендом: их называет каждый профиль стенда.
-        Песочницы серверов с секцией apps встраивает чат стенда: адрес его
-        страницы — chat_url каждой такой секции."""
+        """Песочница чата стенда; серверы сеются в таблицу после старта."""
+        if self.app is not StandApp.AID:
+            return
+
+        overlay.set(("aid", "chat_url"), self.base_url)
+        overlay.set(("aid", "sandbox_port"), self.sandbox_port)
+
+    def server_records(self) -> Mapping[str, Mapping[str, Any]]:
+        """Серверы, которые посев выдаёт ролям стенда через таблицу grants."""
+        servers: dict[str, Mapping[str, Any]] = {}
         service = self.service()
-        servers: dict[str, dict[str, Any]] = {}
-        own: dict[str, str] = {}
         if service is not None:
-            for name, endpoint in service.PROFILE_ENDPOINTS.items():
-                own[name] = service.server_name(endpoint)
-                servers[own[name]] = service.server(endpoint)
+            for endpoint in service.ENDPOINTS:
+                servers[service.server_name(endpoint)] = service.server(endpoint)
 
         for name, section in self.mcp_servers.items():
-            servers[name] = self._embedded(section)
+            servers[name] = section
 
-        overlay.replace(("mcp",), {"servers": servers})
-        for name, profile in overlay.replaced(("profiles",)).items():
-            named: list[str] = []
-            if name in own:
-                named.append(own[name])
-
-            named.extend(sorted(self.mcp_servers))
-            profile["mcp"] = named
-
-    def _embedded(self, section: Mapping[str, Any]) -> dict[str, Any]:
-        """Секция [mcp.servers.<имя>] с адресом чата стенда в секции apps."""
-        embedded = dict(section)
-        if apps := section.get("apps"):
-            embedded["apps"] = {**apps, "chat_url": self.base_url}
-
-        return embedded
+        return servers
 
     def _use_local_auth(self, overlay: StandOverlay) -> None:
         """Учётки и роли стенда: рабочий [auth.local] не трогаем и не наследуем."""
@@ -1211,6 +1216,13 @@ class StandConfig(StandService):
         overlay.set(("app", "auth"), providers)
 
 
+class ServerSeed(Protocol):
+    """Посев MCP-серверов в таблицу уже запущенного чата стенда."""
+
+    @abstractmethod
+    def run(self) -> None: ...
+
+
 ConfigT = TypeVar("ConfigT", bound=StandService, default=StandConfig)
 
 
@@ -1231,6 +1243,23 @@ class StandProcess(Generic[ConfigT]):
         "loop mismatch",
     )
     """Маркеры строк, которых в логе живого хода быть не должно."""
+
+    _server_seed: ServerSeed | None = field(init=False, default=None)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.config, StandConfig):
+            return
+
+        if self.config.app is not StandApp.AID:
+            return
+
+        if not self.config.seed_servers:
+            return
+
+        # База стенда зависит от его моделей; импорт отложен до создания процесса.
+        from boba.stand.ui.database import StandServerSeed
+
+        self._server_seed = StandServerSeed(self.config)
 
     def start(self, boot_timeout_sec: float) -> None:
         """Поднимает процесс; неудачный старт гасит его."""
@@ -1256,6 +1285,8 @@ class StandProcess(Generic[ConfigT]):
         self._await_ready(
             self.process, StandUrl.of(self.config.app_port, path), deadline
         )
+        if self._server_seed is not None:
+            self._server_seed.run()
 
     def _spawn(self) -> subprocess.Popen[bytes]:
         handle = self.log_path.open("wb")

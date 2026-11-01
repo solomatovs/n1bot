@@ -5,7 +5,7 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
-from aid_stand import NoTabs, Seed
+from aid_stand import FixedServers, NoTabs, Seed
 from chainlit.step import StepDict
 from chainlit.types import Feedback as FeedbackPayload
 from chainlit.types import Pagination, ThreadFilter
@@ -17,12 +17,11 @@ from boba.aid.data.remote_storage import FileOwners, RemoteStorageClient
 from boba.aid.domain.fields import ThreadMetaField
 from boba.aid.infra.config import AppConfig
 from boba.canvas.keys import ObjectKey, ScopeDir
-from boba.chat.profiles import ChatProfileConfig, ChatProfiles
 from boba.chat.threads import DataRejectedError, ThreadUpsert
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import Scope
 from boba.identity.session import UserMetadataField
-from boba.mcp_client.client import McpServers, McpServersConfig
+from boba.mcp_client.client import McpServers, FixedServerConfigs
 from boba.messaging import (
     Envelope,
     FeedbackChanged,
@@ -417,15 +416,12 @@ async def test_delete_thread_of_a_user_without_file_storage(
     layer: PostgresDataLayer,
     data_bus: MemoryMessageBus,
 ):
-    """Профиль пользователя не называет MCP-серверов — хранилища файлов у него
-    нет: удаление треда не падает, удалять из хранилища нечего."""
+    """Пользователю не выдан ни один сервер таблицы mcp_servers — хранилища
+    файлов у него нет: удаление треда не падает, удалять нечего."""
     users = UsersTable(app_config.postgres, app_config.db_schema, pool)
-    profiles = ChatProfiles(
-        {"bare": ChatProfileConfig.model_construct(mcp=[], roles=["*"], default=True)}
-    )
     sessions = NoTabs()
-    servers = McpServers(McpServersConfig(servers={}))
-    owners = FileOwners(lambda: sessions, lambda: users, profiles)
+    servers = McpServers(FixedServerConfigs(servers={}))
+    owners = FileOwners(lambda: sessions, lambda: users, lambda: FixedServers({}))
     bare = PostgresDataLayer(
         users=users,
         threads=ThreadsTable(app_config.postgres, app_config.db_schema, pool),
@@ -436,10 +432,7 @@ async def test_delete_thread_of_a_user_without_file_storage(
     user = await bare.create_user(
         ChainlitUser(
             identifier="bare-user",
-            metadata={
-                UserMetadataField.ROLES: ["dev"],
-                UserMetadataField.PROFILES: ["bare"],
-            },
+            metadata={UserMetadataField.ROLES: ["dev"]},
         )
     )
     assert user is not None

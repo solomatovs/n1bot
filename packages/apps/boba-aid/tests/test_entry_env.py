@@ -55,6 +55,8 @@ CONFIG = """
     session_max_sec = 86400
 
 [aid]
+    chat_url             = "http://localhost:8501/boba"
+    sandbox_port         = 8502
     url_prefix           = "/boba"
     shutdown_timeout_sec = 10
 """

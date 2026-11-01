@@ -75,13 +75,19 @@ from boba.aid.data.data_layer import ThreadDeletionListener
 from boba.aid.domain.fields import ThreadMetaField
 from boba.aid.domain.keys import CanvasFileUrl
 from boba.aid.infra.session import ChainlitSession, LiveSignIn
+from boba.aid.mcp_servers.sources import (
+    McpOrigin,
+    McpViewer,
+    ServerRecord,
+    ServerSource,
+)
 from boba.aid.rendering.renderer import ThreadRewinds
 from boba.canvas.keys import ObjectKey
 from boba.chat.profiles import ChatProfiles, SelectedProfile
 from boba.chat.threads import DataLayerError, StoredThread, ThreadUpsert
 from boba.identity.api import UserRows
 from boba.identity.errors import InternalServiceError
-from boba.mcp_client.client import McpCaller, McpServersConfig
+from boba.mcp_client.client import McpCaller
 from boba.runtime.threads import ThreadsTable
 from boba.toolkit.result import BlockAudience, ContentMime, JsonBlock
 from boba.transport.acp.protocol import (
@@ -247,7 +253,9 @@ class ThreadIdentity:
 
     def registration(self, server: str) -> McpRegistration:
         """Регистрация сервера server для агента или приложения этой
-        вкладки: вызовы идут от имени её пользователя в её треде."""
+        вкладки: вызовы идут от имени её пользователя в её треде. Выдачу
+        сервера пользователю проверяет клиент в момент вызова, а не набор
+        профиля: профиль серверов больше не называет."""
         return McpRegistration(
             user_id=self.user_id,
             login=self.login,
@@ -255,7 +263,6 @@ class ThreadIdentity:
             profile=self.profile.name,
             session=self.session,
             server=server,
-            servers=frozenset(self.profile.config.mcp),
         )
 
 
@@ -654,14 +661,17 @@ class AskedQuestions(SessionUpdates):
 class AgentLaunch:
     """Заготовка запуска агента по текущему профилю чата: имя профиля (у
     службы — имя профиля агента), профиль модели и системный промпт для
-    файла настроек своего процесса, сроки серверов MCP профиля. Собирает
+    файла настроек своего процесса, имена серверов MCP, которые агент
+    объявит сессии, и сроки вызовов этих серверов. Собирает
     AgentLauncher.prepare до остановки прежнего процесса, а ProcessLinks — для
     короткого процесса удаления сессии."""
 
     profile: str
     model: ModelFile
     system_prompt: str
+    servers: Sequence[str]
     mcp: McpFile | None
+    role_servers: frozenset[UUID] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -720,7 +730,6 @@ class ProcessLinks(AgentLinks):
         config: AgentConfig,
         process: AgentCommandConfig,
         agents_dir: Path,
-        servers: McpServersConfig,
         profiles: ChatProfiles,
         relay: McpRelay,
         version: str,
@@ -729,7 +738,7 @@ class ProcessLinks(AgentLinks):
         self._version = version
         self._profiles = profiles
         self._specs = ProfileModelSpecs()
-        self._files = SettingsFileBuilder(config, servers)
+        self._files = SettingsFileBuilder(config)
         self._workdirs = AgentWorkdirs(agents_dir)
         self._environment = HistoryEnvironment(config.history)
         program = process.program()
@@ -765,7 +774,11 @@ class ProcessLinks(AgentLinks):
 
         model = self._specs.model(profile, config)
         launch = AgentLaunch(
-            profile=profile, model=model, system_prompt=config.system_prompt, mcp=None
+            profile=profile,
+            model=model,
+            system_prompt=config.system_prompt,
+            servers=(),
+            mcp=None,
         )
 
         client = AgentClient(MuteUpdates())
@@ -912,7 +925,7 @@ class AgentLauncher:
     def __init__(  # noqa: PLR0913 — запуск собирается конфигом и входами процесса
         self,
         config: AgentConfig,
-        servers: McpServersConfig,
+        source: ServerSource,
         profiles: ChatProfiles,
         users: UserRows,
         registrations: McpRegistrations,
@@ -920,18 +933,16 @@ class AgentLauncher:
         version: str,
         agents_dir: Path,
     ) -> None:
+        self._source = source
         self._specs = ProfileModelSpecs()
         self._registrations = registrations
         self._relay = relay
-        self._files = SettingsFileBuilder(config, servers)
-        self._links = self._chosen(
-            config, servers, profiles, users, relay, version, agents_dir
-        )
+        self._files = SettingsFileBuilder(config)
+        self._links = self._chosen(config, profiles, users, relay, version, agents_dir)
 
     @staticmethod
     def _chosen(  # noqa: PLR0913 — вид агента выбирается всеми входами запуска
         config: AgentConfig,
-        servers: McpServersConfig,
         profiles: ChatProfiles,
         users: UserRows,
         relay: McpRelay,
@@ -942,44 +953,73 @@ class AgentLauncher:
         if isinstance(process, AgentServiceConfig):
             return ServiceLinks(process, users, relay, version)
 
-        return ProcessLinks(
-            config, process, agents_dir, servers, profiles, relay, version
-        )
+        return ProcessLinks(config, process, agents_dir, profiles, relay, version)
 
-    def prepare(self, identity: ThreadIdentity) -> AgentLaunch:
-        """Заготовка запуска по текущему профилю треда: то, что может
-        отказать до остановки прежнего процесса.
+    async def prepare(
+        self,
+        identity: ThreadIdentity,
+        role_servers: Collection[UUID] | None = None,
+    ) -> AgentLaunch:
+        """Заготовка запуска по текущему профилю треда и серверам, выданным
+        его пользователю: то, что может отказать до остановки прежнего
+        процесса. Набор серверов — включённые записи таблицы mcp_servers плюс
+        сервер chat.
 
         Ошибки:
-        AgentSettingsError — профиль не годится агенту или называет сервер
-            без секции [mcp.servers].
+        AgentSettingsError — профиль не годится агенту.
+        McpAppError — серверы пользователя не прочитаны.
         """
         profile = identity.profile
         model = self._specs.model(profile.name, profile.config)
-        mcp = self._files.mcp(profile.config.mcp)
+        visible = await self._source.enabled(self._viewer(identity))
+        granted: list[ServerRecord] = []
+        selected_roles: set[UUID] = set()
+        for record in visible:
+            if record.origin == McpOrigin.ROLE:
+                if role_servers is not None:
+                    if record.server_id not in role_servers:
+                        continue
+
+                selected_roles.add(record.server_id)
+
+            granted.append(record)
+
+        names: list[str] = []
+        for record in granted:
+            names.append(record.name)
+
+        names.append(ChatTools.NAME)
 
         return AgentLaunch(
             profile=profile.name,
             model=model,
             system_prompt=profile.config.system_prompt,
-            mcp=mcp,
+            servers=tuple(names),
+            mcp=self._files.mcp(granted),
+            role_servers=frozenset(selected_roles),
+        )
+
+    @staticmethod
+    def _viewer(identity: ThreadIdentity) -> McpViewer:
+        """Зритель серверов — пользователь вкладки треда с её профилем."""
+        return McpViewer(
+            user_id=identity.user_id,
+            login=identity.login,
+            roles=identity.roles,
         )
 
     async def launch(
         self, identity: ThreadIdentity, launch: AgentLaunch, client: AgentClient
     ) -> LaunchedAgent:
-        """Агент под вкладку треда по заготовке: серверы профиля и сервер
+        """Агент под вкладку треда по заготовке: серверы набора и сервер
         чата регистрируются от имени пользователя вкладки новыми serverId.
 
         Ошибки:
         AgentProcessError — агент не запустился или не ответил.
         PostgresError — билет роли истории не получен.
         """
-        names = list(identity.profile.config.mcp)
-        names.append(ChatTools.NAME)
-
         registration = identity.registration(ChatTools.NAME)
-        servers = self._registrations.register(registration, names)
+        servers = self._registrations.register(registration, launch.servers)
         caller = McpCaller(login=identity.login, roles=identity.roles)
         try:
             process = await self._links.link(
@@ -1095,6 +1135,8 @@ class ThreadAgent:
         self._closed.set()
         self._gate = asyncio.Lock()
         self._restart_pending = False
+        self._mcp_revision = 0
+        self._role_servers: frozenset[UUID] | None = None
         self._detached = False
         """Вкладка отключилась: процесс останавливается, как только нет хода."""
         self._redraw = False
@@ -1123,6 +1165,11 @@ class ThreadAgent:
 
         return self._launched.process
 
+    def mcp_changed(self) -> None:
+        """Изменение своих серверов заменит процесс перед следующим ходом."""
+        self._restart_pending = True
+        self._mcp_revision += 1
+
     def turn_active(self) -> bool:
         return self._active is not None
 
@@ -1131,7 +1178,7 @@ class ThreadAgent:
         вкладка сразу открывает новую: агент объявляет команды только своей
         сессии, и меню получает их с открытием вкладки."""
         async with self._gate:
-            await self._launch(self._launcher.prepare(self._identity))
+            await self._launch(await self._prepare())
             await self._menu.start(self.process.records_commands())
             await self._opened_ahead()
 
@@ -1295,7 +1342,8 @@ class ThreadAgent:
             отказал в сессии.
         """
         self._restart_pending = True
-        launch = self._launcher.prepare(self._identity)
+        revision = self._mcp_revision
+        launch = await self._prepare()
         await self._close_process()
         await self._launch(launch)
         try:
@@ -1303,7 +1351,7 @@ class ThreadAgent:
         finally:
             await self._close_session(self.process)
 
-        self._restart_pending = False
+        self._restart_pending = self._mcp_revision != revision
         logger.info(
             "thread %s: agent restarted: %s, session=%s",
             self.thread_id,
@@ -1321,7 +1369,15 @@ class ThreadAgent:
             return
 
         self._detached = False
-        await self._launch(self._launcher.prepare(self._identity))
+        await self._launch(await self._prepare())
+
+    async def _prepare(self) -> AgentLaunch:
+        """Сохраняет ролевой набор вкладки при каждой замене процесса."""
+        launch = await self._launcher.prepare(self._identity, self._role_servers)
+        if self._role_servers is None:
+            self._role_servers = launch.role_servers
+
+        return launch
 
     async def _launch(self, launch: AgentLaunch) -> None:
         """Новый процесс по заготовке: файл настроек в свежем приватном
@@ -1441,10 +1497,11 @@ class ThreadAgent:
         async with self._gate:
             self._detached = False
             if self._launched is None or self._exited():
-                launch = self._launcher.prepare(self._identity)
+                revision = self._mcp_revision
+                launch = await self._prepare()
                 await self._close_process()
                 await self._launch(launch)
-                self._restart_pending = False
+                self._restart_pending = self._mcp_revision != revision
 
             await self._close_session(self.process)
             self._session_id = None
@@ -1963,6 +2020,15 @@ class ThreadAgentsIndex(ThreadRewinds):
 
     def of_thread(self, thread_id: str) -> Sequence[ThreadAgent]:
         return list(self._agents.get(thread_id, ()))
+
+    def mcp_changed(self, user_id: UUID) -> None:
+        """Помечает агенты пользователя во всех открытых тредах инстанса."""
+        for agents in self._agents.values():
+            for agent in agents:
+                if agent.user_id != user_id:
+                    continue
+
+                agent.mcp_changed()
 
     def active(self, thread_id: str) -> ThreadAgent | None:
         """Агент треда с идущим ходом в любой вкладке инстанса; None — хода нет."""

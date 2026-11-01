@@ -455,8 +455,8 @@ class NormalRule(StrEnum):
 
 
 class TextNormalizer:
-    """Подставляет правила NormalRule в текстовые узлы области и в адреса
-    ссылок (их показывает дерево доступности: id треда в пути файла);
+    """Подставляет правила NormalRule в текстовые узлы, несекретные поля и
+    адреса ссылок (их показывает дерево доступности: id треда в пути файла);
     отдаёт правила, которые что-то заменили, — их список уходит в отчёт."""
 
     SCRIPT: ClassVar[str] = """(root, rules) => {
@@ -478,6 +478,10 @@ class TextNormalizer:
         const href = link.getAttribute("href");
         const next = normal(href);
         if (next !== href) link.setAttribute("href", next);
+      }
+      for (const field of root.querySelectorAll('input:not([type]),input[type="text"],input[type="url"],textarea')) {
+        const next = normal(field.value);
+        if (next !== field.value) field.value = next;
       }
       return [...applied];
     }"""

@@ -4,14 +4,14 @@
 Файлы пользователя лежат в его workspace на сервере MCP, объявившем
 расширение файлов (FilesFeature). Чат пишет и читает их потоком через
 клиента MCP от имени владельца файла: владельца называет ключ объекта,
-сервер — первый из серверов профиля, в котором пользователь работает,
+сервер — первый из выданных пользователю в таблице mcp_servers,
 объявивший расширение.
 
 Ошибки:
-StorageError — владельца или профиль не определить, сервер недоступен
-    либо отказал.
-StorageAbsentError — профиль пользователя не называет MCP-сервер или ни один
-    его сервер не объявляет расширения файлов: хранилища у пользователя нет.
+StorageError — владельца или выданные ему серверы не определить, сервер
+    недоступен либо отказал.
+StorageAbsentError — пользователю не выдан ни один сервер или ни один его
+    сервер не объявляет расширения файлов: хранилища у пользователя нет.
 StorageNotFoundError — файла нет в workspace.
 StorageFullError — в workspace не осталось места.
 """
@@ -25,6 +25,8 @@ from typing import Any, ClassVar
 from uuid import UUID
 
 from boba.aid.infra.session import ChainlitSession, OwnerSessions
+from boba.aid.mcp_servers import McpAppError
+from boba.aid.mcp_servers.sources import McpViewer, ServerSource
 from boba.canvas.keys import ObjectKey
 from boba.canvas.storage import (
     FileStat,
@@ -32,7 +34,6 @@ from boba.canvas.storage import (
     StorageAbsentError,
     StorageError,
 )
-from boba.chat.profiles import ChatProfiles
 from boba.identity.api import UserRows
 from boba.identity.signin import SignInMetadata
 from boba.mcp_client.client import FilesHost, McpCaller, McpClientError, McpServers
@@ -46,42 +47,46 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class FilesTarget:
-    """Где искать файлы и чьим именем: серверы MCP профиля по порядку и
-    пользователь на них; хранилище — первый из серверов, объявивший
-    расширение файлов."""
+    """Где искать файлы и чьим именем: серверы, выданные пользователю, по
+    порядку имён и сам пользователь на них; хранилище — первый из серверов,
+    объявивший расширение файлов."""
 
     servers: Sequence[str]
     caller: McpCaller
 
 
 class FileOwners:
-    """Владелец файла и серверы его профиля по ключу объекта.
+    """Владелец файла и серверы, выданные ему, по ключу объекта.
 
     Создаётся сборкой чата; им пользуется RemoteStorageClient. Ключ называет
-    пользователя (строка users) и тред. Логин, роли и профиль берутся из
-    живой сессии пользователя — сначала той, что открыла этот тред; без
-    живой сессии (ссылка открыта после закрытия вкладки) — из строки users,
-    где их оставил последний вход. Серверы — MCP-серверы профиля по порядку
-    конфига.
+    пользователя (строка users) и тред. Логин и роли берутся из живой сессии
+    пользователя — сначала той, что открыла этот тред; без живой сессии
+    (ссылка открыта после закрытия вкладки) — из строки users, где их
+    оставил последний вход. Серверы — включённые записи таблицы mcp_servers,
+    выданные пользователю, в порядке имён.
     """
 
     def __init__(
         self,
         sessions: Callable[[], OwnerSessions],
         users: Callable[[], UserRows],
-        profiles: ChatProfiles,
+        source: Callable[[], ServerSource],
     ) -> None:
         self._sessions = sessions
         self._users = users
-        self._profiles = profiles
+        self._source = source
 
     async def of_thread(self, user_id: str, thread_id: str) -> FilesTarget:
         session = self._session_of(user_id, thread_id)
         if session is not None:
-            caller = McpCaller(login=session.identifier, roles=session.roles)
-            servers = self._servers_of(session.chat_profile, user_id, thread_id)
+            viewer = McpViewer(
+                user_id=UUID(user_id),
+                login=session.identifier,
+                roles=session.roles,
+            )
+            servers = await self._granted(viewer, thread_id)
 
-            return FilesTarget(servers, caller)
+            return FilesTarget(servers, viewer.caller())
 
         try:
             stored = await self._users().stored_by_id(UUID(user_id))
@@ -97,9 +102,14 @@ class FileOwners:
             raise StorageError(msg)
 
         sign_in = SignInMetadata.parse(stored.meta)
-        caller = McpCaller(login=stored.identifier, roles=sign_in.roles)
+        viewer = McpViewer(
+            user_id=stored.id,
+            login=stored.identifier,
+            roles=sign_in.roles,
+        )
+        servers = await self._granted(viewer, thread_id)
 
-        return FilesTarget(self._granted_servers(sign_in, thread_id), caller)
+        return FilesTarget(servers, viewer.caller())
 
     def _session_of(self, user_id: str, thread_id: str) -> ChainlitSession | None:
         """Живая сессия владельца: открывшая этот тред, иначе любая его."""
@@ -118,41 +128,31 @@ class FileOwners:
 
         return None
 
-    def _servers_of(
-        self, profile: str | None, user_id: str, thread_id: str
-    ) -> Sequence[str]:
-        declared = self._profiles.all
-        if not profile or profile not in declared:
-            msg = (
-                f"files of thread {thread_id} of user {user_id}: the session works "
-                f"in profile {profile!r}, expected one of {sorted(declared)}"
-            )
-            raise StorageError(msg)
+    async def _granted(self, viewer: McpViewer, thread_id: str) -> Sequence[str]:
+        """Имена включённых серверов, выданных зрителю.
 
-        servers = declared[profile].mcp
-        if not servers:
+        Ошибки:
+        StorageError — строки mcp_servers не прочитаны.
+        StorageAbsentError — зрителю не выдан ни один сервер: хранилища
+            файлов у него нет.
+        """
+        try:
+            names = await self._source().enabled_names(viewer)
+        except McpAppError as exc:
             msg = (
-                f"files of thread {thread_id} of user {user_id}: profile "
-                f"{profile!r} names no mcp server, so it has no file storage"
+                f"files of thread {thread_id} of {viewer.login!r}: reading the "
+                f"mcp servers granted to the user failed: {exc}"
+            )
+            raise StorageError(msg) from exc
+
+        if not names:
+            msg = (
+                f"files of thread {thread_id}: no mcp server is granted to the "
+                f"user {viewer.login!r}, so the thread has no file storage"
             )
             raise StorageAbsentError(msg)
 
-        return servers
-
-    def _granted_servers(
-        self, sign_in: SignInMetadata, thread_id: str
-    ) -> Sequence[str]:
-        """Серверы пользователя без живой сессии: серверы первого профиля с
-        серверами, выданного его последнему входу."""
-        for config in self._profiles.visible_for(sign_in.profiles).values():
-            if config.mcp:
-                return config.mcp
-
-        msg = (
-            f"files of thread {thread_id}: none of the profiles "
-            f"{sorted(sign_in.profiles)} granted to the user names an mcp server"
-        )
-        raise StorageAbsentError(msg)
+        return names
 
 
 class RemoteStorageClient(StorageClient):

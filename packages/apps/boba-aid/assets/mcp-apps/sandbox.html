@@ -19,6 +19,9 @@
   // пересылает как есть, кроме своих ui/notifications/sandbox-*. Шрифты
   // приложению открыты с источника самой страницы: рядом с ней лежит шрифт
   // чата (fonts/), его @font-face чат передаёт в styles.css.fonts.
+  const token = new URL(location.href).searchParams.get("token");
+  history.replaceState(null, "", location.pathname);
+  const TOKEN_FIELD = "_bobaSandboxToken";
   const PREFIX = "ui/notifications/sandbox-";
   const READY = "ui/notifications/sandbox-proxy-ready";
   const RESOURCE = "ui/notifications/sandbox-resource-ready";
@@ -178,11 +181,11 @@
       if (typeof data.method === "string" && data.method.startsWith(PREFIX)) {
         return;
       }
-      window.parent.postMessage(data, host);
+      window.parent.postMessage({ ...data, [TOKEN_FIELD]: token }, host);
     }
   });
 
-  window.parent.postMessage({ jsonrpc: "2.0", method: READY, params: {} }, "*");
+  window.parent.postMessage({ jsonrpc: "2.0", method: READY, params: {}, [TOKEN_FIELD]: token }, "*");
 </script>
 </body>
 </html>

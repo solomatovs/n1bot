@@ -1,8 +1,8 @@
 """Сборка приложения aid поверх FastAPI chainlit: авторизация, DI и отдача файлов.
 
 Ошибки:
-ConfigError — серверу с приложениями MCP Apps разрешён CORS-доступ к чату
-    либо в app_root нет страницы-прокси песочницы.
+ConfigError — песочнице приложений MCP Apps разрешён CORS-доступ к чату либо
+    в app_root нет страницы-прокси песочницы.
 ServerStartError — порт чата или песочницы не удалось занять либо приложение
     не поднялось.
 RuntimeError — провайдер контейнера отдал не тот компонент.
@@ -75,13 +75,14 @@ def run_app(raw: DictConfig, conf_dir: Path):
 
     _use_chainlit_middleware(app, c.aid)
 
-    storage = providers.storage_provider(
-        c, providers.file_owners(providers.chat_profiles_registry(c))
-    )
+    storage = providers.storage_provider(c, providers.file_owners())
     _use_file_serving(c, storage)
 
     container = _use_di_container(app, c)
     container.provide(providers.storage_provider, storage)
+    # токен песочницы один на процесс: его получают и страница-прокси, и лента
+    sandbox = providers.sandbox_links(c)
+    container.provide(providers.sandbox_links, sandbox)
     app.state.container = container
 
     _use_stream_journal()
@@ -108,7 +109,9 @@ def run_app(raw: DictConfig, conf_dir: Path):
         if c.aid.ws_ping_timeout:
             ws_ping_timeout = c.aid.ws_ping_timeout
 
-        listeners = AidListeners(c, app, Path(chainlit_config.root).resolve())
+        listeners = AidListeners(
+            c, app, Path(chainlit_config.root).resolve(), sandbox.token
+        )
         uv_config = uvicorn.Config(
             listeners,
             host=c.aid.host,
@@ -141,12 +144,12 @@ class SandboxOrigin(StrEnum):
 
 
 class SandboxCors:
-    """Проверка старта: CORS chainlit закрыт песочницам приложений MCP Apps.
+    """Проверка старта: CORS chainlit закрыт песочнице приложений MCP Apps.
 
-    Скрипт песочницы приложений сервера не должен ходить в API чата с куками
-    пользователя: при секции apps у любого сервера allow_origins chainlit не
-    содержит ни "*", ни "null", ни источника песочницы. Создаёт run_app со
-    списком allow_origins, который chainlit разобрал из своего конфига.
+    Скрипт приложения сервера не должен ходить в API чата с куками
+    пользователя: allow_origins chainlit не содержит ни "*", ни "null", ни
+    источника единственной песочницы платформы. Создаёт run_app со списком
+    allow_origins, который chainlit разобрал из своего конфига.
     """
 
     def __init__(self, allowed: Sequence[str]) -> None:
@@ -156,24 +159,20 @@ class SandboxCors:
         """Ошибки:
         ConfigError — CORS chainlit открыт песочнице.
         """
-        for name, server in config.mcp.servers.items():
-            apps = server.apps
-            if apps is None:
+        origin = config.aid.sandbox_origin()
+        for opened in (*SandboxOrigin, origin):
+            if opened not in self._allowed:
                 continue
 
-            origin = apps.origin()
-            for opened in (*SandboxOrigin, origin):
-                if opened not in self._allowed:
-                    continue
-
-                msg = (
-                    f"[mcp.servers.{name}.apps]: chainlit [project].allow_origins "
-                    f"{list(self._allowed)} lets {opened!r} call the chat API with "
-                    f"the cookies of the user, so the apps of the sandbox {origin} "
-                    "could act as the user; list in allow_origins only the origins "
-                    "that embed the chat, without '*' and without the sandbox origin"
-                )
-                raise ConfigError(msg)
+            msg = (
+                f"[aid].sandbox_port {config.aid.sandbox_port}: chainlit "
+                f"[project].allow_origins {list(self._allowed)} lets {opened!r} "
+                "call the chat API with the cookies of the user, so the apps of "
+                f"the sandbox {origin} could act as the user; list in "
+                "allow_origins only the origins that embed the chat, without '*' "
+                "and without the sandbox origin"
+            )
+            raise ConfigError(msg)
 
 
 @asynccontextmanager
@@ -418,7 +417,9 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
         providers.thread_agents_index,
     )
     container.eager(providers.remote_journals)
+    container.eager(providers.sandbox_links)
     container.eager(providers.mcp_servers)
+    container.eager(providers.mcp_updates)
     container.eager(providers.agent_feeds)
     # инстанс регистрируется после блокирующего старта зигот и моделей: иначе
     # его пульс молчит дольше lock_ttl, и соседи снимают его как мёртвый

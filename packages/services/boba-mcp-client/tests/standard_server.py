@@ -36,6 +36,7 @@ import argparse
 import asyncio
 import json
 import os
+from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, ClassVar
 
@@ -274,12 +275,13 @@ class StandardServer:
         self,
         port: int,
         extended: bool,
+        apps: bool,
         ttl_ms: int,
         retired: str,
         workspace: str,
         commands: bool,
     ) -> None:
-        extensions = self._extensions(self._apps(), extended, workspace, commands)
+        extensions = self._extensions(apps, extended, workspace, commands)
 
         hints: dict[Any, CacheHint] = {}
         if ttl_ms:
@@ -350,14 +352,17 @@ class StandardServer:
         return apps
 
     def _extensions(
-        self, apps: Apps, extended: bool, workspace: str, commands: bool
+        self, apps: bool, extended: bool, workspace: str, commands: bool
     ) -> tuple[Extension, ...]:
-        """Расширения сервера: MCP Apps, с extended — объявленные не по
-        моделям клиента, с workspace — файлы workspace под этим каталогом, с
-        commands — расширение команд com.boba/commands."""
-        extensions: tuple[Extension, ...] = (apps,)
+        """Расширения сервера: с apps — MCP Apps, с extended — объявленные не
+        по моделям клиента, с workspace — файлы workspace под этим каталогом,
+        с commands — расширение команд com.boba/commands."""
+        extensions: tuple[Extension, ...] = ()
+        if apps:
+            extensions = (self._apps(),)
+
         if extended:
-            extensions = (apps, *self.EXTENSIONS)
+            extensions = (*extensions, *self.EXTENSIONS)
 
         if workspace:
             files = {"path": "/files", "upload": "show", "workspace": workspace}
@@ -691,13 +696,31 @@ class DeniedAuth:
     вход. Запросы до неё не доходят — руки у клиента связывает SharedToken
     только через свой способ входа, а здесь входа нет вовсе."""
 
-    def __init__(self, app: ASGIApp) -> None:
+    def __init__(self, app: ASGIApp, required: Mapping[str, str] | None = None) -> None:
         self._app = app
+        self._required = required
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http" or scope["method"] != "POST":
+        if scope["type"] != "http":
             await self._app(scope, receive, send)
             return
+
+        if self._required is None:
+            if scope["method"] != "POST":
+                await self._app(scope, receive, send)
+                return
+
+        if self._required is not None:
+            presented = dict(scope["headers"])
+            admitted = True
+            for name, value in self._required.items():
+                if presented.get(name.lower().encode()) != value.encode():
+                    admitted = False
+                    break
+
+            if admitted:
+                await self._app(scope, receive, send)
+                return
 
         await send(
             {
@@ -722,13 +745,17 @@ if __name__ == "__main__":
     parser.add_argument("--retired", default="")
     parser.add_argument("--workspace", default="")
     parser.add_argument("--commands", action="store_true")
+    parser.add_argument("--no-apps", action="store_true")
     parser.add_argument("--denied", action="store_true")
+    parser.add_argument("--require-header", action="store_true")
+    parser.add_argument("--require-bearer", action="store_true")
     args = parser.parse_args()
 
     extended = args.transport == "stdio-extended"
     server = StandardServer(
         args.port,
         extended,
+        not args.no_apps,
         args.ttl_ms,
         args.retired,
         args.workspace,
@@ -737,10 +764,23 @@ if __name__ == "__main__":
     if args.transport.startswith("stdio"):
         server.run(args.transport)
     else:
-        app = server._mcp.streamable_http_app(host="127.0.0.1")
-        server._switch = ModernSwitch(app, server._retired)
-        app = server._switch
+        if args.transport == "sse":
+            app = server._mcp.sse_app(host="127.0.0.1")
+        else:
+            app = server._mcp.streamable_http_app(host="127.0.0.1")
+            server._switch = ModernSwitch(app, server._retired)
+            app = server._switch
         if args.denied:
             app = DeniedAuth(app)
+
+        required: dict[str, str] = {}
+        if args.require_header:
+            required["X-Api-Key"] = "stand-header-secret"
+
+        if args.require_bearer:
+            required["Authorization"] = "Bearer stand-bearer-secret"
+
+        if required:
+            app = DeniedAuth(app, required)
 
         uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")

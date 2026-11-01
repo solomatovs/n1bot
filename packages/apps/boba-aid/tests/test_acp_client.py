@@ -17,7 +17,7 @@ from acp.experimental.v2 import schema
 from acp_stand import Agents, FakeModel, RecordingUpdates
 
 from boba.aid.agent.client import AgentRequestError
-from boba.mcp_client.client import McpServersConfig
+from boba.mcp_client.client import FixedServerConfigs
 from boba.stand.site import Stand
 from boba.stand.ui.fake_llm import ScenarioName
 from boba.transport.acp.protocol import AcpErrorCode
@@ -34,7 +34,7 @@ def chainlit_context() -> None:
 async def agents(
     tmp_path: Path, model: FakeModel, stand: Stand
 ) -> AsyncIterator[Agents]:
-    made = Agents(tmp_path / "agents", model, stand, McpServersConfig(servers={}))
+    made = Agents(tmp_path / "agents", model, stand, FixedServerConfigs(servers={}))
     try:
         yield made
     finally:

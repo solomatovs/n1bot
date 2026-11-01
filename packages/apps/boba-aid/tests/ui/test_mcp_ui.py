@@ -170,6 +170,16 @@ def apps_host() -> Iterator[AppsHost]:
 
 
 @pytest.fixture(scope="module")
+def plain_host() -> Iterator[AppsHost]:
+    host = AppsHost(["--no-apps"])
+    try:
+        host.await_listening()
+        yield host
+    finally:
+        host.stop()
+
+
+@pytest.fixture(scope="module")
 def mcp_stand(  # noqa: PLR0913 — стенд собирается из фикстур модуля
     stand_workdir: Path,
     llm_port: int,
@@ -178,11 +188,12 @@ def mcp_stand(  # noqa: PLR0913 — стенд собирается из фик�
     boba_mcp_stand: BobaMcpStand,
     standard: McpServerConfig,
     apps_host: AppsHost,
+    plain_host: AppsHost,
 ) -> Iterator[StandProcess]:
     """Стенд чата с MCP-серверами: обычный по stdio, boba-mcp и обычный по
     HTTP — записью apps с секцией apps (страница-прокси песочницы на своём
     источнике) и записью plain без неё."""
-    server = standard.model_dump(mode="json", exclude_none=True)
+    server = apps_host.plain()
     config = StandConfig(
         # не "mcp": это каталог сервиса boba-mcp общего стенда (StandConfig.service)
         workdir=stand_workdir / "chat-mcp",
@@ -195,7 +206,7 @@ def mcp_stand(  # noqa: PLR0913 — стенд собирается из фик�
             "standard": server,
             "boba": boba_mcp_stand.server(),
             "apps": apps_host.drawn(),
-            "plain": apps_host.plain(),
+            "plain": plain_host.plain(),
         },
     )
     process = StandProcess(config=config, log_path=stand_workdir / "mcp-app.log")
@@ -878,7 +889,7 @@ class TestToolAppLook:
         proxy = card.frame_locator("iframe").first.locator("iframe").first
 
         src = str(outer.get_attribute("src"))
-        sandbox = StandUrl.of(mcp_stand.config.mcp_servers["apps"]["apps"]["port"], "/")
+        sandbox = StandUrl.of(mcp_stand.config.sandbox_port, "/")
         page = urlsplit(src)
         if urlunsplit((page.scheme, page.netloc, page.path, "", "")) != sandbox:
             raise AssertionError(f"the sandbox is on the port of the server: {src}")
@@ -1192,13 +1203,28 @@ class TestSandboxPage:
         ".catch(() => {{ window.reached = 'blocked'; }});</script>"
     )
 
-    @staticmethod
+    @pytest.fixture(autouse=True)
+    def sandbox_url(
+        self,
+        mcp_stand: StandProcess,
+        open_chat: OpenChat,
+        llm_port: int,
+    ) -> None:
+        orders = OrdersApp(open_chat(mcp_stand, ""), llm_port)
+        card = orders.ask()
+        address = orders.outer(card).get_attribute("src")
+        assert address is not None
+        self._sandbox_url = address
+
     def _loaded(
-        browser: Browser, stand: StandProcess, html: str, csp: dict[str, Any] | None
+        self,
+        browser: Browser,
+        stand: StandProcess,
+        html: str,
+        csp: dict[str, Any] | None,
     ) -> Page:
-        sandbox = StandUrl.of(stand.config.mcp_servers["apps"]["apps"]["port"], "/")
         page = browser.new_page()
-        page.goto(sandbox)
+        page.goto(self._sandbox_url)
         page.evaluate(
             "([html, csp]) => window.postMessage({jsonrpc: '2.0', method: "
             "'ui/notifications/sandbox-resource-ready', params: {html, csp}}, '*')",
@@ -1249,7 +1275,7 @@ class TestSandboxPage:
     def test_domains_over_the_chat_origin_leave_the_csp(
         self, mcp_stand: StandProcess, browser: Browser
     ) -> None:
-        port = mcp_stand.config.mcp_servers["apps"]["apps"]["port"]
+        port = mcp_stand.config.sandbox_port
         csp = {
             "connectDomains": [
                 "*",
@@ -1331,7 +1357,7 @@ class TestSandboxOrigin:
 
     @staticmethod
     def _sandbox(stand: StandProcess) -> str:
-        return StandUrl.of(stand.config.mcp_servers["apps"]["apps"]["port"], "/")
+        return StandUrl.of(stand.config.sandbox_port, "/")
 
     @staticmethod
     def _chat_origin(stand: StandProcess) -> str:
@@ -1376,8 +1402,14 @@ class TestSandboxOrigin:
         orders.check_clean()
 
     def test_sandbox_port_serves_only_its_page_and_fonts(
-        self, mcp_stand: StandProcess
+        self,
+        mcp_stand: StandProcess,
+        open_chat: OpenChat,
+        llm_port: int,
     ) -> None:
+        orders = OrdersApp(open_chat(mcp_stand, ""), llm_port)
+        address = orders.outer(orders.ask()).get_attribute("src")
+        assert address is not None
         prefix = mcp_stand.config.url_prefix
         faces = sorted(self.FONTS.glob("*.woff2"))
         if not faces:
@@ -1386,7 +1418,9 @@ class TestSandboxOrigin:
             )
 
         with httpx.Client(base_url=self._sandbox(mcp_stand), timeout=30.0) as client:
-            page = client.get("/")
+            unsigned = client.get("/")
+            invalid = client.get("/?token=invalid")
+            page = client.get(address)
             font = client.get(f"/fonts/inter/files/{faces[0].name}")
             posted = client.post("/")
             foreign: list[int] = []
@@ -1398,7 +1432,10 @@ class TestSandboxOrigin:
             "form-action 'none'; object-src 'none'"
         )
 
+        assert unsigned.status_code == HTTPStatus.NOT_FOUND
+        assert invalid.status_code == HTTPStatus.NOT_FOUND
         assert page.status_code == HTTPStatus.OK
+        assert page.headers["cache-control"] == "no-store"
         assert "<title>MCP Apps sandbox</title>" in page.text
         assert page.headers["content-security-policy"] == policy
         assert "set-cookie" not in page.headers
@@ -1406,6 +1443,26 @@ class TestSandboxOrigin:
         assert font.headers["access-control-allow-origin"] == "*"
         assert posted.status_code == HTTPStatus.METHOD_NOT_ALLOWED
         assert foreign == [HTTPStatus.NOT_FOUND] * 3
+
+    def test_sandbox_message_without_token_is_refused(
+        self,
+        mcp_stand: StandProcess,
+        open_chat: OpenChat,
+        llm_port: int,
+    ) -> None:
+        orders = OrdersApp(open_chat(mcp_stand, ""), llm_port)
+        card = orders.ask()
+        handle = orders.outer(card).element_handle()
+        assert handle is not None
+        proxy = handle.content_frame()
+        assert proxy is not None
+        assert "token=" not in proxy.url
+        proxy.evaluate(
+            "window.parent.postMessage({jsonrpc:'2.0',method:'ui/notifications/sandbox-proxy-ready',params:{}}, '*')"
+        )
+        expect(card.locator("[data-mcp-app-error]")).to_contain_text(
+            "valid proxy token"
+        )
 
     def test_only_the_chat_frames_the_sandbox(
         self, mcp_stand: StandProcess, browser: Browser
@@ -1826,7 +1883,7 @@ class TestHandshakeQuestion:
         if "names no call the relay holds open" not in output:
             raise AssertionError(f"the late answer is an error: {output}")
 
-        if "call_timeout_sec of [mcp.servers.brief]" not in output:
+        if "call timeout of the MCP server 'brief'" not in output:
             raise AssertionError(f"the error names the setting: {output}")
 
         actions = [answer["action"] for answer in self._answers(chat, 45)]
@@ -2370,7 +2427,7 @@ def fastmcp_stand(  # noqa: PLR0913 — стенд собирается из ф�
     ):
         servers[name] = SandboxHost().drawn(apps_slot.host, port.value)
 
-    servers["boba"] = {**boba_mcp_stand.server(), "apps": SandboxHost().apps()}
+    servers["boba"] = boba_mcp_stand.server()
     config = StandConfig(
         workdir=stand_workdir / "chat-fastmcp",
         app=StandApp.AID,
