@@ -26,14 +26,10 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from boba.connection_broker.crypto import ConnectionSeal
 from boba.connection_broker.user_connections import ArmedConnections
 from boba.connections.marks import ConnectionRefusal
-from boba.connections.sealed import (
-    ConnectionSeal,
-    SealedParamSchema,
-    SealFeature,
-    SealKey,
-)
+from boba.connections.sealed import SealedParamSchema, SealFeature, SealKey
 from boba.core.validation import ValidationText
 from boba.identity.errors import RefusalError
 

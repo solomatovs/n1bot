@@ -17,6 +17,9 @@ services ← apps; ребро против направления в src — р�
 плагины и в services не импортируются, testing вне оси. Циклы ищутся по
 dependencies.
 
+Прямой импорт требует прямой декларации у потребителя; установка библиотеки
+через extra другого пакета эту декларацию не заменяет.
+
 Ошибки:
 DepsAuditError — pyproject не разбирается, каталог packages не найден или модуль
     не принадлежит ни одному дистрибутиву.
@@ -25,7 +28,6 @@ DepsAuditError — pyproject не разбирается, каталог package
 from __future__ import annotations
 
 import ast
-import re
 import sys
 import tomllib
 from collections.abc import Iterable, Iterator, Mapping, Sequence
@@ -34,7 +36,10 @@ from importlib import metadata
 from pathlib import Path
 from typing import ClassVar
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from packaging.requirements import InvalidRequirement
+from packaging.requirements import Requirement as Pep508Requirement
+from packaging.utils import canonicalize_name
+from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
 __all__ = ["DepsAudit", "DepsAuditError", "Finding", "PackageProject"]
 
@@ -143,39 +148,23 @@ class Requirement(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    NAME: ClassVar[re.Pattern[str]] = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
-    EXTRAS: ClassVar[re.Pattern[str]] = re.compile(
-        r"^\s*[A-Za-z0-9][A-Za-z0-9._-]*\s*\[([^\]]*)\]"
-    )
-    EXTRA_MARKER: ClassVar[str] = 'extra == "{extra}"'
-
     name: str
     extras: frozenset[str] = frozenset()
 
+    @model_validator(mode="before")
     @classmethod
-    def normalize(cls, name: str) -> str:
-        return re.sub(r"[-_.]+", "-", name).lower()
+    def _read_spec(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
 
-    @classmethod
-    def parse(cls, spec: str) -> Requirement:
-        found = cls.NAME.match(spec)
-        if found is None:
-            msg = (
-                f"requirement {spec!r} does not match a PEP 508 name: "
-                f"{cls.NAME.pattern}"
-            )
-            raise DepsAuditError(msg)
+        try:
+            parsed = Pep508Requirement(value)
+        except InvalidRequirement as exc:
+            raise DepsAuditError(
+                f"reading dependency {value!r}: expected a PEP 508 requirement: {exc}"
+            ) from exc
 
-        extras: set[str] = set()
-        with_extras = cls.EXTRAS.match(spec)
-        if with_extras is not None:
-            for part in with_extras.group(1).split(","):
-                extras.add(part.strip())
-
-        return cls(name=cls.normalize(found.group(1)), extras=frozenset(extras))
-
-    def marker_of(self, extra: str) -> str:
-        return self.EXTRA_MARKER.format(extra=extra)
+        return {"name": canonicalize_name(parsed.name), "extras": parsed.extras}
 
 
 class PackageProject(BaseModel):
@@ -215,20 +204,20 @@ class PackageProject(BaseModel):
         module_extras = cls._string_table(document, pyproject, cls.TOOL_EXTRAS)
         unimported: set[str] = set()
         for dist in cls._string_table(document, pyproject, cls.TOOL_UNIMPORTED):
-            unimported.add(Requirement.normalize(dist))
+            unimported.add(canonicalize_name(dist))
 
         dependencies: list[Requirement] = []
         for spec in project.get("dependencies", []):
-            dependencies.append(Requirement.parse(spec))
+            dependencies.append(Requirement.model_validate(spec))
 
         extras: dict[str, list[Requirement]] = {}
         for extra, specs in project.get("optional-dependencies", {}).items():
             extras[extra] = []
             for spec in specs:
-                extras[extra].append(Requirement.parse(spec))
+                extras[extra].append(Requirement.model_validate(spec))
 
         return cls(
-            name=Requirement.normalize(project["name"]),
+            name=canonicalize_name(project["name"]),
             root=pyproject.parent,
             dependencies=dependencies,
             extras=extras,
@@ -337,7 +326,7 @@ class ModuleOwners:
         if raw_name is None:
             return
 
-        name = Requirement.normalize(raw_name)
+        name = canonicalize_name(raw_name)
         if name.startswith(f"{PackageProject.NAMESPACE}-"):
             return
 
@@ -470,45 +459,6 @@ class ModuleOwners:
 
         msg = f"module {module}: no installed distribution owns it"
         raise DepsAuditError(msg)
-
-    def brought_by_extras(self, requirement: Requirement) -> set[str]:
-        """Дистрибутивы extras-части зависимости: psycopg[pool] → psycopg-pool."""
-        if not requirement.extras:
-            return set()
-
-        project = self._projects.get(requirement.name)
-        if project is not None:
-            return self._workspace_extra_members(project, requirement.extras)
-
-        return self._distribution_extra_members(requirement)
-
-    def _workspace_extra_members(
-        self, project: PackageProject, extras: frozenset[str]
-    ) -> set[str]:
-        members: set[str] = set()
-        for extra in extras:
-            for member in project.extras.get(extra, ()):
-                members.add(member.name)
-
-        return members
-
-    def _distribution_extra_members(self, requirement: Requirement) -> set[str]:
-        try:
-            requires = metadata.requires(requirement.name)
-        except metadata.PackageNotFoundError:
-            return set()
-
-        if requires is None:
-            return set()
-
-        members: set[str] = set()
-        for line in requires:
-            for extra in requirement.extras:
-                if requirement.marker_of(extra) not in line:
-                    continue
-                members.add(Requirement.parse(line).name)
-
-        return members
 
 
 class ImportScan:
@@ -668,15 +618,11 @@ class DepsAudit:
         used = self._used(project, project.src)
 
         declared: set[str] = set()
-        via_extras: set[str] = set()
         for requirement in project.shipped_requirements():
             declared.add(requirement.name)
-            via_extras |= self._owners.brought_by_extras(requirement)
 
         for dist in sorted(used):
             if dist in declared:
-                continue
-            if dist in via_extras:
                 continue
             yield Finding(
                 package=project.name,
@@ -716,11 +662,9 @@ class DepsAudit:
         covered: set[str] = set()
         for requirement in project.dependencies:
             covered.add(requirement.name)
-            covered |= self._owners.brought_by_extras(requirement)
 
         for requirement in project.dev_requirements():
             covered.add(requirement.name)
-            covered |= self._owners.brought_by_extras(requirement)
 
         for dist in sorted(used):
             if dist in covered:

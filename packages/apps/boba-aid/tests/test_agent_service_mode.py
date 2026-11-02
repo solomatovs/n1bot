@@ -46,10 +46,10 @@ from boba.identity.context import CallContexts
 from boba.identity.session import Login
 from boba.identity.signin import SignInMetadata
 from boba.mcp_client.client import (
+    FixedServerConfigs,
     HttpLocation,
     HttpRoute,
     McpServers,
-    FixedServerConfigs,
     ProxyAuth,
 )
 from boba.runtime.config import ProcessConfig

@@ -25,7 +25,8 @@ from typing import Annotated, ClassVar
 
 from pydantic import Field
 
-from boba.toolkit.chain import CallAmbient
+from boba.tool_io.chain import CallAmbient
+from boba.tool_io.pump import PipePlumbing
 from boba.toolkit.facade import PayloadTool, tool
 from boba.toolkit.frames import ToolFrame
 from boba.toolkit.launcher import (
@@ -38,7 +39,6 @@ from boba.toolkit.launcher import (
 )
 from boba.toolkit.ports import PortDecl, PortDirection, StreamSpec
 from boba.toolkit.protocol import ReplyError, ReplyOk
-from boba.toolkit.pump import PipePlumbing
 from boba.toolkit.result import ErrorResult, MarkdownResult
 
 __all__ = ["DevNullTool"]

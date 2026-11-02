@@ -1,7 +1,8 @@
 """Личный MCP-сервер меняет набор агентов пользователя и историю инструментов."""
 
 import asyncio
-from collections.abc import Iterator, Sequence
+from collections.abc import AsyncIterator, Iterator, Sequence
+from dataclasses import dataclass
 from uuid import uuid4
 
 import pytest
@@ -23,7 +24,7 @@ from boba.aid.domain.fields import ThreadMetaField
 from boba.aid.infra.config import AppConfig
 from boba.aid.mcp_servers.store import StoredServer
 from boba.config import ConfigLoader, bind
-from boba.connections.secrets import SecretCipher
+from boba.connection_broker.crypto import SecretCipher
 from boba.db.postgres import AsyncPostgresPool
 from boba.mcp_client.client import HttpEndpoint, McpServerConfig, SseEndpoint
 from boba.stand.names import StandNames
@@ -132,84 +133,95 @@ class AdminRoleServer:
             await self._pool.close()
 
 
+@dataclass(frozen=True)
+class AgentPeer:
+    tab: ChatSocket
+    processes: AgentProcesses
+
+
+@pytest.fixture
+async def peer(
+    second: StandProcess, cookie: str, live_host: AppsHost
+) -> AsyncIterator[AgentPeer]:
+    """Закрывает удалённую сессию до остановки её MCP-сервера."""
+    remote = ChatSocket(second, cookie, str(uuid4()))
+    await remote.open()
+    try:
+        yield AgentPeer(remote, AgentProcesses(second))
+    finally:
+        await remote.close()
+
+
 async def test_own_server_restarts_all_user_agents_and_records_delta(
     app: StandProcess,
-    second: StandProcess,
     tab: ChatSocket,
-    cookie: str,
+    peer: AgentPeer,
     rows: ChatRows,
     live_host: AppsHost,
 ) -> None:
     processes = AgentProcesses(app)
-    remote_processes = AgentProcesses(second)
-    remote = ChatSocket(second, cookie, str(uuid4()))
-    await remote.open()
-    try:
-        for socket in (tab, remote):
-            await socket.send(f"before adding own MCP {ScenarioName.ANSWER.value}")
-            await socket.wait_task_end()
-            assert not socket.errors(), socket.trace()
+    remote_processes = peer.processes
+    remote = peer.tab
 
-        first_pid = await processes.await_thread(tab.thread_id)
-        second_pid = await remote_processes.await_thread(remote.thread_id)
-        endpoint = McpServerConfig.model_validate(live_host.plain()).endpoint.label()
-        answer = await asyncio.to_thread(
-            tab.action,
-            "mcp_add",
-            {
-                "form": {
-                    "name": "personal",
-                    "transport": "streamable-http",
-                    "url": endpoint,
-                    "auth": "none",
-                    "token": "",
-                    "headers": [],
-                }
-            },
-        )
-        assert "error" not in answer, answer
-        assert first_pid in processes.of_thread(tab.thread_id)
-        await remote.wait_log("MCP server update for user")
-        for socket in (tab, remote):
-            await socket.send(f"after adding own MCP {ScenarioName.ANSWER.value}")
-            await socket.wait_task_end()
-            assert not socket.errors(), socket.trace()
+    for socket in (tab, remote):
+        await socket.send(f"before adding own MCP {ScenarioName.ANSWER.value}")
+        await socket.wait_task_end()
+        assert not socket.errors(), socket.trace()
 
-        await processes.await_thread(tab.thread_id, other_than=first_pid)
-        await remote_processes.await_thread(remote.thread_id, other_than=second_pid)
-        config = bind(
-            ConfigLoader(app.config.files.paths(StandApp.AID)).load(), "app", AppConfig
-        )
-        for socket in (tab, remote):
-            meta = await rows.thread_meta(socket.thread_id)
-            assert meta is not None
-            deltas = await ToolDeltas(config).read(
-                str(meta[ThreadMetaField.AGENT_SESSION])
-            )
-            added = set()
-            for delta in deltas:
-                added.update(delta.added_names)
-                added.update(delta.surfaced_names)
+    first_pid = await processes.await_thread(tab.thread_id)
+    second_pid = await remote_processes.await_thread(remote.thread_id)
+    endpoint = McpServerConfig.model_validate(live_host.plain()).endpoint.label()
+    answer = await asyncio.to_thread(
+        tab.action,
+        "mcp_add",
+        {
+            "form": {
+                "name": "personal",
+                "transport": "streamable-http",
+                "url": endpoint,
+                "auth": "none",
+                "token": "",
+                "headers": [],
+            }
+        },
+    )
+    assert "error" not in answer, answer
+    assert first_pid in processes.of_thread(tab.thread_id)
+    await remote.wait_log("MCP server update for user")
+    for socket in (tab, remote):
+        await socket.send(f"after adding own MCP {ScenarioName.ANSWER.value}")
+        await socket.wait_task_end()
+        assert not socket.errors(), socket.trace()
 
-            assert "mcp__personal__add" in added, deltas
-
-        removed = await asyncio.to_thread(
-            tab.action, "mcp_remove", {"name": "personal"}
-        )
-        assert "error" not in removed, removed
-        await tab.send(f"after removing own MCP {ScenarioName.ANSWER.value}")
-        await tab.wait_task_end()
-        assert not tab.errors(), tab.trace()
-        meta = await rows.thread_meta(tab.thread_id)
+    await processes.await_thread(tab.thread_id, other_than=first_pid)
+    await remote_processes.await_thread(remote.thread_id, other_than=second_pid)
+    config = bind(
+        ConfigLoader(app.config.files.paths(StandApp.AID)).load(), "app", AppConfig
+    )
+    for socket in (tab, remote):
+        meta = await rows.thread_meta(socket.thread_id)
         assert meta is not None
         deltas = await ToolDeltas(config).read(str(meta[ThreadMetaField.AGENT_SESSION]))
-        gone = set()
+        added = set()
         for delta in deltas:
-            gone.update(delta.removed_names)
+            added.update(delta.added_names)
+            added.update(delta.surfaced_names)
 
-        assert "mcp__personal__add" in gone, deltas
-    finally:
-        await remote.close()
+        assert "mcp__personal__add" in added, deltas
+
+    removed = await asyncio.to_thread(tab.action, "mcp_remove", {"name": "personal"})
+    assert "error" not in removed, removed
+    await tab.send(f"after removing own MCP {ScenarioName.ANSWER.value}")
+    await tab.wait_task_end()
+    assert not tab.errors(), tab.trace()
+    meta = await rows.thread_meta(tab.thread_id)
+    assert meta is not None
+    deltas = await ToolDeltas(config).read(str(meta[ThreadMetaField.AGENT_SESSION]))
+    gone = set()
+    for delta in deltas:
+        gone.update(delta.removed_names)
+
+    assert "mcp__personal__add" in gone, deltas
 
 
 async def test_sql_role_grant_appears_only_in_a_new_chat(

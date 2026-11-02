@@ -11,9 +11,9 @@ import pytest
 from psycopg import sql
 from pydantic import SecretStr
 
+from boba.connection_broker.crypto import SecretCipher, SecretCryptoError
 from boba.connection_broker.store import ConnectionStore
 from boba.connections.manifest import ConnectionTypes, UnknownConnectionKindError
-from boba.connections.secrets import SecretCipher, SecretCryptoError
 from boba.connections.stored import (
     ConnectionNotFoundError,
     GrantKind,

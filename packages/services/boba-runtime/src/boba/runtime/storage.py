@@ -19,16 +19,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import os
 import stat as stat_module
 import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, AsyncIterator, Sequence
-from pathlib import Path
 from typing import Any, ClassVar, Literal, Self
 
-import aiofiles
-import aiofiles.os
+from anyio import Path, open_file
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from boba.canvas.keys import DirKey, ObjectKey, ScopeDir, WorkspaceMount
@@ -208,7 +205,7 @@ class StorageClient(ABC):
         """Файл локального диска как источник чанков для upload_stream."""
         chunk_bytes = self._chunk_bytes
 
-        async with aiofiles.open(path, "rb") as f:
+        async with await open_file(path, "rb") as f:
             while True:
                 chunk = await f.read(chunk_bytes)
                 if not chunk:
@@ -302,9 +299,9 @@ class ConfiguredStorageClient(StorageClient, ABC):
 class LocalStorageClient(ConfiguredStorageClient):
     """Хранит файлы вложений на локальном диске под files_dir."""
 
-    def _resolve(self, object_key: str) -> Path:
-        base_dir = Path(self._config.files_dir).resolve()
-        path = (base_dir / object_key).resolve()
+    async def _resolve(self, object_key: str) -> Path:
+        base_dir = await Path(self._config.files_dir).resolve()
+        path = await (base_dir / object_key).resolve()
 
         if not path.is_relative_to(base_dir):
             msg = (
@@ -322,21 +319,21 @@ class LocalStorageClient(ConfiguredStorageClient):
         mime: str,
     ) -> dict[str, Any]:
         """Кладёт файл чанками: содержимое целиком в память не поднимается."""
-        path = self._resolve(object_key)
-        await aiofiles.os.makedirs(path.parent, exist_ok=True)
+        path = await self._resolve(object_key)
+        await path.parent.mkdir(parents=True, exist_ok=True)
 
-        async with aiofiles.open(path, "wb") as f:
+        async with await path.open("wb") as f:
             async for chunk in source:
                 await f.write(chunk)
 
         return self._uploaded(object_key)
 
     async def _stat(self, object_key: str) -> FileStat:
-        path = self._resolve(object_key)
+        path = await self._resolve(object_key)
         return await self._stat_path(path)
 
     async def _open_stream(self, object_key: str, window: ReadWindow) -> OpenedStream:
-        path = self._resolve(object_key)
+        path = await self._resolve(object_key)
 
         stat = await self._stat_path(path)
         body = self._window_chunks(path, window, stat.size)
@@ -344,7 +341,7 @@ class LocalStorageClient(ConfiguredStorageClient):
 
     @staticmethod
     async def _stat_path(path: Path) -> FileStat:
-        result = await aiofiles.os.stat(path)
+        result = await path.stat()
 
         if not stat_module.S_ISREG(result.st_mode):
             msg = f"storage: {path} is not a regular file, mode {result.st_mode:o}"
@@ -359,7 +356,7 @@ class LocalStorageClient(ConfiguredStorageClient):
         chunk_bytes = self._config.mounting.copy_chunk_bytes
         remaining = window.resolve_length(size)
 
-        async with aiofiles.open(path, "rb") as f:
+        async with await path.open("rb") as f:
             await f.seek(window.offset)
 
             while remaining > 0:
@@ -371,28 +368,27 @@ class LocalStorageClient(ConfiguredStorageClient):
                 yield chunk
 
     async def _delete_file(self, object_key: str) -> bool:
-        path = self._resolve(object_key)
+        path = await self._resolve(object_key)
         try:
-            await aiofiles.os.remove(path)
+            await path.unlink()
         except FileNotFoundError:
             return False
 
         return True
 
     async def _list_dir(self, prefix: str) -> Sequence[str]:
-        path = self._resolve(prefix)
+        path = await self._resolve(prefix)
+        names: list[str] = []
         try:
-            entries = await aiofiles.os.listdir(path)
+            async for entry in path.iterdir():
+                if not await entry.is_file():
+                    continue
+
+                names.append(entry.name)
         except (FileNotFoundError, NotADirectoryError):
             return ()
 
-        names: list[str] = []
-        for entry in sorted(entries):
-            if not await aiofiles.os.path.isfile(path / entry):
-                continue
-            names.append(entry)
-
-        return tuple(names)
+        return tuple(sorted(names))
 
 
 class ImageStorageClient(ConfiguredStorageClient):
@@ -578,7 +574,7 @@ class ImageStorageClient(ConfiguredStorageClient):
     ) -> asyncio.subprocess.Process:
         """Запускает лаунчер на одну операцию над образом."""
         self._chain.check()
-        await aiofiles.os.makedirs(os.path.dirname(image), exist_ok=True)
+        await Path(image).parent.mkdir(parents=True, exist_ok=True)
         argv = self._chain.argv(
             images=[(image, ImageMountPoint.under(self._config.mount_dir, image))],
             ro_images=(),

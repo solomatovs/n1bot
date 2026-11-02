@@ -47,7 +47,7 @@ from boba.db.clickhouse.transfer import (
     ChTypes,
     StreamBody,
 )
-from boba.toolkit.arrow import ArrowColumns, ArrowIpc, BytePipe
+from boba.tool_io.arrow import ArrowColumns, ArrowIpc, BytePipe
 from boba.toolkit.contract import (
     ArrowContract,
     ColumnDeclaration,

@@ -26,7 +26,7 @@ from pydantic import BaseModel, JsonValue
 from boba.access import ProfileGrant, RoleConfig, ToolAccess
 from boba.identity.context import CallContexts
 from boba.sandbox.program import PluginCommand, PluginEntry
-from boba.toolkit.chain import CallAmbient
+from boba.tool_io.chain import CallAmbient
 from boba.toolkit.dag import DagNode, NodeCalls, NodeOutcome, ToolServer
 from boba.toolkit.facade import PayloadTool
 from boba.toolkit.launcher import ToolLauncher

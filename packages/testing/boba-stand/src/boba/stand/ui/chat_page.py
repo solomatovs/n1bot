@@ -74,7 +74,7 @@ class ChatPage:
     def open(self) -> None:
         self.page.goto(f"{self.base_url}/", wait_until="domcontentloaded")
         self._await(Selector.INPUT.value)
-        self._await_chat_start()
+        self.await_start()
 
     def open_thread(
         self, thread_id: str, last_step_id: str, timeout_sec: float = 30.0
@@ -98,7 +98,7 @@ class ChatPage:
         )
         raise ChatPageError(msg)
 
-    def _await_chat_start(self, timeout_sec: float = 30.0) -> None:
+    def await_start(self, timeout_sec: float = 30.0) -> None:
         """Свой ход chainlit рисует на старте сессии: тест ждёт его окончания.
 
         Иначе ожидание конца хода срабатывает на чужой паре task_start/task_end:
@@ -179,7 +179,7 @@ class ChatPage:
 
         self.log.clear()
         item.first.click()
-        self._await_chat_start()
+        self.await_start()
 
     def ask(self, text: str) -> None:
         """Задаёт вопрос; журнал очищается, чтобы в нём был только этот ход."""

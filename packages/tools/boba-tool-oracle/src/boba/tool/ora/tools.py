@@ -35,6 +35,7 @@ from boba.db.oracle import (
 from boba.db.oracle.address import OraAddresses
 from boba.db.oracle.connection import OracleConfig
 from boba.db.oracle.target import OraTableRef
+from boba.tool_io.entry import ToolMain
 from boba.toolkit.contract import (
     ArrowContract,
     ColumnDeclaration,
@@ -42,7 +43,6 @@ from boba.toolkit.contract import (
     ContractTable,
     StreamContract,
 )
-from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
 from boba.toolkit.ports import (
     Inbound,

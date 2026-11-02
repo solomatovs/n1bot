@@ -251,7 +251,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
-from boba.toolkit.entry import ToolMain
+from boba.tool_io.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import TableResult
 from boba.toolkit.sql import QueryRowLimit, SqlErrorKind, SqlLimits
@@ -443,12 +443,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-tool-redis"
-version = "0.0.19.dev4"
+version = "0.0.31.dev1"
 description = "Инструменты redis: перебор ключей на сервере из конфига."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-toolkit==0.0.19.dev4",
-    "pydantic>=2.10,<2.11",
+    "boba-toolkit==0.0.31.dev1",
+    "boba-tool-io==0.0.31.dev1",
+    "pydantic>=2.12,<3",
 ]
 
 [project.optional-dependencies]
@@ -458,9 +459,9 @@ payload = [
     "redis>=5",
 ]
 dev = [
-    "boba-config==0.0.19.dev4",
-    "boba-stand-core==0.0.19.dev4",
-    "pytest>=8",
+    "boba-config==0.0.31.dev1",
+    "boba-stand-core==0.0.31.dev1",
+    "pytest>=9.1,<10",
 ]
 
 [project.entry-points."boba.tools"]
@@ -481,6 +482,9 @@ imports = ["redis"]
   `pydantic`, пакеты моделей конфига и профилей. Их ставит и хост, и
   песочница. Версии boba-пакетов пинятся точно, их проставляет
   `make version-set`.
+- **`boba-tool-io`** — исполнение тела через `ToolMain` и потоковый I/O.
+  Его объявляет пакет, который импортирует исполнителя; модели и аннотации
+  инструментов остаются в `boba-toolkit`.
 - **`payload`** — клиент, парсер, движок: всё, чем работает тело. Хост эту
   группу не ставит и не импортирует, поэтому плагин остаётся
   самостоятельной программой со своими зависимостями. Как не притащить их
@@ -728,10 +732,11 @@ packages/tools/boba-tool-redis/
 ```toml
 [project]
 name = "boba-tool-redis"
-version = "0.0.17.dev3"
+version = "0.0.31.dev1"
 dependencies = [
-    "boba-toolkit==0.0.17.dev3",
-    "boba-connections==0.0.17.dev3",
+    "boba-toolkit==0.0.31.dev1",
+    "boba-tool-io==0.0.31.dev1",
+    "boba-connections==0.0.31.dev1",
     "redis>=5",
 ]
 
@@ -1505,7 +1510,7 @@ async def redis_restore_stream(
 Поэтому каждая декларация живёт у владельца стека: libGL для opencv
 объявляет `boba-doc`, а плагины doc и web про него не знают.
 
-После правок `boba-toolkit` или `boba-sandbox` программы всех групп
+После правок `boba-toolkit`, `boba-tool-io` или `boba-sandbox` программы всех групп
 пересобираются: гость внутри песочницы отстаёт от хоста по протоколу
 каналов и спецификации манифеста. Сборка видит это сама — по сумме дерева
 пакетов каждой группы. Два плагина одного пакета (`confluence` и `ingest`)
@@ -1516,6 +1521,8 @@ async def redis_restore_stream(
 тестов `make -C build build APP=runtime` кладёт в `runtime/` корни с python
 и программы-обёртки `python3 -m boba.sandbox.program`, а код пакетов стенд
 монтирует из репозитория.
+После изменения состава Python-пакетов перед тестами нужно повторить сборку
+`APP=runtime`: цель `APP=mcp` не обновляет тестовые `runtime/rootfs`.
 
 ### Прогрев зиготы
 

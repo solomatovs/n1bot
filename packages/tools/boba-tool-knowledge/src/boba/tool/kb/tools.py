@@ -29,6 +29,7 @@ from typing import Annotated, Any, ClassVar, Final
 import psycopg
 from pydantic import BaseModel, ConfigDict, Field
 
+from boba.core.types import LLMStringList
 from boba.db.postgres import PayloadPostgres
 from boba.ix_core.indexes import IndexKind
 from boba.ix_core.nodes import NodeCard, NodeReader
@@ -43,11 +44,10 @@ from boba.ix_core.surfaces import Surface
 from boba.llm.providers import EmbeddingModelConfig
 from boba.tool.kb.chunks import kb_fts_search, kb_vector_search
 from boba.tool.kb.kb import LLM, KbToolConfig
-from boba.toolkit.entry import ToolMain
+from boba.tool_io.entry import ToolMain
 from boba.toolkit.facade import Injected, tool, warmup
 from boba.toolkit.result import MarkdownResult, TableResult
 from boba.toolkit.timing import Elapsed
-from boba.toolkit.types import LLMStringList
 from boba.toolkit.window import RowLimit, RowOffset, RowPage, RowWindow
 
 logger = logging.getLogger(__name__)

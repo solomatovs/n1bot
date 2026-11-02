@@ -34,10 +34,10 @@ from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.toolkit.entry import EntryFlag, InputWire, OutputWire, ToolMain
+from boba.tool_io.entry import EntryFlag, InputWire, OutputWire, ToolMain
+from boba.tool_io.payload import PayloadLogging
 from boba.toolkit.facade import PayloadTool
 from boba.toolkit.manifest import ToolPlugin
-from boba.toolkit.payload import PayloadLogging
 from boba.toolkit.timing import Elapsed
 from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.images import (

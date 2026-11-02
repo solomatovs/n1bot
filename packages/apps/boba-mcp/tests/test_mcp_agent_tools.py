@@ -28,7 +28,7 @@ from boba.stand.zygote import (
     ZygoteStand,
 )
 from boba.tool.shell.tools import BashToolConfig
-from boba.toolkit.chain import CallAmbient
+from boba.tool_io.chain import CallAmbient
 from boba.toolkit.dag import DagNode
 from boba.toolkit.launcher import LauncherError
 from boba.toolkit.result import ShellResult

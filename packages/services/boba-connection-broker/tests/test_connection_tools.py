@@ -17,10 +17,10 @@ from psycopg import sql
 from pydantic import SecretStr
 
 from boba.access.grants import ConnectionFilter
+from boba.connection_broker.crypto import SecretCipher
 from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.tools import GrantedConnections
 from boba.connections.manifest import ConnectionTypes
-from boba.connections.secrets import SecretCipher
 from boba.connections.stored import GrantTarget
 from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.db.postgres.connection import (
@@ -243,7 +243,7 @@ async def test_search_without_filters_equals_list(
     granted: Subject, catalog: GrantedConnections
 ) -> None:
     listed = await catalog.rows(granted)
-    searched = await catalog.search(granted, ConnectionFilter.none())
+    searched = await catalog.search(granted, ConnectionFilter())
 
     if listed != searched:
         raise AssertionError(f"empty filter must equal the list: {searched}")

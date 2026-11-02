@@ -14,7 +14,7 @@ from boba.identity.context import CallContexts
 from boba.stand.refs import StandRefs
 from boba.tool.shell.plugin import MANIFEST
 from boba.tool.shell.tools import BashToolConfig
-from boba.toolkit.entry import ToolArgv
+from boba.tool_io.entry import ToolArgv
 from boba.toolkit.launcher import CollectedCall, PayloadFailureError, ToolLauncher
 from boba.toolkit.manifest import ManifestBuilder, ToolDecl
 from boba.toolkit.protocol import ReplyError

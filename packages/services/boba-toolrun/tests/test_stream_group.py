@@ -23,8 +23,7 @@ from pydantic import BaseModel, SecretStr
 from boba.identity.context import CallContexts
 from boba.identity.run import Runs
 from boba.sandbox.program import PluginCommand, PluginEntry
-from boba.stand.toolstand import ProbeBody, ProbeTools, ToolStand
-from boba.stand_core.fake_toolmod import (
+from boba.stand.fake_toolmod import (
     FakeConfig,
     fake_collect,
     fake_deaf,
@@ -36,15 +35,13 @@ from boba.stand_core.fake_toolmod import (
     fake_split,
     fake_stream,
 )
+from boba.stand.toolstand import ProbeBody, ProbeTools, ToolStand
+from boba.tool_io.chain import CallAmbient, ChannelFanOut, PipeTee, StreamGroupRun
 from boba.toolkit.chain import (
-    CallAmbient,
-    ChannelFanOut,
     GroupCall,
     GroupFailureResult,
     GroupVerdict,
-    PipeTee,
     StreamFailureKind,
-    StreamGroupRun,
     StreamPlan,
     StreamPlanError,
     StreamTimings,
@@ -81,7 +78,7 @@ from boba.toolrun.stream_calls import StreamChannelFields, StreamGroupsConfig
 from boba.toolrun.streams import CallJournals
 
 CFG = FakeConfig(token=SecretStr("t0ken"), limit=5)
-PLUGIN = "boba.stand_core.fake_toolmod:PLUGIN"
+PLUGIN = "boba.stand.fake_toolmod:PLUGIN"
 
 PROGRAM = (
     *PluginEntry().declared_argv(sys.executable, (PLUGIN,)),

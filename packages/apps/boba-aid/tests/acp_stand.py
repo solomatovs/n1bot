@@ -663,6 +663,8 @@ class AppsHost:
         self,
         flags: Sequence[str],
         transport: Literal["streamable-http", "sse"] = "streamable-http",
+        *,
+        script: Path = SCRIPT,
     ) -> None:
         self._transport = transport
         self._sandbox = SandboxHost()
@@ -670,7 +672,7 @@ class AppsHost:
         self._server = subprocess.Popen(
             [
                 sys.executable,
-                str(self.SCRIPT),
+                str(script),
                 self._transport,
                 str(self._mcp_port),
                 *flags,

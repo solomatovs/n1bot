@@ -12,9 +12,9 @@ import pytest
 
 from boba.config import bind
 from boba.db.clickhouse.connection import ClickHouseConfig
-from boba.stand_core.progress import HeardProgress
+from boba.stand.progress import HeardProgress
 from boba.tool.ch.tools import ChToolConfig, ch_query
-from boba.toolkit.entry import ToolMain
+from boba.tool_io.entry import ToolMain
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 

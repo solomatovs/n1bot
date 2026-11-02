@@ -12,9 +12,9 @@ import pytest
 from ora_tool_stand import IxStand
 
 from boba.db.oracle.connection import OracleConfig
-from boba.stand_core.progress import HeardProgress
+from boba.stand.progress import HeardProgress
 from boba.tool.ora.tools import OraToolConfig, ora_query
-from boba.toolkit.entry import ToolMain
+from boba.tool_io.entry import ToolMain
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 

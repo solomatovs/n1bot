@@ -45,7 +45,7 @@ RUN if [ -n "${PYTHON}" ]; then python3 /opt/plugin_rootfs.py names . ${PLUGINS}
            && cp -a /opt/python-slim/. /out/tree/usr/local/ \
            && uv pip install --python "$(command -v python3)" --target "$site" \
                --constraint /tmp/wheels/constraints.txt --find-links=/tmp/wheels \
-               --override /tmp/wheels/overrides.txt $(cat /tmp/names.txt) \
+               $(cat /tmp/names.txt) \
            && rm -rf "$site/bin" \
            && echo python > /out/runtime.txt; \
        else : > /out/runtime.txt; fi \

@@ -32,7 +32,7 @@ from boba.doc.config import DocSection
 from boba.doc.document import DocumentHint, DocumentKind
 from boba.llm.providers import LlmProviders, LlmProviderTypes
 from boba.text.grep import GrepLimits, TextGrep
-from boba.toolkit.entry import ToolMain
+from boba.tool_io.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
 from boba.toolkit.ports import DownloadProgress, ToolProgress
 from boba.toolkit.result import MarkdownResult, ResultTooLargeError, TableResult

@@ -37,9 +37,10 @@ from boba.auth.roles import HeaderRoles, LocalRoles, RoleProviders
 from boba.auth.signin import CompositeSignIn, LocalSignIn
 from boba.canvas.keys import WorkspaceMount
 from boba.config import ConfigLoader, bind
+from boba.connection_broker.crypto import SealKeys
 from boba.connection_broker.sealed import SealedConnectionParams, ServerConnection
 from boba.connections.manifest import ConnectionTypes
-from boba.connections.sealed import OfferedSource, SealKeys
+from boba.connections.sealed import OfferedSource
 from boba.identity.admission import RoleMappingConfig
 from boba.identity.context import CallContexts
 from boba.identity.run import Runs
@@ -63,11 +64,10 @@ from boba.oauth.server import (
 )
 from boba.runtime.journal import DirVault, StreamJournal
 from boba.runtime.storage import LocalStorageClient, LocalStorageConfig
-from boba.stand import fake_connection
+from boba.stand import fake_caller, fake_connection, fake_toolmod
 from boba.stand.service_signin import ServiceSignIn
 from boba.stand.toolstand import ToolStand
-from boba.stand_core import fake_caller, fake_toolmod
-from boba.toolkit.chain import CallAmbient
+from boba.tool_io.chain import CallAmbient
 from boba.toolrun.callvalues import CallContextValues
 from boba.toolrun.hosted import PluginSection
 from boba.toolrun.injected import InjectedConfig, StaticConfig, StaticSection
@@ -149,8 +149,8 @@ class ServiceStand:
     ANALYST: ClassVar[str] = "analyst"
 
     PLUGINS: ClassVar[tuple[str, ...]] = (
-        "boba.stand_core.fake_toolmod:PLUGIN",
-        "boba.stand_core.fake_caller:PLUGIN",
+        "boba.stand.fake_toolmod:PLUGIN",
+        "boba.stand.fake_caller:PLUGIN",
         "boba.stand.fake_connection:PLUGIN",
     )
     """Объявления фейковых модулей: тела идут их программой плагина."""

@@ -374,7 +374,7 @@ class FrontBuild:
         if not path.is_file():
             msg = (
                 f"look tests: the chainlit UI has no {path}; build it with "
-                "make -C build build APP=runtime"
+                "make -C build build APP=frontend"
             )
             raise LookError(msg)
 
@@ -386,7 +386,7 @@ class FrontBuild:
         msg = (
             f"look tests: the chainlit UI in {path.parent} is built from other "
             f"sources: built {built!r}, the sources give {expected!r}; rebuild it "
-            "with make -C build build APP=runtime"
+            "with make -C build build APP=frontend"
         )
         raise LookError(msg)
 
@@ -479,7 +479,10 @@ class TextNormalizer:
         const next = normal(href);
         if (next !== href) link.setAttribute("href", next);
       }
-      for (const field of root.querySelectorAll('input:not([type]),input[type="text"],input[type="url"],textarea')) {
+      const fields = root.querySelectorAll(
+        'input:not([type]),input[type="text"],input[type="url"],textarea'
+      );
+      for (const field of fields) {
         const next = normal(field.value);
         if (next !== field.value) field.value = next;
       }
@@ -1047,7 +1050,8 @@ class LookCheck:
             msg = (
                 f"{self._test}: look baselines retaken ({len(self._outcomes)} "
                 f"frames, {len(failed)} changed); review {report} and accept them "
-                "with git add or drop them with git checkout\n" + "\n".join(failed)
+                "in the baseline directory, or restore its previous files\n"
+                + "\n".join(failed)
             )
             raise LookError(msg)
 
@@ -1305,8 +1309,8 @@ class WindowStandConfig(StandConfig):
 
 class LookStand:
     """Стенды aid тестов вида: на каждый набор входов и язык свой процесс,
-    поднятый по первому запросу и остановленный в конце сессии. База и
-    FakeLLM — общие."""
+    поднятый по первому запросу и остановленный в конце модуля тестов.
+    Стенды модуля используют одну базу и один FakeLLM."""
 
     BOOT_TIMEOUT_SEC: ClassVar[float] = 300.0
     FULL_WINDOW: ClassVar[int] = 200000

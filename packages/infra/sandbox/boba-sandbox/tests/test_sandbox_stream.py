@@ -11,7 +11,7 @@ import pytest
 
 from boba.stand.shell import ShellRun
 from boba.stand.zygote import SandboxStand, ZygoteStand
-from boba.toolkit.chain import CallAmbient
+from boba.tool_io.chain import CallAmbient
 from boba.toolkit.channels import JournalChannel, ToolChannel, WrapChannel
 from boba.toolkit.stream import ChannelSinks, Chunk, StreamSink
 

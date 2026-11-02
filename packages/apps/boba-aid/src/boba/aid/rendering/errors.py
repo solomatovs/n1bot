@@ -10,8 +10,9 @@ from typing import Any
 
 from chainlit.context import context
 
-from boba.identity.errors import BaseError, FailureReport
+from boba.identity.errors import BaseError
 from boba.identity.session import LogLine
+from boba.runtime.errors import FailureReports
 
 __all__ = ["ToastLevel", "chainlit_error_ctx_handler", "show_error"]
 
@@ -40,17 +41,19 @@ def chainlit_error_ctx_handler(fn: Callable) -> Callable:
 
     logger = logging.getLogger(__name__)
 
+    failures = FailureReports()
+
     @functools.wraps(fn)
     async def wrapper(*args: Any, **kwargs: Any) -> Any:
         try:
             return await fn(*args, **kwargs)
         except BaseError as e:
-            logger.exception("%s", LogLine.safe(FailureReport.of(e).log))
+            logger.exception("%s", LogLine.safe(failures.describe(e).log))
             if m := e.view_message():
                 await show_error(m.content)
         except Exception as e:
             # один разбор на журнал и вкладку: формулировка совпадает дословно
-            report = FailureReport.of(e)
+            report = failures.describe(e)
             logger.exception("%s", LogLine.safe(report.log))
             if report.view:
                 await show_error(report.view)

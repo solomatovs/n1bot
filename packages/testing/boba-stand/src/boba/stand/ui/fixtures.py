@@ -1,7 +1,7 @@
-"""Плагин pytest UI-стенда: один sync-playwright и один браузер на сессию.
+"""Плагин pytest UI-стенда: один sync-playwright и браузер на модуль.
 
-Sync API держит запущенный asyncio-loop в главном потоке, пока жив: второй
-sync_playwright() в этом потоке падает, поэтому экземпляр общий для всех пакетов.
+Sync API держит asyncio-loop главного потока. Закрытие на границе модуля
+освобождает поток для асинхронных тестов других компонентов.
 """
 
 from collections.abc import Iterator
@@ -9,7 +9,7 @@ from collections.abc import Iterator
 import pytest
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def playwright() -> Iterator[object]:
     from playwright.sync_api import sync_playwright  # noqa: PLC0415
 
@@ -17,7 +17,7 @@ def playwright() -> Iterator[object]:
         yield instance
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def browser(playwright: object) -> Iterator[object]:
     from playwright.sync_api import Playwright  # noqa: PLC0415
 

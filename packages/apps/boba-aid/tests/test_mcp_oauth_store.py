@@ -16,7 +16,7 @@ from pydantic import SecretStr
 from boba.aid.mcp_servers import McpAppError
 from boba.aid.mcp_servers.oauth import McpBrowserOAuth
 from boba.aid.mcp_servers.oauth_store import McpOAuthStore
-from boba.connections.secrets import SecretCipher
+from boba.connection_broker.crypto import SecretCipher
 from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.mcp_client.client import (
     BrowserOAuthAuth,

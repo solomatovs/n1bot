@@ -19,8 +19,8 @@ from boba.identity.context import CallContexts, LlmInitiator
 from boba.identity.run import Runs
 from boba.stand.toolstand import ToolStand
 from boba.stand_core.context import CallStand
+from boba.tool_io.chain import CallAmbient
 from boba.toolkit.calls import ToolCallBase
-from boba.toolkit.chain import CallAmbient
 from boba.toolkit.dag import DagNode, ToolServer
 from boba.toolkit.facade import PayloadTool, tool
 from boba.toolkit.result import ExceptionResult, MarkdownResult, ToolResultBase

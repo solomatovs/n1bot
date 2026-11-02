@@ -34,7 +34,7 @@ from psycopg.rows import DictRow, dict_row
 from boba.cancellation import current_cancellation
 from boba.db.postgres.connection import PostgresAuthSession, PostgresConfig
 from boba.db.postgres.errors import PostgresError
-from boba.toolkit.closing import ProcessClosers
+from boba.tool_io.closing import ProcessClosers
 
 __all__ = [
     "AsyncPostgresPool",

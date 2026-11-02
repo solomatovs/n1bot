@@ -53,7 +53,7 @@ class TestMcpForms:
             )
 
     @pytest.mark.parametrize(
-        "url,port",
+        ("url", "port"),
         [
             ("https://mcp.invalid", 443),
             ("http://mcp.invalid", 80),

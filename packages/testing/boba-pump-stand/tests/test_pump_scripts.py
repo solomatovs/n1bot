@@ -34,7 +34,7 @@ from boba.pump_stand import (
 from boba.pump_stand.oracle import PumpUser
 from boba.stand.collection import StandServers
 from boba.stand.names import StandNames
-from boba.stand_core.progress import HeardProgress
+from boba.stand.progress import HeardProgress
 from boba.toolkit.result import SqlFailureResult
 from boba.toolkit.transfer import StreamWire
 from boba.toolrun.dag_run import DagOutcome

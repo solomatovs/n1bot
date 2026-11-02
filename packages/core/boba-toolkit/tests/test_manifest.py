@@ -15,7 +15,7 @@ from pydantic import (
     ValidationError,
 )
 
-from boba.stand_core.fake_toolmod import PLUGIN, fake_stream
+from boba.stand.fake_toolmod import PLUGIN, fake_stream
 from boba.toolkit.facade import (
     Injected,
     NotLogged,

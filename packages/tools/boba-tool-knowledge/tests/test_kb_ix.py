@@ -29,7 +29,7 @@ from boba.tool.kb.tools import (
     kb_trgm_search2,
     kb_vector_search2,
 )
-from boba.toolkit.entry import ToolMain
+from boba.tool_io.entry import ToolMain
 from boba.toolkit.result import MarkdownResult, TableResult
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]

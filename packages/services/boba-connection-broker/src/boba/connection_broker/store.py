@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable, Iterator, Mapping, Sequence
+from dataclasses import replace
 from typing import Any, ClassVar
 from uuid import UUID
 
@@ -25,14 +26,15 @@ from pydantic import (
     ConfigDict,
 )
 
-from boba.access.grants import ConnectionFilter, SubjectGrantsQuery, SubjectRowColumn
+from boba.access.grants import ConnectionFilter
+from boba.connection_broker.crypto import SecretCipher
+from boba.connection_broker.grants import SubjectGrantsQuery, SubjectRowColumn
 from boba.connections.address import AddressError
 from boba.connections.manifest import (
     ConnectionTypes,
     ConnectionTypesError,
     UnknownConnectionKindError,
 )
-from boba.connections.secrets import SecretCipher
 from boba.connections.stored import (
     ConnectionBase,
     ConnectionNotFoundError,
@@ -97,6 +99,7 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
         super().__init__(None, db_schema, pool)
         self._types = types
         self._cipher = cipher
+        self._grants = SubjectGrantsQuery()
 
     def _failure(self, action: str, exc: Exception) -> Exception:
         return ConnectionStoreError(self._detail(action, exc))
@@ -399,7 +402,7 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
     ) -> Sequence[GrantedConnection]:
         """Соединения вида kind, выданные пользователю лично или любой его роли,
         с признаком дубля имени."""
-        rows = await self._subject_rows(subject, ConnectionFilter.of_kind(kind))
+        rows = await self._subject_rows(subject, ConnectionFilter(kind=kind))
 
         return list(self._granted_rows(rows))
 
@@ -411,7 +414,7 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
         Секреты не читаются. Имя-дубль внутри вида не показывается: вызов
         отвергнет его как неоднозначное, выбирать из таких нечего.
         """
-        unique = flt.model_copy(update={"unique_only": True})
+        unique = replace(flt, unique_only=True)
         rows = await self._subject_rows(subject, unique)
 
         return list(self._catalog_entries(rows))
@@ -469,8 +472,9 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
         self, subject: Subject, flt: ConnectionFilter
     ) -> list[dict[str, Any]]:
         """Строки SubjectGrantsQuery, прошедшие фильтр."""
-        grants = SubjectGrantsQuery(subject, flt)
-        query = self._query().add(grants.text(), **grants.params()).build()
+        text = self._grants.text(flt)
+        params = self._grants.params(subject, flt)
+        query = self._query().add(text, **params).build()
 
         return await self._rows(query, "for subject")
 

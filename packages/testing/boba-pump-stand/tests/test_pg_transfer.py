@@ -38,7 +38,7 @@ from boba.stand.collection import StandServers
 from boba.stand.ix import IxStandError
 from boba.stand.names import StandNames
 from boba.stream.pg_to_pg.transfer import PgStreamColumn
-from boba.toolkit.ports import ToolProgress
+from boba.tool_io.ports import PipeProgress
 from boba.toolkit.result import SqlFailureResult
 from boba.toolkit.transfer import (
     CommandJournal,
@@ -1859,7 +1859,7 @@ class TestDescribeCost:
             before = await cursor.fetchone()
             started = time.perf_counter()
             contract = await PgCopyOut(
-                conn, CommandJournal("test", TransferProgress(ToolProgress(-1), "test"))
+                conn, CommandJournal("test", TransferProgress(PipeProgress(-1), "test"))
             ).contract(self.HEAVY, ())
             elapsed = time.perf_counter() - started
             cursor = await conn.execute(counters.text)
@@ -1939,7 +1939,7 @@ class TestCopyOutLoop:
         sink = WideSink()
         async with await AsyncPostgresPool.dedicated(postgres.profile) as conn:
             copy_out = PgCopyOut(
-                conn, CommandJournal("test", TransferProgress(ToolProgress(-1), "test"))
+                conn, CommandJournal("test", TransferProgress(PipeProgress(-1), "test"))
             )
             contract = await copy_out.contract(select, ())
             started = time.perf_counter()
@@ -1948,7 +1948,7 @@ class TestCopyOutLoop:
                 PgCopyLayout.CSV,
                 contract,
                 TransferOutbound(
-                    SinkOutbound(sink), TransferProgress(ToolProgress(-1), "test")
+                    SinkOutbound(sink), TransferProgress(PipeProgress(-1), "test")
                 ),
             )
             elapsed = time.perf_counter() - started
@@ -1972,7 +1972,7 @@ class TestCopyOutLoop:
         select = "select g, 1 / (g - 5000) as bad from generate_series(1, 10000) g"
         async with await AsyncPostgresPool.dedicated(postgres.profile) as conn:
             copy_out = PgCopyOut(
-                conn, CommandJournal("test", TransferProgress(ToolProgress(-1), "test"))
+                conn, CommandJournal("test", TransferProgress(PipeProgress(-1), "test"))
             )
             contract = await copy_out.contract(select, ())
             with pytest.raises(psycopg.errors.DivisionByZero):
@@ -1981,7 +1981,7 @@ class TestCopyOutLoop:
                     PgCopyLayout.CSV,
                     contract,
                     TransferOutbound(
-                        SinkOutbound(Sink()), TransferProgress(ToolProgress(-1), "test")
+                        SinkOutbound(Sink()), TransferProgress(PipeProgress(-1), "test")
                     ),
                 )
 
@@ -1997,7 +1997,7 @@ class TestCopyOutLoop:
         select = self.SELECT.format(rows=self.ROWS)
         async with await AsyncPostgresPool.dedicated(postgres.profile) as conn:
             copy_out = PgCopyOut(
-                conn, CommandJournal("test", TransferProgress(ToolProgress(-1), "test"))
+                conn, CommandJournal("test", TransferProgress(PipeProgress(-1), "test"))
             )
             contract = await copy_out.contract(select, ())
             started = time.perf_counter()
@@ -2008,7 +2008,7 @@ class TestCopyOutLoop:
                     contract,
                     TransferOutbound(
                         SinkOutbound(BrokenSink()),
-                        TransferProgress(ToolProgress(-1), "test"),
+                        TransferProgress(PipeProgress(-1), "test"),
                     ),
                 )
             elapsed = time.perf_counter() - started

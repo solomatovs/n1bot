@@ -9,7 +9,7 @@ from boba.connection_broker.sealed import SealedConnectionParams
 from boba.connection_broker.user_connections import CredentialsRef, StoreRef
 from boba.connections.manifest import ConnectionTypes
 from boba.identity.context import CallContexts
-from boba.toolkit.chain import CallAmbient
+from boba.tool_io.chain import CallAmbient
 from boba.toolrun.streams import CallJournals
 
 __all__ = ["ExecRefs", "RuntimeRefs"]

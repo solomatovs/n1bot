@@ -2,7 +2,6 @@
 
 Пакет объявляет два entry point'а: `boba.connections` (тип `oracle`: модель профиля
 и probe для кнопки «Check») и `boba.addresses` (семейство адресов `OraAddresses`).
-Снимок для каталога (`boba.catalog`) не объявлен.
 
 ## Профиль
 

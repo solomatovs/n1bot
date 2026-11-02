@@ -25,14 +25,10 @@ from probe_stand import (
     SealedStand,
 )
 
+from boba.connection_broker.crypto import SealKeys
 from boba.connection_broker.sealed import SealedConnectionParams
 from boba.connections.marks import ConnectionRefusal
-from boba.connections.sealed import (
-    ConnectionOffer,
-    SealedParamSchema,
-    SealFeature,
-    SealKeys,
-)
+from boba.connections.sealed import ConnectionOffer, SealedParamSchema, SealFeature
 from boba.stand.sealing import SealingStand
 from boba.stand_core.context import CallStand
 from boba.toolkit.dag import DagNode, NodeOutcome, ToolCard, ToolServer

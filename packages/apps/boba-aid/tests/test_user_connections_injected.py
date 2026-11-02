@@ -25,10 +25,10 @@ from boba.aid.auth.kerberos import KerberosAuth
 from boba.aid.data.data_layer import PostgresDataLayer
 from boba.auth.credentials import KerberosCredentialSource
 from boba.config import bind
+from boba.connection_broker.crypto import SecretCipher
 from boba.connection_broker.store import ConnectionStore
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.marks import ConnectionRefusal
-from boba.connections.secrets import SecretCipher
 from boba.connections.stored import GrantTarget, StoredRole
 from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.db.postgres.connection import PostgresConfig, TrustAuth

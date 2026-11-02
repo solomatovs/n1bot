@@ -19,9 +19,9 @@ from functools import partial
 
 from pydantic import create_model
 
+from boba.tool_io.chain import CallAmbient, NodeSlot
+from boba.tool_io.entry import ToolArgv
 from boba.toolkit.calls import CallViews, ToolCallBase
-from boba.toolkit.chain import CallAmbient, NodeSlot
-from boba.toolkit.entry import ToolArgv
 from boba.toolkit.launcher import (
     CollectedCall,
     PayloadFailureError,

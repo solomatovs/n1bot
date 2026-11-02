@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 from boba.access import ToolAccess
 from boba.identity.context import CallContexts
-from boba.toolkit.chain import CallAmbient
+from boba.tool_io.chain import CallAmbient
 from boba.toolkit.dag import NodeCalls, ToolServer, ToolServers
 from boba.toolkit.launcher import ToolLauncher
 from boba.toolkit.manifest import ToolDecl

@@ -1,6 +1,6 @@
 """Инструмент MCP-сервера в живой ленте чата.
 
-Стенд поднимается с MCP-серверами: обычным (официальный SDK, stdio),
+Стенд поднимается с MCP-серверами: обычным (официальный SDK, HTTP),
 который о boba не знает, своим boba-mcp отдельным процессом по HTTP и тем же
 обычным сервером по HTTP дважды — с секцией apps (его приложения рисуются в
 песочнице, которую чат отдаёт сам на своём порту того же хоста 127.0.0.1) и
@@ -186,13 +186,11 @@ def mcp_stand(  # noqa: PLR0913 — стенд собирается из фик�
     fake_llm: None,
     stand_database: str,
     boba_mcp_stand: BobaMcpStand,
-    standard: McpServerConfig,
     apps_host: AppsHost,
     plain_host: AppsHost,
 ) -> Iterator[StandProcess]:
-    """Стенд чата с MCP-серверами: обычный по stdio, boba-mcp и обычный по
-    HTTP — записью apps с секцией apps (страница-прокси песочницы на своём
-    источнике) и записью plain без неё."""
+    """Стенд с HTTP-серверами: стандартный SDK, boba-mcp, сервер с MCP Apps
+    и сервер, не объявляющий поддержку приложений."""
     server = apps_host.plain()
     config = StandConfig(
         # не "mcp": это каталог сервиса boba-mcp общего стенда (StandConfig.service)
@@ -1458,7 +1456,8 @@ class TestSandboxOrigin:
         assert proxy is not None
         assert "token=" not in proxy.url
         proxy.evaluate(
-            "window.parent.postMessage({jsonrpc:'2.0',method:'ui/notifications/sandbox-proxy-ready',params:{}}, '*')"
+            "window.parent.postMessage({jsonrpc:'2.0',"
+            "method:'ui/notifications/sandbox-proxy-ready',params:{}}, '*')"
         )
         expect(card.locator("[data-mcp-app-error]")).to_contain_text(
             "valid proxy token"
@@ -1603,7 +1602,7 @@ def handshake_stand(  # noqa: PLR0913 — стенд собирается из �
     llm_port: int,
     fake_llm: None,
     stand_database: str,
-    standard: McpServerConfig,
+    apps_host: AppsHost,
     apps_slot: AppsSlot,
 ) -> Iterator[StandProcess]:
     """Стенд чата с обычным сервером 2026-07-28 (standard) и своим сервером
@@ -1616,7 +1615,7 @@ def handshake_stand(  # noqa: PLR0913 — стенд собирается из �
         path=apps_slot.PATH,
     )
     servers: dict[str, Any] = {
-        "standard": standard.model_dump(mode="json", exclude_none=True),
+        "standard": apps_host.plain(),
     }
     for name, call_timeout_sec in (("legacy", 120.0), ("brief", 3.0)):
         config = McpServerConfig(

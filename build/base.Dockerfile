@@ -172,23 +172,72 @@ RUN pip3 install --no-cache-dir /out/oracledb-*.whl \
     && python3 -c "import oracledb; print(oracledb.__version__)" | grep -q "+${ORACLEDB_LOCAL}$"
 
 
-# колёса всех пакетов репозитория, constraints из uv.lock и переопределения
-# зависимостей, с которыми собран uv.lock: деревья пакетов ставятся теми же версиями
+# LiteralAI нужен Chainlit для моделей сообщений и шагов. Патч оставляет
+# трассировку в extra tracing, чтобы обычный чат не устанавливал Traceloop.
+FROM base AS literalai
+
+ARG LITERALAI_VERSION
+ARG LITERALAI_SHA256
+ARG SETUPTOOLS_VERSION=84.0.0
+ARG WHEEL_VERSION=0.48.0
+
+COPY build/patches/literalai-${LITERALAI_VERSION}-optional-tracing.patch /tmp/literalai.patch
+
+RUN pip3 install --no-cache-dir "setuptools==${SETUPTOOLS_VERSION}" "wheel==${WHEEL_VERSION}"
+RUN pip3 download --no-cache-dir --no-deps --no-binary :all: --no-build-isolation \
+        "literalai==${LITERALAI_VERSION}" -d /tmp/sdist
+RUN echo "${LITERALAI_SHA256}  /tmp/sdist/literalai-${LITERALAI_VERSION}.tar.gz" | sha256sum -c -
+
+WORKDIR /tmp/literalai-src
+RUN tar -xzf /tmp/sdist/literalai-${LITERALAI_VERSION}.tar.gz --strip-components=1
+RUN patch -p1 < /tmp/literalai.patch
+RUN pip3 wheel . --no-cache-dir --no-deps --no-build-isolation -w /out
+RUN pip3 install --no-cache-dir /out/literalai-*.whl \
+    && python3 -c "import literalai, importlib.util; assert literalai.__version__ == '${LITERALAI_VERSION}+boba.1'; assert importlib.util.find_spec('traceloop') is None"
+
+
+# Нативный MCP-коннектор Chainlit использует SDK 2 без override зависимостей.
+FROM base AS chainlit
+
+ARG CHAINLIT_VERSION
+ARG CHAINLIT_SHA256
+ARG HATCHLING_VERSION=1.33.0
+
+COPY build/patches/chainlit-${CHAINLIT_VERSION}-mcp2.patch /tmp/chainlit.patch
+
+RUN pip3 install --no-cache-dir "hatchling==${HATCHLING_VERSION}"
+RUN pip3 download --no-cache-dir --no-deps --no-binary :all: --no-build-isolation \
+        "chainlit==${CHAINLIT_VERSION}" -d /tmp/sdist
+RUN echo "${CHAINLIT_SHA256}  /tmp/sdist/chainlit-${CHAINLIT_VERSION}.tar.gz" | sha256sum -c -
+
+WORKDIR /tmp/chainlit-src
+RUN tar -xzf /tmp/sdist/chainlit-${CHAINLIT_VERSION}.tar.gz --strip-components=1
+RUN patch -p1 < /tmp/chainlit.patch && rm PKG-INFO
+RUN pip3 wheel . --no-cache-dir --no-deps --no-build-isolation -w /out
+RUN test -f "/out/chainlit-${CHAINLIT_VERSION}+boba.1-py3-none-any.whl" \
+    && test -f chainlit/frontend/dist/index.html \
+    && test -f chainlit/copilot/dist/index.js
+
+
+# Колёса всех пакетов репозитория и constraints из uv.lock:
+# деревья пакетов разрешаются без переопределения чужих ограничений.
 FROM base AS wheels
 
 COPY pyproject.toml  /tmp/boba/pyproject.toml
 COPY uv.lock         /tmp/boba/uv.lock
 COPY packages/       /tmp/boba/packages/
 COPY --from=oracledb /out/  /tmp/wheels/
+COPY --from=literalai /out/ /tmp/wheels/
+COPY --from=chainlit /out/ /tmp/wheels/
 # find-links корневого pyproject ведёт сюда: колесо с патчем лежит там же, где у .venv
 COPY --from=oracledb /out/  /tmp/boba/build/out/oracledb/
+COPY --from=literalai /out/ /tmp/boba/build/out/literalai/
+COPY --from=chainlit /out/ /tmp/boba/build/out/chainlit/
 
 WORKDIR /tmp/boba
 RUN uv build --all-packages --wheel --no-sources -o /tmp/wheels
 RUN uv export --frozen --all-packages --all-extras --no-emit-workspace --no-hashes \
         -o /tmp/wheels/constraints.txt
-RUN python3 -c "import tomllib, pathlib; uv = tomllib.loads(pathlib.Path('pyproject.toml').read_text())['tool']['uv']; print('\\n'.join(uv['override-dependencies']))" \
-        > /tmp/wheels/overrides.txt
 
 
 # инструменты компиляции: Nuitka и patchelf из индекса pypi в /opt/nuitka, ccache из

@@ -48,7 +48,7 @@ class ToolChannel(StrEnum):
     boba.toolkit.protocol), PROGRESS — отчёты тела о ходе работы
     (ToolProgress в boba.toolkit.ports); эти четыре — служебные. Номера
     дескрипторов RESULT, FRAMES и PROGRESS лончер передаёт телу аргументами
-    команды (флаги EntryFlag в boba.toolkit.entry).
+    команды (флаги EntryFlag в boba.tool_io.entry).
     """
 
     STDIN = "tool_stdin"

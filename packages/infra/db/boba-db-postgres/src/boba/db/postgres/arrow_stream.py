@@ -18,7 +18,6 @@ psycopg.Error — сервер отклонил стейтмент или зна
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from datetime import UTC, datetime
 from typing import Any, ClassVar
 
 import psycopg
@@ -30,11 +29,12 @@ from boba.db.postgres.query import PgQuery, PgQueryBuilder
 from boba.db.postgres.trace import PgCommandReport
 from boba.db.postgres.transfer import (
     PgColumnDeclaration,
+    PgLoadTable,
     PgTableFacts,
     PgTableRef,
     PgTypeResolver,
 )
-from boba.toolkit.arrow import ArrowIpc, ArrowReader
+from boba.tool_io.arrow import ArrowIpc, ArrowReader
 from boba.toolkit.contract import (
     ArrowContract,
     ColumnDeclaration,
@@ -57,21 +57,18 @@ from boba.toolkit.transfer import (
     CommandJournal,
     CommandKind,
     CreateTemplate,
-    DeleteOutcome,
     DeleteStrategyApply,
     InsertStrategyApply,
     PlannedColumn,
     SchemaHead,
     SchemaStrategyPlan,
     StreamWire,
-    TemplateVar,
     TransferError,
     TransferInbound,
     TransferOutbound,
     TransferReport,
     TransferRun,
     TransferSink,
-    TransferTable,
     UnknownTypeApply,
 )
 from boba.toolkit.transfer import Engine as WireEngine
@@ -291,13 +288,12 @@ class PgNeutralFacts:
         return tuple(specs)
 
 
-class PgArrowTable(TransferTable):
-    """Реализация TransferTable для postgres по нейтральному плану таблицы:
-    DDL и delete через PgQueryBuilder на одном соединении, условие where от
-    вызова — raw_query. create table — по шаблону вызывающего: схема, имя и
-    колонки подставляются экранированными psycopg фрагментами."""
+class PgArrowTable(PgLoadTable):
+    """Реализация TransferTable для Arrow по нейтральному TableSpec.
 
-    BACKUP_STAMP: ClassVar[str] = "%Y%m%d_%H%M%S_%f"
+    PgDdlTypes выбирает типы PostgreSQL по источнику; PgLoadTable выполняет
+    общие операции таблицы на соединении загрузки и ведёт журнал команд.
+    """
 
     def __init__(  # noqa: PLR0913 — ширина подписи задана контрактом
         self,
@@ -308,13 +304,9 @@ class PgArrowTable(TransferTable):
         template: CreateTemplate,
         journal: CommandJournal,
     ) -> None:
-        self._conn = conn
-        self._table = table
+        super().__init__(conn, table, template, journal)
         self._source_engine = source_engine
         self._spec = spec
-        self._template = template
-        self._journal = journal
-        self._facts = PgTableFacts(conn, table, journal)
         self._ddl_types = PgDdlTypes()
 
     def planned(self) -> list[PlannedColumn]:
@@ -325,38 +317,6 @@ class PgArrowTable(TransferTable):
             planned.append(column.planned(type_text))
 
         return planned
-
-    async def exists(self) -> bool:
-        return await self._facts.exists()
-
-    async def create(self, unknown_as_varchar: bool) -> str:
-        query = self._create_query(unknown_as_varchar)
-        try:
-            await self._execute(query)
-        except psycopg.errors.UndefinedObject as exc:
-            raise TransferError(
-                f"create table {self._table.text()}: the target server has no such "
-                f"type: {exc.diag.message_primary}; declare another type for the "
-                f"column in rules.column_types, for example text; statement: "
-                f"{query.text.as_string(self._conn)}"
-            ) from exc
-
-        return query.text.as_string(self._conn)
-
-    def _create_query(self, unknown_as_varchar: bool) -> PgQuery:
-        rendered = self._template.render(
-            {
-                TemplateVar.SCHEMA_NAME: sql.Identifier(self._table.schema).as_string(
-                    self._conn
-                ),
-                TemplateVar.TABLE_NAME: sql.Identifier(self._table.name).as_string(
-                    self._conn
-                ),
-                TemplateVar.COLUMNS: self._columns_fragment(unknown_as_varchar),
-            }
-        )
-
-        return PgQueryBuilder().raw_query(rendered).build()
 
     def _columns_fragment(self, unknown_as_varchar: bool) -> str:
         builder = PgQueryBuilder()
@@ -369,80 +329,6 @@ class PgArrowTable(TransferTable):
             builder.when(not column.nullable, "not null")
 
         return builder.build().text.as_string(self._conn)
-
-    async def backup(self) -> str:
-        stamp = datetime.now(UTC).strftime(self.BACKUP_STAMP)
-        renamed = f"{self._table.name}_bak_{stamp}"
-        query = (
-            PgQueryBuilder(table=self._table.ident())
-            .add(
-                "alter table {table} rename to {renamed}",
-                renamed=sql.Identifier(renamed),
-            )
-            .build()
-        )
-        await self._execute(query)
-
-        return renamed
-
-    async def drop(self, cascade: bool) -> str:
-        query = (
-            PgQueryBuilder(table=self._table.ident())
-            .add("drop table {table}")
-            .when(cascade, "cascade")
-            .build()
-        )
-        await self._execute(query)
-
-        return query.text.as_string(self._conn)
-
-    async def truncate(self) -> DeleteOutcome:
-        query = (
-            PgQueryBuilder(table=self._table.ident())
-            .add("truncate table {table}")
-            .build()
-        )
-        await self._execute(query)
-
-        return DeleteOutcome(effect="removed by truncate")
-
-    async def delete_all(self) -> DeleteOutcome:
-        query = (
-            PgQueryBuilder(table=self._table.ident()).add("delete from {table}").build()
-        )
-
-        return await self._deleted(query)
-
-    async def delete_where(self, where: str) -> DeleteOutcome:
-        query = (
-            PgQueryBuilder(table=self._table.ident())
-            .add("delete from {table} where")
-            .raw_query(where)
-            .build()
-        )
-
-        return await self._deleted(query)
-
-    async def _execute(self, query: PgQuery) -> int:
-        """Команда в журнале вызова: статус сервера; ответ — rowcount."""
-        text = query.text.as_string(self._conn)
-        with self._journal.command(text, CommandKind.ACTION) as running:
-            async with self._conn.cursor() as cursor:
-                await cursor.execute(query.text, query.params)
-                rows = cursor.rowcount
-                status = cursor.statusmessage
-
-            if status is None:
-                status = "done"
-
-            running.status = status
-
-        return max(rows, 0)
-
-    async def _deleted(self, query: PgQuery) -> DeleteOutcome:
-        rows = await self._execute(query)
-
-        return DeleteOutcome(effect=f"{rows} rows deleted")
 
 
 class PgArrowSource:

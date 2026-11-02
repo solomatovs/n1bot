@@ -9,7 +9,7 @@ from typing import Annotated, ClassVar, Final, Literal
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from boba.core.secrets import SecretRevealing
-from boba.toolkit.entry import ToolMain
+from boba.tool_io.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import (
     MarkdownResult,

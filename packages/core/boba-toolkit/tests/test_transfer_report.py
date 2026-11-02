@@ -149,7 +149,7 @@ class TestCommandJournal:
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         journal = CommandJournal(
-            "pg_stream_in", TransferProgress(ToolProgress(-1), "test")
+            "pg_stream_in", TransferProgress(ToolProgress(None), "test")
         )
 
         with caplog.at_level(logging.INFO):
@@ -169,7 +169,7 @@ class TestCommandJournal:
 
     def test_failure_shows_columns_and_the_failed_command(self) -> None:
         journal = CommandJournal(
-            "ch_stream_in", TransferProgress(ToolProgress(-1), "test")
+            "ch_stream_in", TransferProgress(ToolProgress(None), "test")
         )
         journal.columns([{"column": "id", "type": "Nullable(Int32)"}])
 

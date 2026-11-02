@@ -30,7 +30,7 @@ from boba.doc.document import (
 )
 from boba.llm.providers import LlmProviders, LlmProviderTypes
 from boba.tool.doc.config import DocToolsConfig
-from boba.toolkit.entry import ToolMain
+from boba.tool_io.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
 from boba.toolkit.ports import StageProgress, ToolProgress
 from boba.toolkit.result import MarkdownResult, TableResult

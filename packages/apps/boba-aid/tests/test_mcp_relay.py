@@ -34,24 +34,24 @@ from boba.aid.agent.relay import ChatTools, McpRegistration, McpRegistrations, M
 from boba.aid.canvas.tools import CanvasOpener
 from boba.aid.rendering.tool import AppResource, ToolSource
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
+from boba.connection_broker.crypto import SecretCipher
 from boba.connection_broker.sealing import McpServerInfo
 from boba.connection_broker.store import ConnectionStore
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.sealed import ConnectionOffer, SealedParamSchema, SealFeature
-from boba.connections.secrets import SecretCipher
 from boba.connections.stored import GrantTarget
 from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.context import DelegatedTicket, NoUserCredential, Scope
 from boba.identity.errors import AuthenticationError, RefusalError
 from boba.mcp_client.client import (
+    FixedServerConfigs,
     HttpEndpoint,
     HttpLocation,
     McpClientError,
     McpServerConfig,
     McpServerLimits,
     McpServers,
-    FixedServerConfigs,
     StdioCommand,
 )
 from boba.messaging import Envelope, JournalOpened

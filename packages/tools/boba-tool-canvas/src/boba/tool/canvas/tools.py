@@ -28,7 +28,7 @@ from boba.canvas.diagram import (
 )
 from boba.canvas.keys import ObjectKey, ScopeDir, WorkspaceRoot
 from boba.identity.context import Scope, Subject
-from boba.toolkit.entry import ToolMain
+from boba.tool_io.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import (
     CanvasResult,

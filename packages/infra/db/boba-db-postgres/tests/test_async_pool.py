@@ -112,11 +112,15 @@ def test_open_close():
 def test_close_from_another_loop_raises():
     pool = AsyncPostgresPool(_cfg())
     inner = _FakeAsyncConnectionPool.instances[0]
-    asyncio.run(pool.open())
-    with pytest.raises(PostgresPoolLoopError):
-        asyncio.run(pool.close())
-    if inner.closed is not False:
-        raise AssertionError("a pool of another loop stays open")
+    with asyncio.Runner() as owner:
+        owner.run(pool.open())
+        try:
+            with pytest.raises(PostgresPoolLoopError):
+                asyncio.run(pool.close())
+            if inner.closed is not False:
+                raise AssertionError("a pool of another loop stays open")
+        finally:
+            owner.run(pool.close())
 
 
 async def _open_then_close_all(own: AsyncPostgresPool) -> None:
@@ -129,14 +133,18 @@ def test_close_all_closes_only_the_pools_of_the_running_loop():
     foreign = AsyncPostgresPool(_cfg())
     own = AsyncPostgresPool(_cfg())
     foreign_inner, own_inner = _FakeAsyncConnectionPool.instances
-    asyncio.run(foreign.open())
-    asyncio.run(_open_then_close_all(own))
-    if own_inner.closed is not True:
-        raise AssertionError("the pool of the running loop is closed")
-    if foreign_inner.closed is not False:
-        raise AssertionError("the pool of another loop stays open")
-    if foreign not in AsyncPostgresPool.opened():
-        raise AssertionError("the pool of another loop stays live")
+    with asyncio.Runner() as owner:
+        owner.run(foreign.open())
+        try:
+            asyncio.run(_open_then_close_all(own))
+            if own_inner.closed is not True:
+                raise AssertionError("the pool of the running loop is closed")
+            if foreign_inner.closed is not False:
+                raise AssertionError("the pool of another loop stays open")
+            if foreign not in AsyncPostgresPool.opened():
+                raise AssertionError("the pool of another loop stays live")
+        finally:
+            owner.run(foreign.close())
 
 
 def test_connection_after_close_raises():
@@ -147,11 +155,15 @@ def test_connection_after_close_raises():
 
 
 def test_connection_from_another_loop_raises():
-    # каждый asyncio.run — свой loop; пул открыт в первом, обращение идёт из второго
+    # Владелец сохраняет свой loop до закрытия пула, обращение идёт из другого.
     pool = AsyncPostgresPool(_cfg())
-    asyncio.run(pool.open())
-    with pytest.raises(PostgresPoolLoopError):
-        asyncio.run(pool.connection().__aenter__())
+    with asyncio.Runner() as owner:
+        owner.run(pool.open())
+        try:
+            with pytest.raises(PostgresPoolLoopError):
+                asyncio.run(pool.connection().__aenter__())
+        finally:
+            owner.run(pool.close())
 
 
 def test_connection_in_same_loop_passes():
@@ -159,7 +171,10 @@ def test_connection_in_same_loop_passes():
 
     async def open_and_use() -> None:
         await pool.open()
-        async with pool.connection():
-            pass
+        try:
+            async with pool.connection():
+                pass
+        finally:
+            await pool.close()
 
     asyncio.run(open_and_use())

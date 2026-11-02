@@ -17,9 +17,9 @@ from boba.runtime.launchers import (
     ToolLaunchers,
     ZygoteLaunchers,
 )
+from boba.stand.fake_toolmod import PLUGIN
 from boba.stand_core.context import CallStand
-from boba.stand_core.fake_toolmod import PLUGIN
-from boba.toolkit.chain import CallAmbient
+from boba.tool_io.chain import CallAmbient
 from boba.toolkit.manifest import ManifestBuilder
 from boba.toolrun.process import ProcessToolCaller
 

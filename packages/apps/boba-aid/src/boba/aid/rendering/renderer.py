@@ -31,7 +31,6 @@ from boba.aid.rendering.chat_view import ChatView
 from boba.aid.rendering.errors import show_error
 from boba.canvas.canvas import CanvasSignal
 from boba.identity.context import Scope
-from boba.identity.errors import FailureReport
 from boba.messaging import (
     AgentUpdate,
     AnswerInterrupted,
@@ -47,6 +46,7 @@ from boba.messaging import (
     TurnStarted,
     Unsubscribe,
 )
+from boba.runtime.errors import FailureReports
 
 __all__ = [
     "CatchUp",
@@ -199,6 +199,7 @@ class ChatRenderer:
         self._rewinds = rewinds
         self._scope = Scope.chat(thread_id)
         self._codec = SessionUpdateCodec()
+        self._failures = FailureReports()
         self._turn_key: str | None = None
         self._handlers = self._handler_table()
         self._order = asyncio.Lock()
@@ -231,7 +232,7 @@ class ChatRenderer:
         try:
             await self._render(envelope)
         except Exception as exc:
-            report = FailureReport.of(exc)
+            report = self._failures.describe(exc)
             logger.exception(
                 "thread %s: rendering of %s (seq %d) failed: %s",
                 self._thread_id,

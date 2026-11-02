@@ -8,8 +8,8 @@ path — одна база, роли объекта — query в порядке 
 три формы одного pg_column. Рутины pg_proc адресуются по prokind: function,
 procedure, а pg_routine — рутина любого вида (агрегат, оконная функция или
 вид не различён); перегрузки различаются ролью args — сигнатурой
-pg_get_function_identity_arguments, пустая строка обязательна. Сборка и
-разбор строки — здесь и только здесь, на urllib.parse.
+pg_get_function_identity_arguments, пустая строка обязательна. Общий разбор
+и сборка URI — в boba.connections.database_address.
 
 Ошибки:
 AddressError — строка не является адресом PostgreSQL: чужая схема, учётка
@@ -18,23 +18,14 @@ AddressError — строка не является адресом PostgreSQL: �
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from enum import StrEnum
-from pathlib import PurePosixPath
-from typing import ClassVar, Literal, Self
-from urllib.parse import (
-    SplitResult,
-    parse_qsl,
-    quote,
-    unquote,
-    urlencode,
-    urlsplit,
-    urlunsplit,
-)
+from typing import ClassVar, Literal
 
-from pydantic import Field, ValidationError
+from pydantic import Field
 
-from boba.connections.address import Address, AddressError, AddressFamily
+from boba.connections.address import AddressError, AddressFamily
+from boba.connections.database_address import DatabaseAddress
 from boba.db.postgres.connection import PostgresConfig
 
 __all__ = [
@@ -77,172 +68,14 @@ class PgNodeKind(StrEnum):
     SEQUENCE = "pg_sequence"
 
 
-class PgAddress(Address):
-    """База адресов PostgreSQL: подключение и грамматика строки; роли объекта
-    — поля наследника после полей подключения, по alias."""
+class PgAddress(DatabaseAddress):
+    """Схема и поля адресов PostgreSQL; общий URI-контракт — в boba-connections."""
 
     SCHEME: ClassVar[str] = "postgresql"
     LIBPQ_PORT: ClassVar[int] = 5432
-    BASE_FIELDS: ClassVar[frozenset[str]] = frozenset(
-        {"scheme", "host", "port", "database"}
-    )
-    PATH_ROOT: ClassVar[str] = "/"
+    DEFAULT_PORT: ClassVar[int | None] = LIBPQ_PORT
 
     scheme: Literal["postgresql"] = "postgresql"
-    host: str = Field(min_length=1)
-    port: int = Field(ge=1, le=65535)
-    database: str = Field(min_length=1)
-
-    @classmethod
-    def roles(cls) -> Sequence[str]:
-        """Роли объекта в каноническом порядке, по alias."""
-        return tuple(cls._role_names())
-
-    @classmethod
-    def _role_names(cls) -> Iterator[str]:
-        for name, field in cls.model_fields.items():
-            if name in cls.BASE_FIELDS:
-                continue
-
-            alias = field.alias
-            if alias is None:
-                alias = name
-
-            yield alias
-
-    @classmethod
-    def shape(cls) -> str:
-        roles = cls.roles()
-        if not roles:
-            return "the database itself, no roles"
-
-        return ", ".join(roles)
-
-    def render(self) -> str:
-        values = self.model_dump(
-            mode="json", by_alias=True, exclude=set(self.BASE_FIELDS)
-        )
-        query = urlencode(values, quote_via=quote)
-
-        split = SplitResult(
-            scheme=self.scheme,
-            netloc=self._netloc(),
-            path=PurePosixPath(
-                self.PATH_ROOT, quote(self.database, safe="")
-            ).as_posix(),
-            query=query,
-            fragment="",
-        )
-
-        return urlunsplit(split)
-
-    def _netloc(self) -> str:
-        """IPv6 — в скобках по RFC 3986 §3.2.2."""
-        if ":" in self.host:
-            return f"[{self.host}]:{self.port}"
-
-        return f"{self.host}:{self.port}"
-
-    @classmethod
-    def accepts(cls, text: str) -> bool:
-        given = set(cls._given_roles(text))
-
-        return given == set(cls.roles())
-
-    @classmethod
-    def _given_roles(cls, text: str) -> Iterator[str]:
-        for name, _ in parse_qsl(urlsplit(text).query, keep_blank_values=True):
-            yield name
-
-    @classmethod
-    def parse(cls, text: str) -> Self:
-        url = urlsplit(text)
-        if url.scheme != cls.SCHEME:
-            msg = (
-                f"postgresql address {text!r}: expected scheme {cls.SCHEME}, "
-                f"got {url.scheme!r}"
-            )
-            raise AddressError(msg)
-
-        if url.username is not None:
-            msg = f"postgresql address {text!r}: credentials are not part of an address"
-            raise AddressError(msg)
-
-        if url.fragment:
-            msg = f"postgresql address {text!r}: fragment is not part of an address"
-            raise AddressError(msg)
-
-        host = url.hostname
-        if not host:
-            msg = f"postgresql address {text!r}: host is required"
-            raise AddressError(msg)
-
-        port = cls._port_of(url, text)
-
-        database = cls._database_of(url, text)
-
-        roles = parse_qsl(url.query, keep_blank_values=True)
-        cls._check_roles(roles, text)
-
-        parts: dict[str, str | int] = {
-            "scheme": url.scheme,
-            "host": host,
-            "port": port,
-            "database": database,
-        }
-        parts.update(roles)
-
-        try:
-            return cls.model_validate(parts)
-        except ValidationError as exc:
-            msg = f"{cls.__name__}: address {text!r} is not valid: {exc}"
-            raise AddressError(msg) from exc
-
-    @classmethod
-    def _port_of(cls, url: SplitResult, text: str) -> int:
-        try:
-            port = url.port
-        except ValueError as exc:
-            msg = f"postgresql address {text!r}: port is not a number: {exc}"
-            raise AddressError(msg) from exc
-
-        if port is None:
-            return cls.LIBPQ_PORT
-
-        return port
-
-    @classmethod
-    def _database_of(cls, url: SplitResult, text: str) -> str:
-        parts = PurePosixPath(url.path).parts
-        if parts and parts[0] == cls.PATH_ROOT:
-            parts = parts[1:]
-
-        if len(parts) != 1:
-            msg = (
-                f"postgresql address {text!r}: path must be a single segment "
-                f"/<database>, got {url.path!r}"
-            )
-            raise AddressError(msg)
-
-        return unquote(parts[0])
-
-    @classmethod
-    def _check_roles(cls, roles: Sequence[tuple[str, str]], text: str) -> None:
-        given: list[str] = []
-        for name, _ in roles:
-            given.append(name)
-
-        if len(set(given)) != len(given):
-            msg = f"{cls.__name__}: address {text!r} repeats a role: {given}"
-            raise AddressError(msg)
-
-        expected = list(cls.roles())
-        if set(given) != set(expected):
-            msg = (
-                f"{cls.__name__}: address {text!r} expects roles {expected}, "
-                f"got {given}"
-            )
-            raise AddressError(msg)
 
 
 class PgDatabaseAddress(PgAddress):

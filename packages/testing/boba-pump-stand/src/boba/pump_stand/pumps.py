@@ -14,7 +14,8 @@ from boba.pump_stand.ports import Feed, Sink
 from boba.tool.ch import tools as ch
 from boba.tool.ora import tools as ora
 from boba.tool.pg import tools as pg
-from boba.toolkit.entry import ToolArgv, ToolMain
+from boba.tool_io.entry import ToolArgv, ToolMain
+from boba.tool_io.ports import PipeProgress, PipeStreamGroup
 from boba.toolkit.ports import StreamGroup, ToolProgress
 from boba.toolkit.result import FailureResult
 from boba.toolkit.transfer import (
@@ -49,7 +50,7 @@ class Pumps:
         отчёты о ходе работы; None — отчёты никуда не уходят."""
         heard = progress
         if heard is None:
-            heard = ToolProgress(-1)
+            heard = PipeProgress(-1)
 
         self._progress_heard = heard
         target = postgres_target
@@ -128,7 +129,7 @@ class Pumps:
         о ходе работы приёмнику стенда."""
         built: dict[str, StreamGroup | ToolProgress] = {}
         for field in self._groups[name]:
-            built[field] = StreamGroup(-1, -1)
+            built[field] = PipeStreamGroup(-1, -1)
 
         for field in self._progress[name]:
             built[field] = self._progress_heard

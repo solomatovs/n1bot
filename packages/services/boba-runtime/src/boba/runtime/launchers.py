@@ -58,7 +58,7 @@ from boba.sandbox.zygote import (
     ZygoteSection,
     ZygoteToolCaller,
 )
-from boba.toolkit.chain import CallAmbient
+from boba.tool_io.chain import CallAmbient
 from boba.toolkit.launcher import ToolLauncher
 from boba.toolkit.manifest import (
     ManifestError,

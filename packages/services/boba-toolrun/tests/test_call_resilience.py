@@ -20,7 +20,7 @@ from pydantic import SecretStr
 from boba.cancellation import ToolStopped, run_cancellation
 from boba.identity.context import CallContexts
 from boba.sandbox.program import PluginCommand, PluginEntry
-from boba.stand_core.fake_toolmod import (
+from boba.stand.fake_toolmod import (
     TOOLS,
     FakeChunkHead,
     FakeConfig,
@@ -28,8 +28,8 @@ from boba.stand_core.fake_toolmod import (
     fake_relay,
     fake_stream,
 )
-from boba.toolkit.chain import CallAmbient
-from boba.toolkit.entry import ToolArgv, ToolMain
+from boba.tool_io.chain import CallAmbient
+from boba.tool_io.entry import ToolArgv, ToolMain
 from boba.toolkit.frames import FrameProtocolError, ToolFrame
 from boba.toolkit.launcher import LauncherError
 from boba.toolkit.ports import StreamSpec
@@ -39,9 +39,7 @@ from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
 CFG = FakeConfig(token=SecretStr("t0ken"), limit=5)
 
 PROGRAM = (
-    *PluginEntry().declared_argv(
-        sys.executable, ("boba.stand_core.fake_toolmod:PLUGIN",)
-    ),
+    *PluginEntry().declared_argv(sys.executable, ("boba.stand.fake_toolmod:PLUGIN",)),
     PluginCommand.CALL.value,
 )
 """Тела фейковых инструментов: подкоманда call программы плагина."""

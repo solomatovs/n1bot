@@ -11,8 +11,8 @@ from pydantic import SecretStr
 
 from boba.identity.context import CallContexts
 from boba.sandbox.program import PluginCommand, PluginEntry
-from boba.stand_core.fake_toolmod import FakeChunkHead, FakeConfig
-from boba.toolkit.chain import CallAmbient
+from boba.stand.fake_toolmod import FakeChunkHead, FakeConfig
+from boba.tool_io.chain import CallAmbient
 from boba.toolkit.frames import ToolFrame
 from boba.toolkit.protocol import CallInputSpec, CallOutputSpec, ReplyOk, ToolCommand
 from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
@@ -21,9 +21,7 @@ from boba.toolrun.streaming import AsyncToolCall
 CFG = FakeConfig(token=SecretStr("t0ken"), limit=5)
 
 PROGRAM = (
-    *PluginEntry().declared_argv(
-        sys.executable, ("boba.stand_core.fake_toolmod:PLUGIN",)
-    ),
+    *PluginEntry().declared_argv(sys.executable, ("boba.stand.fake_toolmod:PLUGIN",)),
     PluginCommand.CALL.value,
 )
 """Тела фейковых инструментов: подкоманда call программы плагина."""

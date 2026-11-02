@@ -51,6 +51,7 @@ from pydantic import (
 )
 
 from boba.core.validation import ValidationText
+from boba.mcp_models import ToolHints
 from boba.toolkit.calls import FieldView
 from boba.toolkit.chain import (
     StreamInput,
@@ -481,20 +482,6 @@ class WorkflowResult(ToolResultBase):
                 blocks=range(start, len(out)),
                 elapsed_ms=node.result.elapsed_ms,
             )
-
-
-@dataclass(frozen=True)
-class ToolHints:
-    """Пометки инструмента по стандартным annotations MCP: читает ли он
-    только (readOnlyHint) и может ли разрушить данные (destructiveHint).
-
-    По ним клиент решает, спрашивать ли подтверждение перед вызовом.
-    Инструмент без пометок считается меняющим и разрушающим — так же
-    трактует отсутствие annotations стандарт MCP.
-    """
-
-    read_only: bool = False
-    destructive: bool = True
 
 
 @dataclass(frozen=True)

@@ -70,6 +70,7 @@ class RunFile(StrEnum):
     SEEN_MARK = "31_seen_mark.sql"
     LINKS_TABLE = "32_links_table.sql"
     LINKS_MARK = "33_links_mark.sql"
+    LINKS_SOURCE = "34_links_source.sql"
     INDEX_CLEAR = "50_index_clear.sql"
     INDEX_PUSH = "51_index_push.sql"
     LINKS_CLEAR = "80_links_clear.sql"
@@ -256,6 +257,8 @@ class IxStore:
 
     async def queue_links(self, node_id: int, links: Sequence[PageLink]) -> None:
         """Ссылки страницы в temp-таблицу; рёбрами они станут после обхода."""
+        await self._execute(RunFile.LINKS_SOURCE, src_node=node_id)
+
         for link in links:
             await self._execute(
                 RunFile.LINKS_MARK,

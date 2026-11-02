@@ -49,13 +49,13 @@ from boba.stand.zygote import (
     SandboxStand,
     ZygoteStand,
 )
-from boba.toolkit.chain import CallAmbient, ChannelFanOut, PipeTee
+from boba.tool_io.chain import CallAmbient, ChannelFanOut, PipeTee
+from boba.tool_io.entry import ToolMain
 from boba.toolkit.channels import JournalChannel, ToolChannel
-from boba.toolkit.entry import ToolMain
 from boba.toolkit.frames import ToolFrame
 from boba.toolkit.launcher import CollectedCall, LauncherError
 from boba.toolkit.manifest import PluginManifest
-from boba.toolkit.protocol import CallGateMode, ReplyError, ReplyOk
+from boba.toolkit.protocol import CallGateMode, ReplyError, ReplyOk, ToolCommand
 from boba.toolkit.stream import (
     ChannelSinks,
     Chunk,
@@ -200,12 +200,12 @@ class RecordingSinks(ChannelSinks):
         return recorder.text()
 
 
-def _command(text: str) -> Any:
+def _command(text: str) -> ToolCommand:
     """ToolCommand для fx_echo — ровно как его строит обёртка запуска."""
     return FX.render("fx_echo", {"text": text, "cfg": CFG})
 
 
-def _stream_command(prefix: str) -> Any:
+def _stream_command(prefix: str) -> ToolCommand:
     """ToolCommand потокового инструмента: io-параметр в аргументы не попадает."""
     return FX.render("fx_stream", {"prefix": prefix, "cfg": CFG})
 
@@ -405,6 +405,40 @@ needs_delegation = SandboxCgroup().required()
 
 @needs_delegation
 class TestCgroup:
+    @pytest.mark.parametrize("input_fails", [True, False])
+    def test_refused_pipe_size_releases_descriptors_and_leaf(
+        self, zygote: Any, input_fails: bool
+    ) -> None:
+        base = SandboxCgroup().child("zygote-pipe-refusal")
+        caller = zygote(
+            _profile(
+                cgroup_base=base,
+                group_memory_bytes=512 * 1024 * 1024,
+                group_pids_max=64,
+            )
+        )
+        valid = _stream_command("re:")
+        size = int(Path("/proc/sys/fs/pipe-max-size").read_text()) * 2
+        if input_fails:
+            port = valid.inputs[0].model_copy(update={"pipe_bytes": size})
+            command = valid.model_copy(update={"inputs": (port,)})
+        else:
+            output = valid.outputs[0].model_copy(update={"pipe_bytes": size})
+            command = valid.model_copy(update={"outputs": (output,)})
+
+        before = set(os.listdir("/proc/self/fd"))
+        for _ in range(3):
+            with pytest.raises(LauncherError, match="pipe-user-pages-soft"):
+                caller.open(command)
+
+            assert set(os.listdir("/proc/self/fd")) == before
+            assert not list(Path(base).glob("run-*"))
+
+        outcome = CollectedCall.of(caller, _command("after refusal"))
+
+        assert isinstance(outcome.reply, ReplyOk)
+        assert not list(Path(base).glob("run-*"))
+
     def test_leaf_created_and_released(self, zygote: Any) -> None:
         base = SandboxCgroup().child("zygote-test")
         caller = zygote(

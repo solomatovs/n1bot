@@ -13,8 +13,8 @@ from ora_tool_stand import IxStand
 
 from boba.db.oracle.connection import OracleConfig
 from boba.tool.ora.tools import OraToolConfig, ora_list_tables, ora_query
-from boba.toolkit.entry import ToolMain
-from boba.toolkit.ports import ToolProgress
+from boba.tool_io.entry import ToolMain
+from boba.tool_io.ports import PipeProgress
 
 pytestmark = [pytest.mark.run, pytest.mark.anyio]
 
@@ -41,7 +41,7 @@ async def test_run_ora_query(connection: OracleConfig) -> None:
         offset=0,
         limit=50,
         cfg=OraToolConfig.model_validate({"max_rows": 500, "max_bytes": 1_000_000}),
-        progress=ToolProgress(-1),
+        progress=PipeProgress(-1),
     )
 
     print(artifact.llm_view())

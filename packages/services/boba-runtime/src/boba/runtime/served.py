@@ -16,8 +16,8 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import ClassVar
 
-from fastapi import HTTPException, Response
-from fastapi.responses import StreamingResponse
+from starlette.exceptions import HTTPException
+from starlette.responses import Response, StreamingResponse
 
 from boba.canvas.storage import OpenedStream, StorageNotFoundError
 from boba.canvas.transfer import (

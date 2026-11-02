@@ -1,6 +1,6 @@
 """Пин фронта chainlit: overlay собран под исходники одной версии, и она обязана
-совпадать с установленным пакетом и с пином в pyproject. Апгрейд chainlit без
-пересмотра overlay падает здесь, а не в проде.
+совпадать с исходной версией установленного wheel. Локальный патч закреплён
+отдельно; переход на другой upstream без пересмотра overlay падает здесь.
 """
 
 from __future__ import annotations
@@ -26,26 +26,28 @@ class UpstreamPin:
     PYPROJECT: ClassVar[Path] = PACKAGE_DIR / "pyproject.toml"
     DEPENDENCY: ClassVar[str] = "chainlit=="
 
-    @classmethod
-    def version(cls) -> str:
-        return cls.UPSTREAM.read_text(encoding="utf-8").strip()
+    def version(self) -> str:
+        return self.UPSTREAM.read_text(encoding="utf-8").strip()
 
-    @classmethod
-    def pinned_dependency(cls) -> str:
+    def pinned_dependency(self) -> str:
         """Пин chainlit из pyproject; отсутствие точного пина — ошибка."""
-        with cls.PYPROJECT.open("rb") as handle:
+        with self.PYPROJECT.open("rb") as handle:
             project = tomllib.load(handle)
 
         for dependency in project["project"]["dependencies"]:
-            if dependency.startswith(cls.DEPENDENCY):
-                return dependency.removeprefix(cls.DEPENDENCY)
+            if dependency.startswith(self.DEPENDENCY):
+                return dependency.removeprefix(self.DEPENDENCY)
 
         raise AssertionError("pyproject has no exact chainlit pin")
 
 
 def test_installed_chainlit_matches_upstream_sources() -> None:
-    assert chainlit.__version__ == UpstreamPin.version()
+    pin = UpstreamPin()
+    assert chainlit.__version__ == pin.pinned_dependency()
+    upstream, _, _ = chainlit.__version__.partition("+")
+    assert upstream == pin.version()
 
 
 def test_pyproject_pins_upstream_version() -> None:
-    assert UpstreamPin.pinned_dependency() == UpstreamPin.version()
+    pin = UpstreamPin()
+    assert pin.pinned_dependency() == f"{pin.version()}+boba.1"

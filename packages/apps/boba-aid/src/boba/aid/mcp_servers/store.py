@@ -23,8 +23,8 @@ from psycopg.errors import UniqueViolation
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from boba.access.grants import GrantedIds
-from boba.connections.secrets import SecretCipher, SecretCryptoError
+from boba.connection_broker.crypto import SecretCipher, SecretCryptoError
+from boba.connection_broker.grants import GrantedIds
 from boba.connections.stored import GrantKind
 from boba.db.postgres import PgQuery, PostgresPool, PostgresTable
 from boba.mcp_client.client import HttpEndpoint, McpServerLimits, SseEndpoint

@@ -19,16 +19,15 @@ from probe_stand import (
 )
 from pydantic import SecretStr
 
+from boba.connection_broker.crypto import ConnectionSeal, SealKeys
 from boba.connection_broker.sealed import SealedConnectionParams
 from boba.connections.base import ConnectionBase
 from boba.connections.marks import ConnectionRefusal
 from boba.connections.sealed import (
-    ConnectionSeal,
     SealedConnection,
     SealedParamSchema,
     SealFeature,
     SealKey,
-    SealKeys,
 )
 from boba.core.secrets import SecretReveal
 from boba.identity.errors import RefusalError

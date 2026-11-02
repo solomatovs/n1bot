@@ -67,7 +67,7 @@ from boba.tool.confluence.ingest_base import (
     SpaceScope,
 )
 from boba.tool.confluence.tools import ConfluenceHttp, ConfluenceToolsConfig
-from boba.toolkit.entry import ToolMain
+from boba.tool_io.entry import ToolMain
 from boba.toolkit.facade import Injected, tool, warmup
 from boba.toolkit.ports import DownloadProgress, ToolProgress
 from boba.toolkit.result import MarkdownResult, TableResult

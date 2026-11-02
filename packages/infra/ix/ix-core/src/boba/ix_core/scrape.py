@@ -155,15 +155,20 @@ class VersionGate:
 @dataclass(frozen=True, kw_only=True)
 class ScrapeFile(VersionGate):
     """Объявление файла scrape/ источником: имя raw-таблицы, волна, файл запроса,
-    массивы параметров и ворота. Сверка лежит рядом с запросом в `<файл>.verify.sql`."""
+    массивы параметров и ворота. По умолчанию сверка лежит в `<файл>.verify.sql`;
+    verify_query задаёт общий запрос сверки для нескольких вариантов."""
 
     name: str
     wave: int
     query: str
+    verify_query: str = ""
     params: tuple[str, ...] = ()
     collect: Collect | None = None
 
     def verify(self) -> str:
+        if self.verify_query:
+            return self.verify_query
+
         return f"{Path(self.query).stem}.verify.sql"
 
     def raw_table(self) -> str:

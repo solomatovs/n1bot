@@ -39,12 +39,9 @@ from pydantic import (
     model_validator,
 )
 
-from boba.toolkit.chain import (
-    CallAmbient,
-    StreamFailureKind,
-    StreamPlanError,
-    StreamTimings,
-)
+from boba.tool_io.chain import CallAmbient
+from boba.tool_io.entry import ToolArgv
+from boba.toolkit.chain import StreamFailureKind, StreamPlanError, StreamTimings
 from boba.toolkit.dag import (
     CallDag,
     DagNode,
@@ -59,7 +56,6 @@ from boba.toolkit.dag import (
     WorkflowNodeResult,
     WorkflowResult,
 )
-from boba.toolkit.entry import ToolArgv
 from boba.toolkit.failure import ToolRefusalError
 from boba.toolkit.ports import PortDecl, PortDirection, StreamSpecs
 from boba.toolkit.result import (

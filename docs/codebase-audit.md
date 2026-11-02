@@ -1,0 +1,3771 @@
+# Карта кодовой базы и основания для сокращения
+
+Дата: 2026-11-01. Срез: `6c84d728f`, рабочее дерево до анализа было чистым.
+Разделы 1–13 описывают исходный срез и план рефакторинга; рекомендации
+уточнены с учётом решений пользователя. Оба KB-контура сохраняются (§22).
+Дополнение от 2026-11-02: анализ внешних и транзитивных зависимостей, extras и
+состава поставки — **§13**. Реализованные изменения, повторные измерения и
+результаты тестирования от 2026-11-02 — **§14**; они уточняют исходный аудит.
+Security-проверки, реальная Make-сборка и прототип отключения трассировки —
+**§15**. Результат прототипа отделён от изменений рабочего lock.
+Внедрение патча LiteralAI, сокращение внешних зависимостей поставки
+**232 → 171** и проверки чата — **§16**. Исправление охвата SCA и обновление
+уязвимого pypdf в shell-песочнице — **§17**. Production Python сокращён
+**156 653 → 156 191 строка**; цель >2× остаётся открытой. Python и SQL
+учитываются отдельно: §27 убрал 157 строк SQL, добавив 20 строк
+общего выбора файлов; §28 убрал ещё 10 строк Python, §29 — 7 строк.
+Разделение контрактов и исполнения в §30 добавило 82 строки адаптеров и
+границ; это архитектурное изменение, не сокращение реализации.
+Общий владелец пайпов и стандартный откат ресурсов в §31 убрали 53 строки.
+Удаление неиспользуемых пакетов каталога и поиск визуальных эталонов — **§19**.
+8151 строка исходников каталога учитывается отдельно: этот контур уже был
+исключён из базы production-метрики.
+Общие модели MCP и устранение дублей `agent`/`toolkit` — **§20**.
+Устранение конфликта Chainlit/MCP локальным патчем — **§21**;
+границы общего кода двух сохраняемых KB-контуров — **§22**.
+FastMCP без ветки keyring, **232 → 161** внешняя зависимость поставки — **§23**;
+устранение зависимости OAuth от runtime и завершённые проверки этих шагов —
+**§24**. Независимое исправление удаления ссылок ix и проверки обоих KB — **§25**.
+Прямые зависимости без исключения для чужих extras и библиотечный разбор
+requirements — **§26**. Общие SQL-ресурсы PostgreSQL/Greenplum — **§27**.
+Чистые правила доступа и SQL выдачи в брокере, минимальная установка
+`boba-access` **18 → 7 пакетов** — **§28**.
+Модели соединений без криптоадаптеров и сокращение состава песочниц
+документов/БД — **§29**.
+Контракты toolkit без Linux/FD и общий пакет исполнения `boba-tool-io` —
+**§30**, полный цикл проверок завершён.
+Общее владение пайпами process/zygote и исправление утечки FD — **§31**;
+полный цикл проверок этого шага завершён.
+По уточнению пользователя разработка решения для насосов на AnyIO выделена
+в отдельный этап **после основной работы по сокращению и улучшению кода** —
+**§10.2**. Перед продолжением рефакторинга проводится сверка и полный прогон
+всех предусмотренных категорий тестов с разбором падений — **§32**.
+Требования к каждому шагу рефакторинга: итеративная проверка существующими
+тестами и постоянный пересмотр границ общих компонентов — **§11.1–11.3**.
+Дополнительные требования: `sec.sh`, работоспособность Make-сборки,
+человекочитаемость и согласование существенных развилок — **§11.4–11.6**.
+Целевой масштаб сокращения — **более чем вдвое**; правила оценки внешних
+компонентов и измерения результата — **§8.1 и §10.1**. Уточнение выбора между
+собственным кодом и библиотекой, включая пример psycopg/ADBC, — **§8.2**.
+
+Цель — сократить объём сопровождаемого кода, число независимых реализаций одной
+возможности и состав сторонних компонентов поставки, сохранив требуемое
+поведение. Стоимость проверок ИБ и обновлений зависимостей — отдельный критерий.
+Перемещение классов между файлами и
+создание новых пакетов сами по себе сокращением не считаются.
+
+## 1. Выводы для выбора направления
+
+1. Общую основу нужно проверять у двух систем индексации: прежней
+   `Confluence → Pipeline → kb_chunks` и новой `источники → ix → fts/trgm/vector`.
+   Старые инструменты **по-прежнему зарегистрированы**. Их нельзя удалить только
+   по слову «старый» в docstring. По решению пользователя оба контура остаются:
+   сокращать нужно общие повторяющиеся механизмы, сохраняя их отдельные функции.
+   REST/пагинация и HTML backend уже общие (§22.1); размер обоих контуров не
+   является оценкой возможного сокращения.
+2. На исходном срезе `boba-catalog` и `boba-catalog-service` исключены из
+   workspace, pytest, Ruff и Pyright. После подтверждения пользователем
+   неиспользования их 8 151 строка `src` удалена (§19). В активной системе эти строки уже не дают
+   выигрыша по времени исполнения; их удаление сокращает дерево сопровождения.
+3. Есть буквальные дубли: MCP-карточки и представление ответов в `agent`/`toolkit`,
+   циклы FTS/TRGM, операции таблиц PostgreSQL в двух путях загрузки, валидация
+   адресов БД. Для них возможны небольшие независимые изменения с понятным итогом.
+4. Граф прямых статических импортов между пакетами ацикличен; импортов из пакетов
+   `core` в пакеты `services/apps/infra` не найдено. Но границы ответственности
+   размыты **внутри** нижних пакетов: `toolkit` содержит Linux I/O и исполнение,
+   на исходном срезе `access` содержал SQL (исправлено в §28),
+   криптоадаптеры `connections` перенесены в broker (§29),
+   `core` по-прежнему содержит сборку Nuitka.
+5. Сильнейшая общая зависимость — `boba-toolkit`: 14 220 строк, 42 других пакета
+   импортируют его непосредственно. Дробить его нужно по контрактам и исполнению,
+   а не по одному классу на пакет. Это прежде всего условие последующего удаления
+   дублей, а не самостоятельная экономия строк.
+6. Для собственного DI, HTTP-отдачи файлов и PostgreSQL↔Arrow сравнить упрощение
+   текущей реализации с использованием библиотек. Сначала оценивать возможности
+   уже используемых SDK, драйверов и форматных библиотек (§8.1–8.2).
+7. Сокращение сторонних зависимостей требует работы с их транзитивным графом,
+   а не только с прямыми imports. В семи основных сборочных профилях найдено
+   232 внешних Python-дистрибутива. Крупнейший исследованный резерв aid —
+   интеграция LiteralAI/Traceloop; небольшие первые шаги — зависимости runtime
+   от FastAPI/aiofiles и extra uvicorn. Расчёты, ограничения и 11 направлений
+   сокращения приведены в §13.
+
+## 2. Методика, объём и границы достоверности
+
+Проанализированы все 73 отслеживаемых `packages/**/pyproject.toml`, Python AST
+всех 576 отслеживаемых файлов `src/**/*.py`, декларации extras и entry points,
+точки сборки приложений, наиболее связанные и крупные модули, SQL-дерево,
+фронтенд, сборка и существующие тесты. Проверены тела функций на точные совпадения
+AST без docstring и координат; абстрактные заглушки не считались дублированием
+функциональности. Функциональное дублирование проверялось чтением связанных
+реализаций, регистраций и потребителей.
+
+Числа ниже — **физические строки**, включая комментарии и пустые строки, а не
+SLOC. Они воспроизводятся через `git ls-files`, `Path.read_text().splitlines()`.
+Сторонние исходники в `build/src`, `.venv`, `node_modules`, результаты сборки,
+локальные `runtime`/`.dev` и секреты экземпляров в базу подсчёта не входят.
+
+| Категория `packages` | Пакеты | Python-файлы в `src` | Строки Python в `src` |
+|---|---:|---:|---:|
+| apps | 12 | 97 | 39 648 |
+| core | 15 | 134 | 45 378 |
+| infra | 24 | 155 | 44 009 |
+| services | 8 | 73 | 26 816 |
+| testing | 3 | 68 | 28 405 |
+| tools | 11 | 49 | 10 649 |
+| Всего | 73 | 576 | 194 905 |
+
+В этой сумме есть исключённый каталог (8 151), исследовательский
+`boba-prompt-assembly` (14 354) и тестовые стенды. `boba-stand-core` находится в
+`core`, но его 1 696 строк относятся к тестовой инфраструктуре. После исключения
+двух пакетов каталога, всей категории `testing` и `stand-core` остаётся 156 653
+строки `src` — полезная отдельная база для оценки производственного кода.
+
+Во всём отслеживаемом дереве: 1 006 Python-файлов / 349 007 строк; 387 SQL-файлов /
+122 266 строк. Из SQL **99 714 строк** — справочные версии запросов
+[`docs/psql-queries`](psql-queries), а не исполняемая бизнес-логика.
+Фронтенд `aid/web`: 32 файла JS/TS/TSX / 5 004 строки; пользовательские элементы
+`assets/public/elements`: 7 JSX-файлов / 4 232 строки. Копии компонентов Chainlit
+в overlay входят в эти числа; при измерении экономии их стоит выделять отдельно.
+
+Ограничения исследования:
+
+- Статический импорт включает импорты внутри функций и `TYPE_CHECKING`; это
+  зависимость исходников, а не доказательство загрузки модуля при каждом запуске.
+- Граф пакетов строился по абсолютным `import`/`from` с разрешением до наиболее
+  конкретного модуля-владельца. Динамические загрузки, entry points, запуск
+  subprocess и SQL-связи проверялись отдельно; отсутствие импорта не доказывает
+  неиспользование плагина. Внутримодульные и межмодульные циклы внутри одного
+  дистрибутива этим результатом об ацикличности не покрываются.
+- Проектные планы в `docs` не принимались за текущее устройство. Часть локальных
+  планов не отслеживается Git; основание выводов — исходники текущего среза.
+- Не выполнялись запуск сервисов, обращение к рабочим БД, нагрузочные измерения,
+  полный тестовый прогон или удаление кода. Это архитектурный аудит, а не
+  подтверждение корректности всех исполняемых веток.
+- Для рекомендаций библиотек проверена публичная документация; совместимость с
+  закреплёнными версиями, Linux-окружением и Nuitka требует отдельного прототипа.
+- «Подтверждено» означает наличие связи/повтора в исходниках; оценка объёма
+  будущего удаления и эксплуатационной востребованности остаётся гипотезой.
+
+## 3. Карта исполнения и владельцы данных
+
+### 3.1. Основной пользовательский путь
+
+```mermaid
+flowchart LR
+    Browser[Браузер: Chainlit UI и элементы] --> Aid[boba-aid]
+    Aid -->|ACP: stdio или служба| Cli[boba-cli]
+    Cli --> Agent[boba-agent]
+    Agent --> Llm[boba-llm: порты]
+    Cli --> Providers[HTTP / ONNX провайдеры]
+    Providers --> Models[Серверы и локальные модели]
+    Cli --> History[JSONL / Postgres history]
+    Cli -->|MCP-over-ACP| Relay[aid.agent.relay]
+    Relay --> Client[boba-mcp-client]
+    Client -->|MCP| Mcp[boba-mcp]
+    Client -->|MCP| Foreign[Сторонние MCP-серверы]
+    Mcp --> Toolrun[boba-toolrun]
+    Toolrun --> Launcher[Process / Sandbox launcher]
+    Launcher --> Plugin[Программа плагина]
+    Plugin --> External[БД / Confluence / web / shell]
+```
+
+Стрелки здесь означают взаимодействие, не только Python-импорт. В текущем
+`cli/acp_server.py:McpServerSpecs` агент принимает только MCP-over-ACP;
+записи прямых HTTP/stdio MCP-серверов отвергаются. Соединениями с этими серверами
+владеет клиент агента — в показанном пути это aid и его relay.
+`boba-aid` не импортирует `boba-agent`: процессы разделены ACP и
+схемой настроек. Тела инструментов выполняются программами плагинов; MCP-сервис
+собирает их по манифестам, а не должен импортировать все тела инструментов.
+
+Основные точки для чтения:
+
+- [`aid/infra/bootstrap.py`](../packages/apps/boba-aid/src/boba/aid/infra/bootstrap.py),
+  [`aid/agent/chat.py`](../packages/apps/boba-aid/src/boba/aid/agent/chat.py),
+  [`aid/agent/relay.py`](../packages/apps/boba-aid/src/boba/aid/agent/relay.py).
+- [`cli/app.py`](../packages/apps/boba-cli/src/boba/cli/app.py),
+  [`cli/acp_server.py`](../packages/apps/boba-cli/src/boba/cli/acp_server.py),
+  [`cli/serve.py`](../packages/apps/boba-cli/src/boba/cli/serve.py).
+- [`mcp_server/app.py`](../packages/apps/boba-mcp/src/boba/mcp_server/app.py),
+  [`runtime/plugins.py`](../packages/services/boba-runtime/src/boba/runtime/plugins.py),
+  [`toolrun/registry.py`](../packages/services/boba-toolrun/src/boba/toolrun/registry.py).
+
+### 3.2. Поиск и индексация
+
+```mermaid
+flowchart LR
+    Sources[Postgres / Oracle / ClickHouse / Confluence] --> Scrape[Приложения ix: scrape и cfl-indexer]
+    Scrape --> Ix[ix: node, tree, edge, surface, aspect]
+    Ix --> Desc[ix-llm-describer]
+    Desc --> Ix
+    Ix --> Index[ix-fts / ix-trgm / ix-vector]
+    Index --> Search[ix-core: IxSearch и NodeReader]
+    Search --> NewTools[kb_*2]
+    Cfl[Confluence] --> Ingest[tool-confluence: ingest]
+    Ingest --> Pipeline[boba-indexing Pipeline]
+    Pipeline --> Chunks[db-pgvector: kb_chunks и ledger]
+    Chunks --> OldTools[kb_vector_search / kb_fts_search]
+```
+
+Новый контур индексирует адресуемые объекты и аспекты нескольких источников.
+Старый — коллекции чанков документов с собственными хешами, ledger,
+фильтрацией и очисткой. Это пересекающиеся возможности, но разные модели данных;
+оба контура сохраняются. Общие HTTP, Confluence, текстовые и модельные
+компоненты можно переиспользовать без объединения индексов и их данных.
+
+### 3.3. Данные и ответственность
+
+| Данные / состояние | Контракт / владелец | Реализация и потребители |
+|---|---|---|
+| Записи разговора, восстановление, сжатие | `agent/history.py`, `records.py`, `writer.py` | `history-jsonl`, `history-postgres`, memory; агент пишет, ACP передаёт представление чату |
+| Метаданные тредов и feedback | `boba-chat` | `runtime/threads.py`, `elements.py`; `aid/data/data_layer.py` адаптирует Chainlit |
+| Пользователи, логин, роли, контекст | `identity`, `auth`, `access` | `runtime/users.py`, LDAP/Kerberos, HTTP-входы aid/mcp/agent |
+| Соединения и выдачи | `connections/stored.py` | `connection-broker/store.py`; broker готовит соединения на вызов и запечатывает их |
+| MCP-серверы пользователя и OAuth-токены | `aid/mcp_servers` | таблицы server/grant, шифрованное OAuth-хранилище; `mcp-client` выполняет подключения |
+| Живые события, команды и блокировки | `messaging`, `identity/locks.py` | `runtime/bus.py`, `payloads.py`, `locks.py`; вкладки и держатели запусков |
+| Файлы workspace, журналы потоков | `canvas/storage.py`, `journal.py` | `runtime/storage.py`, `journal.py`; MCP отдаёт файлы, aid использует remote storage |
+| Индексы объектов | `ix-core` и SQL поверхностей | scrape/index workers; `tool-knowledge` и search-lab читают |
+| Старые документы/чанки | `indexing` | `db-pgvector`; ingest пишет, старые KB-инструменты читают |
+| Старые процессы и версии снимков каталога | `catalog`, `catalog-service` | исключены из активного workspace; отдельный предметный контур |
+
+Две таблицы/модели со словом `thread`, `history`, `connection` или `node` ещё не
+дубли: важно, кто владеет записью, жизненным циклом и API. Например, история
+агента и метаданные треда UI нужны одновременно; `canvas` как UI-панель и
+workspace storage — связанные, но разные обязанности.
+
+## 4. Реестр компонентов
+
+Ниже перечислены **все 73 пакета**. «Связи» — прямые фактические внутренние
+импорты из `src`, без внешних библиотек. Для компактности префикс `boba-` у
+зависимостей опущен. Пустой список означает отсутствие внутренних статических
+импортов, а не отсутствие внешних зависимостей. Динамические связи описаны в §5.
+
+### 4.1. Приложения и workers
+
+| Пакет / исходники | Python LOC | Назначение | Связи: импортирует |
+|---|---:|---|---|
+| [boba-aid](../packages/apps/boba-aid/src) | 23 453 | Веб-приложение Chainlit: login, треды, ACP-клиент агента, MCP relay, каталог MCP-серверов, canvas и удалённые файлы. `agent`, `rendering`, `infra`, `data`, `mcp_servers` — главные подсистемы. | `access`, `auth`, `cancellation`, `canvas`, `chat`, `config`, `connection-broker`, `connections`, `core`, `db-postgres`, `identity`, `kerberos`, `mcp-adapter`, `mcp-client`, `messaging`, `runtime`, `sandbox`, `toolkit`, `toolrun`, `transport-acp`, `transport-http` |
+| [boba-cli](../packages/apps/boba-cli/src) | 8 670 | Программа агента: сборка `Agent`, настройки, ACP stdio/server, служба WebSocket, история и управление потоками сессий. Владелец composition root агента. | `access`, `agent`, `auth`, `cancellation`, `config`, `core`, `db-postgres`, `history-jsonl`, `history-postgres`, `identity`, `ldap`, `llm`, `llm-http`, `llm-onnx`, `oauth`, `runtime`, `transport-acp` |
+| [boba-mcp](../packages/apps/boba-mcp/src) | 2 699 | MCP-сервис инструментов: OAuth, роли, endpoint/prompts, file/journal API, сборка runtime и исполнителей. | `access`, `auth`, `cancellation`, `canvas`, `config`, `connection-broker`, `connections`, `core`, `identity`, `mcp-adapter`, `oauth`, `runtime`, `sandbox`, `toolkit`, `toolrun` |
+| [boba-cfl-indexer](../packages/apps/ix/cfl-indexer/src) | 1 678 | Обход Confluence по спейсам, страницы/вложения/comments/links, извлечение документов и запись в поверхности ix; отдельный worker/CLI. | `cancellation`, `confluence`, `db-postgres`, `doc`, `ix-core`, `krb`, `llm`, `transport-http` |
+| [boba-ch-meta-scraper](../packages/apps/ix/ch-meta-scraper/src) | 239 | Снятие системных метаданных ClickHouse; реализация источника для общего scrape runner и собственные SQL/layout. | `cancellation`, `db-clickhouse`, `ix-core` |
+| [boba-ix-fts](../packages/apps/ix/ix-fts/src) | 281 | Пакетный upsert/prune полнотекстового индекса аспектов ix, веса FTS, SQL и CLI. | `cancellation`, `config`, `db-postgres`, `ix-core` |
+| [boba-ix-llm-describer](../packages/apps/ix/ix-llm-describer/src) | 681 | Очередь объектов ix → текст аспектов → описание LLM → запись результата; ограничение и свёртка контекста. | `cancellation`, `config`, `db-postgres`, `ix-core`, `llm` |
+| [boba-ix-search-lab](../packages/apps/ix/ix-search-lab/src) | 335 | Отдельный HTTP-стенд сравнения FTS/TRGM/vector выдачи; диагностическое приложение. | `cancellation`, `config`, `db-postgres`, `ix-core`, `llm` |
+| [boba-ix-trgm](../packages/apps/ix/ix-trgm/src) | 235 | Пакетный upsert/prune триграммного индекса аспектов ix; собственные SQL и CLI. | `cancellation`, `config`, `db-postgres`, `ix-core` |
+| [boba-ix-vector](../packages/apps/ix/ix-vector/src) | 522 | Чанкирование аспектов по токенам, embeddings, запись и очистка векторного индекса ix. | `cancellation`, `config`, `db-postgres`, `ix-core`, `llm` |
+| [boba-ora-meta-scraper](../packages/apps/ix/ora-meta-scraper/src) | 227 | Источник метаданных Oracle для общего scrape runner; SQL системных каталогов и layout поверхности. | `cancellation`, `db-oracle`, `ix-core` |
+| [boba-pg-meta-scraper](../packages/apps/ix/pg-meta-scraper/src) | 628 | Источник PostgreSQL/Greenplum: определение версии, выбор SQL вариантов, общий scrape runner и layout поверхности. | `cancellation`, `db-postgres`, `ix-core`, `kerberos` |
+
+### 4.2. Доменные и общие пакеты
+
+| Пакет / исходники | Python LOC | Назначение | Связи: импортирует |
+|---|---:|---|---|
+| [boba-access](../packages/core/boba-access/src) | 537 | Решения по tool grants/профилям/ролям; также SQL получения выданных соединений (`grants.py`, D02). | `connections`, `identity`, `toolkit` |
+| [boba-agent](../packages/core/boba-agent/src) | 12 575 | Ядро разговора: `Agent`, очередь, turn loop, tools/permissions, сборка запроса, compaction, records, history ports, replay, skills. Не зависит от UI или DB-реализации. | `cancellation`, `core`, `llm` |
+| [boba-cancellation](../packages/core/boba-cancellation/src) | 218 | Контекст и сигнал отмены, причины остановки, прерыватели и завершение процесса; без сторонних зависимостей. | — |
+| [boba-canvas](../packages/core/boba-canvas/src) | 2 214 | Контракты файлов/workspace, ключи, панели и watchers, stream journals, transfer headers и Mermaid-описания. | `core`, `identity`, `toolkit` |
+| `boba-catalog` (удалён, §19) | 2 408 | Исключённый домен редактора процессов: snapshots, nodes/flows/groups, операции, diff, source diff и staleness. | — |
+| [boba-chat](../packages/core/boba-chat/src) | 557 | Контракты хранения тредов/feedback и выбор chat-профиля по ролям; не реализация agent loop. | `access`, `identity`, `llm` |
+| [boba-connections](../packages/core/boba-connections/src) | 1 441 | Профили и записи соединений, registry типов/адресов, credential ports, whitelist; также JWE-печать и шифрование секретов. | `core`, `identity`, `kerberos`, `toolkit` |
+| [boba-core](../packages/core/boba-core/src) | 1 006 | Общие имена MCP, команды и аргументы, безопасный текст validation, сериализация secrets; также Nuitka package-data survey/self-check. | — |
+| [boba-identity](../packages/core/boba-identity/src) | 2 743 | Subject/Scope, вход/SSO/token/session/directory ports, доменные ошибки, реестр запусков и контракты live locks. | `cancellation`, `core`, `toolkit` |
+| [boba-indexing](../packages/core/boba-indexing/src) | 3 458 | Старый универсальный document pipeline: requests/transports/readers/chunkers, sections, hashes, filters, source ledger, store ports, run events. | `llm` |
+| [boba-kerberos](../packages/core/boba-kerberos/src) | 547 | Модели и порты Kerberos без gssapi: профили аутентификации/делегирования, sign-in и типы ошибок. | `core` |
+| [boba-llm](../packages/core/boba-llm/src) | 790 | Контракты chat/embedding, запросы/ответы, capabilities и registry провайдеров; независимая граница модели. | — |
+| [boba-messaging](../packages/core/boba-messaging/src) | 968 | Контракты событий, команд, подписок и тел сообщений между процессами; Postgres-реализация в runtime. | `identity` |
+| [boba-stand-core](../packages/core/boba-stand-core/src) | 1 696 | Общие тестовые примитивы, контексты и probes; собственный AST-аудитор зависимостей `deps.py` (891 строка). pytest-зависимость, несмотря на размещение в core. | `cancellation`, `core`, `identity`, `toolkit` |
+| [boba-toolkit](../packages/core/boba-toolkit/src) | 14 220 | SDK инструментов: manifest/schema/result/MCP, facade/entry, ports/frames, DAG/chain, transfer и SQL helpers; одновременно контракты и I/O-исполнение (D01). | `cancellation`, `core` |
+
+### 4.3. Инфраструктурные адаптеры
+
+| Пакет / исходники | Python LOC | Назначение | Связи: импортирует |
+|---|---:|---|---|
+| [boba-krb](../packages/infra/auth/boba-krb/src) | 1 724 | Реализации Kerberos через gssapi/krb5: tickets, SPNEGO, workspace, sealed credentials; потребители — auth и адаптеры соединений. | `kerberos`, `toolkit` |
+| [boba-ldap](../packages/infra/auth/boba-ldap/src) | 165 | Адаптер каталога пользователей на ldap3 для контрактов identity; поиск и проверка учётных данных. | `identity` |
+| [boba-config](../packages/infra/config/boba-config/src) | 214 | Чтение и композиция TOML-конфигурации с OmegaConf; входная граница настроек. | — |
+| [boba-db-clickhouse](../packages/infra/db/boba-db-clickhouse/src) | 6 531 | Профиль/auth/address, query builder, payload driver, описание типов, trace, wire formats, Arrow и transfer стороны ClickHouse. | `connections`, `core`, `kerberos`, `krb`, `toolkit` |
+| [boba-db-oracle](../packages/infra/db/boba-db-oracle/src) | 2 865 | Профиль/auth/address, query builder, thin payload, trace, Arrow source/sink и отображение типов Oracle. | `connections`, `core`, `toolkit` |
+| [boba-db-pgvector](../packages/infra/db/boba-db-pgvector/src) | 1 415 | Старое KB-хранилище: chunks/collections/source ledger, DSL→SQL, schema/migrations и vector/FTS операции. | `db-postgres`, `indexing`, `toolkit` |
+| [boba-db-postgres](../packages/infra/db/boba-db-postgres/src) | 6 119 | Профиль libpq/auth, async pool/cancellation, SQL builder/schema/table, address, payload, trace, describe, COPY/Arrow/transfer. | `cancellation`, `connections`, `core`, `kerberos`, `krb`, `toolkit` |
+| [boba-confluence](../packages/infra/format/boba-confluence/src) | 2 733 | Общий REST builder/paginator, DTO, адреса, JSON и HTML разбор Confluence; часть моделей связана со старым indexing. | `connections`, `doc`, `indexing`, `toolkit`, `transport-http` |
+| [boba-doc](../packages/infra/format/boba-doc/src) | 2 212 | Маршрутизатор форматов, документ/страницы/окна/поиск, PDF/Office/text/image readers, OCR и async-byte bridge; уже поверх готовых parser-библиотек. | `llm` |
+| [boba-kbdoc](../packages/infra/format/boba-kbdoc/src) | 353 | Адаптер документа базы знаний к section/reader моделям старого indexing. | `indexing` |
+| [boba-text](../packages/infra/format/boba-text/src) | 893 | PlainTextReader, символьный и структурный chunker, grep с окнами/лимитами; часть API зависит от indexing. | `indexing` |
+| [boba-history-jsonl](../packages/infra/history/boba-history-jsonl/src) | 516 | Файловая реализация HistoryStore: JSONL, запись/чтение, владение и восстановление истории агента. | `agent` |
+| [boba-history-postgres](../packages/infra/history/boba-history-postgres/src) | 997 | Postgres-реализация HistoryStore: хранение записей и владение сессией; используется сборкой агента. | `agent`, `db-postgres` |
+| [boba-ix-core](../packages/infra/ix/ix-core/src) | 2 730 | Общие ix schema upgrade, surface/aspect/index registry, URL templates, NodeReader/IxSearch и scrape runner. Несмотря на имя core — инфраструктура PostgreSQL. | `config`, `db-postgres`, `krb`, `toolkit` |
+| [boba-llm-fastembed](../packages/infra/llm/boba-llm-fastembed/src) | 248 | Локальный embedding backend FastEmbed; регистрируется как LLM provider, тяжёлая реализация подключается extra. | `llm`, `toolkit` |
+| [boba-llm-http](../packages/infra/llm/boba-llm-http/src) | 1 512 | OpenAI-compatible SSE chat/embeddings и Ollama NDJSON; wire DTO, chunk assembly и mapping ошибок поверх общего HTTP. | `llm`, `toolkit`, `transport-http` |
+| [boba-llm-onnx](../packages/infra/llm/boba-llm-onnx/src) | 815 | Локальный chat backend ONNX Runtime GenAI, генерация/отмена и provider manifest; модели вне исходников. | `llm`, `toolkit` |
+| [boba-sandbox](../packages/infra/sandbox/boba-sandbox/src) | 8 071 | Программа plugin SDK, manifest/setup/call, guest/zygote, warmup, cgroups, mounts/rootfs/workspace и изолированный launcher. | `cancellation`, `core`, `toolkit` |
+| [boba-stream-ch-to-ch](../packages/infra/stream/boba-stream-ch-to-ch/src) | 174 | Специализированный transfer ClickHouse→ClickHouse, регистрируемая стратегия приёмника. | `db-clickhouse`, `toolkit` |
+| [boba-stream-ch-to-pg](../packages/infra/stream/boba-stream-ch-to-pg/src) | 291 | Специализированный transfer ClickHouse→PostgreSQL; связывает контракты двух DB-адаптеров. | `db-clickhouse`, `db-postgres`, `toolkit` |
+| [boba-stream-pg-to-ch](../packages/infra/stream/boba-stream-pg-to-ch/src) | 359 | Специализированный transfer PostgreSQL→ClickHouse; регистрируемая стратегия и преобразование потока. | `db-clickhouse`, `db-postgres`, `toolkit` |
+| [boba-stream-pg-to-pg](../packages/infra/stream/boba-stream-pg-to-pg/src) | 233 | Специализированный transfer PostgreSQL→PostgreSQL через COPY; регистрируемая стратегия. | `db-postgres`, `toolkit` |
+| [boba-transport-acp](../packages/infra/transport/boba-transport-acp/src) | 877 | Общие расширения/модели транспорта ACP поверх agent-client-protocol, включая MCP-over-ACP; без внутренней зависимости от agent. | — |
+| [boba-transport-http](../packages/infra/transport/boba-transport-http/src) | 1 962 | HttpConnection/auth, request/response stream, retries, cancellation, сетевые настройки и регистрация web connection. | `cancellation`, `connections`, `kerberos`, `krb` |
+
+### 4.4. Сервисы и сборка
+
+| Пакет / исходники | Python LOC | Назначение | Связи: импортирует |
+|---|---:|---|---|
+| [boba-auth](../packages/services/boba-auth/src) | 2 479 | Общий сервис входа: local/LDAP/Kerberos/proxy, роли и профили, JWT сессии, credential source для вызовов. | `connections`, `identity`, `kerberos`, `krb`, `toolkit` |
+| `boba-catalog-service` (удалён, §19) | 5 743 | Исключённый сервис версий процессов/черновиков, Postgres stores, снимки подключений, sync runner и публикация событий. | `cancellation`, `catalog`, `db-postgres`, `identity`, `messaging`, `toolkit`, `toolrun` |
+| [boba-connection-broker](../packages/services/boba-connection-broker/src) | 1 648 | Хранилище connections/roles/grants, подготовка credentials, sealed params на обеих сторонах, connection_list/search. | `access`, `connections`, `core`, `db-postgres`, `identity`, `kerberos`, `toolkit`, `toolrun` |
+| [boba-mcp-adapter](../packages/services/boba-mcp-adapter/src) | 302 | Адаптирует ToolServer/tool-result к FastMCP provider/tools; фильтрация по вызывающему и URI журналов. | `toolkit` |
+| [boba-mcp-client](../packages/services/boba-mcp-client/src) | 3 366 | HTTP/stdio подключения MCP, auth, sessions/dispatch, tool/resource/prompt каталог, cache/subscriptions, файлы/журналы и запуск команды. | `auth`, `canvas`, `connections`, `core`, `sandbox`, `toolkit` |
+| [boba-oauth](../packages/services/boba-oauth/src) | 1 187 | OAuth-сервер служб на FastMCP: login pages, access/refresh/resource tokens, клиенты и коды; общее auth ядро, HTTP SSO из runtime. | `auth`, `identity`, `runtime` |
+| [boba-runtime](../packages/services/boba-runtime/src) | 7 949 | Общий composition/config/DI слой, providers и plugins; одновременно Postgres bus/locks/chat tables, storage/journal, HTTP и launcher assembly. | `access`, `auth`, `cancellation`, `canvas`, `chat`, `config`, `connection-broker`, `connections`, `db-postgres`, `identity`, `krb`, `ldap`, `messaging`, `sandbox`, `toolkit`, `toolrun` |
+| [boba-toolrun](../packages/services/boba-toolrun/src) | 4 142 | Сервис исполнения инструментов: registry/hosting, injected config/context, access/cancel/error/log wrappers, DAG, streams и process launcher. | `access`, `cancellation`, `canvas`, `identity`, `toolkit` |
+
+### 4.5. Плагины инструментов
+
+| Пакет / исходники | Python LOC | Назначение | Связи: импортирует |
+|---|---:|---|---|
+| [boba-tool-canvas](../packages/tools/boba-tool-canvas/src) | 216 | Plugin canvas: открыть/отправить workspace-файл, сохранить Mermaid; использует canvas-контракты. | `canvas`, `identity`, `toolkit` |
+| [boba-tool-clickhouse](../packages/tools/boba-tool-clickhouse/src) | 1 632 | Plugin ch: query, описания объектов и адресов, потоковый export/import и sync; работает через DB-адаптер. | `core`, `db-clickhouse`, `toolkit` |
+| [boba-tool-confluence](../packages/tools/boba-tool-confluence/src) | 2 769 | Два plugin id: чтение/search Confluence и старый ingest страниц/спейсов в chunk KB с OCR/embedding/progress. | `confluence`, `core`, `db-pgvector`, `doc`, `indexing`, `llm`, `text`, `toolkit`, `transport-http` |
+| [boba-tool-describer](../packages/tools/boba-tool-describer/src) | 1 267 | Plugin describer: CRUD узлов и рёбер пользовательских описаний, собственное Postgres-хранилище и entity addresses. | `connections`, `core`, `db-postgres`, `identity`, `toolkit` |
+| [boba-tool-doc](../packages/tools/boba-tool-doc/src) | 291 | Plugin doc: чтение окна страниц, outline и поиск документа, настройки OCR/model через boba-doc. | `doc`, `llm`, `toolkit` |
+| [boba-tool-knowledge](../packages/tools/boba-tool-knowledge/src) | 1 073 | Plugin kb: одновременно прежний chunk search и ix catalog/FTS/TRGM/vector/node инструменты; setup старой KB-схемы. | `confluence`, `core`, `db-pgvector`, `db-postgres`, `indexing`, `ix-core`, `kbdoc`, `llm`, `toolkit` |
+| [boba-tool-mail](../packages/tools/boba-tool-mail/src) | 100 | Plugin mail: SMTP-отправка с typed config; малый адаптер stdlib, малый потенциал сокращения. | `core`, `toolkit` |
+| [boba-tool-oracle](../packages/tools/boba-tool-oracle/src) | 1 086 | Plugin ora: query, описания объектов/адреса и Arrow streams/sync через Oracle-адаптер. | `core`, `db-oracle`, `toolkit` |
+| [boba-tool-postgres](../packages/tools/boba-tool-postgres/src) | 1 581 | Plugin pg: query/scripts, описания объектов/адреса, COPY/Arrow streams/sync через PostgreSQL-адаптер. | `core`, `db-postgres`, `toolkit` |
+| [boba-tool-shell](../packages/tools/boba-tool-shell/src) | 270 | Plugin bash: команда в среде запуска, ограничение входа, сбор/публикация потоков stdout/stderr. | `toolkit` |
+| [boba-tool-web](../packages/tools/boba-tool-web/src) | 364 | Plugin web: fetch/grep/address, HTML/document extraction с общим HTTP и text/doc. | `core`, `doc`, `llm`, `text`, `toolkit`, `transport-http` |
+
+### 4.6. Стенды и исследования
+
+| Пакет / исходники | Python LOC | Назначение | Связи: импортирует |
+|---|---:|---|---|
+| [boba-prompt-assembly](../packages/testing/boba-prompt-assembly/src) | 14 354 | Исследовательский CLI реконструкции prompts/requests/compaction из журналов; независимая модель, не production agent. | — |
+| [boba-pump-stand](../packages/testing/boba-pump-stand/src) | 1 597 | Интеграционный стенд per-engine transfer, DAG, типовые матрицы и сверка значений PG/CH/Oracle. | `connection-broker`, `connections`, `db-clickhouse`, `db-oracle`, `db-postgres`, `identity`, `stand`, `stand-core`, `tool-clickhouse`, `tool-oracle`, `tool-postgres`, `toolkit`, `toolrun` |
+| [boba-stand](../packages/testing/boba-stand/src) | 12 454 | Общие интеграционные стенды: конфиг/БД/Kerberos, sandbox/zygote, agent/ACP/MCP, fake LLM, Confluence, UI/browser, fixtures. | `access`, `agent`, `auth`, `cfl-indexer`, `chat`, `cli`, `config`, `confluence`, `connection-broker`, `connections`, `core`, `db-clickhouse`, `db-oracle`, `db-postgres`, `history-jsonl`, `identity`, `ix-core`, `ix-fts`, `ix-trgm`, `ix-vector`, `kerberos`, `krb`, `ldap`, `llm`, `llm-fastembed`, `llm-http`, `mcp-client`, `runtime`, `sandbox`, `stand-core`, `tool-clickhouse`, `tool-postgres`, `tool-shell`, `tool-web`, `toolkit`, `toolrun`, `transport-http` |
+
+
+## 5. Связи, не видимые в обычном графе импортов
+
+| Механизм | Где объявлен / кто читает | Значение для рефакторинга |
+|---|---|---|
+| `boba.tools` | `pyproject.toml` пакетов инструментов → `sandbox.program`, манифесты → `runtime.plugins` | 11 пакетов дают 12 plugin id: Confluence имеет `confluence` и `ingest`; отсутствие импорта тела из приложения — нормальная изоляция |
+| `boba.connections` | пакеты БД и HTTP → `connections.manifest.ConnectionTypes` | host должен знать виды профилей; драйвер тела может оставаться extra |
+| `boba.addresses` | DB, Confluence, describer → `connections.address.AddressFamilies` | пакет может требоваться только ради регистрации семейства адресов |
+| `boba.llm` | HTTP, ONNX, FastEmbed → `llm.providers` | неиспользуемость провайдера нельзя выводить из одного AST |
+| `boba.transfer.*` | четыре stream-пакета → реестры transfer приёмников | специализации pg↔ch подгружаются без прямого импорта вызывающим |
+| Сборочные списки и configs | `build/Makefile`, `apps/boba-mcp/conf/plugins` | определяют состав программ, extras, rootfs и моделей; изменение pyproject недостаточно |
+| SQL-ресурсы | каталоги `schema`, `layout`, `scrape`, `run`, `verify` | имена файлов и столбцов — фактически API между общим runner и пакетом источника |
+| ACP и JSON Schema | `aid.agent.settings`, `agent.settings`, `transport-acp` | отдельные процессы могут иметь разные DTO, совместимость проверяется контрактом |
+| Chainlit overlay | `web/chainlit-ui/UPSTREAM`, `build/ui.Dockerfile` | это поддерживаемая модификация внешнего UI, а не самостоятельный frontend framework |
+
+[`build/Makefile`](../build/Makefile) собирает программы `boba`, `boba-mcp`,
+`boba-aid`, программы групп плагинов, rootfs и модели. Режимы получения исходников,
+подготовки, компиляции и упаковки имеют разные сетевые условия.
+[`core/package_data.py`](../packages/core/boba-core/src/boba/core/package_data.py)
+сохраняет ресурсы и entry points для Nuitka. Эти связи обязательны в проверке
+удаления пакета: успешный импорт из общего `.venv` не доказывает успешную сборку.
+
+## 6. Реестр дублирования и кандидатов на сокращение
+
+Приоритет P0 — подготовить безопасное удаление/границы; P1 — первый цикл
+сокращения; P2 — прототип или последующий цикл. Размер области — объём для
+исследования, **не обещание**, что все эти строки будут удалены.
+
+### R01. Исключённый каталог — выполнено, §19
+
+**Доказательства.** `boba-catalog` (2 408 строк) и `boba-catalog-service`
+(5 743) исключены в корневом [pyproject.toml](../pyproject.toml) и
+[`packages/conftest.py`](../packages/conftest.py). Единственный пакетный
+потребитель `catalog` в `src` — `catalog-service`; потребителей самого сервиса
+в остальных анализируемых `src` не найдено.
+
+**Действие.** Проверить внешние импорты, старые развёртывания и нужность редактора
+процессов; затем удалить оба пакета из основной ветки, сохранив историю Git.
+Снять относящиеся к ним исключения. Не переносить автоматически старые модели
+процесса в `ix`: совпадение слова «каталог» не означает эквивалентный продукт.
+
+**Проверка.** Сборочные списки, документация и runtime-конфиги не ссылаются на
+каталог; активные тесты и упаковка приложений проходят без него. Потенциал —
+ровно 8 151 строка `src` плюс тесты, но это сокращение уже отключённого контура.
+
+### R02. Общая основа двух сохраняемых систем индексации/KB — P1
+
+**Доказательства.**
+[`kb/tools.py`](../packages/tools/boba-tool-knowledge/src/boba/tool/kb/tools.py)
+в `TOOLS` регистрирует одновременно `kb_vector_search`, `kb_fts_search` и
+`kb_*2`. Более того, отслеживаемый
+[`conf/plugins/kb.toml`](../packages/apps/boba-mcp/conf/plugins/kb.toml)
+включает только два старых поиска; новые имена `*2` в его allowlist закомментированы.
+Это состояние поставляемого конфига, а не проверка локальных настроек работающих
+экземпляров. [`kb/plugin.py`](../packages/tools/boba-tool-knowledge/src/boba/tool/kb/plugin.py)
+по-прежнему выполняет `KbSchema` старого pgvector store.
+[`confluence/plugin.py`](../packages/tools/boba-tool-confluence/src/boba/tool/confluence/plugin.py)
+публикует ingest с тем же storage setup.
+[`ingest_base.py`](../packages/tools/boba-tool-confluence/src/boba/tool/confluence/ingest_base.py)
+собирает `Pipeline`, `PostgresChunkStore`, `PostgresSourceLedger`,
+`StructuralChunkerFactory`; новый
+[`cfl_indexer/worker.py`](../packages/apps/ix/cfl-indexer/src/boba/cfl_indexer/worker.py)
+пишет объекты/аспекты в `ix` своим путём.
+
+**Что пересекается.** Обход Confluence, извлечение текста вложений, отслеживание
+изменений/удалений, чанкирование, эмбеддинги, FTS/vector поиск, отчётность.
+Старые `indexing_log.py` (628 строк) и `ingest_base.py` (533) содержат отдельную
+обвязку запуска и прогресса.
+
+**Решение пользователя:** оба индексатора и оба поиска остаются самостоятельными.
+Объединение данных, переключение старых инструментов на ix и удаление прежнего
+контура отменены как ошибочная интерпретация задачи. Их сохранение не требует
+переиндексации или решения о доступности исторических источников.
+
+**Направление рефакторинга.** Найти повторяющиеся механизмы под двумя сценариями:
+Confluence REST/пагинацию и разбор общих полей ответа; чтение вложений и OCR;
+чистые операции над текстом и одинаковые правила метаданных. Сначала использовать
+существующие `boba-confluence`, `boba-doc`, `boba-text` и доменные модели; выносить
+новый пакет только при необходимости правильного направления зависимостей.
+Не импортировать приложение `cfl-indexer` из инструментов. Хранилища, chunk/ix
+модели, стратегии очистки, поиск и управление запуском остаются своими.
+
+**Граница изменений.** `kb/chunks.py`, `kb/search.py`, `KbSchema`,
+`PostgresChunkStore`, ledger, `boba-indexing` и их инструменты не являются
+кандидатами на удаление по наличию нового ix. Удалять можно только конкретный
+дублирующий внутренний алгоритм, когда оба потребителя используют одну общую
+реализацию с прежним поведением. Различающиеся контракты не сводить к одному
+классу с флагами.
+
+**Проверка.** Старый поиск, page/space ingest, коллекции, OCR, прогресс и очистка
+проходят свои существующие тесты; ix, его worker, связи и поиск — свои.
+Общий компонент проверяется на данных обоих потребителей, включая различия
+§22. Экономия заранее не приравнивается к размеру одного из контуров.
+
+### R03. Повторный разбор Confluence и HTML — P1, функциональное пересечение
+
+[`confluence/parsing.py`](../packages/infra/format/boba-confluence/src/boba/confluence/parsing.py),
+[`confluence/html.py`](../packages/infra/format/boba-confluence/src/boba/confluence/html.py),
+[`cfl_indexer/confluence.py`](../packages/apps/ix/cfl-indexer/src/boba/cfl_indexer/confluence.py),
+[`doc/html.py`](../packages/infra/format/boba-doc/src/boba/doc/html.py) и
+`tool-confluence/pipeline.py` образуют несколько путей JSON/HTML→текст.
+В indexer есть собственные `ConfluenceParser`, `ConfluenceReader`, `Content`,
+`Attachment`; старый путь использует свои DTO и decoder.
+
+Уточнение после чтения обоих путей (§22.1): REST-клиент, пагинация, HTML-дерево
+Confluence и Markdown backend **уже общие**. Повторное выделение этих механизмов
+не требуется и не даст ожидаемой экономии. Проверять оставшееся извлечение
+полей JSON и смешение общих DTO с адаптерами старого ingestion.
+Не сводить обычный HTML и Confluence storage macros в одинаковый алгоритм:
+секции, таблицы, ссылки и формат тела требуют адаптера. Критерий — устранение
+подтверждённого повторения с сохранением результата на существующих fixtures,
+а не единая модель на все случаи.
+
+### R04. Несколько алгоритмов разбиения текста — P2, пересечение с разной семантикой
+
+Есть `text/splitter.py:OverlapCharSplitter`,
+`text/structural_chunker.py:StructuralChunker`,
+[`ix_vector/embedding.py`](../packages/apps/ix/ix-vector/src/boba/ix_vector/embedding.py):`Chunker`
+и [`ix_llm_describer/describe.py`](../packages/apps/ix/ix-llm-describer/src/boba/ix_llm_describer/describe.py):`MarkdownSplit`.
+Они решают соседние задачи — символьное перекрытие, структурные секции,
+токеновый бюджет embedding, сокращение контекста описателя.
+
+Сохранить алгоритмы с разными назначениями; выделить минимальный общий контракт
+фрагмента (текст, происхождение, длина/бюджет), только если он нужен обоим
+потребителям. Удалять лишь вытесненные дубли конкретных операций.
+Сравнить с chunker выбранного document backend. Нельзя подменять бюджет токенов
+числом символов или терять заголовки таблиц ради единственного класса.
+
+### R05. MCP-карточки и ответы продублированы — P1, точные совпадения
+
+[`agent/mcp.py`](../packages/core/boba-agent/src/boba/agent/mcp.py) и
+[`toolkit/mcp.py`](../packages/core/boba-toolkit/src/boba/toolkit/mcp.py):
+совпадают тела `ToolCards.hints_of` / `McpToolStubs.hints_of` (строки 107 / 80),
+`ToolReplies.prompt` / `McpResults.prompt` (197 / 158), `_block_text` (244 / 196).
+Совпадения подтверждены AST, а не только
+сходством имён. Вместе файлы занимают 478 строк; не все строки идентичны.
+
+Выделить небольшой **чистый** общий контракт MCP-карточки/ответа либо модуль в
+узком базовом пакете. Он зависит от `mcp-types` и имён MCP, не от запуска
+инструментов, UI, файлов и Linux. Не решать дубль подключением всего `toolkit`
+к `agent`: это испортит уже существующую независимость ядра агента.
+
+Проверить audience, отсутствие annotations, structuredContent, error-ответы,
+embedded resources, JSON alias и полноту raw-ответа в истории. После изменения
+остаётся одна реализация общей семантики и тесты на неё плюс адаптеры потребителей.
+
+### R06. FTS/TRGM workers — P1, точные совпадения
+
+[`ix_fts/worker.py`](../packages/apps/ix/ix-fts/src/boba/ix_fts/worker.py) и
+[`ix_trgm/worker.py`](../packages/apps/ix/ix-trgm/src/boba/ix_trgm/worker.py):
+`IndexerWorker.run` (89 / 78) и `_upsert` (169 / 125) совпадают; рядом повторяются
+config/report/CLI и prune. Размер области — 516 строк.
+
+Добавить общий `SqlIndexCycle` в существующий `ix-core`, параметризованный
+построением частей SQL и файлами операций. FTS-веса и TRGM SQL остаются у
+конкретного индексатора. Сохранить CLI-имена и SQL-пакеты; не нужен новый
+дистрибутив или общий workflow framework. Проверить пустую очередь, несколько
+пачек, prune, отказ и повторный запуск. Vector/LLM workers подключать к общему
+циклу только в части, где совпадает контракт транзакций и прогресса.
+
+### R07. PostgreSQL: два управления таблицей при загрузке — P1, точные совпадения
+
+[`postgres/transfer.py`](../packages/infra/db/boba-db-postgres/src/boba/db/postgres/transfer.py)
+и [`postgres/arrow_stream.py`](../packages/infra/db/boba-db-postgres/src/boba/db/postgres/arrow_stream.py)
+повторяют `create` (752 / 332), `_create_query` (766 / 346), `backup` (805 / 373),
+`_execute` (858 / 426). Размер двух модулей — 2 166 строк; это область анализа,
+не размер дубля.
+
+Оставить одну реализацию операций PostgreSQL-таблицы и подставлять стратегию
+выбора типов/колонок. Уже есть `TransferTable`, `TransferSink`, `TransferRun` в
+`toolkit/transfer.py`: расширять существующий контракт предпочтительнее новой
+универсальной иерархии. Общий сценарий create/backup/delete/load использует
+композицию с dialect-specific реализациями. Семантика transaction, COPY,
+ограничений и backup должна остаться той же.
+
+Проверки: `boba-pump-stand/tests/test_pg_transfer.py`, `test_pg_arrow.py`,
+`test_pg_sync_edges.py`, матрицы pg/ch/ora; точность numeric, timezone, null,
+порядок и переименование колонок, обрыв источника, rollback и лимит памяти.
+
+### R08. SQL-инструменты, адреса и описания БД — P1/P2
+
+В `tool-pg/tools.py`, `tool-ch/tools.py`, `tool-ora/tools.py` повторяется схема
+query → progress → window → TableResult, рядом остаются отличающиеся транзакции
+и отчёты драйверов. Общий объём трёх пакетов — 4 299 строк.
+
+У `db-{postgres,oracle,clickhouse}/address.py` точно совпадает `_check_roles`
+(230 / 229 / 220); у PG/Oracle — `render` (121 / 120). Три модуля — 1 205 строк.
+
+Выделить общие правила адреса объекта и общий сбор результата запроса, оставив
+диалект, список объектов, bind-параметры и драйверные отчёты реализациям.
+В первую очередь использовать существующие `QueryBuilder`, `RowWindow`,
+`QueryProgress`, `TableResult`. Новый интерфейс нужен лишь там, где он реально
+убирает две реализации. Не делать `GenericDatabase` с множеством флагов движка.
+
+SQL-скраперы уже используют общий `ix_core.scrape`; их объединение заново даст
+мало. В `pg-meta-scraper/scrape` обнаружены одинаковые verify-файлы для нескольких
+версий и одинаковые `2_class.sql`/`2_class__gp7.sql`. Рассмотреть fallback на
+базовый файл в существующем селекторе версий, если это сохраняет явную поддержку
+версий. Малый размер дублей не оправдывает новый шаблонизатор SQL.
+
+Реализованная часть — §27: общие SQL выбраны явно через существующий
+`ScrapeFile`; прежние правила версий и flavors сохранены.
+
+### R09. Запуск process/zygote и потоки — общие пайпы реализованы и проверены, §31
+
+В [`sandbox/zygote.py`](../packages/infra/sandbox/boba-sandbox/src/boba/sandbox/zygote.py)
+и [`toolrun/process.py`](../packages/services/boba-toolrun/src/boba/toolrun/process.py)
+совпадает `drain_reads` (418 / 266). Уже используется общая механика
+`toolkit.pump` (`OpenRun`, `PumpedCall`, `ChannelPump`); это хорошая база.
+
+Свести повторный lifecycle чтения/закрытия/ожидания к этой общей реализации,
+но перенести саму I/O-механику из чистого контрактного слоя (D01).
+Зигота, fork, FD passing, cgroup, bwrap и process-mode имеют разные гарантии;
+подмена одним обычным subprocess API их не сохраняет.
+
+Уточнение после D01 (§30): насос уже находится в `boba.tool_io.pump`.
+У `_CallPipes` и `_CallChannels` совпадает `drain_reads`, но владение
+дескрипторами различается: process сам проверяет `raw` перед `claim_frames`,
+у зиготы это делает вызывающий; закрытие process идемпотентно, зигота
+учитывает отдельно stdin/control/cgroup. Общий объект выходных каналов
+имеет смысл проверять целиком: создание, передача владения, drain и закрытие.
+Mixin ради одного совпавшего метода уменьшил бы несколько строк ценой
+неявного общего состояния, поэтому такой перенос не выполнен.
+В §31 реализован общий объект владения портами и откат через `ExitStack`.
+
+### R10. Самописный DI и service locator — P2, кандидат библиотеки
+
+[`runtime/di.py`](../packages/services/boba-runtime/src/boba/runtime/di.py):
+248 строк собственного `Depends`, introspection, кэшей, async cleanup,
+scope-check; `Container.root` и `_session_hook` глобальны. `runtime/providers.py`
+и `aid/infra/providers.py` вместе — ещё 1 125 строк wiring, которые библиотека
+не удалит автоматически.
+
+Сравнить два прототипа: явная сборка объектов через конструкторы + `AsyncExitStack`
+и Dishka. Выигрыш должен учитывать адаптеры Chainlit и число переписанных
+провайдеров. Нужны app/session/call lifetime, корректное закрытие ресурсов,
+ошибки старта и отказ от глобального поиска контейнера в доменных методах.
+Сохранить `test_container_start.py`, тесты sharing пула и изоляции вкладок.
+
+### R11. Перевод событий ACP в UI и MCP relay — P2, архитектурная гипотеза
+
+Крупные модули: `cli/acp_server.py` — 5 506 строк; `aid/agent/chat.py` — 2 255;
+`aid/agent/relay.py` — 1 812; `aid/rendering/acp_view.py` — 1 372;
+`aid/rendering/chat_view.py` — 2 122. В них перемешаны маршрутизация, состояние
+сессии, запросы пользователю, lifecycle и представление результатов.
+
+Размер не доказывает дубль. Нужно проследить одну state machine
+«tool-start → progress → result/cancel → запись истории → replay» и назначить
+единственного владельца каждого перехода. Общие преобразования кадров могут
+жить в `transport-acp`; бизнес-решения агента — в `agent`; Chainlit Step/Element —
+в UI-адаптере. Извлекать один сценарий за раз, не строить второй event framework.
+Критерий — уменьшение числа повторных преобразований и независимых состояний,
+проверенное replay, edit, reconnect, multi-tab, permission/question тестами.
+
+### R12. Независимые settings DTO — намеренное повторение, не срочное объединение
+
+[`aid/agent/settings.py`](../packages/apps/boba-aid/src/boba/aid/agent/settings.py)
+и [`agent/settings.py`](../packages/core/boba-agent/src/boba/agent/settings.py)
+описывают одну границу запуска с разных сторон. Их docstring явно фиксирует:
+чат не импортирует ядро агента; схема публикуется `boba settings-schema`.
+Есть `test_agent_settings_contract.py`.
+
+Сохранить независимость. Если обслуживание схемы дорого — генерировать DTO
+клиента по опубликованной JSON Schema либо выделить маленький пакет схемы,
+если совместное версионирование допустимо. Прямой импорт `boba-agent` в aid ради
+экономии нескольких DTO не рекомендован.
+
+### R13. Исследовательская сборка промптов — P1, решение о составе репозитория
+
+`boba-prompt-assembly` — 14 354 строки, отдельный CLI для реконструкции запросов,
+нормализации и compaction по журналам; других `src`-потребителей не найдено.
+Это не доказательство ненужности: у пакета есть самостоятельная точка входа.
+
+Если исследование завершено, перенести пакет в отдельный research-репозиторий
+или архивировать. Не засчитывать перенос как сокращение производственной
+реализации агента и не смешивать реконструкцию чужого формата с runtime-ядром.
+Полезные fixtures/золотые проверки сохранить без второго полного движка.
+
+### R14. UI overlay и копии upstream — P2
+
+`web/chainlit-ui/overlay` хранит заменяемые файлы Chainlit, версия задаётся
+`UPSTREAM`; дополнительные Canvas, Question, ToolApp, McpServers — в
+`assets/public/elements`. Сверить каждый overlay с исходным тегом: какие
+изменения уже поддерживает upstream API, а какие необходимы для ACP/MCP Apps.
+
+Отказ от лишних override-файлов может сократить сопровождение сильнее локального
+выделения React-хелперов. Не считать весь overlay собственным новым кодом.
+Сохранить сборку frontend/react-client/copilot, проверку `index.html` и `index.js`,
+UI/look проверки вопросов, потоков, загрузок, нескольких вкладок и MCP Apps.
+Полная замена Chainlit сейчас не обоснована аудитом: она создаст новый UI-код.
+
+Уточнение 2026-11-02 при проверке D03: сопоставлены все **31 файл overlay**
+с frontend-архивом `chainlit-2.11.1`, используемым Make. **27 файлов изменены,
+4 добавлены, побайтово неизменённых нет**. Простое удаление любого текущего
+override не подтверждено. Малые поправки также функциональны: экранирование
+валюты при LaTeX, префикс PDF worker, запрет PDF eval, сортировка по активности,
+локализация ошибок входа и другие; их нельзя считать ненужными только по размеру.
+
+Прототип хранения тех же изменений как patch восстанавливает все **31 файл
+побайтово** (`patch --fuzz=0`). Полные файлы занимают **15 329 строк**, patches
+и новые файлы — **3 842**. Однако **8 791 строка** разницы приходится на форму
+хранения pnpm-lock.yaml; TypeScript/TSX/JS — **4 763 → 2 156** строк записи.
+Полученный frontend имеет тот же исходный код, зависимости и поведение.
+Это экономия дублируемой записи upstream, **не удаление функциональной
+реализации**, и она не приближает production Python к порогу §10.1.
+Исходники в рабочем дереве оставлены для обычного редактирования и навигации
+IDE; дополнительный patch-процесс ради числа строк не внедрялся.
+
+Архив frontend в build/src имеет SHA256
+`f3496d6674aebc59172cb06c626e0c49800b9f2be509f2698b6eae752e1f0808`.
+Он отличается от Python sdist, для которого Make проверяет `CHAINLIT_SHA256`:
+это два разных исходных архива, не взаимозаменяемые контрольные суммы.
+В корневом .npmrc upstream `shared-workspace-lockfile=false`, поэтому lock
+frontend действительно нужен; считать его лишним рядом с корневым lock нельзя.
+Сравнение и проверенный прототип лежат в `/tmp/boba-refactor-20261102-r14/`;
+код UI и Dockerfile этим исследованием не менялись.
+
+### R15. Собственный аудитор зависимостей — P2, кандидат замены
+
+[`stand_core/deps.py`](../packages/core/boba-stand-core/src/boba/stand_core/deps.py)
+занимает 891 строку: разбор workspace/requirements, определение владельцев
+модулей, AST импорты, extras, missing/unused, слои и циклы. Его уже вызывают
+[`test_dependency_declarations.py`](../packages/core/boba-stand-core/tests/test_dependency_declarations.py),
+а правила проверяет `test_deps_audit_rules.py`. Поэтому начинать с создания
+ещё одного собственного dependency checker не нужно.
+
+Сравнить покрытие deptry + Import Linter с текущим аудитом. У Boba есть свои
+правила `[tool.boba.extras]`, `[tool.boba.unimported]`, bundle extras и общих
+conftest, которые нужно сохранить маленьким адаптером либо декларативной
+конфигурацией. Замена имеет смысл, если основной самописный сканер удаляется;
+не оставлять два равноправных источника решений. На первом шаге дешевле
+использовать существующий аудитор и уточнить его политику транзитивных extras.
+
+Первый частичный шаг выполнен в §26: разбор PEP 508 и нормализация имён
+переданы уже установленному `packaging`, исключение для чужих extras удалено.
+Основной аудитор и проверки пакетных границ сохраняются; второй checker
+не добавлен. Размер `deps.py`: **891 → 835 строк**.
+
+## 7. Транзитивность и границы зависимостей
+
+Здесь под требованием транзитивности понимаются три проверяемых свойства:
+
+1. Разрешённое направление сохраняется по **всей цепочке** импортов: домен не
+   получает инфраструктуру через якобы нейтральный helper.
+2. Пакет, который импортирует библиотеку непосредственно, объявляет её в своих
+   зависимостях/соответствующем extra, а не полагается на чужую установку.
+3. Зависимость указывает на нужный контракт, не на большой компонент из-за
+   пары утилит. Само наличие `A → B → C` ошибкой не является.
+
+### D01. Toolkit объединяет контракты и Linux-исполнение — выполнено, §30
+
+На исходном срезе: `identity.context → toolkit.manifest`, `identity.errors → toolkit.failure`;
+пакет `toolkit` одновременно содержит `chain.py` (`ctypes`, `fcntl`, `termios`,
+`os`), `pump.py` (`selectors`, pipes, threads), `entry.py` (CLI/FD I/O),
+`ports.py` (декларации вместе с реализациями потоков).
+
+Это подтверждённое нарушение **ответственности нижнего слоя**, хотя не прямой
+импорт `core → infra`. Наличие в одном пакете не означает, что любой импорт
+`ToolHints` выполняет весь Linux-код; проблема — граница поставки и дальнейшей
+эволюции общего API.
+
+Предлагаемая граница: чистые tool contracts/result/manifest и план DAG остаются
+нижним слоем; исполнение FD/pipe/process/stream-group переходит в сервис/infra,
+которое реализует эти контракты. `identity` не должно знать `FailurePacker`
+исполнителя: доменная ошибка и её превращение в tool-result разделяются.
+После выделения запретить зависимости чистой части от инфраструктурных
+I/O-пакетов, включая косвенные; прямые native I/O-импорты проверять отдельно.
+
+Реализация и актуальная карта ответственности — §30. План и кодек остаются
+в toolkit, Linux/FD перенесены в один `boba-tool-io`; обе реализации запуска
+используют его. Внешних библиотек не добавлено.
+
+### D02. SQL авторизации расположен в core/access — выполнено, §28
+
+На исходном срезе `access/grants.py` содержал `SubjectGrantsQuery`, CTE, JOIN
+и знания о хранении выдач: отсутствие импорта psycopg не делало этот код доменным.
+
+SQL перенесён в существующий
+[`connection_broker/grants.py`](../packages/services/boba-connection-broker/src/boba/connection_broker/grants.py).
+Оба потребителя, `ConnectionStore` и `McpServerStore`, используют один `GrantedIds`.
+В [`access/grants.py`](../packages/core/boba-access/src/boba/access/grants.py)
+остался только неизменяемый фильтр. Порт хранилища, SQL-схема и правила выдачи
+не менялись; новый repository API и пакет не добавлены. Одновременно общий
+CSV-тип перенесён из toolkit в core: `boba-access` больше не зависит от toolkit,
+connections и identity. Эквивалентность и измерение минимальной установки — §28.
+
+### D03. Core/connections содержит криптографический адаптер — выполнено, §29
+
+На исходном срезе `connections/sealed.py` импортировал `joserfc.jwe`, `ECKey`,
+а `secrets.py` содержал `SecretCipher`. Пакет моделей соединений зависел от
+конкретного формата печати и криптобиблиотек. При этом сам JWE уже реализован библиотекой: переписывать
+криптографию или добавлять ещё один crypto facade не требуется.
+
+Отделить описание offer/sealed-param и порт печати от реализации JWE/Fernet;
+реализация — в существующей инфраструктуре/broker или одном узком crypto-модуле.
+
+Уточнение §28: все production-потребители `SecretCipher`, `ConnectionSeal` и
+`SealKeys` находятся в services/apps; моделей `SealFeature`, `SealKey`,
+`SealedConnection`, `ConnectionOffer` достаточно оставить в connections.
+Новый пакет не обязателен: broker уже является прямой зависимостью runtime,
+aid и MCP. Для тестов нужно отдельно поправить прямые dev-декларации владельцев.
+Проверка графа текущего lock с переносом двух рёбер `cryptography`/`joserfc`
+из connections в broker даёт: профиль `plugins/docs` **75 → 71** внешний пакет
+(уходят cffi, cryptography, joserfc, pycparser), `plugins/db` **40 → 39**
+(уходит joserfc); остальные профили и общее объединение **161** прежние.
+Расчёт кандидата из §28 подтверждён после переноса в §29. Сами алгоритмы JWE/Fernet
+уже библиотечные; их смена, изменение формата сохранённых секретов и ключей
+в этот шаг не входят. Нужны прежние crypto/store/delegation тесты, установка
+чистых моделей без crypto, plugin rootfs и Make. Расчёт сохранён в
+`/tmp/boba-refactor-20261102-d02/d03-candidate.log`.
+Граница полезна, если позволит пользователям профилей не тянуть sealing.
+Версию формата, открытые ключи, expiry и совместимость client/server сохранить.
+
+### D04. OAuth зависит от runtime ради двух классов — выполнено, §24
+
+[`oauth/server.py`](../packages/services/boba-oauth/src/boba/oauth/server.py):99
+импортирует `SsoRequests`, `SsoResponses` из `runtime.http`. Поэтому OAuth
+декларирует `boba-runtime`, а транзитивное замыкание его внутренних обязательных
+зависимостей достигает **20 пакетов**, включая chat, canvas, toolrun и sandbox.
+Это число зависимостей установки, не измерение загруженных модулей/RSS.
+
+Перенести общий HTTP-адаптер SSO к небольшому auth-web модулю/пакету, который
+зависит от identity/auth и Starlette. `runtime`, OAuth и aid используют этот
+адаптер. Если перенос в существующий пакет не создаёт обратное ребро, новый
+дистрибутив не нужен. Измеримый результат — исчезновение `oauth → runtime`,
+изолированная установка OAuth без launcher/UI и сохранение сценариев входа.
+
+### D05. Общий HTTP/LLM тянет tool runtime контракты — P2
+
+`llm-http` использует `toolkit.timing.Elapsed`; через HTTP profiles он также
+связан с `connections`, `identity`, Kerberos. Обязательное внутреннее замыкание
+`llm-http` — 9 пакетов. `fastembed`/`onnx` также используют toolkit.
+
+Малый таймер может жить в базовом модуле либо заменяться stdlib непосредственно
+в узком адаптере. Дальше разделить нейтральную HTTP-конфигурацию и регистрацию
+`web` connection/делегирование учётных данных. Kerberos нужен продукту, но не
+обязан быть обязательным путём простого bearer HTTP-провайдера. Не смешивать
+это с ошибочным утверждением, что вся обвязка HTTP избыточна.
+
+### D06. Runtime совмещает сборку и реализации хранилищ — P2
+
+`runtime` одновременно содержит DI/config/providers, Postgres tables/bus/locks,
+local/image storage, HTTP, launcher/plugins и chat cleanup. У него есть пять
+прямых пакетных потребителей, в том числе OAuth и CLI агента.
+
+Первыми вынести явно чужие общему runtime обязанности: auth-web (D04), затем
+по необходимости Postgres-реализации chat/messaging/locks и storage backend.
+Порты уже существуют в `chat`, `messaging`, `identity`, `canvas`; новые копии
+портов не нужны. Сборка конкретных реализаций остаётся у приложений.
+Не создавать сразу по пакету на каждую таблицу.
+
+### D07. Packaging и файловое I/O в core — P2
+
+`core/package_data.py` объединяет survey дистрибутивов, Nuitka flags, ресурсы и
+runtime self-check. `agent/skills.py:SkillsDir` читает каталог и SKILL.md;
+`agent/template.py:AgentTemplate` читает packaged resources.
+
+`package_data` логично отделить в build/runtime-support, сохранив части,
+необходимые в собранном бинарнике. Для skills полезен порт каталога с файловой
+реализацией на границе приложения. Чтение неизменяемых packaged templates имеет
+меньший приоритет: само по себе не объясняет значительный размер кода.
+
+### D08. Прямые импорты и транзитивные extras — P1
+
+| Пакет | Непосредственный импорт | Сейчас приходит через | Исправление |
+|---|---|---|---|
+| `boba-stand` | `boba.mcp_client.client`, `stand/ui/database.py:41` | общий workspace/тестовое окружение | объявить `boba-mcp-client` напрямую |
+| `boba-aid` | `psycopg` в `mcp_servers/store.py`, `oauth_store.py` | `boba-db-postgres` и собственный extra `dev` | перенести/добавить `psycopg` в обязательные зависимости: импорт находится в `src` |
+| `boba-aid`, tests | `boba.agent` в `test_mcp_agent.py` | зависимость `boba-cli` из `dev` | объявить `boba-agent` непосредственно в `dev` |
+| `boba-ch-meta-scraper` | `clickhouse_connect` в `worker.py:20` | `boba-db-clickhouse[payload]` | объявить драйвер напрямую или скрыть его типы за портом DB-адаптера |
+| `boba-ora-meta-scraper` | `oracledb` в `worker.py:20` | `boba-db-oracle[payload]` | аналогично, не полагаться на extra другого пакета как на декларацию своего импорта |
+| `boba-stand` | `oracledb` в `stand/oracle_user.py:19` | `boba-db-oracle[payload]` | объявить прямую зависимость стенда |
+
+На исходном срезе первые три строки были расхождениями с действующим аудитором.
+Последние три требовали ужесточения политики: `DepsAudit._src_findings` разрешал
+импорт зависимости, принесённой extra другого пакета (`via_extras`). Это
+скрывало непосредственную связь с API драйвера при чтении pyproject потребителя,
+хотя полная установка работала. Исключение удалено в §26; прямые зависимости
+исправлены у всех выявленных потребителей, включая тесты и psycopg-pool.
+`engineio` в aid корректно обеспечен прямым `python-engineio`; различие имён
+импорта и дистрибутива не является missing dependency.
+
+Других отсутствующих прямых внутренних зависимостей при описанном AST-проходе
+`src` не найдено. Для внешних импортов сопоставлялись имена модулей и
+дистрибутивов, учитывались optional-dependencies; сверка с `DepsAudit` отдельно
+различает production extras и `dev`. Это не полноценная проверка
+каждой допустимой комбинации extras в изолированном wheel-окружении.
+
+У `boba-chat` объявлен `boba-toolkit`, но прямого импорта не найдено — кандидат
+на удаление декларации после проверки API/сборки. У aid так же не найдено прямых
+импортов ClickHouse/Oracle; их необходимость для entry points адресов/соединений
+уже явно записана в `[tool.boba.unimported]`. Удалять их по одному AST нельзя.
+
+### D09. Привязка к внутренностям SDK — P2
+
+`llm/http/openai.py:33` импортирует приватный `httpx_sse._decoders.SSEDecoder`.
+`mcp-client` реализует `BorrowedDispatcher`, наследование `ClientSession` и
+доступ к `_wire`; `aid/infra/socket_events.py` оборачивает handlers Chainlit.
+Не каждый класс `mcp.shared` автоматически приватный, но использование
+underscore-полей и внутренней диспетчеризации увеличивает связанность.
+
+Изолировать такие зависимости в адаптере библиотеки и закрепить contract tests.
+Проверить публичные расширения SDK перед написанием новой обвязки. Удалять
+код только после проверки cancellation, progress, subscription, auth и relay;
+3 365 строк `mcp-client/client.py` не равны 3 365 строкам лишнего MCP-протокола.
+
+### D10. Глобальный тестовый bootstrap скрывает изоляцию — P1/P2
+
+Корневой `pythonpath` перечисляет почти весь workspace; `packages/conftest.py`
+всегда подключает `boba.stand.fixtures` и `boba.stand.ui.fixtures`. У
+`boba-stand` большая зависимость от приложений, БД, браузера и SDK. Из-за этого
+проверка маленького пакета в общем окружении может не обнаружить отсутствующую
+декларацию зависимости.
+
+Разделить подключение UI/живого стенда по наборам, сохранить общие лёгкие
+фикстуры в stand-core; добавить проверку импорта собранного wheel с его
+объявленными extras. Это улучшение достоверности проверок, не повод удалить
+интеграционные тесты ради статистики строк.
+
+## 8. Готовые библиотеки: что проверять на замену
+
+В таблице перечислены **кандидаты**, а не уже выбранные зависимости.
+Возможность библиотеки подтверждена ссылкой; применимость к Boba — инженерная
+гипотеза. Оценивать чистый выигрыш: удалённый собственный код минус адаптер,
+дополнительная конфигурация, особенности сборки и стоимость обновлений.
+После уточнения цели 2026-11-02 каждый новый кандидат также проходит сравнение
+транзитивного состава по §13: меньше Python-кода при существенно большем наборе
+сторонних компонентов не считается безусловным улучшением. В частности, Docling,
+ADBC и новый DI пока не предлагаются к установке.
+
+| Приоритет / кандидат | Что может заменить | Что уже подтверждено документацией | Ограничение и критерий прототипа |
+|---|---|---|---|
+| P1: stdlib / уже используемые примитивы | маленькие helpers и повторные преобразования | прежде всего проверять уже имеющиеся `RowWindow`, `TransferRun`, `QueryBuilder`, `AsyncExitStack`, `graphlib` | Не заменять streaming DAG целиком `TopologicalSorter`: он решает порядок зависимостей, не IPC, fan-out, барьер или остановку процессов |
+| P2: Dishka | `runtime.di` и ручное управление scope | [Scopes](https://dishka.readthedocs.io/en/stable/advanced/scopes.html) и [async providers](https://dishka.readthedocs.io/en/latest/provider/provide.html): области жизни, вложенные контейнеры, async providers | прототип app/session/call, async-generator cleanup, Chainlit callbacks; сравнить с явной сборкой, собственный container всего 248 строк |
+| P2: Starlette `FileResponse` | локальный путь `runtime.served.RangeHeader/StreamedFile` | [Responses](https://starlette.dev/responses/): Range, 206/416, Content-Length, ETag, Last-Modified | применимо к локальному path; remote/image storage выдаёт абстрактный поток, доступ и mount lifetime нельзя потерять; не скачивать весь файл в tmp ради API |
+| P2: Arrow ADBC PostgreSQL, только условный кандидат | часть `postgres/arrow.py`, преобразования COPY↔Arrow | [PostgreSQL driver](https://arrow.apache.org/adbc/25/driver/postgresql.html): COPY, bulk ingestion, транзакции, явные ограничения типов | исходный выбор — psycopg3 и объединение собственного кода (§8.2); сначала доказать выигрыш с учётом второго драйвера и бинарного состава, затем проверять PG/Greenplum, типы, отмену, Kerberos, память, Nuitka; create/backup/schema-sync остаются Boba |
+| P2: Docling | часть `doc/readers`, OCR routing, структурный разбор/чанкирование | [Официальный репозиторий](https://github.com/docling-project/docling), [параметры pipeline](https://docling-project.github.io/docling/reference/pipeline_options/): форматы, document model, OCR и настройки pipeline | сравнить на своём корпусе PDF/Office/HTML, page-window/stream без seek, startup/RSS, модели и offline-сборку; нынешний reader уже использует форматные библиотеки, полная замена может оказаться тяжелее |
+| После основных этапов: AnyIO, §10.2 | решение для насосов: координация I/O, очереди, время жизни задач и bridges | [Streams](https://anyio.readthedocs.io/en/stable/streams.html): byte/object streams, ограниченный буфер, закрытие и async iteration | Разработка запланирована пользователем; memory stream доставляет элемент одному получателю. Протокол кадров, fan-out, барьеры, гарантии запуска и завершения требуют отдельной проверки; наличие AnyIO в одном приложении не доказывает его наличие в каждой песочнице |
+| P2: публичный API HTTPX | часть HTTP transport glue | [Transports](https://www.python-httpx.org/advanced/transports/): custom transports и ограниченный connect retry | существующие Retry-After/status budgets, SPNEGO и cancellation не покрываются простым `retries=N`; MCP использует `httpx2`, обычный transport — `httpx`, сначала совместимость SDK |
+| P2: Import Linter + deptry, инструменты контроля | собственный `stand_core.deps` (R15) | [Layers](https://github.com/seddonym/import-linter/blob/main/docs/contract_types/layers.md) проверяет и косвенные цепочки; [deptry rules](https://deptry.com/rules-violations/) различает missing/transitive/dev dependencies | проверить namespace `boba`, extras, allowlist entry points и общие conftest; учитывать уже действующие правила Boba, измерять удаление собственного checker |
+
+Для Oracle дополнительный универсальный слой пока не обоснован:
+`payload.py` уже вызывает `fetch_df_batches`, `executemany_arrow` передаёт Arrow
+batch драйверу; [python-oracledb](https://python-oracledb.readthedocs.io/en/stable/user_guide/dataframes.html)
+поддерживает Arrow DataFrames, batch fetch и вставку. Проверять новые возможности
+драйвера и необходимость локального patch полезнее, чем повторно «внедрять Arrow».
+Direct path load — отдельный режим с другой семантикой, а не автоматическая
+замена транзакционной вставки.
+
+Не рекомендовано на основании этого аудита:
+
+- заменять весь agent loop на другой agent framework без сохранения history,
+  replay, compaction, permissions, ACP и golden requests;
+- заменять psycopg/специальный SQL скраперов ORM ради меньшего числа строк:
+  поддержка системных каталогов разных версий и COPY остаётся задачей проекта;
+- вводить Redis/Celery вместо Postgres bus/locks только ради библиотеки:
+  изменятся гарантия доставки, владение, транзакции и эксплуатация;
+- считать bubblewrap/cgroups/zygote обычным запускающим кодом и убирать
+  изоляцию; библиотечная замена должна сохранять те же свойства;
+- объединять cookies, JWT сессии, OAuth access/refresh и JWE в один тип токена:
+  у них разные аудитории, жизненный цикл и правила отзыва.
+
+### 8.1. Обязательная оценка каждого внешнего компонента
+
+Для каждого затрагиваемого блока сравнивать сохранение собственной реализации,
+её упрощение/объединение, использование stdlib или уже имеющейся библиотеки и
+введение новой зависимости. Цель — меньше совокупной сложности и стоимости
+сопровождения при сохранении поведения. Внешний компонент не получает
+предпочтение только потому, что сокращает число строк в репозитории.
+Поиск не ограничивать маленькими helpers: оценивать замену целых подсистем,
+если она позволяет убрать значительную реализацию вместе с её обвязкой.
+При этом список кандидатов выше пока не доказывает достижимость цели §10.1.
+
+До выбора библиотеки составлять её карточку с проверяемыми данными:
+
+| Критерий | Что записывать и проверять |
+|---|---|
+| Альтернативы | Сохранить текущий код; объединить/упростить его; использовать существующий стек; добавить библиотеку. Для каждой альтернативы указать выигрыш и оставшиеся обязанности; сохранение своего кода — полноценное решение |
+| Область замены | Конкретные файлы, классы, сценарии и собственные реализации, которые исчезнут; кто останется потребителем |
+| Чистое сокращение кода | Удаляемые строки минус новые адаптеры, конфигурация, сборочная логика, совместимость и сопровождаемые patches; оценка до прототипа и фактический diff после него |
+| Покрытие функций | Матрица «обязательный сценарий → API библиотеки → существующий тест → результат»: покрыто напрямую / нужен адаптер / не покрыто / пока неизвестно; отдельно ошибки, отмена, streaming, память, auth и форматы данных |
+| Полное дерево зависимостей | Точная версия, extras и платформенные условия; добавляемые, сохраняемые и действительно исчезающие прямые и транзитивные компоненты по каждому затронутому профилю §13 |
+| Повторные реализации | Какие HTTP, JWT, конфигурационные, сериализационные, модельные и native стеки уже есть; не приносит ли кандидат ещё один аналог; можно ли использовать существующий backend публичным API или поддерживаемым extra |
+| Совместимость графа | Ограничения версий существующих SDK, Python/OS, resolver и lock, отсутствие обратных зависимостей и циклов; импорт общих моделей без инфраструктурных extras |
+| Поставка и эксплуатация | Nuitka/rootfs/frontend, offline и закрытый реестр, размер и native компоненты, локальные модели, ресурсы и реальные показатели на нужных сценариях |
+| Бинарная цена | Новые драйверы, `.so`, зависимости wheel и системные пакеты; какие библиотеки вендорятся или используют общую системную копию; отдельные сборки, обновления, лицензии и проверки ИБ. Наличие `pyarrow` не доказывает отсутствие цены у нового драйвера |
+| Сопровождение | Публичность нужного API, лицензия, активность сопровождения, обновления безопасности, стоимость миграций и patches; ссылки на первичные источники с датой проверки |
+| Решение | Сохранить / упростить свой код / использовать имеющуюся библиотеку / внедрить новую / прототипировать / отложить; измеренный выигрыш, пробелы, причины отказа от альтернатив и условия пересмотра |
+
+Сравнивать исходное замыкание `G0` с пересчитанным resolver замыканием `G1`
+после добавления кандидата **и удаления заменяемых компонентов**:
+`добавлено = G1 − G0`, `удалено = G0 − G1`. Помимо количества записывать сами
+имена, версии и пути от корня; одинаковый размер множеств может скрывать
+появление второго HTTP-стека. Сравнивать и отдельные профили, и их объединение:
+библиотека, уже имеющаяся в aid, может быть новой тяжёлой зависимостью для CLI.
+Уменьшение install tree подтверждать отдельно составом готовой поставки.
+
+Обязательный функциональный пробел не компенсируется большой экономией строк.
+Постоянный дубликат уже используемого стека требует отдельного обоснования
+по §8.2; без него вариант отклоняется или меняется способ интеграции.
+Временное сосуществование при миграции
+допустимо только с конкретным планом удаления старой ветки и проверкой итогового
+графа. Не обходить зависимости библиотеки через `--no-deps`, подмену metadata
+или private API ради красивого подсчёта; требуемый upstream patch учитывать
+как сопровождаемый код и отдельную стоимость.
+
+При сопоставимых возможностях и затратах предпочитать уже освоенный стек и
+меньшее число независимо сопровождаемых компонентов. Дополнительная библиотека
+должна давать существенный, проверяемый выигрыш относительно упрощения своего
+кода, особенно если приносит второй драйвер или бинарный стек. Если критерии
+противоречат друг другу, явно записать компромисс; не считать новый framework
+выигрышем только потому, что он скрывает много кода за одним вызовом.
+Каждый выбранный кандидат проверяется прототипом на существующих тестах §11.
+Непроверенные предположения в карточке остаются предположениями.
+
+### 8.2. Сохранение своей реализации и пример PostgreSQL/Arrow
+
+Уточнение пользователя от 2026-11-02: цель сокращения кода не означает
+обязательную замену собственного решения внешним. При недоказанном выигрыше
+сохранять текущую реализацию и искать упрощение в пределах существующего стека.
+Библиотека может быть полезной, но дороже небольшого собственного адаптера с
+уже проверенными контрактами, особенно для сборки и проверок ИБ.
+
+В [`boba-db-postgres/pyproject.toml`](../packages/infra/db/boba-db-postgres/pyproject.toml)
+основной драйвер — `psycopg[binary,pool]>=3.3,<4`, Arrow подключается отдельным
+extra с `pyarrow`. **Исходное решение для PostgreSQL — сохранить psycopg3**,
+объединить дубли управления таблицами (R07) и использовать возможности
+существующих COPY/Arrow-адаптеров. Само наличие Arrow-формата не обосновывает
+добавление ещё одного PostgreSQL-драйвера.
+
+Для возвращения к ADBC нужны ответы в карточке §8.1:
+
+- Какую существенную проблему не удаётся разумно решить на psycopg3 и какой
+  выигрыш даст ADBC: удаляемая реализация, производительность, память или
+  необходимая функция, подтверждённые на сценариях проекта.
+- Останется ли psycopg3 в том же профиле поставки; какие соединения, пулы,
+  настройки аутентификации и обработки ошибок придётся сопровождать параллельно.
+- Какие новые бинарные и транзитивные компоненты реально попадут в wheel,
+  Nuitka/rootfs и SBOM; что потребуется для offline-сборки, обновлений и ИБ.
+- Сколько собственного кода останется для совместимости, типов, cancellation,
+  транзакций и схем; действительно ли суммарный результат лучше упрощения
+  текущего решения после прохождения существующих тестов.
+
+Если результат — небольшой выигрыш по строкам при сохранении psycopg3 и
+появлении второго бинарного драйвера, кандидат отклоняется. Существенный
+подтверждённый выигрыш может оправдать новую зависимость; это инженерное
+решение по фактическому составу и поведению, а не общий запрет библиотек.
+ADBC остаётся условным кандидатом, его установка и прототип не обязательны.
+
+## 9. Предлагаемая целевая граница пакетов
+
+Это ориентир, не задание создать все перечисленные новые дистрибутивы.
+Сначала модуль в существующем корректном владельце; отдельный пакет — когда
+нужна независимая установка, переиспользование или запрет обратной зависимости.
+
+```mermaid
+flowchart TD
+    Apps[apps: aid / cli / mcp / ix CLI] --> Services[сценарии: agent / toolrun / auth / indexing]
+    Apps --> Adapters[infra: PostgreSQL / HTTP / crypto / files / sandbox]
+    Services --> Contracts[чистые модели и порты]
+    Adapters --> Contracts
+    Services --> McpModels[чистые MCP-карточки и ответы]
+    McpModels --> Types[mcp-types]
+    ToolExecution[FD / pump / chain runtime] --> ToolContracts[tool contracts / DAG plan / result]
+    Services --> ToolContracts
+    Adapters --> ToolContracts
+```
+
+| Область | Существующий контракт | Общая реализация / место | Что должно исчезнуть |
+|---|---|---|---|
+| MCP cards/replies | `ToolCard`, `ToolReply`, `ToolHints` | узкий общий модуль с единственным codec | две одинаковые трактовки MCP |
+| Потоки и запуск | `ToolCall`, launcher ports, `StreamSpec`, DAG | исполнитель в service/infra, process и sandbox реализуют один контракт | I/O в чистом toolkit и копии lifecycle |
+| Загрузка БД | `TransferTable`, `TransferSink`, `TransferRun` | общая PG-table реализация + dialect/schema strategy | повторные create/backup/execute |
+| Индексный цикл | `IxRegistry`, SQL run files | `SqlIndexCycle` в ix-core + FTS/TRGM policies | копии цикла и отчёта |
+| Доступ к соединениям | store/grants ports | Postgres queries у broker/storage | SQL из core/access |
+| SSO по HTTP | `SsoRequest`, `SsoChallenge`, `SignedIn` | небольшой auth-web адаптер | ребро OAuth→runtime |
+| История/треды/шина | уже имеющиеся `HistoryStore`, chat/messaging/locks ports | конкретные storage adapters | зависимости потребителей портов от общего runtime |
+| Skills | карточка/текст skill | порт каталога; filesystem adapter на границе | чтение произвольного каталога из чистого agent domain |
+
+Существующие удачные границы сохранять: `boba-llm` и реализации провайдеров,
+`HistoryStore` и разные storage, `boba-kerberos` и `boba-krb`, manifest программы
+плагина, общий `ix_core.scrape`, `TransferRun` и стратегии. Не заменять их
+новыми интерфейсами с теми же обязанностями.
+
+## 10. Последовательность работ и измеримый результат
+
+| Этап | Изменения | Условие окончания |
+|---|---|---|
+| 0. Зафиксировать исходную базу | этот документ, LOC по категориям, граф; перечень нужных сценариев старого KB/каталога | понятен знаменатель сокращения; исключённый/research/upstream код учтён отдельно |
+| 1. Быстрые независимые сокращения | R01 при подтверждении ненужности; R05–R08 малыми изменениями; D08 | один владелец общих функций, прямые зависимости объявлены; чистое уменьшение кода видно в diff |
+| 2. Общая основа двух KB-контуров | R02/R03/R04: одинаковые операции Confluence, документов и текста перенести в общие компоненты | оба индексатора, поиска, хранилища и конфиги сохранены; дубли общей логики удалены; тесты обоих потребителей проходят |
+| 3. Устранить широкие зависимости | D04, D01, D02; затем только необходимые D03/D05/D06 | чистые контракты не импортируют I/O; OAuth устанавливается без runtime; общий MCP codec не тянет tool execution |
+| 4. Проверка выбранных альтернатив | прототипировать только кандидатов, прошедших сравнение §8.1–8.2; сохранение и упрощение своей реализации допустимы | доказана эквивалентность на тестовом наборе и совокупная выгода по коду, зависимостям и сопровождению; неудачный прототип не остаётся третьей реализацией |
+| 5. Закрепить результат | уточнить существующий DepsAudit либо заменить по R15; lint contracts, package isolation, build manifests и guides | новый дубль/запрещённая цепочка выявляются автоматически; документ отражает итоговый граф |
+| 6. Решение для насосов на AnyIO | после основной работы этапов 1–5 разработать и проверить реализацию по §10.2 | сохранены сценарии перекачки и остановки; измерены код, зависимости каждого профиля, скорость и память; вытесненная реализация удалена после проверки |
+
+Порядок отдельных изменений может уточняться: выделение чистого MCP codec из
+R05 одновременно помогает D01; R03/R04 нельзя оценивать независимо от R02.
+Работы по пакетным границам должны завершаться удалением вытесненных внутренних
+дублей; нужные публичные API и самостоятельные сценарии сохраняются. Общий слой
+не должен оставаться третьей реализацией рядом с прежними копиями.
+
+Считать отдельно:
+
+- net LOC собственного production `src` и SQL; тесты — отдельной строкой;
+- архивирование неактивного/research кода и удаление upstream overlay;
+- число повторных реализаций одной операции; число нужных индексаторов не
+  является метрикой дублирования;
+- обязательные зависимости и их транзитивное замыкание для `cli`, `oauth`,
+  `llm-http`, а также доступность минимальной установки;
+- размер бинарников/rootfs, startup, RSS и скорость перекачки — измерять, не
+  выводить из количества строк;
+- сохранённые сценарии и стоимость обновления внешних библиотек.
+
+Реалистичный первый резерв известен без обещаний процентов: 8 151 строка
+отключённого каталога; отдельно до 14 354 строк исследовательского пакета при
+решении вынести его. Это **не** 22 505 строк экономии рабочего runtime.
+Резерв активной части в общих операциях индексации, передачи и протоколов ещё
+нужно измерить после проверки конкретных повторений. Существование двух нужных
+KB-контуров само по себе не доказывает крупной экономии. Целевой порог ниже
+задаёт направление работы; достижимый процент пока не подтверждён прототипами
+и проверкой функций.
+
+### 10.1. Цель: сократить сопровождаемую кодовую базу более чем вдвое
+
+Требование пользователя: стремиться к **сокращению более чем на 50%** за счёт
+объединения повторных реализаций, удаления заменённого кода и подходящих готовых
+компонентов. Внешние компоненты — важный источник сокращения, но выбор между
+ними и собственным кодом определяется совокупной выгодой по §8.1–8.2.
+Целевой процент не оправдывает ухудшение архитектуры, поставки или сопровождения.
+Это целевой результат рефакторинга, а не обещание, что перечисленных в аудите
+небольших замен достаточно.
+
+Уже измеренный ориентир для активного производственного Python `src` —
+**156 653 физических строки** на срезе §2. Для этого состава порог «более чем
+вдвое» означает **не более 78 326 строк** после изменений, то есть чистое
+сокращение минимум на 78 327 строк. Новые общие пакеты, адаптеры и перенесённые
+файлы входят в итог независимо от места в дереве; знаменатель не меняется
+из-за переименования или переклассификации пакета.
+
+Это ориентир Python-части, не всего проекта. Перед первым этапом зафиксировать
+также воспроизводимый состав активного SQL, frontend, сборочного кода,
+конфигурации и собственных patches, исключив справочные SQL из §2. Вести
+сводный результат и отдельные дельты по этим категориям; достижение порога
+Python не объявлять сокращением всего проекта вдвое. Тесты, стенды,
+исследовательские материалы и архивирование неактивного кода учитывать
+отдельно, не использовать их удаление для достижения производственной цели.
+
+Не считать экономией перенос собственной реализации в другой репозиторий,
+генерацию того же сопровождаемого алгоритма, уплотнение форматирования либо
+удаление комментариев. Форки и vendor-копии остаются сопровождаемым кодом;
+при переходе на upstream учитывать собственный overlay/patch и стоимость
+обновлений. Физические строки дополнять проверкой SLOC и фактически удалённых
+обязанностей, чтобы метрика отражала уменьшение реализации.
+
+Для движения к порогу вести список крупных замен с карточками §8.1 и
+консервативной оценкой чистого удаления. Учитывать пересекающиеся файлы один
+раз: несколько альтернатив одной подсистемы нельзя суммировать. После каждого
+прототипа уточнять достижимый остаток, удалять ненужную старую обвязку и
+обновлять фактический результат. Небольшие замены DI/helpers не подменяют
+исследование крупных резервов.
+
+Если подтверждённый набор изменений не достигает цели, искать обоснованные
+упрощения крупных подсистем и внешние компоненты, документировать оставшийся
+разрыв и причины сохранения собственного кода. Не закрывать разрыв потерей
+нужных возможностей, ослаблением тестов
+или постоянным разрастанием дублирующих зависимостей. Кандидат принимается
+только с проверкой поведения по §11 и итогового графа по §13.
+
+### 10.2. Разработка решения для насосов на AnyIO после основной работы
+
+По решению пользователя от 2026-11-02 это отдельный запланированный этап
+разработки, следующий за основным сокращением и улучшением кодовой базы.
+Текущие изменения `boba-tool-io` и общих пайпов (§30–31) не являются переходом
+на AnyIO. До завершения основной работы миграция насосов не начинается.
+
+1. Зафиксировать обязанности текущих насосов и контракт одного законченного
+   пути перекачки: чтение/запись, ограничение буферов, кадры, несколько
+   потребителей, барьеры, таймауты, отмена, ошибки и закрытие ресурсов.
+2. Разработать реализацию общей I/O-координации на AnyIO, используя его
+   потоки, группы задач и области отмены там, где они покрывают контракт.
+   Явно определить границу с синхронными драйверами и действующим API вызова.
+   Прикладные правила загрузки таблиц, типы БД, изоляция и протокол зиготы
+   сохраняются; новый драйвер БД для этого этапа не требуется.
+3. Сравнить старый и новый пути на существующих process/zygote, streaming DAG
+   и PG/CH/Oracle тестах: порядок/целостность данных, медленный получатель,
+   ограничение памяти, обрыв источника/приёмника, Stop, rollback, отсутствие
+   зависших задач, процессов и утечек дескрипторов.
+4. Измерить чистое сокращение собственного кода с учётом адаптеров, скорость,
+   CPU/RSS, запуск и состав каждого host/rootfs. AnyIO уже присутствует в
+   проекте, но его добавление в минимальный профиль может расширить зависимости.
+5. После подтверждения совместимости выполнить переход потребителей и удалить
+   вытесненный код. Не оставлять две постоянные реализации одной механики.
+   Существенные развилки по API, поведению или составу зависимостей обсудить
+   с пользователем на основе работающего прототипа и измерений.
+
+Перед возобновлением основной работы также действует требование пользователя:
+сначала проверить все предусмотренные категории тестов и исправить выявленные
+проблемы. Непроверенные, пропущенные и ожидаемо падающие сценарии перечислять
+явно; успешный выбранный набор не называть прохождением всех тестов проекта.
+
+### 10.3. Отдельный этап новых возможностей MCP Apps
+
+Пользователь уточнил границу полного исправления: сейчас исправляются
+существующие функции; ещё не реализованные возможности из прежних `xfail`
+разрабатываются отдельным этапом. Эти ожидаемые падения не засчитываются как
+работающие сценарии и не маскируют новые ошибки других тестов.
+
+Отдельный этап включает потоковую передачу частичных аргументов через
+агент/ACP/UI, обозначение источника сообщений приложения, публикацию
+приложений и Prefab-результатов сервером Boba, настройки разрешений и рамки
+iframe, ограничение размера UI-ресурса и генеративный UI. Потребность в
+Deno/Pyodide и влияние на состав поставки оцениваются перед реализацией.
+Этот этап не подменяет основной рефакторинг или отложенную разработку AnyIO.
+
+## 11. Проверки, которые должны сопровождать рефакторинг
+
+Существующие тесты — обязательная основа сохранения функциональности на всех
+этапах R/D/S. Проверка архитектуры также выполняется при каждом изменении,
+а не только на этапе выделения пакетов. Следующие правила фиксируют требования
+пользователя от 2026-11-02 к дальнейшей работе.
+
+| Область | Имеющиеся проверки / обязательный сценарий |
+|---|---|
+| MCP codec и плагины | `boba-toolkit/tests/test_mcp.py`, `test_wire.py`, `test_manifest.py`; `boba-stand/tests/test_plugin_manifests.py`; manifest программы в собранном окружении |
+| Agent/ACP/UI | `boba-agent/tests` builder/records/loader/compaction/permissions; `boba-aid/tests/test_agent_settings_contract.py`, `test_mcp_relay.py`, ACP/feed/опросы; UI multi-tab/reconnect/edit/replay |
+| KB/Confluence | `boba-tool-knowledge/tests/test_kb_ix.py`; `boba-cfl-indexer/tests` по вложениям/links/comments/stop/memory; сравнительный корпус выдачи |
+| Перекачка | `boba-pump-stand/tests`: pg/ch/ora matrix, schema-sync edges, Arrow, keepalive, память и обрывы |
+| Auth | `boba-auth/tests`, `boba-oauth/tests/test_oauth_server.py`, `boba-mcp-client/tests/test_mcp_auth.py`; SSO/proxy/refresh и ресурс токена |
+| Storage/bus/locks | `boba-runtime/tests/test_live_bus.py`, `test_live_locks.py`, `test_stream_journal.py`; `aid` streaming upload/remote storage/Range и отмена |
+| Sandbox и упаковка | process/sandbox launcher tests, warmup/zygote; `build/plugin_check.sh`, self-check ресурсов и entry points; binary tests после сборки |
+| Фронтенд | `web/page` TypeScript/ESLint, сборка Chainlit frontend/react-client/copilot, UI/look по изменённым сценариям |
+
+Это перечень для последующих изменений, **не отчёт об успешном прогоне сейчас**.
+Текущий документ проверяется по существованию ссылок/пакетов, полноте реестра,
+подсчётам, исходникам и декларациям. Изменений исполняемого кода нет.
+
+Дополнительно напрямую выполнен существующий `DepsAudit.findings()` текущим
+`.venv/bin/python`, без запуска pytest или сервисов. Он проверил 71 активный
+workspace-пакет и вернул четыре расхождения:
+
+```text
+boba-chat [src] unused boba-toolkit
+boba-aid [src] missing psycopg
+boba-aid [tests] missing boba-agent
+boba-stand [src] missing boba-mcp-client
+```
+
+Они описаны в D08 и оставлены для следующего этапа. Вызов аудита завершился
+нормально; список findings не пуст — это не успешное прохождение теста
+`test_pyproject_matches_imports`.
+
+### 11.1. Цикл изменений и разбор падающих тестов
+
+1. **До правки** определить затронутые сценарии, пакеты и их потребителей;
+   запустить существующие проверки этой области и зафиксировать исходный
+   результат. Перед первым этапом рефакторинга получить общий базовый прогон.
+   Уже существующие падения записывать с причиной, а не считать их новыми
+   регрессиями или молча исключать из следующих запусков.
+2. **Менять небольшими завершёнными шагами.** После каждого шага запускать
+   тесты изменённых компонентов и зависимых потребителей. Перенос общего
+   контракта требует проверки всех его реализаций и клиентов, замена библиотеки
+   — существующих сценариев использования, ошибок, отмены и сериализации.
+3. **Каждое падение разбирать по существу:** воспроизвести конкретный тест,
+   прочитать traceback и логи стенда, сопоставить ожидаемое поведение с
+   контрактом. Различать регрессию кода, неверное ожидание/fixture, проблему
+   окружения и нестабильность теста. Повторный успешный запуск сам по себе
+   не объясняет предыдущее падение.
+4. **Исправлять причину и повторять цикл:** сначала упавший тест, затем весь
+   затронутый набор и его потребителей. При сохранённом контракте исправлять
+   реализацию. Тест менять, когда доказана ошибка проверки либо изменился
+   согласованный контракт; обновление путей импортов при переносе допустимо,
+   проверяемое поведение должно сохраниться. Не ослаблять assertions,
+   не добавлять skip/xfail, ретраи и новые эталоны только ради зелёного результата.
+5. **Перед завершением этапа** выполнять общий регрессионный прогон и нужные
+   специализированные проверки из таблицы. После каждого цикла изменений кода
+   проверять ошибки типов Pylance/Pyright в коде и тестах, исправлять причины;
+   выполнять применимые lint/dependency checks. После изменения упаковки,
+   extras, entry points или SDK проверять также установку и собранный артефакт.
+6. **Не оставлять необъяснённые падения.** Исправлять код, тест или доступное
+   тестовое окружение итеративно до успешного результата. Если обязательный
+   внешний ресурс недоступен и восстановить его нельзя, явно записать
+   непройденный сценарий и препятствие; такой шаг не считать полностью
+   проверенным. Исходные известные ошибки учитывать отдельно от новых.
+
+Обычный запуск pytest здесь не равен всем тестам: корневой
+[`pyproject.toml`](../pyproject.toml) по умолчанию исключает `integration`, `ui`,
+`look`, `load`, `run`. Нужные наборы выбирать явно по изменённым возможностям
+и требованиям их стендов; binary-проверкам нужна соответствующая сборка.
+Долгие прогоны выполнять в именованной tmux-сессии с сохранением лога и кода
+завершения; perf-измерения проводить без конкурирующих тяжёлых прогонов.
+
+Сначала использовать имеющиеся тесты. Новую регрессионную проверку добавлять,
+когда обнаруженное поведение ими не покрывается; предпочтителен действующий
+интеграционный стенд с реальными зависимостями. Удаление старой реализации
+не должно удалять единственную проверку нужного сценария: перенести её на
+общий компонент и проверить оставшиеся адаптеры.
+
+### 11.2. Постоянная проверка общих моделей и границ пакетов
+
+При работе с каждым затронутым компонентом заново оценивать следующее:
+
+- **Общая семантика.** Есть ли уже модель, правило, алгоритм или контракт
+  с тем же смыслом у других потребителей? Объединять совпадающие инварианты
+  и поведение; внешнее сходство полей или методов недостаточно. Сохранять
+  обоснованные различия, например DTO разных границ из R12.
+- **Независимость от инфраструктуры.** Общие модели, доменные правила,
+  порты и чистые алгоритмы не знают HTTP-клиентов, драйверов БД, файловой
+  системы, процессов, env и конкретного UI. Общие сигнатуры и ошибки также
+  не должны требовать типов конкретного SDK. Преобразование внешних DTO,
+  выполнение I/O и настройка соединений остаются в адаптерах; приложение
+  связывает реализации с контрактами.
+- **Действительная общая реализация.** Чистый одинаковый алгоритм переносить
+  целиком к общему владельцу. Различающиеся операции инфраструктуры выражать
+  небольшими Protocol/ABC, если есть реальная граница подмены. Общий базовый
+  класс оправдан общим поведением и инвариантами, а не только одинаковыми
+  именами методов; существующие протоколы переиспользовать.
+- **Связность группы.** Модели, ошибки и контракты одной предметной области
+  держать рядом. Группировать по ответственности и потребителям, а не собирать
+  все абстракции проекта в безразмерные `common`, `models` или `toolkit`.
+  Проверять, не вынужден ли адаптер импортировать чужой сервис или весь runtime
+  ради одного нейтрального типа.
+- **Нужен ли пакет.** Сначала выбирать подходящий существующий пакет/модуль.
+  Выделять отдельный пакет, когда это обеспечивает независимую установку,
+  повторное использование несколькими адаптерами или удаляет нежелательное
+  транзитивное замыкание. Не создавать пакет на каждый класс. Для решения
+  записать ответственность, публичный API, потребителей и разрешённые зависимости.
+- **Полный путь импорта.** Проверять не только прямые imports, но и
+  `__init__`/re-exports, обязательные зависимости, extras и entry points.
+  Импорт общей модели не должен косвенно запускать I/O или требовать установки
+  инфраструктурного SDK. `TYPE_CHECKING` и ленивый import сами по себе не
+  устраняют архитектурную связь или обязательную зависимость дистрибутива.
+- **Доказательство изоляции.** После переноса проверить граф на циклы,
+  декларации прямых зависимостей, импорт и установку общего пакета без чужих
+  инфраструктурных extras. Общий dev `.venv` и корневой `pythonpath` могут
+  скрыть отсутствующую декларацию — см. D08/D10. Тесты контрактов и адаптеров
+  должны подтверждать прежнее поведение после изменения направления связей.
+
+Направление остаётся таким: сценарии и инфраструктурные реализации зависят
+от общих контрактов; контракты не зависят от реализаций. Общая инфраструктурная
+логика, например PostgreSQL-загрузка, тоже может переиспользоваться, но остаётся
+в инфраструктурном пакете, а не объявляется независимым доменным компонентом.
+
+В каждом шаге принимать явное решение: оставить текущую группу, объединить
+дубли, выделить модуль либо разделить пакеты. Необязательное соседнее изменение
+можно записать в R/D/S с конкретными потребителями и причиной, не раздувая
+текущий шаг; обнаруженная регрессия текущего шага исправляется до его завершения.
+
+### 11.3. Что фиксировать по завершении каждого шага
+
+Обновлять этот документ и отчёт о работе: сохранённые сценарии; выбранный
+владелец общих моделей/логики и причина группировки; удалённые реализации
+и временные адаптеры; изменения прямых и транзитивных зависимостей; точные
+команды проверок, окружение, результаты и пути к логам. Для падений указывать
+причину, исправление и результат повторной проверки; пропуски и недоступные
+проверки перечислять отдельно. Не подменять сокращение кода сокращением тестов.
+
+### 11.4. Security-проверки и актуальность Make-сборки
+
+После каждого законченного цикла изменений выполнять `bash sec/sec.sh all`
+(равнозначная цель — `make -C build sec`). Это проверка всего дерева `packages`
+через Ruff, Bandit, Semgrep и SCA по lock; локальный lint изменённых файлов
+её не заменяет. Сохранять команду, версию проверяемого дерева, код завершения,
+вывод и причины пропусков. Разбирать новые и исходные находки отдельно;
+пустой/неполученный отчёт и отсутствие данных о локальном wheel не считать
+доказательством отсутствия уязвимостей. Исключения проверок должны иметь
+актуальное обоснование; не добавлять их для получения зелёного результата.
+
+После изменений сборки, shell/Dockerfile/frontend или большой перегруппировки
+дополнительно выполнять `bash sec/sec.sh full` и разбирать отчёт. В этом
+репозитории `full` — расширенный диагностический режим с правилами, которые
+намеренно отмечают динамические пути и команды
+([описание режима](../sec/semgrep-boba/README.md)).
+Он не заменяет обязательный режим `all`; каждое совпадение требует оценки
+проверок входа и границы доверия, а не механического устранения вызова.
+
+Make проверять в начале этапа, после изменений пакетов, extras, entry points,
+ресурсов, lock или native-компонентов и перед завершением этапа:
+
+1. Проверить `make -C build help` и план `make -C build -n build APP=<деталь>`:
+   существование путей и целей, корни пакетов, флаги Nuitka, копирование
+   ресурсов, версии, правила обновления артефактов и разделение сетевых стадий.
+2. Реально собрать затронутую деталь через `make -C build build APP=<деталь>`.
+   Dry-run не доказывает сборку. Для проверки использовать отдельный `OUT`
+   и `TAG`, когда это позволяет не затронуть работающие экземпляры и их артефакты.
+3. Проверить `self-check`, нужные binary/smoke-тесты и manifest/состав готового
+   артефакта. Проверять и удаление зависимостей, и сохранение нужных модулей,
+   плагинов, SQL, статики и shared libraries. Совпадение dev-окружения с lock
+   не заменяет эту проверку.
+
+Долгие сканы и сборки выполняются в tmux с логами. Сборка не подразумевает
+развёртывание. Если сборка или скан заблокированы окружением, явно фиксировать
+непроверенную часть и продолжать независимую работу; успех остальных проверок
+не скрывает это ограничение.
+
+### 11.5. Читаемость для человека
+
+Чистое сокращение строк не является целью отдельного метода. Предпочитать
+понятное последовательное выполнение, предметные имена и видимые зависимости.
+Применять стиль never nester: ранние возвраты и отказы, небольшую глубину
+вложенности, отдельные шаги валидации и действий. При распрямлении ветвлений
+сохранять условия, порядок побочных эффектов и закрытие ресурсов.
+
+Не уплотнять код цепочками условных выражений, вложенных comprehensions и
+универсальными helpers с множеством флагов ради LOC. Выделять метод или модель,
+когда у них есть понятная ответственность; не дробить простой сценарий так,
+чтобы для его чтения приходилось переходить по множеству файлов. Типы, имена,
+обычное форматирование и отступы должны объяснять основной ход программы.
+Комментарии нужны для причины, ограничения или нетривиального контракта;
+они не должны построчно пересказывать код или компенсировать сложную структуру.
+
+Использовать настроенные Ruff lint/format для затронутого Python-кода и
+штатные форматеры остальных языков. Не переформатировать несвязанные части
+репозитория вместе с функциональным изменением. При ревью отдельно проверять,
+может ли человек увидеть входы, зависимости, нормальный путь, ошибки и
+владельца ресурсов без изучения истории разговора.
+
+### 11.6. Продолжение работы и архитектурные развилки
+
+Работу вести последовательными проверенными итерациями до достижения
+рефакторинга: собственный код и внешние зависимости сокращены, повторные
+реализации устранены, общие контракты отделены от инфраструктуры, прямые
+импорты объявлены, а транзитивные пути и оставшиеся пересечения обоснованы.
+Цель >2× остаётся ориентиром §10.1. Успех отдельного небольшого этапа или
+зелёные тесты сами по себе не означают завершение всего плана.
+
+Существенные развилки обязательно обсуждать с пользователем **до зависимой
+реализации**: выбор новой библиотеки/сопровождаемого patch, смена основного
+индексного контура, формат миграции данных, удаление используемого API или
+компромисс между составом поставки и возможностями. Перед вопросом собрать
+факты и представить варианты, последствия, стоимость зависимостей и
+рекомендацию. Пока ответ не получен, продолжать независимые проверки и
+изменения; молчание не считается выбором. Рутинные правки в рамках уже
+согласованного решения не требуют повторных вопросов.
+
+При библиотечной замене сохранить работоспособность каждого затронутого
+компонента и его клиентов, включая ошибки, отмену, streaming, историю,
+права и упаковку. Старую реализацию удалять после доказательства эквивалентности;
+временное сосуществование заканчивается удалением миграционных адаптеров.
+
+Решение пользователя по S01 от 2026-11-02: внешняя интеграция
+**LiteralAI/Traceloop не используется и может быть исключена**, при обязательном
+сохранении истории чата, сообщений, шагов интерфейса и streaming. Это уточняет
+прежний открытый вопрос §13.4; способ исключения ещё требует оценки §8.1–8.2.
+
+## 12. Как повторить измерения
+
+Для состава исходников использовать только `git ls-files`, чтобы не включить
+локальные checkout/build/runtime. Для числа пакетов отобрать
+`packages/**/pyproject.toml`, прочитать `project.name`, `dependencies`,
+`optional-dependencies`, `entry-points`. Для каждого пакета считать отслеживаемые
+`src/**/*.py`; тесты и SQL считать отдельно. Проверять срез командой
+`git rev-parse HEAD` и незакоммиченные изменения `git status --short`.
+
+Существующую проверку зависимостей можно повторить из корня проекта:
+
+```bash
+.venv/bin/python - <<'PY'
+from pathlib import Path
+from boba.stand_core.deps import DepsAudit
+
+audit = DepsAudit(Path('packages').resolve())
+print(audit.render(audit.findings()))
+PY
+```
+
+Алгоритм графа:
+
+1. Преобразовать каждый путь под `src` в модуль Python; `__init__` соответствует
+   самому пакету. Построить отображение модуль → дистрибутив.
+2. Разобрать AST без исполнения исходников; для абсолютных `Import` и
+   `ImportFrom` искать наиболее длинный известный префикс модуля.
+3. Схлопнуть ребро в пару дистрибутивов, сохранив файл, строку и импортируемое имя.
+   Отдельно учитывать guarded/type-only imports при оценке runtime.
+4. Проверить strongly connected components, запрет направлений и замыкания.
+   Сопоставить прямые зависимости с pyproject; для external-модулей использовать
+   реальное соответствие import-name → distribution-name.
+5. Отдельно пройти entry points, build manifests, JSON Schema/ACP/MCP, конфиги и
+   SQL-ресурсы. Ни AST, ни deptry не заменяют эту часть проверки.
+6. Для буквальных дублей сравнить AST тел функций от 13 физических строк без
+   docstring/координат; исключить abstract/protocol stubs, вручную проверить
+   семантику и окружающие зависимости. Результат — подсказка, не полный детектор
+   функционального дублирования.
+
+После каждого этапа обновлять приоритеты, статус R/D-пунктов и фактическую
+экономию. Нереализованное предложение остаётся гипотезой, даже если его
+библиотечный аналог существует.
+
+## 13. Сокращение внешних зависимостей и состава поставки
+
+Дополнение от 2026-11-02. Задача — уменьшить число сторонних компонентов,
+пересекающихся реализаций и нативных библиотек, которые надо сопровождать и
+предъявлять проверкам ИБ. Это дополнительная цель к сокращению собственного кода.
+
+### 13.1. Что именно измеряем
+
+Нужно различать четыре состава:
+
+1. **Workspace lock:** всё, что разрешено для разработки, тестов, приложений и
+   опциональных возможностей. Наличие в `uv.lock` не доказывает поставку в образ.
+2. **Окружение конкретной сборки:** замыкание выбранных корней и активированных
+   extras. Здесь можно измерить реальный эффект изменения зависимостей.
+3. **Готовый артефакт:** модули/данные/библиотеки, включённые Nuitka, JS bundles,
+   Python внутри rootfs, системные пакеты. Для проверки состава важен этот набор.
+4. **Полная поставка:** приложения, программы плагинов, вложенные ext4 rootfs,
+   модели и frontend вместе. Разделение на образы помогает только тогда, когда
+   ненужный профиль действительно не поставляется целевому пользователю.
+
+SAST и анализ сторонних компонентов оценивают разные вещи. Меньший состав
+сокращает объём сопровождения и потенциальных замечаний по компонентам; это
+не доказывает прохождение конкретных проверок и не является оценкой CVE.
+Результаты ваших сканеров и их точный охват в этом анализе не использовались.
+
+Удаление строки из прямых зависимостей не обязательно уменьшает поставку:
+если пакет остаётся в другом пути, экономия равна нулю. Обратно, добавление
+отсутствующей прямой декларации из D08 обычно не добавляет нового компонента —
+он уже был транзитивным, а декларация делает связь явной.
+
+### 13.2. Измеренный состав по lock-файлам и сборочным корням
+
+[`uv.lock`](../uv.lock) содержит **315 уникальных Python-дистрибутивов**:
+71 пакет workspace и 244 внешних. Для каждого имени здесь закреплена одна
+версия: проблема Python-дерева прежде всего в параллельных библиотеках и
+лишних возможностях, а не в двух версиях одного и того же дистрибутива.
+
+Посчитано транзитивное замыкание обязательных зависимостей и только выбранных
+extras для CPython 3.11/Linux x86_64; extras `dev` и корневая группа dev не
+активировались. Источник графа — `package.dependencies` и
+`package.optional-dependencies` lock-файла, с учётом маркеров и `extra` на рёбрах.
+
+| Сборочный профиль | Корни | Внутренних пакетов | Внешних дистрибутивов |
+|---|---|---:|---:|
+| `aid` | `boba-aid`, `boba-llm-http` | 28 | **182** |
+| `mcp`, только host | `boba-mcp`, DB PG/Oracle/CH, `boba-transport-http` без payload extras | 26 | **91** |
+| `boba`, агент | `boba-cli`, `boba-llm-onnx[generation]` | 29 | **96** |
+| `plugins/core` | canvas, mail, sandbox guest | 8 | 6 |
+| `plugins/db` | pg, ch, ora, describer и автоматически выбранные providers/payload | 23 | 40 |
+| `plugins/docs` | doc, web, kb, confluence, ingest и LLM providers/payload | 26 | 75 |
+| `plugins/shell` | bash и sandbox guest, shell payload | 5 | 27 |
+
+Корни первых трёх профилей взяты из `*_PACKAGES` в
+[`build/Makefile`](../build/Makefile). Корни групп плагинов получены штатной
+командой `python build/plugin_rootfs.py names packages <id...>` по значениям
+`sandbox.program` всех отслеживаемых `conf/plugins/*.toml` — так их выбирает
+Makefile. Это включает `mail` с `enable=false`: выключение инструмента в
+runtime-конфиге само по себе не исключает его из сборки.
+
+Объединение этих семи профилей содержит **232 внешних дистрибутива**, а не сумму
+значений таблицы. Оставшиеся 12 внешних имён lock-файла вне данного объединения:
+`execnet`, `greenlet`, `iniconfig`, `nodeenv`, `playwright`, `pluggy`, `pyee`,
+`pyright`, `pytest`, `pytest-xdist`, `ruff`, `xlwt`. Это сравнение конкретных
+семи корней, а не утверждение, что других исполняемых приложений ix нет.
+
+**Таблица не является SBOM готовых бинарников.** В
+[`build/conf/nuitka/common.yml`](../build/conf/nuitka/common.yml) уже есть
+anti-bloat/no-follow для части `rich`, `httpx2`, `uvicorn`, `yaml`, `psycopg`;
+в [`aid.yml`](../build/conf/nuitka/aid.yml) удаляется watcher-import Chainlit.
+Поэтому число устанавливаемых пакетов может быть больше числа компонентов,
+действительно включённых в бинарник. При этом shell rootfs содержит Python
+site-packages, и к нему применима другая картина поставки.
+
+`build/base.Dockerfile` экспортирует все extras в **constraints**, а
+`build/site.Dockerfile` устанавливает конкретные корни с этими ограничениями.
+Constraints фиксируют версии; они не означают установку всех 315 пакетов.
+Нельзя объявлять всю dev-ветку производственной только из-за `--all-extras`
+в шаге экспорта. Различие dependencies/extras/dev также описано в
+[документации uv](https://docs.astral.sh/uv/concepts/projects/dependencies/).
+
+### 13.3. Найденные семейства пересекающихся зависимостей
+
+| Семейство | Реальные пути появления в текущем lock | Вывод |
+|---|---|---|
+| HTTP №1 | `boba-transport-http → httpx[http2] → httpcore`; также `chainlit`, `literalai`, `huggingface-hub → httpx` | перевод одного нашего адаптера не удалит httpx из всей поставки |
+| HTTP №2 | `mcp`, `fastmcp-slim[server]`, `boba-mcp-client → httpx2 → httpcore2 → truststore` | это отдельные дистрибутивы, а не две версии httpx |
+| HTTP №3 | `fastembed`, `rapidocr`, OTLP HTTP exporter → `requests → urllib3` | requests остаётся даже при унификации нашего HTTP-кода |
+| HTTP №4 | `boba-db-clickhouse[payload] → aiohttp`; `clickhouse-connect → urllib3`; `traceloop-sdk → aiohttp` | async ClickHouse и sync/общие части драйвера требуют разных backend; убрать aiohttp без замены используемого API нельзя |
+| JWT/OAuth/JWE | `boba-auth`, `mcp`, `chainlit → pyjwt`; `boba-connections`, `boba-oauth`, FastMCP → `joserfc`; FastMCP → `authlib → joserfc` | Authlib и joserfc — также связь верхнего/нижнего уровней; не три взаимозаменяемых реализации одного API |
+| Async files | `runtime`, `chainlit → aiofiles`; FastMCP → `py-key-value-aio[filetree] → aiofile → caio`; AnyIO уже предоставляет file I/O | две дополнительные файловые библиотеки, но с разными владельцами |
+| Web framework | `runtime → fastapi → starlette`; MCP/FastMCP также используют Starlette | у runtime FastAPI нужен лишь для импортов HTTP-ответов/ошибки; узкое место для быстрого удаления |
+| Конфигурация | `boba-config → omegaconf → antlr4-python3-runtime + pyyaml`; FastMCP/Chainlit → `pydantic-settings → python-dotenv` | перенос всего Boba на pydantic-settings не покрывает существующие interpolation/resolver контракты автоматически |
+| PDF/Office/HTML | doc readers: `pypdfium2`, `python-docx`, `python-pptx`, `openpyxl`, `xlrd`, `striprtf`, bs4/markdownify/lxml; shell добавляет `pypdf`, `odfpy`, pandas и OS-конвертеры | часть пересечения — чтение одного документа несколькими доступными путями; PDF rendering и редактирование PDF не одинаковы |
+| Event loop / HTTP parser | stdlib asyncio + `uvloop`; `h11` + `httptools` через `uvicorn[standard]` | профиль сборки уже исключает часть альтернатив из Nuitka; можно уменьшить и install tree |
+| WebSocket | `websockets`; `python-engineio → simple-websocket → wsproto` | Socket.IO и обычный WebSocket — разные протоколы; убрать Engine.IO заменой websockets нельзя |
+| Типы/сериализация | Pydantic; `chainlit → dataclasses-json → marshmallow + typing-inspect` | свои dataclass не требуют dataclasses-json; пакет принесён Chainlit, удаление собственных DTO не поможет |
+| Логи/инструментация | stdlib logging; FastEmbed → loguru; RapidOCR → colorlog; LiteralAI → Traceloop/OpenTelemetry | основной резерв — опциональная инструментация, а не попытка заменить каждый logging wrapper |
+
+Ни одно из этих пересечений само по себе не доказывает, что библиотека лишняя.
+В следующих пунктах указаны владелец изменения, конкретный результат и условия.
+
+### 13.4. Приоритетный реестр изменений состава
+
+#### S01. LiteralAI/Traceloop в aid — большой резерв, изменение upstream-интеграции
+
+Цепочка: `aid → chainlit 2.11.1 → literalai 0.1.201 → traceloop-sdk 0.61.0`.
+Кроме Chainlit, aid прямо объявляет LiteralAI и импортирует `TrueStepType` в
+[`rendering/chat_view.py`](../packages/apps/boba-aid/src/boba/aid/rendering/chat_view.py).
+Traceloop тянет 37 пакетов `opentelemetry-instrumentation-*`; всего в lock
+49 дистрибутивов с префиксом `opentelemetry-`. Instrumentation-пакет для
+LangChain, ChromaDB и т. п. **не означает наличие самого LangChain/ChromaDB**.
+
+Локальные исходники установленных версий подтверждают ранние импорты:
+`chainlit/__init__.py`, `step.py`, `message.py` импортируют LiteralAI;
+`literalai/__init__.py → client.py`, а `client.py` и `observability/step.py`
+импортируют `traceloop.sdk.Traceloop`. Версии локальных пакетов сверены с lock.
+Поэтому выключить telemetry настройкой или убрать собственный импорт
+`TrueStepType` недостаточно для удаления зависимостей.
+
+**Цель:** сохранить используемые типы/возможности Chainlit, но сделать LiteralAI
+observability/Traceloop опциональным путём. Предпочтителен совместимый upstream
+release/extra. Если его нет — оценить маленький сопровождаемый patch исходников
+и metadata с тестами против стоимости сохранения набора. Не создавать пустой
+пакет-заглушку и не использовать `--no-deps` как «оптимизацию».
+
+**Вычисленный потенциал:** после условного удаления ребра
+`literalai → traceloop-sdk` из текущего графа `aid` уменьшается с 182 до 112
+внешних имён, **−70**. В объединении семи профилей — **−59**, поскольку aiohttp,
+requests/urllib3, protobuf и часть их зависимостей остаются другим профилям.
+Это модель потенциального изменения, не готовая работоспособная установка и
+не измеренное уменьшение бинарника. `opentelemetry-api` остаётся через MCP.
+
+**Проверка:** Chainlit startup, Steps/Message/feedback/generation metadata,
+история, streaming, ошибки, сохранение нужных функций и отсутствие обращений
+к исключённой интеграции, Nuitka report и состав итогового `aid`.
+Подтвердить, нужна ли интеграция LiteralAI
+в реальном развёртывании; отсутствие её вызовов в Boba не доказывает этого.
+
+#### S02. Убрать лишнюю зависимость runtime от FastAPI — первый небольшой шаг
+
+[`runtime/served.py`](../packages/services/boba-runtime/src/boba/runtime/served.py):19–20
+берёт `HTTPException`, `Response`, `StreamingResponse` из FastAPI. Это единственные
+исполняемые FastAPI-imports в `runtime`; остальные приложения уже используют
+Starlette напрямую. Заменить их эквивалентными Starlette типами и убрать
+`fastapi` из обязательных зависимостей runtime.
+
+В графах `mcp` и `boba` это убирает **2 дистрибутива: fastapi, annotated-doc**.
+В aid — **0**, поскольку там FastAPI используется непосредственно и требуется
+Chainlit. Проверить обработку HTTPException, file Range и ошибки streaming.
+Не переносить FastAPI-специфичные upload/routes самого aid без отдельной задачи.
+
+#### S03. Снять избыточный `uvicorn[standard]` — первый небольшой шаг
+
+`boba-aid` и `boba-mcp` объявляют standard extra, который приносит альтернативный
+loop/parser и reload-возможности. Текущий `build/conf/nuitka/common.yml` уже
+не включает `uvloop`, `httptools`, `watchfiles` из uvicorn, описывая asyncio/h11
+и отсутствие reload. Привести декларацию install tree к этому намерению:
+обычный `uvicorn` плюс явно нужный WebSocket backend.
+
+По текущему графу исчезают **httptools и uvloop** из каждого `aid`/`mcp` install
+tree. `watchfiles` остаётся через FastMCP, а в aid ещё и Chainlit; PyYAML,
+python-dotenv и websockets также имеют другие пути. Уменьшение бинарника может
+оказаться нулевым, поскольку anti-bloat уже исключает альтернативы.
+Список optional-компонентов подтверждён [Uvicorn](https://uvicorn.dev/installation/).
+
+#### S04. Один прикладной HTTP-адаптер — полезно, но удаление зависимостей ограничено
+
+Целевой кандидат для собственного сетевого кода — один backend, совместимый с
+закреплённым MCP SDK (`httpx2` в текущем lock), с проверенными SPNEGO, TLS,
+прокси, streaming, cancellation и дампом. Это не простая замена import:
+[`http/dump.py`](../packages/infra/transport/boba-transport-http/src/boba/transport/http/dump.py)
+наследует `httpcore.AsyncNetworkStream/AsyncNetworkBackend`, а transport строит
+SSL context и использует `httpx.AsyncHTTPTransport`.
+
+Даже после миграции собственного HTTP-кода `httpx/httpcore` останутся в aid
+через Chainlit/LiteralAI, а в docs-профиле через Hugging Face. Для исключения
+семейства нужен список **всех** входящих рёбер в конкретном профиле и устранение
+каждого из них. Нельзя заранее записывать глобальную экономию «−httpx».
+Переход к иной TLS-библиотеке проверять с CA закрытого контура; truststore и
+certifi не считать эквивалентными поставками сертификатов.
+
+В db-профиле aiohttp нужен используемому async API ClickHouse и собственным
+настройкам буферов в `db/clickhouse/payload.py`; urllib3 объявлен самим драйвером.
+Самописный ClickHouse-клиент ради удаления этих пакетов увеличит код и проверку
+протокола — по этому аудиту не рекомендован.
+
+#### S05. FastMCP server extra и опциональные сервисы — средний/большой резерв
+
+Уже выбран `fastmcp-slim[server]`, а не полный FastMCP. Но в закреплённой версии
+4.0.11 server extra включает `cyclopts`, `griffelib`, `pyperclip`, `watchfiles`,
+OpenAPI helpers, Authlib и `py-key-value-aio[filetree,keyring,memory]`.
+Последняя цепочка приносит `aiofile/caio`, `keyring`, `secretstorage`, `jeepney`,
+`jaraco-*`, `backports-tarfile`, `cachetools` и другие пакеты.
+
+Официальная [модель установки FastMCP](https://github.com/PrefectHQ/fastmcp/blob/main/docs/getting-started/installation.mdx)
+предусматривает extras; их фактический состав здесь установлен по нашему lock,
+а не по незакреплённой последней документации.
+
+**Цель:** более узкий upstream extra для embedding сервера без CLI/OpenAPI/
+desktop keyring, если доступен совместимый вариант; либо небольшой patch
+optional imports/metadata. Другой вариант — сравнить замену FastMCP-адаптера
+на уже используемый MCP SDK, но учесть OAuth, tool providers и объём нового кода.
+Удалять server extra при текущих imports нельзя.
+
+Вычитание всего server extra в графе `mcp` даёт **28** внешних имён, уникальных
+для этой ветки. Это **предел для анализа области, не прогноз удаления**: часть
+возможностей нужна сервису, и сервер без них может не импортироваться. Например,
+FastMCP OAuth proxy действительно использует Authlib и FileTreeStore.
+
+#### S06. Файловое I/O: использовать имеющийся AnyIO там, где это даёт эффект
+
+`runtime/storage.py` использует aiofiles для read/write/stat/remove/listdir.
+AnyIO уже входит в серверные графы и имеет async file/path wrappers на потоках —
+[официальный API](https://anyio.readthedocs.io/en/latest/fileio.html).
+Можно адаптировать runtime storage к нему с прямой декларацией `anyio`.
+
+Это даёт **−1 aiofiles** для `mcp` и `boba`; в aid экономия **0** из-за Chainlit.
+`aiofile/caio` таким изменением не удалятся: ими владеет py-key-value-aio, см. S05.
+Проверить окна чтения, cancellation, размер памяти, file lifetime и все storage
+backends. Внедрение третьей библиотеки файлового I/O не нужно.
+
+#### S07. Локальные модели и OCR должны стать вариантами поставки
+
+Агент в Makefile всегда собирается с `boba-llm-onnx[generation]`, независимо от
+того, использует экземпляр только удалённую модель или нет. Профиль remote-only
+может убрать **5** внешних имён из агента: `onnxruntime-genai`, `onnxruntime`,
+`numpy`, `flatbuffers`, `protobuf`. Для этого нужны согласованные настройки
+`boba_FLAGS`, imports, entry points и self-check, а не только снятие extra.
+
+`plugin_rootfs.Plugins._roots()` выбирает всех workspace-провайдеров объявленной
+группы entry points, а `_walk()` активирует `payload` у пакетов замыкания. Поэтому
+группа docs получает FastEmbed с локальным inference/download stack даже при
+выборе удалённого embedding в конкретной конфигурации. ONNX provider тоже
+выбирается, но его extra `generation` здесь **не** активируется автоматически.
+
+Разделить профили build-time: `docs` с локальным embedding / remote embedding;
+OCR local / remote / disabled. Выбирать допустимых провайдеров явно при сборке,
+а не по секретным runtime-конфигам. Сохранить полную поставку как отдельный
+вариант, если пользователю нужны все режимы.
+
+Для `plugins/docs` условное отключение FastEmbed payload даёт **−17** внешних
+имён, включая FastEmbed, Hugging Face/tokenizers/download stack и loguru.
+Отключение `boba-doc[ocr]` отдельно даёт **−5**: RapidOCR, OpenCV, pyclipper,
+Shapely, colorlog. ONNX runtime/NumPy во втором сценарии остаются через FastEmbed.
+Суммы сценариев не складывать: общие зависимости меняют итог совместного шага.
+
+Веса уже загружаются отдельно при build/fetch, а FastEmbed получает
+`local_files_only=True`. Это не убирает metadata-зависимости Hugging Face,
+hf-xet, requests. Отключение скачивания в runtime и исключение download-кода из
+дистрибутива — разные изменения. Не писать собственный embedding backend без
+проверки pooling/normalization/tokenization, чтобы сэкономить несколько имён.
+
+Уточнение рабочего окружения после S05/D04: локальные конфиги MCP и ix
+выбирают FastEmbed; MCP и cfl-indexer выбирают RapidOCR. Это действующие
+варианты настройки, а не неиспользуемые библиотеки; наличие конфигурации
+не доказывает частоту вызовов, но запрещает считать их безопасным кандидатом
+на простое удаление. У агента настроена удалённая OpenAI-совместимая модель,
+однако это не доказывает ненужность его ONNX-режима в других развёртываниях.
+Расчёт по текущему lock без `boba-llm-onnx[generation]`: профиль агента
+**83 → 78**, но объединение всей поставки лишь **161 → 160** — остальные четыре
+пакета нужны документным инструментам. Это расчёт варианта, не выполненное
+изменение Make или измерение готового облегчённого бинарника. По одной такой
+экономии менять основной состав поставки и добавлять его вариант пока
+не обосновано; текущие локальные возможности сохранены.
+
+#### S08. Shell payload и документные конвертеры — большой резерв вне Python host
+
+[`boba-tool-shell/pyproject.toml`](../packages/tools/boba-tool-shell/pyproject.toml)
+предустанавливает 13 payload-зависимостей для пользовательских Python-команд,
+включая pandas, pypdf, Office, Pillow/HEIF и Arrow. Это не неиспользуемые импорты
+инструмента: предоставление библиотек пользовательскому shell — его функция,
+и её проверяет `boba-mcp/tests/test_tools_integration.py`.
+
+Одновременно в rootfs объявлены `poppler-utils`, `catdoc`, `antiword`, `unrtf`,
+`pandoc`, `libxml2-utils`, `imagemagick`, `ffmpeg`, `curl`, архиваторы и другие
+утилиты. Пересечения: pypdf/PDFium/Poppler, docx-reader/pandoc/legacy Word tools,
+striprtf/unrtf, Pillow/ImageMagick/ffmpeg. Это разные операции и форматы, поэтому
+заменяемость нужно проверять по фактическим shell-сценариям.
+
+**Цель:** `shell-minimal` и отдельный `shell-data-docs` либо продуктовый отказ
+от невостребованных конвертеров с использованием уже имеющихся doc tools.
+Снятие всех shell payload Python extras уменьшает его install tree с 27 до 6
+внешних имён, **−21**. Но это одновременно удаляет API для пользовательских
+скриптов. Сначала определить обязательные сценарии, затем изменить capability
+описания/тесты. Отдельно измерять apt/native замыкание: оно в −21 не входит.
+
+Переименование пакетов или разбиение на два образа не даст общей экономии,
+если оба образа и rootfs по-прежнему входят в поставку MCP. `enable=false`
+не равно «не собирать» и не равно «не копировать в итоговый образ».
+
+#### S09. JWT, конфиг и DTO — унификация с нулевым ближайшим эффектом состава
+
+Перевод `boba-auth` с PyJWT на уже имеющийся joserfc не удаляет **ни одного**
+внешнего пакета из `aid`, `mcp`, `boba`: PyJWT нужен MCP, а в aid ещё Chainlit.
+joserfc нужен JWE и JWTIssuer FastMCP; Authlib предоставляет OAuth-интеграцию и
+сам использует joserfc. Выбор единого API для собственного кода возможен, но
+оценивать его как облегчение поставки сейчас нельзя. Криптографию оставить
+библиотекам, сохранить алгоритмы, audience, expiry и negative tests.
+
+Аналогично, pydantic-settings у стороннего framework и OmegaConf у Boba не
+исчезнут от удаления одного прямого import. `${...}` interpolation, custom
+resolvers и наложения TOML — действующая функция. RapidOCR также зависит от
+OmegaConf, поэтому миграция только boba-config не исключит его из docs-профиля.
+`dataclasses-json/marshmallow` принесены Chainlit; свои dataclass можно оставлять
+без ещё одной сериализационной библиотеки.
+
+#### S10. Frontend и build-only зависимости считать отдельно
+
+Отслеживаемый frontend `pnpm-lock.yaml` содержит **1 072 записи `packages`**;
+это не 1 072 зависимости browser bundle: там есть dev и platform-specific записи.
+`web/page/package-lock.json` содержит 170 установочных записей, все с `dev=true`;
+testapps lock — 108 записей. Нельзя прибавлять эти числа к Python-таблице как
+независимые компоненты production: экосистемы, scope и единицы измерения разные.
+
+Найдены конкретные направления:
+
+- У page-проекта Vite 6, у frontend Vite 5; унификация toolchain может уменьшить
+  build-only поверхность сопровождения, но не доказывает сокращение browser JS.
+- Frontend имеет Plotly/react-plotly, react-player, PDF.js/react-pdf, highlight.js,
+  Markdown/rehype/remark и MCP UI client. Для отказа от отдельной renderer-функции
+  нужно удалить imports и соответствующий capability, проверить bundle; просто
+  скрыть кнопку недостаточно.
+- В проверенном frontend lock по одной версии `react`, `react-dom`,
+  `pdfjs-dist`, `katex`, `zod`. `react-pdf` и прямой `pdfjs-dist` здесь не доказывают
+  два PDF-движка: прямой import предоставляет worker того же PDF.js.
+- KaTeX JS через rehype и отдельно скачанный KaTeX CSS/шрифты имеют разные роли;
+  локальный Mermaid нужен Canvas. Не считать это одинаковыми исполняемыми
+  копиями без анализа сборки.
+
+`build/ui.Dockerfile` собирает также react-client и copilot из upstream tarball.
+Один lock overlay не описывает весь workspace upstream и итоговую статику.
+Нужен bundle report для всех трёх частей и отдельный список поставляемых vendor
+файлов. Тестовые Node MCP-серверы не надо включать в production SBOM, если они
+действительно не поставляются, но их build/test зависимости остаются видимыми
+в отдельном отчёте для ИБ.
+
+#### S11. Системные библиотеки и локальные patches — отдельный критерий
+
+Python-имена не покрывают native библиотеки внутри wheel, rootfs и бинарника:
+psycopg-binary/libpq, PDFium, OpenCV, Arrow, ONNX, Pillow/HEIF, cryptography,
+Kerberos и системные зависимости конвертеров. «Удалили один пакет» здесь может
+быть полезнее удаления нескольких чистых Python helpers.
+
+Локальная версия `oracledb==26.0.0+boba.1` и patch e2fsprogs уже добавляют
+сопровождаемую поверхность. При будущих обновлениях проверять, вошли ли нужные
+исправления upstream, чтобы убрать patch; не утверждать, что это уже произошло.
+Собственный fork ради slimming принимать только при понятной выгоде и малом
+поддерживаемом diff. Сквозное сокращение ветки предпочтительнее маскировки
+компонентов в metadata: состав должен оставаться проверяемым.
+
+### 13.5. Таблица вычисленных сценариев
+
+Каждая строка — **отдельный** пересчёт исходного lock-графа без переустановки,
+обновления lock или исполнения полученного окружения. Снятие mandatory-ребра
+или нужного extra моделирует будущий рефакторинг, а не разрешённую установку
+существующих wheel. Общий результат нескольких шагов считать заново.
+
+| Изменение | Профиль | До → после, внешние имена | Статус |
+|---|---|---:|---|
+| исключить `literalai → traceloop-sdk` | aid | 182 → 112 | −70, нужен upstream/patch и переработка imports |
+| тот же шаг для объединения 7 профилей | объединение | 232 → 173 | −59, другие ветви удерживают часть библиотек |
+| заменить FastAPI-типы runtime на Starlette | mcp / boba | 91 → 89 / 96 → 94 | −2 в каждом профиле; в aid 0 |
+| снять uvicorn standard extra, сохранить нужный WS backend | mcp / aid | 91 → 89 / 182 → 180 | −2; no-follow уже может давать этот эффект в бинарнике |
+| заменить runtime aiofiles на имеющийся AnyIO | mcp / boba | 91 → 90 / 96 → 95 | −1; в aid 0 |
+| remote-only агент без ONNX generation extra | boba | 96 → 91 | −5, отдельный вариант возможностей |
+| docs без FastEmbed payload | plugins/docs | 75 → 58 | −17, нужен удалённый embedding и provider selection |
+| docs без локального OCR extra | plugins/docs | 75 → 70 | −5, отдельно от предыдущего шага |
+| shell без data/document payload | plugins/shell | 27 → 6 | −21, удаляет предоставляемые shell-возможности |
+| снять весь FastMCP server extra | mcp | 91 → 63 | −28, только верхняя граница исследования; текущий server так собирать нельзя |
+| заменить PyJWT только в boba-auth | aid / mcp / boba | без изменения | 0, пакет остаётся через SDK |
+
+### 13.6. Изменение порядка работ после уточнения цели
+
+1. Начать с S02/S03/S06: узкие изменения на **уже используемых** Starlette и
+   AnyIO, без нового большого framework. Проверить уменьшение дерева установки
+   и отдельно итогового артефакта; не обещать одинаковую экономию для всех служб.
+2. Параллельно с планированием R02 оценить S01: это самый большой обнаруженный
+   кластер зависимостей aid. Решение должно учитывать реальные LiteralAI функции
+   и цену patch/upstream-изменения.
+3. Выделить варианты поставки по S07/S08, если локальные модели, полный OCR и
+   богатый shell нужны не каждому развёртыванию. Сделать build profiles явными;
+   не читать для их формирования секретные настройки работающего экземпляра.
+4. Затем исследовать S05 и только после этого S04: перенос собственного HTTP
+   API полезен, но без изменений upstream-потребителей может не уменьшить
+   количество библиотек вовсе.
+5. Кандидаты новых библиотек из §8 принимать по двум дельтам:
+   `собственный код после − до` и `состав сторонних компонентов после − до`.
+   Дополнительно учитывать размер native части, обновления и требуемые patch.
+   Небольшой собственный адаптер к имеющейся библиотеке иногда лучше нового
+   универсального пакета с большим замыканием.
+
+Критерий готовности каждого шага: нужное поведение сохранено, исчезнувшие
+компоненты действительно отсутствуют в выбранной поставке, resolver/metadata
+согласованы, тесты не полагаются на общий `.venv`. Удалённый импорт или флаг
+«не использовать» без изменения состава этим критериям не соответствует.
+
+Для будущего отчёта ИБ сохранять по каждому артефакту: точные версии и
+происхождение, путь зависимости от корня, build/runtime/test scope, native
+компоненты и локальные patches, SBOM до/после и результаты используемых
+сканеров. Для Nuitka связывать install tree с compilation report; для ext4
+проверять содержимое образа; для frontend — bundles и поставляемую статику.
+Это документация фактического состава, а не исключение неудобных компонентов
+из проверки.
+
+### 13.7. Воспроизводимость подсчёта зависимостей
+
+В дополнение к §12: не использовать `pip freeze` общего dev-окружения как список
+production. Корни брать из `build/Makefile` и вывода `plugin_rootfs.py names`;
+для каждого имени в lock проходить обязательные рёбра и рёбра запрошенных
+extras до неподвижной точки. Новое extra у уже посещённого имени должно быть
+обработано — иначе недосчитаются pyarrow, crypto и payload. Считать уникальные
+имена внешних дистрибутивов, не количество путей к ним.
+
+Например, этот read-only фрагмент вычисляет семь профилей по текущему `uv.lock`.
+Для исходных чисел §13.2 нужен lock среза `6c84d728f`; после реализации он
+показывает актуальные числа последней итерации (§16). Он
+использует `packaging`, уже установленный в `.venv`; ничего не устанавливает:
+
+```bash
+.venv/bin/python - <<'PY'
+import collections
+import pathlib
+import subprocess
+import tomllib
+
+from packaging.markers import Marker
+from packaging.requirements import Requirement
+
+packages = {
+    item['name']: item
+    for item in tomllib.loads(pathlib.Path('uv.lock').read_text())['package']
+}
+environment = {
+    'python_full_version': '3.11.0', 'python_version': '3.11',
+    'sys_platform': 'linux', 'platform_python_implementation': 'CPython',
+    'platform_system': 'Linux', 'platform_machine': 'x86_64',
+    'os_name': 'posix', 'extra': '',
+}
+
+def closure(roots):
+    queue = collections.deque()
+    for spec in roots:
+        requirement = Requirement(spec)
+        queue.append((requirement.name, frozenset(requirement.extras)))
+    visited, names = set(), set()
+    while queue:
+        name, extras = queue.popleft()
+        if (name, extras) in visited:
+            continue
+        visited.add((name, extras))
+        names.add(name)
+        package = packages[name]
+        edges = list(package.get('dependencies', []))
+        for extra in extras:
+            edges.extend(package.get('optional-dependencies', {}).get(extra, []))
+        for edge in edges:
+            if edge.get('marker') and not Marker(edge['marker']).evaluate(environment):
+                continue
+            queue.append((edge['name'], frozenset(edge.get('extra', []))))
+    return names
+
+profiles = {
+    'aid': ['boba-aid', 'boba-llm-http'],
+    'mcp': ['boba-mcp', 'boba-db-postgres', 'boba-db-oracle',
+            'boba-db-clickhouse', 'boba-transport-http'],
+    'boba': ['boba-cli', 'boba-llm-onnx[generation]'],
+}
+groups = collections.defaultdict(list)
+for path in pathlib.Path('packages/apps/boba-mcp/conf/plugins').glob('*.toml'):
+    config = tomllib.loads(path.read_text())
+    groups[config['sandbox']['program']].append(path.stem)
+for group, ids in sorted(groups.items()):
+    profiles[group] = subprocess.check_output(
+        ['python', 'build/plugin_rootfs.py', 'names', 'packages', *sorted(ids)],
+        text=True,
+    ).splitlines()
+combined = set()
+for profile, roots in profiles.items():
+    names = closure(roots)
+    external = {name for name in names if not name.startswith('boba-')}
+    combined.update(external)
+    print(profile, len(names) - len(external), len(external))
+print('external union:', len(combined))
+PY
+```
+
+Для сценариев §13.5 в том же проходе исключались только названные рёбра либо
+активация extra, затем вычислялась разность множеств. Так моделируются, например,
+отказ от `literalai → traceloop-sdk` или от `(uvicorn, standard)`. Для S02/S06/S09
+убиралось ребро соответственно `boba-runtime → fastapi`, `boba-runtime → aiofiles`,
+`boba-auth → pyjwt`; заменяющие Starlette/AnyIO/joserfc уже присутствуют в графе.
+Для итогового проекта после реализации нужен новый корректный lock/resolver
+и повторный анализ артефактов, а не ручное удаление записей из старого lock.
+
+В ходе этого дополнения исходники, зависимости и lock-файлы не изменялись;
+SBOM/уязвимости готовых образов не сканировались. Выполнены чтение metadata,
+сверка ключевых imports и extras, расчёт замыканий и моделирование дельт.
+
+## 14. Реализация: первая итерация, 2026-11-02
+
+### 14.1. Выполненные изменения и владельцы общего кода
+
+| Пункт | Реализовано | Граница ответственности |
+|---|---|---|
+| S02 | `runtime.served` использует `HTTPException`, `Response`, `StreamingResponse` Starlette; FastAPI удалён из dependencies runtime | HTTP-адаптер остаётся в runtime; приложение aid продолжает использовать FastAPI |
+| S03 | В aid/mcp `uvicorn[standard]` заменён на `uvicorn` с явно объявленным WebSocket backend `websockets` | Серверные приложения владеют выбором backend; динамический импорт объяснён в `tool.boba.unimported` |
+| S06, файловая часть | Файловые операции runtime переведены с aiofiles на `anyio.Path`/`open_file`, aiofiles удалён из dependencies runtime | Сохранены потоковое чтение/запись, проверка выхода за корень, сортировка списка, диапазоны и обработка отсутствующего файла; файловый I/O остаётся инфраструктурой |
+| D08 | Убрано неиспользуемое ребро `boba-chat → boba-toolkit`; psycopg перенесён из dev в обязательные зависимости aid; явно объявлены `aid[dev] → boba-agent` и `boba-stand → boba-mcp-client` | Импорты объявлены у непосредственного потребителя, а не обеспечиваются случайным транзитивным путём |
+| R08, адреса | Общая модель [`DatabaseAddress`](../packages/core/boba-connections/src/boba/connections/database_address.py) в существующем `boba-connections` заменяет три копии URI-парсинга | Общая модель зависит от stdlib/Pydantic и `Address`, не импортирует драйверы, транспорт или I/O. PG/Oracle/CH сохраняют конкретные формы объектов, aliases, схему, порты и интеграцию с профилями соединений |
+| R06, цикл | Общий [`SqlIndexCycle`](../packages/infra/ix/ix-core/src/boba/ix_core/worker.py), конфигурация пачек и отчёты в существующем `ix-core` | Это PostgreSQL-инфраструктура: сессия, чтение реестра, upsert/prune. SQL-файлы, веса FTS и CLI остаются у конкретных приложений. Общий цикл не навязан vector/LLM workers |
+
+После переноса цикла из FTS убрана прямая зависимость от Pydantic, из TRGM —
+от Pydantic, psycopg и `boba-db-postgres`: эти реализации теперь принадлежат
+`ix-core`. Это сокращение прямых рёбер, **не удаление этих библиотек из поставки**.
+Новых workspace-пакетов и внешних дистрибутивов не добавлено.
+
+Выбор внешнего компонента для файлового I/O: AnyIO уже входит в серверную
+цепочку; его файловые объекты покрывают требуемые операции без второго
+исполнителя файловых задач. Проверены существующие streaming/storage-тесты и
+чистая установка runtime (§14.3). См. [AnyIO: работа с файлами](https://anyio.readthedocs.io/en/stable/fileio.html).
+Для URI используется уже имеющийся `urllib.parse`: прикладные роли и виды
+объектов остаются в моделях. Добавление другой URL-библиотеки ради этой части
+не даёт подтверждённого преимущества по функционалу или составу зависимостей.
+
+### 14.2. Измеренный эффект
+
+Исходная точка — `6c84d728f`. Счётчик production Python соответствует §10.1:
+физические строки `src/**/*.py`, без тестовых пакетов, `boba-stand-core` и двух
+исключённых catalog-пакетов. Новые общие модули включены в итог.
+
+| Область изменения | Чистое изменение production Python |
+|---|---:|
+| Общая URI-модель и три её реализации | −292 строки |
+| Общий SQL-цикл и два индексатора | −38 строк |
+| Файловый runtime | −4 строки |
+| Всего | **−334 строки: 156 653 → 156 319** |
+
+Это около **0,21%**, а не достижение цели «более чем вдвое». Тесты не удалялись
+ради этого числа; перемещение кода в общий модуль само по себе экономией не
+считалось. Основной объём R02/R03 и более крупных замен из §8 остаётся впереди.
+
+Lock пересчитан штатным `uv lock --offline`, без ручного редактирования и
+обновления версий оставшихся внешних пакетов. Число имён в lock: **315 → 313**,
+внешних имён: **244 → 242**. Полностью исчезли `httptools` и `uvloop`.
+
+| Профиль (§13.2, CPython 3.11/Linux x86_64) | Внешних имён до | После | Что перестало достигаться |
+|---|---:|---:|---|
+| aid | 182 | 180 | httptools, uvloop |
+| mcp host | 91 | 86 | aiofiles, annotated-doc, fastapi, httptools, uvloop |
+| boba agent | 96 | 93 | aiofiles, annotated-doc, fastapi |
+| plugins/core | 6 | 6 | — |
+| plugins/db | 40 | 40 | — |
+| plugins/docs | 75 | 75 | — |
+| plugins/shell | 27 | 27 | — |
+| Объединение внешних имён семи профилей | 232 | 230 | httptools, uvloop |
+
+FastAPI, annotated-doc и aiofiles остаются в общем lock через другие
+потребители. Числа относятся к разрешённому графу установки, а не к размеру
+Nuitka-бинарников или готовому SBOM. Новые бинарники/образы в этой итерации
+не собирались; результат проверки SAST/SCA не заявляется.
+
+### 14.3. Тестирование, обнаруженные причины падений
+
+Все долгие проверки запускались в именованных tmux-сессиях, логи и коды выхода
+сохранены в `/tmp/boba-refactor-20261102/`. Использованы существующая `.venv`,
+стенд проекта и `.vscode/python-debug-slice.sh`; секреты конфигурации в документ
+не копируются. Параллельный обычный набор, PostgreSQL performance и браузерный
+performance запускаются разными процессами и последовательно.
+
+Исходный общий прогон до изменений приложения: **3216 passed, 2 xfailed,
+4 failed, 91 errors**. Причины разобраны отдельно:
+
+- 90 teardown-ошибок — `xdist --dist loadgroup` добавлял группу к `nodeid`,
+  который использовался как имя golden-файла. `GoldenScope` теперь собирает
+  идентичность из коллекторов pytest; имена параметров, включая `@`, сохраняются.
+  Сами golden-файлы и проверяемые ответы не менялись.
+- Одна ошибка collection — два `test_loader.py` в пакетах без отдельного
+  namespace тестов. Конфигурационный модуль переименован в
+  `test_config_loader.py`, содержимое осталось побайтно прежним.
+- Одна проверка деклараций зависимостей — четыре расхождения D08, исправлены
+  декларации прямых импортов (см. §14.1).
+- Три FastEmbed-сценария первоначально падали после других тестов, но отдельно
+  прошли (**14 passed**). Встроенная служба агента заменяла глобальный реестр
+  провайдеров, исключая FastEmbed. В повторном общем прогоне это проявилось
+  в четырёх тестах. Изоляция только CLI-набора оказалась недостаточна: такую же
+  службу запускают тесты aid. Общая фикстура `boba-stand` теперь восстанавливает
+  реестр после каждого теста. Последовательность «aid → CLI → Confluence/KB»
+  в одном процессе прошла: **32 passed**.
+- При совместном `pytest packages -m perf` браузерные тесты прошли, но две
+  PostgreSQL-проверки столкнулись с уже работающим циклом событий синхронного
+  Playwright. В отдельных процессах PostgreSQL: **2 passed**, UI: **2 passed**.
+  Пороги performance-тестов не ослаблялись.
+- Следующий общий прогон: **3228 passed, 2 xfailed, 2 failed**. Обе ошибки
+  относились к проверкам общего пула aid. Причина — четыре unit-теста
+  `boba-db-postgres/tests/test_async_pool.py` оставляли фиктивные пулы в `_LIVE`
+  после уничтожения их event loop. `close_all()` правильно не закрывал пулы
+  чужого цикла, и aid видел четыре лишних объекта. Последовательность
+  `test_async_pool.py → test_pool_sharing.py` воспроизвела обе ошибки:
+  **7 passed, 2 failed**. Исправлены владельцы ресурсов в PostgreSQL-тестах:
+  `asyncio.Runner` сохраняет исходный loop до закрытия пула в `finally`.
+  После исправления та же последовательность: **9 passed**. Проверки aid
+  и их требование единственного пула не менялись.
+
+Промежуточные проверки:
+
+| Проверка | Результат |
+|---|---|
+| Runtime, streaming/storage aid/mcp, stand-core, golden-сценарии агента, конфиг | 240 passed |
+| Семейства адресов PG/Oracle/CH и boba-connections | 125 passed |
+| Confluence → ix → FTS/TRGM/vector до выделения цикла | 9 passed |
+| Confluence → ix → FTS/TRGM/vector после выделения цикла | 9 passed |
+| Pyright до изменений | 980 файлов, 0 ошибок/предупреждений |
+| Pyright после выделения URI-модели | 981 файл, 0 ошибок/предупреждений |
+| Pyright после выделения SQL-цикла | 982 файла, 0 ошибок/предупреждений |
+
+Дополнительно создано **отдельное чистое окружение runtime** через
+`uv sync --locked --offline --no-dev --package boba-runtime`. В нём отсутствуют
+FastAPI, aiofiles, httptools и uvloop. Реальный Uvicorn/h11 + Starlette проверен
+HTTP-запросами: upload из чанков, list/delete, полное чтение `200`, диапазон `206`
+с проверкой тела и заголовков, некорректный диапазон `416`, отсутствующий файл
+`404`. Smoke-проверка завершилась с кодом 0. Это отдельное подтверждение:
+основная developer `.venv` ещё содержит ранее установленные пакеты.
+
+Команды контрольных прогонов (после загрузки штатного окружения стенда):
+
+```bash
+# Основной набор, без performance и явно внешних/браузерных сценариев.
+.vscode/python-debug-slice.sh -m pytest packages -q -n 4 --dist loadgroup \
+  -m 'not integration and not ui and not look and not load and not run and not perf'
+
+# Performance последовательно, каждый набор в своём процессе.
+.vscode/python-debug-slice.sh -m pytest \
+  packages/testing/boba-pump-stand/tests/test_pg_transfer.py -q -m perf
+.vscode/python-debug-slice.sh -m pytest \
+  packages/apps/boba-aid/tests/ui/test_feed_perf_ui.py -q -m perf
+
+# Затронутый путь индексаторов на живой БД стенда.
+.vscode/python-debug-slice.sh -m pytest \
+  packages/apps/ix/cfl-indexer/tests/test_index_space.py -q -m integration
+
+.venv/bin/pyright --outputjson
+build/src/uv/uv lock --check --offline
+```
+
+Команды выполняются внутри tmux с сохранением вывода, согласно правилам проекта.
+Полная матрица внешних integration/UI/look/load/run и binary-тесты здесь не
+заявляются выполненными: выполнены обычный набор и дополнительные проверки
+затронутых путей.
+
+**Итог после всех исправлений:**
+
+| Контроль | Результат |
+|---|---|
+| Общий обычный набор, 4 worker, loadgroup | **3230 passed, 2 xfailed, 0 failed, 0 errors**, 377,05 с |
+| Предупреждения общего набора | 289; в том числе deprecation сторонних библиотек и длина тестовых JWT-ключей |
+| Pyright по исходникам и тестам | **982 файла, 0 ошибок, 0 предупреждений** |
+| Ruff по всем изменённым/новым Python-файлам | Успешно |
+| `uv lock --check --offline` | Успешно, 313 пакетов |
+| `git diff --check`, локальные ссылки документа | Успешно |
+
+Итоговые логи: `regression-clean.log`, `pyright-final.json`, `ruff-final.log`,
+`ix-final.log`, `perf-pg.log`, `perf-ui-final.log`, `minimal-smoke.log`,
+`dependencies-final.json` в `/tmp/boba-refactor-20261102/`.
+После успешных проверок код повторно не менялся. Коммиты, сборка и развёртывание
+в эту итерацию не входят; изменения находятся в рабочем дереве.
+
+### 14.4. Что остаётся следующим
+
+Состояние после первой итерации; S01 впоследствии реализован в §16.
+
+S01 (LiteralAI/Traceloop), S04 (HTTP-стеки), крупные пересечения индексации и
+прочие библиотечные замены остаются исследованными кандидатами, не выполненными
+изменениями. В частности, отключение telemetry не убирает ранние импорты
+Traceloop в установленном LiteralAI; пока нет проверенного варианта optional
+интеграции с сохранением поведения, −70 пакетов нельзя записывать в результат.
+
+Для следующей итерации сохраняются критерии §11: зелёный базис, функциональное
+сравнение, небольшой обратимый diff, повторные тесты, проверка типов и графа,
+измерение **чистого** эффекта по коду и зависимостям. R08 пока закрыт только в
+части URI; сборка SQL-результатов остаётся отдельной задачей. R06 объединяет
+цикл, но ещё не CLI. Достижение цели >2× потребует крупных замен и миграций,
+перечисленных в §8–10; эта итерация создаёт проверенный базис для них.
+
+## 15. Security, сборка и проверка S01, 2026-11-02
+
+### 15.1. Проверки безопасности и сопровождение сборщика
+
+Исходный `bash sec/sec.sh all` завершился с кодом 1: Ruff обнаружил 22 замечания.
+Остальные проверки прошли, но SCA содержал три устаревших исключения для MCP.
+Исключения удалены; повторный SCA без них не обнаружил известных уязвимостей.
+Комментарии о старом ограничении Pydantic и отсутствии MCP-сервера исправлены.
+
+Сканеры теперь запускаются без `PYTHONHOME`, `PYTHONPATH`, `LD_LIBRARY_PATH` и
+`LD_PRELOAD` приложения. Это исправляет реальное падение Semgrep: библиотека
+`runtime/third/lib/libstdc++.so.6` не предоставляла `GLIBCXX_3.4.29`, нужный
+сканеру. Настройки рабочей поставки при этом не меняются.
+
+Неудачный `uv export` больше не приводит к аудиту пустого файла требований.
+В расширенном режиме ошибки разбора JSON и аварийный код Bandit возвращают
+ненулевой итог. Находки диагностического режима по-прежнему не являются
+автоматическим отказом (§11.4). Переменная `SEC_REPORT_DIR` сохраняет
+`semgrep.json` и `bandit.json` для разбора; новые файлы создаются с закрытыми
+правами. По умолчанию временные JSON удаляются после сводки.
+
+В Make добавлена отсутствовавшая цель `sec` с `SEC_MODE`; исправлены команды
+в `sec/semgrep-boba/README.md`. Проверены help и dry-run, затем выполнена
+**реальная сборка** агента:
+
+```bash
+make -C build build APP=boba \
+  OUT=/tmp/boba-refactor-20261102-next/build-out \
+  TAG=refactor-20261102 PARALLEL=2 JOBS=4
+```
+
+Сборка завершилась с кодом 0, образ `boba:refactor-20261102` прошёл встроенный
+`self-check`. На созданном `boba.dist` прошли **4 бинарных теста**: запуск/help,
+self-check, ACP с инструментом/permission и восстановление истории PostgreSQL.
+Тест локальной ONNX-модели не входил в этот запуск (`-m binary`); развёртывания
+нового образа не было. Эти проверки относятся к агенту, а не к новой сборке aid.
+
+Основной security-прогон после исправлений завершился с кодом 0: Ruff чист,
+Bandit по заданным порогам и Semgrep не нашли проблем; pip-audit не нашёл
+известных уязвимостей в проверенных версиях. Локальный
+`oracledb==26.0.0+boba.1` пропущен базой PyPI. Дополнительная проверка
+`oracledb==26.0.0` завершилась без известных уязвимостей; она характеризует
+upstream-версию, **не удостоверяет безопасность собственного patch/wheel**.
+
+Первый расширенный прогон: Semgrep — 343 совпадения на 1790 файлах;
+Bandit — 7130, включая 6761 `assert` из тестов, 118 динамических SQL и 75
+запусков процессов. Это исходная очередь анализа, а не 7473 доказанные
+уязвимости и не результат, который следует скрывать исключениями.
+
+### 15.2. Читаемость и направление зависимостей тестового стенда
+
+Устранены замечания Ruff без расширения ignore-списков. Кроме сортировки
+импортов/экспортов и форматирования, исправлена причина локального импорта
+в UI-стенде: `stand.py` зависел от `database.py`, который импортировал модели
+обратно из `stand.py`. Модели конфигурации, пути и наложения находятся в
+`ui/config.py`; `database.py` и `stand.py` используют этот модуль, а
+`StandProcess` импортирует реализацию подготовки базы обычным верхним импортом.
+Прежние имена в `ui.stand` сохранены через явный переэкспорт.
+
+Этот модуль остаётся инфраструктурой **тестового** стенда: он содержит
+формирование файлов и окружения запуска. Его нельзя называть чистой доменной
+моделью или переносить в production core только ради общего импорта.
+
+В тесте распространения MCP-настроек на второй экземпляр чата жизненный цикл
+удалённой сессии перенесён в fixture с неизменными проверками результата.
+Тело сценария стало плоским; fixture закрывает сессию до остановки MCP-сервера.
+После разделения стенда прошли 163 целевых теста, Pyright проверил 983 файла
+без ошибок и предупреждений. Изменённые Python-файлы форматируются Ruff.
+
+Текущий production Python: **156 653 → 156 320 (−333 строки)**. По сравнению
+с §14 добавлена одна строка при переносе длинного сообщения; разделение файлов
+тестового стенда не выдано за экономию production. Цель >2× остаётся открытой.
+
+### 15.3. S01: проверенный прототип и решение о поставке
+
+Пользователь подтвердил: внешняя интеграция LiteralAI/Traceloop не используется,
+её можно исключить при сохранении функций чата. Исследован минимальный patch
+**LiteralAI 0.1.201**, а не переписывание моделей Chainlit:
+
+- `traceloop-sdk` из обязательных требований перенесён в extra `tracing`;
+- ранние импорты Traceloop в client/step/thread перенесены в шесть методов,
+  непосредственно выполняющих трассировку; exporter импортируется при инициализации;
+- исходные модели, сериализаторы и сетевой клиент сохранены;
+- версия wheel обозначена `0.1.201+boba.1`, изменено пять файлов upstream.
+
+Исходный sdist проверен по SHA256 из lock:
+`29e4ccadd9d68bfea319a7f0b4fc32611b081990d9195f98e5e97a14d24d3713`.
+В изолированном окружении установлен Chainlit 2.11.1 с метаданными этого wheel
+и действующим MCP override проекта; `--no-deps` при установке не использовался.
+Override `mcp>=2.3,<3` остаётся прежним исключением из upstream-ограничения
+Chainlit `<2` и требует отдельной работы; прототип S01 его не устраняет.
+Traceloop отсутствует. Создание и отправка
+сообщения, поток токенов, создание/завершение tool-step, восстановление сообщения
+и сериализация LiteralAI Step выполнены; JSON совпал с исходным окружением
+при одинаковых идентификаторах и времени. Это smoke-контракт, а не замена
+полным тестам истории, reconnect и UI приложения.
+
+Проверена и возможность обойтись обновлением upstream: в
+[setup.py LiteralAI main](https://raw.githubusercontent.com/Chainlit/literalai-python/main/setup.py)
+для 0.1.300 Traceloop всё ещё обязательный, а
+[Chainlit main](https://raw.githubusercontent.com/Chainlit/chainlit/main/backend/pyproject.toml)
+сохраняет pin LiteralAI 0.1.201. Эти ссылки объясняют необходимость patch для
+исследованного пути; незакреплённый main не используется при сборке прототипа.
+
+Отдельная копия workspace разрешена штатным `uv lock --offline`:
+
+| Область | Рабочий lock после §14 | Прототип |
+|---|---:|---:|
+| Все имена в workspace lock | 313 | 254 |
+| Внешние зависимости aid | 180 | 110 |
+| Объединение внешних зависимостей семи профилей | 230 | 171 |
+
+Остальные шесть профилей не изменились; версии всех оставшихся пакетов,
+кроме локального суффикса LiteralAI, сохранились. Уходят Traceloop, большинство
+OTel-инструментаторов, grpcio и связанные только с ними пакеты.
+`opentelemetry-api` остаётся через других потребителей; удалять весь namespace
+нельзя. Считать экономию каждого профиля отдельно и складывать её нельзя.
+
+Пользователь выбрал **внедрить patch и проверить чат полным набором тестов**.
+Стоимость сопровождения локального wheel принята явно. Реализация и итоговые
+проверки записываются в §16; таблица выше сохраняет результаты прототипа.
+
+### 15.4. Расширение проверок: ошибки прежних UI-стендов
+
+До следующих изменений обычный набор повторно прошёл: **3230 passed,
+2 xfailed**, 389,13 с. Расширение охвата до браузерных сценариев обнаружило
+проблемы, которых этот набор не проверяет. Первый полный параллельный UI-прогон
+дал **48 failed, 131 passed, 8 xfailed, 33 errors**; он не считается зелёным
+базисом. Ему предшествовал прерванный последовательный запуск, не используемый
+для итогового количества тестов.
+
+Установлены и исправлены следующие причины:
+
+1. **Ожидания профилей устарели после переноса MCP-серверов в таблицу.**
+   Актуальный контракт [пользовательских MCP-серверов](mcp-servers-user.md)
+   явно исключает список серверов в профиле: выдачи определяются пользователем
+   и ролями. Тесты ещё ожидали прежнюю фильтрацию endpoint'ов профилем.
+   Ожидаемые наборы теперь включают все выданные серверы; сохраняется точное
+   равенство наборов, ограничение собственных инструментов чата и проверки
+   ролей. Ни golden, ни assert не удалены. Все **13 профильных UI-тестов**
+   прошли. Все 21 перенесённый класс конфигурации совпали по AST с HEAD —
+   извлечение `ui/config.py` не меняло подготовку профилей.
+2. **Посев соединений удалял выдачи MCP-серверов.**
+   `StandDatabase._seed_connections()` очищал общую таблицу `grants` целиком.
+   После добавления в неё MCP-выдач этот код оставлял агенту только встроенный
+   сервер `chat`; десятки тестов инструментов получали `No such tool available`.
+   Очистка выдач теперь ограничена `src_kind = connections`. Повторная проверка
+   двух сценариев Bash (успех и ненулевой exit code) прошла без изменения
+   ожиданий инструментов.
+3. **Старый handshake-стенд использовал stdio в пользовательской таблице.**
+   Текущий контракт панели поддерживает HTTP/SSE; `StandServerSeed` правильно
+   отвергал такой конфиг. Стенд переведён на существующий HTTP `AppsHost` того
+   же стандартного SDK. Ограничение production API сохранено.
+4. **`--no-apps` удалял и проверяемый текстовый инструмент.**
+   Стандартный тестовый сервер регистрировал `orders` только через расширение
+   Apps. Для режима без Apps он теперь регистрирует обычный MCP-инструмент с
+   тем же именем и текстовым результатом. Текстовый renderer общий с fallback
+   App-инструмента. Проверки блоков ответа и отсутствия карточки не ослаблены.
+
+5. **Состояние MCP-серверов переходило между UI-модулями.**
+   Session-fixtures делили одну базу; сервер `cmds` из завершённого модуля
+   оставался в настройках следующего. База и процессы теперь имеют scope
+   `module`, имя базы содержит имя модуля. Согласованы scopes зависимых
+   fixtures входа и вопросов. Последовательность commands → queued input
+   проверена отдельно; полный прогон затем дал 211 passed, 8 прежних xfailed
+   и единственное падение старой проверки покрытия инструментов.
+6. **Покрытие теряло endpoint инструмента.**
+   `ToolCall` теперь хранит endpoint, а Coverage учитывает полное MCP-имя.
+   Проверки `diagram_save` и `canvas_open` параметризованы для обоих серверов
+   all/search с сохранением проверок результата и DOM. Отдельный полный
+   набор инструментов прошёл: **80 passed**, 388,45 с.
+
+После пунктов 3–4 прошли **6 целевых UI-тестов**. Затем полный UI-набор
+успешно прошёл в окружении S01 без Traceloop (результаты — §16);
+исходные падения не скрываются `skip`, новыми `xfail` или отключением тестов.
+Исправления подготовки стенда затрагивают только тестовые базы и процессы.
+
+### 15.5. R07: общая реализация операций таблицы PostgreSQL
+
+До изменения выполнены **707 интеграционных тестов** из `test_pg_transfer.py`
+и `test_pg_arrow.py`: все прошли за 381,63 с. Это реальные COPY/Arrow-пути,
+включая пары с ClickHouse и Oracle, стратегии таблиц, типы и ошибки загрузки.
+
+Десять методов `PgTransferTable` и `PgArrowTable` совпали по AST. Общая
+реализация находится в `PgLoadTable` существующего `db/postgres/transfer.py`:
+проверка существования, создание по шаблону, backup, drop, truncate/delete,
+исполнение команд и журнал. `PgTransferTable` сохраняет план COPY и его
+fallback типов, `PgArrowTable` — нейтральный `TableSpec` и `PgDdlTypes`.
+Они предоставляют общий абстрактный метод формирования колонок.
+
+Это инфраструктурная реализация `TransferTable`, поэтому она остаётся рядом
+с psycopg и SQL-builder. Нейтральный контракт в toolkit не получает импорта
+PostgreSQL/Arrow. Новый пакет и новый драйвер не добавлены; связь
+`arrow_stream → transfer` уже существовала, обратного ребра не появилось.
+
+Чистое сокращение двух файлов — **89 строк** с учётом нового базового класса.
+Общий production Python относительно исходного аудита: **156 653 → 156 231
+(−422 строки)**. Код не заменён библиотекой там, где достаточно общей
+реализации над уже используемым psycopg3. Цель сокращения более чем вдвое
+пока не достигнута. Pyright после изменения: 983 файла, 0 ошибок/предупреждений.
+Повторный интеграционный прогон: **707 passed**, 419,06 с; общий набор:
+**3230 passed, 2 xfailed**, 448,10 с. `make -C build sec` прошёл без исключений
+CVE. Расширенный режим сохранил 343 совпадения Semgrep и 7130 Bandit,
+ошибок сканирования нет. Настоящая Make-сборка `plugins-db` завершилась
+успешно: проверки ch/describer/ora/pg прошли в rootfs-db без сети; внешние
+системные библиотеки ограничены glibc, размер каталога программы — 283 МБ.
+
+
+## 16. S01: внедрение LiteralAI без обязательного Traceloop
+
+Патч [literalai-0.1.201-optional-tracing.patch](../build/patches/literalai-0.1.201-optional-tracing.patch)
+включён в [base.Dockerfile](../build/base.Dockerfile). Новый target `literalai`
+скачивает закреплённый sdist из настроенного реестра, проверяет SHA256,
+применяет patch и строит wheel. Установка wheel выполняется с разрешением
+зависимостей; smoke стадии проверяет локальную версию и отсутствие Traceloop.
+`--no-deps` используется только при скачивании исходника и **сборке** wheel.
+
+Make предоставляет `build APP=literalai` и включает эту деталь в `all`.
+Обычная сборка пакетов получает тот же wheel, что и `.venv` через find-links.
+`dev.sh` подготавливает отсутствующие колёса python-oracledb и LiteralAI.
+В aid закреплён `literalai==0.1.201+boba.1`; pin Chainlit `==0.1.201`
+принимает эту локальную версию согласно PEP 440. Дополнительного override
+для LiteralAI нет. Существующий override MCP остаётся открытым вопросом §15.3.
+
+Рабочий lock пересчитан `uv lock --offline`; все оставшиеся версии, кроме
+локального суффикса LiteralAI, сохранены:
+
+| Область | До S01 | После S01 | Изменение |
+|---|---:|---:|---:|
+| Все имена в workspace lock | 313 | 254 | −59 |
+| Внешние имена в workspace lock | 242 | 183 | −59 |
+| Внешние зависимости aid | 180 | 110 | −70 |
+| Объединение семи production-профилей | 230 | 171 | −59 |
+
+Остальные профили: mcp 86, boba 93, plugins/core 6, plugins/db 40,
+plugins/docs 75, plugins/shell 27 — без изменений. От исходного аудита
+полное объединение уменьшилось **232 → 171 (−61; 26,3%)**. Это количество
+дистрибутивов, а не процент сокращения кода или размера образа.
+
+`uv sync --locked --offline --all-packages --all-extras` завершился успешно,
+удалив Traceloop и ставшие недостижимыми пакеты из рабочего окружения.
+Smoke сообщений, streaming, tool-step и resume прошёл; сериализованный JSON
+побайтово совпал с исходной версией при фиксированных id/времени.
+Повторный обычный набор: **3230 passed, 2 прежних xfailed**, 436,98 с.
+Полный функциональный браузерный набор: **214 passed, 8 прежних xfailed**,
+433,88 с. Новых skip/xfail нет, golden-файлы не изменялись.
+Интеграционный набор чата: **122 passed**, 97,67 с. Проверка
+скомпилированного артефакта также завершена: **214 passed, 8 прежних
+xfailed**, 416,37 с. Те же UI-сценарии выполнены через собранный executable.
+
+SCA теперь отдельно проверяет upstream-версии двух локальных патчей из lock.
+Основной pip-audit по-прежнему честно показывает, что PyPI не знает локальные
+`+boba` версии. Дополнительная проверка не сертифицирует patch: его diff,
+SHA256 исходника, сборка и контрактные тесты остаются отдельными доказательствами.
+
+
+Проверки после внедрения:
+
+- `make -C build build APP=literalai` прошёл. Все **51 файла** Python-пакета
+  в wheel Make побайтово совпали с проверенным прототипом; в `build/out`
+  помещён wheel штатной сборки.
+- `uv lock --check --offline` прошёл. `uv pip check` обнаружил ровно одно
+  прежнее несоответствие: Chainlit требует `mcp>=1.11.0,<2.0.0`, установлен
+  MCP 2.3.0. Локальный pin LiteralAI конфликтов не добавляет. До решения этого
+  вопроса нельзя считать весь граф транзитивных ограничений согласованным.
+- Pyright: **983 файла, 0 ошибок, 0 предупреждений**.
+- `make -C build sec`: успешно; Semgrep 263 правила на 1720 файлах,
+  0 findings; SCA и отдельная проверка upstream локальных патчей без известных
+  уязвимостей. CVE не исключались.
+- `SEC_MODE=full`: 343 совпадения Semgrep на 1791 файле, 7130 Bandit,
+  0 HIGH и 0 ошибок сканеров. Это диагностическая очередь §15.1.
+
+Для визуальных сравнений `look` нужен утверждённый внешний каталог эталонов.
+В рабочем дереве его нет; обнаруженные в `/tmp` наборы содержат только
+24–32 MCP-изображения. Путь к полному набору запрошен у пользователя.
+Эталоны не пересоздаются и не заменяются результатами нового кода.
+
+
+Чистое install tree настоящей сборки `boba-build-site-aid:refactor-20261102`
+содержит **28 внутренних и 110 внешних дистрибутивов** — результат совпал
+с обходом lock. Установлен `literalai 0.1.201+boba.1`; Traceloop, grpcio,
+uvloop и httptools отсутствуют. Проверка сделана по metadata `/opt/site`
+контейнера, а не по общему dev-окружению.
+
+
+Дополнительно обнаружен и исправлен пробел охвата SCA: прежний экспорт без
+extras проверял 164 внешних имени и пропускал **13 имён production-профилей**:
+defusedxml, fastembed, loguru, mmh3, odfpy, onnxruntime-genai, pandas,
+pillow-heif, py-rust-stemmers, pypdf, python-dateutil, pytz, tzdata.
+`sec.sh` теперь передаёт `--all-packages --all-extras`; выгрузка включает
+180 внешних имён, включая все 171 имя production-объединения. Root-группа
+разработки по-прежнему исключена `--no-dev` (ruff, pyright, nodeenv), extras
+пакетов остаются включены. Результат расширенной проверки и исправление
+выявленных уязвимостей — в §17.
+
+
+Make-сборка `APP=aid` завершилась успешно: образ
+`boba-aid:refactor-20261102`, каталог поставки 285 МБ, `bin/` — 237 МБ.
+Самопроверка в образе прошла. Это размер нового артефакта; процент экономии
+бинарника не приводится без сопоставимого исходного build. Браузерные сценарии
+успешно повторены через собранный executable. Два существующих теста SLA ленты
+прошли за 121,03 с: рост стоимости хода ×1,08 при лимите ×1,6;
+максимум 3,3 мс JS на кадр при лимите 12 мс, 441 КБ heap/ход при лимите
+900 КБ, после Stop пришло 7 кадров при лимите 40. Пороги не менялись.
+
+
+## 17. Исправление уязвимого pypdf в shell payload
+
+Расширенный SCA выявил семь известных уязвимостей в `pypdf 6.21.2`, которые
+прежняя выгрузка без extras не охватывала: CVE-2026-119203–119209.
+Пакет приходит напрямую через `boba-tool-shell[payload]`, а не через ридер
+`boba-doc` (он использует PDFium). Поэтому удаление `pypdf` лишило бы LLM
+доступной Python-библиотеки в Bash-песочнице; это отдельный пользовательский
+сценарий чтения/создания документов.
+
+Вместо удаления функции нижняя граница payload поднята до `pypdf>=6.21.4,<7`.
+`uv lock --upgrade-package pypdf==6.21.4` изменил только эту внешнюю версию;
+количество зависимостей осталось прежним. Исправления 6.21.3/6.21.4 описаны
+в [официальном changelog](https://pypdf.readthedocs.io/en/6.21.4/meta/CHANGELOG.html);
+пример подтверждённого отказа — бесконечный поиск trailer в усечённом PDF,
+[advisory проекта](https://github.com/py-pdf/pypdf/security/advisories/GHSA-5849-834g-hvw5).
+
+В обновлённом окружении прошла проверка реальных API: запись/чтение двух
+страниц, Unicode metadata, копирование страницы, шифрование и расшифровка.
+Выполнена Make-пересборка production и Python-корней shell в отдельном OUT;
+для существующего `TestBashTool` подготовлен отдельный runtime с новым образом,
+без изменения runtime работающих сервисов. SCA повторён с полным охватом,
+без исключения CVE.
+
+
+После обновления `make -C build sec` прошёл: Ruff и пороговые SAST-проверки
+чистые, полный экспорт SCA и upstream-аудит локальных патчей — без известных
+уязвимостей. Первоначальный красный отчёт сохранён рядом с исправленным:
+`/tmp/boba-refactor-20261102-next/s01-security-complete.log` и
+`s01-security-fixed.log`. Снижение числа находок достигнуто обновлением
+пакета, не подавлением правил или исключением его из выгрузки.
+
+
+Оба shell-образа (production и Python) собраны Make успешно, ext4 по 1011 МБ.
+В production-контейнере без сети и с файловой системой read-only выполнен
+тот же PDF smoke: `pypdf 6.21.4`, чтение/запись, metadata, копирование страницы,
+шифрование — успешно. Существующий **TestBashTool: 10 passed**, 7,50 с,
+прошёл с новым Python-образом через отдельный runtime. Проверены также
+stdout/stderr, закрытый stdin, запрет сети, утилиты чтения, PDF/HEIC/video.
+Рабочие образы сервисов не заменялись.
+
+
+
+## 18. Итог проверок этапа S01 и остающиеся задачи
+
+| Проверка | Результат |
+|---|---|
+| Обычный набор всего workspace | 3230 passed, 2 прежних xfailed |
+| Дополнительные integration-тесты aid | 122 passed |
+| Полный функциональный UI из исходников | 214 passed, 8 прежних xfailed |
+| Те же UI-сценарии через собранный aid | 214 passed, 8 прежних xfailed |
+| SLA длинной ленты и остановки streaming | 2 passed, пороги не изменены |
+| Bash с новым shell rootfs | 10 passed |
+| Финальный Pyright после S01 и обновления pypdf | 983 файла, 0 ошибок и предупреждений |
+| Ruff и форматирование изменённых Python-файлов | успешно, 42 файла |
+| Основной sec.sh с расширенным SCA после обновления pypdf | успешно |
+| Make: LiteralAI wheel, aid, shell и shell-python ext4 | успешно |
+
+Все текущие журналы — `/tmp/boba-refactor-20261102-next/`: `s01-regression`,
+`s01-ui`, `s01-integration`, `s01-ui-binary`, `s01-perf`, `s01-shell-tests`,
+`s01-security-fixed`, `make-literalai`, `make-aid-s01`, `s01-pdf-rootfs`.
+У каждого запуска есть `.log` и `.exit`. Код 0 относится к завершённым
+запускам, а не к прерванным или ранним красным прогонам.
+
+Для проверки compiled aid использован временный pytest-плагин
+`refactor_aid_binary.py` в том же каталоге. Он заменяет только команду запуска
+`StandProcess` для AID на собранный `boba-aid.bin`; конфигурация, БД, браузер,
+MCP-серверы и все assertions остаются прежними. Тесты выполнялись той же
+командой UI с `-p refactor_aid_binary`. Это дополнительная проверка упаковки,
+не подмена backend моками.
+
+Этап S01 завершён по функциональным проверкам и сборке. Статус последующих задач:
+
+- `look`: поиск и согласование эталонов завершены следующим этапом (§19.1),
+  финальные 28 сценариев прошли. Оригиналы сохранены отдельно.
+- Прежнее несоответствие ограничений Chainlit/MCP (§16) устранено последующим
+  этапом (§21): override удалён, установленные зависимости совместимы.
+- Цель >2× для собственного кода: достигнуто только −422 строки production
+  Python. Следующие области — R05, границы toolkit и общий код двух сохраняемых KB-контуров.
+- R01: пользователь подтвердил отсутствие использования; оба пакета удалены
+  следующим этапом (§19).
+
+
+## 19. R01: удаление неиспользуемого каталога процессов
+
+2026-11-02 пользователь подтвердил, что `boba-catalog` и
+`boba-catalog-service` не используются, и разрешил удалить оба пакета.
+Проверка перед удалением не обнаружила активных потребителей: все их Python-
+импорты находились внутри самих двух пакетов. Деклараций entry points,
+Make-профилей и runtime-конфигураций действующих приложений с этими пакетами нет.
+
+Удалены 27 отслеживаемых файлов:
+
+| Пакет | Файлов | Строк `src/**/*.py` | Строк тестов Python |
+|---|---:|---:|---:|
+| boba-catalog | 14 | 2408 | 893 |
+| boba-catalog-service | 13 | 5743 | 1856 |
+| Итого | 27 | 8151 | 2749 |
+
+Тесты этих двух пакетов уже не собирались pytest; их удаление не уменьшает
+число проверок действующей системы. Сняты специальные исключения из workspace,
+Pyright, Ruff, pytest, Docker context и SAST. README Oracle очищен от ссылки
+на исчезнувший контракт. План Warehouse больше не предполагает повторного
+использования модели редактора процессов.
+
+В историческом `2026-10-16-chat-agent-cutover/dump.sh` сохранены названия
+прежних владельцев таблиц и добавлена дата изменения статуса пакетов.
+Состав dump/restore не изменялся, данные и таблицы работающих БД не удалялись.
+Исходники доступны в Git на исходном срезе, например:
+`git show 6c84d728f:packages/core/boba-catalog/src/boba/catalog/model.py`.
+
+Разделение метрик:
+
+- Физических пакетов в дереве: **73 → 71**; активных workspace-пакетов
+  по-прежнему 71, поскольку каталог был исключён до начала работы.
+- Совокупный Python `packages/**/src`: **194 905 → 186 410 строк** с учётом
+  всех предыдущих изменений. Это включает тестовую инфраструктуру.
+- Активный production Python остаётся **156 231 строка**, −422 к исходному
+  аудиту. Удаление отключённого контура не прибавляется к этому результату.
+- Lock побайтово не изменился: 254 имени, production-объединение 171 внешнее
+  имя. Каталог не устанавливался в эти профили, поэтому удаления внешних
+  зависимостей на этом шаге нет.
+
+`uv lock --check --offline` и `make version` проходят. Make повторно собрал
+`aid`; образ сохранил прежнее содержимое (image id `46782f837f02`), каталог
+поставки 285 МБ. Это подтверждает, что исключённые пакеты не входили в сборку.
+Общий набор: **3230 passed, 2 прежних xfailed**, 391,06 с — число проверок
+действующей системы сохранилось. Pyright: 983 файла, 0 ошибок/предупреждений.
+Основной `sec.sh` прошёл с полным охватом extras; уязвимостей в проверенных
+версиях нет, upstream локальных патчей проверен отдельно. Диагностический
+полный режим: Semgrep 342 совпадения, Bandit 6688, ошибок сканеров нет.
+Удалены исключения, а не добавлены новые. Журналы:
+`/tmp/boba-refactor-20261102-r01/`.
+
+### 19.1. Поиск визуальных эталонов
+
+Пользователь не помнит каталог. Исследованы рабочее дерево, текущие настройки
+pytest/IDE, история перехода на `--look-baseline` (коммит `5e37f75d5`),
+сохранённые каталоги в `/tmp`, `/mnt/store/tmp`, домашнем каталоге и значения
+этой опции в прошлых командах. Содержимое посторонних команд и диалогов в
+отчёт не включается.
+
+Помимо четырёх MCP-наборов на 24–32 PNG найдены пять архивных копий старого
+`tests/look/baseline`. Самая полная — **430 PNG и 215 aria.yml**, восемь групп:
+conversation, login, mcp-app, failures, queued, threads, commands, shell.
+Её окружение совпадает с установленным Playwright/Chromium, локалью, timezone
+и набором шрифтов. Код тестов login/conversation/steps/compaction совпал с
+текущим; часть изображений отличается от других найденных архивов.
+
+Это найденный исторический набор, а не доказательство его утверждения.
+Новые эталоны не создаются; пробное сравнение login пишет только отчёт
+`look-login-report/`. Полный список путей и состав сохранены в
+`look-candidates.json`, выбранный путь — в `look-root.txt` каталога журналов.
+
+
+Первый запуск с путём к архивной копии загрузил её старый `conftest.py`
+из соседнего дерева и остановился на повторном объявлении `--golden-update`.
+Для сравнения сделана побайтовая копия только эталонов в `look-archive/`;
+все 646 файлов сверены SHA256, исходный архив не меняется. Хеши сохранены
+в `look-baseline-hashes.json`.
+
+Следующая попытка выявила устаревший локальный UI: overlay и build-script
+совпали, digest элементов в старой сборке не соответствовал исходникам.
+Сборка Make уже содержала правильный полный frontend. Существующий шаг
+установки `ui/`, vendor-статики и `page.js` выделен в `app-frontend`;
+`app-runtime` использует его как prerequisite. Новая публичная команда:
+`make -C build build APP=frontend`. Она прошла и обновила полный UI в assets.
+Проверка digest сохранена; текст её ошибки теперь предлагает узкую цель Make.
+
+После обновления UI **6 тестов входа прошли** с найденными эталонами.
+Общий пробный прогон выявил две ошибки старых тестовых стендов:
+
+- `steps` и `compaction` задавали MCP через stdio, хотя текущая таблица серверов
+  чата принимает HTTP/SSE. Оба используют общий `standard_host` на существующем
+  `AppsHost --no-apps`, с теми же инструментами и проверками. Повторно все
+  **3 теста прошли**, включая пиксельные эталоны, за 268,81 с.
+- Session-стенд сохранял MCP-регистрации завершённого модуля для следующего.
+  В `queued` дерево доступности явно содержало предупреждение о недоступном
+  сервере `apps` предыдущего модуля. Базы, FakeLLM и процессы разделены по
+  модулям; ожидания кадров и количества сообщений не ослаблялись.
+
+Найденные снимки частично устарели: MCP-форма не содержит варианта OAuth,
+добавленного уже в исходном `6c84d728f`; старое меню команд не содержит `/mcp`,
+тексты полос отказа в старом архиве длиннее текущих. Изменений этих production
+компонентов в рассматриваемом рефакторинге нет. Это не основание молча
+принять новые изображения: действующий контракт `tests/look/aid_look.py`
+требует просмотра отчёта пользователем. Исходные эталоны остаются неизменными.
+Текст ошибки `--look-update` исправлен: он больше не предлагает `git add` для
+эталонов, которые по контракту хранятся вне Git.
+
+После изоляции весь набор без MCP-редактора дал **21 passed, 5 failed**:
+оставшиеся отказы — только сравнение со старыми снимками. Ошибки настройки,
+лишние сообщения недоступного MCP и неверное количество ответов исчезли.
+Для оболочки выявлена отдельная гонка готовности: `networkidle` не означает
+окончание `on_chat_start` по WebSocket. `ShellPage` теперь ждёт существующее
+событие через публичный `ChatPage.await_start`; кадр снимается после запуска
+агента и появления меню команд. Проверка клавиатурного фокуса прошла.
+
+Пользователь просмотрел предложенные отчёты и **согласовал обновление** шести
+сценариев: форма MCP с OAuth, меню команд, три сценария полос ошибок и пустой
+чат после окончания старта. Это 44 различающихся кадра. Восстановленный набор
+с MCP содержит **462 PNG, 231 aria.yml и env.json**. Он скопирован в постоянный
+каталог вне репозитория:
+`/mnt/store/ss/docker/compose/boba-look-baselines/recovered-2026-11-02`.
+Обновляемая копия — соседний `2026-11-02`, решение и список кадров —
+`approval-2026-11-02.json`. Архивы и восстановленный оригинал не изменяются.
+
+Проверка после обновления подтвердила ровно **44 PNG и 22 aria.yml** из
+согласованного списка; изменений вне него нет, все 694 файла восстановленного
+оригинала сохранили SHA256. Дополнительные гонки тестов исправлены ожиданиями
+реальных состояний: аварийный сценарий ждёт заголовок выполняемого `sleep_for`,
+а не промежуточный `ToolSearch`; форма входа ждёт начальный autofocus перед
+снятием фокуса для кадра. Снимки входа не переснимались.
+
+Финальный прогон без обновления эталонов: **28 passed**, 416,45 с. Все
+462 кадра совпали в рамках прежнего порога; пороги сравнения не менялись.
+Повторная проверка файлов подтвердила только 66 согласованных изменений.
+Журнал — `look-final.log`, отчёт — `look-final-report/index.html` в каталоге
+`/tmp/boba-refactor-20261102-r01/`.
+
+## 20. R05: общие модели MCP без инфраструктуры
+
+Добавлен внутренний пакет
+[`boba-mcp-models`](../packages/core/boba-mcp-models/src/boba/mcp_models/__init__.py).
+Его `__init__` содержит только `ToolHints`, базовую `ToolCard` и `Audience`
+на stdlib. Отдельный [`protocol.py`](../packages/core/boba-mcp-models/src/boba/mcp_models/protocol.py)
+владеет преобразованием annotations, текстом ответов `tools/call` и
+`prompts/get`, а также парой разобранного и исходного ответа `ToolReply`.
+Только этот модуль импортирует wire-модели уже используемого `mcp-types`.
+Транспорт, исполнение инструментов, история и UI в пакет не входят.
+
+```mermaid
+graph LR
+    Agent[boba-agent] --> Models[boba-mcp-models]
+    Toolkit[boba-toolkit: MCP adapter] --> Models
+    Models --> Types[mcp-types]
+    Models --> Core[boba-core: MCP names]
+```
+
+`agent.mcp` сохраняет прежние публичные импорты переэкспортом.
+`toolkit.mcp` добавляет только свои `CallViews`, `outputSchema` и преобразование
+в `MarkdownResult`/`ErrorResult`. `toolkit.dag.ToolHints` — та же общая frozen
+dataclass, отдельной копии больше нет. Разные карточки toolkit и агента не
+сливаются флагами: серверная карточка содержит дополнительные поля представления,
+которые ядру агента не нужны. `InputRequiredResult` остаётся явным отказом в
+адаптере, не умеющем запросить дополнительный ввод.
+
+Выбран небольшой общий пакет, поскольку помещение DTO в `toolkit` связало бы
+агент с Linux-исполнением, а добавление `mcp-types` в обязательные зависимости
+`boba-core` расширило бы контракт нейтрального ядра. Новая сторонняя библиотека
+для небольшого преобразования уже используемых DTO не требуется.
+
+Результат измерения после переноса с учётом нового общего модуля:
+
+- **−91 строка production Python**, а не размер перенесённого файла:
+  156 231 → **156 140**, суммарно −513 от исходного аудита.
+- Совокупный Python `packages/**/src`: **186 320 строк**, включая стенды.
+- Workspace: 71 → **72** внутренних пакета. Lock: 254 → 255 записей;
+  все **183 внешние записи lock остались без изменений**.
+- Production-объединение остаётся **171 внешнее имя**; aid 110, mcp 86,
+  boba 93, plugins/core 6, db 40, docs 75, shell 27.
+- Изолированный импорт общего пакета не загружает `agent`, `toolkit`,
+  `runtime`, MCP-клиент, Chainlit или HTTPX. Декларации прямых зависимостей
+  добавлены обоим потребителям, source path — pytest/Pyright, пакет — workspace.
+
+16 проверок общей границы прошли: консервативные пометки безопасности,
+аудитории блоков, structured fallback, ссылки и embedded resources, пустой
+успех/отказ, ошибка JSON-RPC, порядок промпта, wire aliases и сохранение
+неизвестных полей исходного ответа. В новом ожидаемом JSON учтён обязательный
+`resultType: complete` SDK; production-сериализатор не менялся.
+Проверка `test_guest_and_zygote_do_not_import_mcp_types` выявила, что общие
+данные нельзя переэкспортировать вместе с SDK-фабриками из одного `__init__`:
+импорт `ToolHints` загрузил бы SDK в исполнителе. Разделение на чистые модели
+и `protocol.py` сохраняет этот запрет; все 17 адресных проверок прошли.
+В список исходников тестовой песочницы добавлен новый пакет; сам запрет на
+импорт SDK и остальные проверки песочницы сохранены.
+
+Pyright: **986 файлов, 0 ошибок/предупреждений**. Функциональный UI:
+**216 passed, 8 прежних xfailed**; интеграции aid: **122 passed**.
+Полный регрессионный прогон: **3246 passed, 2 прежних xfailed**, 446,87 с.
+Интеграции MCP-клиента: **71 passed**, включая прежнюю редакцию протокола.
+Визуальные тесты: **28 passed** (§19.1). Финальный `sec.sh` прошёл: пороговые
+проверки SAST, полный экспорт SCA и отдельный upstream-аудит локальных патчей.
+Make повторно собрал окончательный `boba`; **4 binary-теста прошли** за 7,28 с
+на этом исполняемом файле. Сборка MCP и самопроверки всех плагинов прошли;
+итоговый aid собран уже с последующим патчем Chainlit (§21).
+Журналы — `/tmp/boba-refactor-20261102-r05/`: `regression-final`,
+`mcp-integration`, `ui`, `aid-integration`, `pyright-pure`, `security-final`,
+`make-final-boba`, `binary-final`.
+
+## 21. Chainlit/MCP: проверенный вариант устранения override
+
+**Статус: пользователь согласовал патч; внедрение и проверки — §21.1.**
+Исходный `chainlit 2.11.1` требует `mcp>=1.11,<2`, тогда как Boba использует
+MCP 2.3 и его новую редакцию протокола. Принудительный override позволяет
+собрать окружение, но оставляет нарушение metadata и реальную несовместимость:
+нативный `/mcp` Chainlit импортирует удалённый `streamablehttp_client`, причём
+до проверки `features.mcp.enabled`. В Boba этот интерфейс отключён;
+используется собственный MCP-клиент, его 71 интеграционная проверка прошла.
+
+Простое расширение версии в metadata недостаточно. Вариант исправления —
+локальный `chainlit 2.11.1+boba.1`, патч трёх файлов:
+
+- `pyproject.toml`: согласованное ограничение `mcp>=2.3,<3` и прямая
+  зависимость `httpx2>=2.10,<3`, уже присутствующая в поставке.
+- `server.py`: `streamable_http_client` получает `AsyncClient` с заголовками
+  подключения и прежними таймаутами 30/300 секунд. Клиент входит в тот же
+  `AsyncExitStack`, что транспорт и MCP-сессия, и закрывается после них.
+- `version.py`: локальная версия, чтобы patched wheel отличался от upstream.
+
+SSE, stdio, callbacks, хранение MCP-сессий, сериализация сообщений и frontend
+этим патчем не меняются. UI/copilot assets в sdist сохраняются. При сборке
+wheel удалён прежний `PKG-INFO`, иначе hatchling оставляет исходный номер версии.
+Исходный sdist проверен SHA256
+`74b7f801c63f39e7b4d99fd1fa9654df4a97ce01a07c739558566d750b5de3b6` из lock.
+
+Проверки прототипа:
+
+- **12 passed** на реальных HTTP, SSE и stdio: initialize/list_tools/call_tool,
+  заголовки авторизации, callbacks, переподключение, disconnect, удаление
+  WebSocket-сессии, отказ callback, запрет чужого пользователя и отключённый MCP.
+  HTTP DELETE и завершение фоновых задач проверены явно.
+- Изолированная копия workspace разрешается **без override**: 255 записей,
+  изменены только Chainlit и ссылка на него у aid. Новых/удалённых имён и
+  изменений версий остальных пакетов нет.
+- Чистое окружение production-зависимостей aid для Linux/Python 3.11:
+  **109 установленных внешних пакетов, `uv pip check` — совместимы**.
+  Это число для конкретных platform markers, не уменьшение общего профиля
+  относительно 110 имён в анализе графа. Экономия внешних пакетов патчем — 0.
+
+Патч и воспроизводимые проверки:
+`/tmp/boba-refactor-20261102-chainlit/chainlit-2.11.1-mcp2.patch`,
+`test_patch.py`, `check.log`, `workspace/uv.lock`, `install.log`.
+Проверки общего Boba/чата на patched wheel и интеграция Make/dev bootstrap
+потребуются при выборе этого варианта; результаты §20 относятся к прежнему
+Chainlit. Цена решения — третий сопровождаемый wheel после Oracle и LiteralAI.
+Другой вариант — отложить исправление до совместимого upstream-релиза,
+сохранив явный долг и override; откат MCP до 1.x теряет используемые Boba
+возможности и не предлагается как эквивалентная замена.
+
+### 21.1. Внедрение после согласования
+
+Пользователь выбрал патч и полный повторный прогон чата. В рабочем дереве:
+
+- [`chainlit-2.11.1-mcp2.patch`](../build/patches/chainlit-2.11.1-mcp2.patch)
+  сохраняет проверенное изменение трёх upstream-файлов.
+- Make получил деталь `chainlit`; отдельная стадия собирает wheel из sdist
+  с проверенным SHA256, проверяет локальную версию и наличие UI/copilot.
+  Wheels-стадия использует его для сборок; `dev.sh` — для `.venv`.
+- Pin и `find-links` обновлены, `override-dependencies` удалён. Также удалены
+  генерация `overrides.txt` и `--override` при установке site/rootfs.
+- `sec.sh` проверяет upstream всех `+boba.*` из lock; расширять ручной список
+  при следующем локальном патче больше не требуется.
+- Нативные MCP-сценарии перенесены в
+  [`test_chainlit_mcp.py`](../packages/apps/boba-aid/tests/test_chainlit_mcp.py).
+
+`uv lock --offline` и синхронизация полного workspace прошли. Установлены
+255 пакетов, **`uv pip check` не обнаруживает конфликтов**. Это устранение
+прежнего нарушения metadata, а не дополнительное сокращение числа зависимостей.
+Результаты окончательного рабочего окружения:
+
+| Проверка | Результат |
+|---|---|
+| Весь обычный набор workspace | **3258 passed, 2 прежних xfailed**, 395,88 с |
+| Нативные MCP-сценарии и контроль pin UI/backend | **14 passed**, включены в общий набор |
+| Интеграции aid | **122 passed** |
+| Полный UI из исходников | **216 passed, 8 прежних xfailed** |
+| Функциональный UI собранного aid | **214 passed, 8 прежних xfailed** |
+| Performance/SLA собранного aid | **2 passed**, прежние пороги |
+| Визуальные сценарии без пересъёмки эталонов | **28 passed**, 412,29 с |
+| Pyright кода и тестов | **988 файлов, 0 ошибок и предупреждений** |
+| `sec.sh`, основной и полный диагностический режимы | успешно; SCA и upstream-аудит трёх патчей без известных уязвимостей |
+| Make: Chainlit wheel, aid, MCP с rootfs/плагинами, boba | успешно; без dependency override |
+
+Все файлы внутри wheel, воспроизведённого Make, побайтово совпали с wheel,
+использованным в тестах; архивные timestamps не считаются кодом. Визуальные
+эталоны не обновлялись: проверены прежние 66 согласованных файлов и неизменность
+остальных. Новых skip/xfail или исключений SAST не добавлено.
+Журналы — `/tmp/boba-refactor-20261102-s10/`: `regression-final`, `native-mcp`,
+`ui`, `aid-integration`, `ui-binary`, `ui-binary-perf`, `look-final`, `pyright`,
+`security-final`, `make-chainlit`, `make-mcp`, `make-boba`.
+Журнал сборки aid — `/tmp/boba-refactor-20261102-r05/make-final-aid.log`.
+
+Первый общий прогон обнаружил две проверки точного равенства backend и UI
+версии. Теперь они проверяют оба условия: установлен ровно pin из pyproject,
+а его upstream-часть совпадает с `UPSTREAM`; разрешённый локальный pin —
+`<UPSTREAM>+boba.1`. Переход на другой upstream по-прежнему ломает проверку.
+
+Нативные MCP-тесты также выявили изоляцию стенда: `sse-starlette` хранит
+`AppStatus.should_exit` на процесс, а watcher запоминает остановленный
+Uvicorn-сервер. Несколько последовательных серверов в одном процессе могут
+преждевременно завершить SSE следующего теста. HTTP/SSE-серверы вынесены в
+отдельные процессы через существующий `AppsHost`, получивший выбор скрипта.
+Проверки callbacks, авторизации, HTTP DELETE и завершения задач сохранены;
+сброс чужих глобальных флагов в production не добавлялся.
+
+## 22. R02: общий код при сохранении обоих KB-контуров
+
+**Решение пользователя:** оба индексатора остаются на текущем этапе.
+Нужны старые `kb_vector_search`/`kb_fts_search` и индексация страницы/спейса
+из чата, а также самостоятельный ix. Рефакторится общая основа и повторяющийся
+код, а не состав индексаторов. Предыдущее предложение объединить их в один
+контур и перенести данные было ошибочной интерпретацией и отменено.
+
+Переноса данных, переключения поиска, удаления старых инструментов или setup
+не выполнялось. Выбирать между переиндексацией и миграцией данных для текущей
+задачи не требуется. Следующая матрица ограничивает обобщение: различия должны
+оставаться в соответствующих реализациях.
+
+| Контракт | Chunks/ingest | Ix | Ограничение общего кода |
+|---|---|---|---|
+| Область поиска | `KbChunksConfig.collection`, SQL фильтрует `c.collection` | `SearchRequest` фильтрует `surfaces`/`aspects` | Коллекции и поверхности не взаимозаменяемы; запросы остаются независимыми |
+| Результат | `distance`, полный `format_content`, tags, page/anchor/heading_path и метаданные источника | `node_id`, surface, URL, score, aspect, snippet до 500 символов; полное содержимое отдельным `kb_node2` | Сохранить оба формата и цитирование; score и distance не отождествлять |
+| Запуск | `confluence_index_page` и `confluence_index_space`, отчёт и прогресс инструмента | Worker обхода source/space | Общие операции чтения не навязывают единый launcher или сценарий обхода |
+| Вложения и OCR | Флаги каждого вызова `attachments`/`ocr`, allowlist | Allowlist и `DocSection` worker | Можно переиспользовать чтение документа; выбор обработки остаётся у каждого сценария |
+| Удалённые документы | Scope/ledger | `sweep_space` после полного успешного обхода | Политики очистки принадлежат своим хранилищам; частичный обход не очищает спейс |
+| Векторы и текст | Структурные чанки и embedding при ingest | Тексты аспектов и отдельный vector worker | Переиспользовать совпадающие операции, сохранять модель, размерность и границы текста каждого контура |
+| Отмена и прогресс | Прогресс вызова, `IngestReport` с pages/attachments | Процесс спейса, сигналы, `Report`/логи | Общий контракт вводить только для действительно одинаковой семантики; не унифицировать отчёты формально |
+| Имена и конфигурация | Старые поиски включены в поставляемом конфиге | Имена `*2` доступны отдельно | Не переименовывать инструменты и не переключать их хранилища в рамках выделения общего кода |
+
+Источники: [`kb/chunks.py`](../packages/tools/boba-tool-knowledge/src/boba/tool/kb/chunks.py),
+[`kb/search.py`](../packages/tools/boba-tool-knowledge/src/boba/tool/kb/search.py),
+[`kb/tools.py`](../packages/tools/boba-tool-knowledge/src/boba/tool/kb/tools.py),
+[`SearchRequest` и выполнение SQL](../packages/infra/ix/ix-core/src/boba/ix_core/search.py),
+[`ingest_tools.py`](../packages/tools/boba-tool-confluence/src/boba/tool/confluence/ingest_tools.py),
+[`SpaceWalker`](../packages/apps/ix/cfl-indexer/src/boba/cfl_indexer/worker.py),
+[`AspectEmbedding`](../packages/apps/ix/ix-vector/src/boba/ix_vector/embedding.py).
+
+После обновления зависимостей отдельно выполнены все автоматические тесты
+`boba-tool-confluence`, `boba-tool-knowledge` и `cfl-indexer` (без ручных/load/perf):
+**177 passed**, 62,94 с. Это проверка работоспособности каждого контура,
+а не доказательство эквивалентности их выдачи. Лог —
+`/tmp/boba-refactor-20261102-d04/kb.log`.
+
+Дополнительные обязательные гарантии из `test_ingest_ledger.py`: запуск одной
+страницы не затрагивает другие; её 404 удаляет её прежние данные, ошибка чтения
+их сохраняет; проходы разных спейсов изолированы. При `attachments=false`
+сохраняются ранее индексированные существующие вложения, но удалённые вложения
+вычищаются без скачивания оставшихся. При выделении общего reader эти условия
+старого ingest должны остаться прежними; новый worker сохраняет свои правила.
+Удаление старого ledger не входит в задачу.
+
+Общая часть должна находиться ниже обоих индексаторов: нейтральные модели
+страниц, вложений и текстовых фрагментов не импортируют Chainlit, PostgreSQL
+или процессы; HTTP/Confluence и документные readers реализуют свои границы.
+Начинать с конкретного повторения и двух действующих потребителей. Обобщение
+не должно менять поиск, схему хранения, область очистки или порядок индексации.
+
+### 22.1. Что уже общее и где остаётся работа
+
+| Механизм | Реализация и потребители | Вывод |
+|---|---|---|
+| REST, адреса и пагинация | `boba.confluence.rest`: `CflRest`, `CflRestBuilder`, `CflPaginator`; старые sources/tools и новый `ConfluenceReader` | Уже общий механизм; новый reader задаёт сценарий обхода, не реализует второй HTTP-клиент |
+| Разбор Confluence HTML и ссылок | `boba.confluence.html.ConfluencePage`; старые `SectionsRender`/`MarkdownRender` и новый `ConfluenceParser.markdown` | Уже общее дерево и правила ссылок; секционный результат и цельный Markdown остаются разными представлениями |
+| Markdown backend | `boba.doc.html.HtmlMarkdown`, использует установленный `markdownify` | Библиотечная реализация уже используется; замена ещё одной библиотекой пока не обоснована |
+| Хэширование | `BodyHasher`/`RunningDigest` из `boba.confluence.parsing` | Механика общая; старый путь хэширует подготовленное тело с заголовком, ix — сырые байты ответа страницы/спейса. Форматы отпечатков сохраняются |
+| Поля REST-ответов | Pydantic `ConfluenceContent`/`ConfluenceAttachmentItem` и извлечение через `JsonNode` в ix | Есть пересечение полей и правил labels/ancestors; нет доказательства эквивалентности обработчиков неполных ответов |
+| Границы общего пакета | `confluence.models` импортирует `MetadataKey`, `SourceId`, `SourceMark`, `TableLayout` из `boba.indexing`; `rest` содержит `ConfluenceRequest` и сборку metadata | Общие DTO, формат документа и адаптер ingestion смешаны. Проверить разделение модулей/extra по реальным потребителям, сохранив старый адаптер |
+
+Последний пункт — задача организации общей основы, а не повод удалить
+`boba-indexing`. Новый пакет оправдан только самостоятельным контрактом и
+измеримым улучшением направления зависимостей. Один перенос импортов без
+проверки `__init__`, extras и реальной изолированной установки не доказывает
+разделение: `boba.confluence.__init__` сейчас сразу импортирует модели и decoder.
+
+Замена `JsonNode` готовыми REST-DTO требует отдельной проверки совместимости:
+`JsonNode` превращает отсутствующие/null поля и нечисловые значения в пустые
+результаты; существующие DTO часть таких значений отвергают. Ix отдельно требует
+корректные timestamps. Ошибки `ConfluenceReadError` и `ConfluencePayloadError`
+принадлежат своим границам и не должны утечь в вызывающий код в другом виде.
+Нельзя ослаблять общую валидацию ради формального совпадения моделей или менять
+эти контракты незаметно под видом сокращения кода.
+
+Следующий шаг R03 — зафиксировать примеры допустимых неполных ответов обоих
+потребителей, затем переиспользовать совпадающие операции в существующем общем
+пакете. Новая универсальная модель, единый запуск обхода и перенос данных для
+этого не нужны. На этом этапе изменения parser не внесены.
+
+## 23. S05: upstream FastMCP вместо дополнительного локального патча
+
+**FastMCP 4.1.4 внедрён в рабочий lock после изолированного прогона.**
+В официальном [релизе 4.1.4](https://github.com/PrefectHQ/fastmcp/releases/tag/v4.1.4)
+keyring перестал быть обязательной зависимостью. Его должны явно устанавливать
+пользователи `KeyringStore`. Это видно и в
+[metadata закреплённого тега](https://github.com/PrefectHQ/fastmcp/blob/v4.1.4/fastmcp_slim/pyproject.toml):
+client/server extras используют `py-key-value-aio[filetree,memory]`.
+В Boba `KeyringStore` не используется; OAuth хранится собственной реализацией.
+
+В изолированной копии workspace обновление меняет только версию FastMCP;
+остальные версии остаются прежними. Lock: **255 → 245**, production-объединение:
+**171 → 161**. Профили aid **110 → 100**, mcp **86 → 76**, boba **93 → 83**;
+профили плагинов не изменились. Исчезают `keyring`, `secretstorage`, `jeepney`,
+три `jaraco-*`, `backports-tarfile`, `more-itertools`, `importlib-metadata`, `zipp`.
+Чистое окружение всех 245 workspace-пакетов установлено, `uv pip check` проходит.
+
+Выбран upstream вместо ещё одного сопровождаемого wheel или ручной сборки
+неполного server extra; результаты проверки поведения приведены в §24. Upstream допускает
+изменения API в minor-релизах, поэтому одного разрешения lock недостаточно.
+Изолированный смешанный прогон MCP/OAuth после исправления условий стенда:
+**388 passed, 2 прежних xfailed**, 138,28 с; результаты и lock —
+`/tmp/boba-refactor-20261102-s05/`. Минимум FastMCP в декларациях потребителей
+поднят до 4.1.4. Рабочий workspace синхронизирован: **245 пакетов**,
+`uv pip check` проходит. Итог production-объединения — **161 внешнее имя**;
+полные проверки и сборка рабочего окружения завершены совместно с D04 (§24).
+
+
+Первый расширенный прогон включал обычные, интеграционные и браузерные тесты
+MCP/OAuth: 385 passed, 2 xfailed и два отказа. Оба отказа воспроизведены на
+прежнем FastMCP 4.0.11: `sql_review.toml` в локальном конфиге отключён, а
+развёрнутый сервис разрешает local/LDAP/Kerberos, хотя тест ожидал только proxy.
+Тест загрузки промптов теперь создаёт свой конфиг с прежним содержимым;
+развёрнутый сервис проверяется по выбранным `[app.auth]` провайдерам. Отдельный
+процесс сервиса без local-входа сохраняет строгую проверку прежнего сценария:
+сообщение об отсутствии провайдеров, отсутствие формы и ссылки SSO. На старой
+версии эти проверки дали **10 passed**; секретные поля fixture исключены из repr.
+
+Смешанный повторный прогон выявил ещё одну проблему изоляции: session-scoped
+sync Playwright держал loop главного потока и мешал AnyIO-тестам, которые xdist
+распределял после UI. Browser/Playwright и зависящая от них проверка среды look
+ограничены модулем. Это сохраняет совместное использование браузера внутри
+модуля и закрывает его до перехода к другим асинхронным тестам; исключения
+сценариев из набора не добавлены.
+
+
+## 24. D04: HTTP-адаптер SSO отделён от runtime
+
+`SsoRequests` и `SsoResponses` перенесены без изменения алгоритмов в
+[`boba.auth.http`](../packages/services/boba-auth/src/boba/auth/http.py).
+Это адаптер Starlette к существующей нейтральной модели `identity.sso`, а не
+новый доменный слой. OAuth и маршруты Kerberos/refresh чата импортируют его
+напрямую; runtime использует тот же класс и сохраняет совместимые re-export.
+
+В существующем `boba-auth` появился extra `http` со Starlette. Потребители
+декларируют `boba-auth[http]`; базовые auth-модели не получили обязательный
+HTTP-framework. У OAuth удалена зависимость `boba-runtime`. Нового пакета,
+внешней библиотеки, копии моделей или реализации SPNEGO не добавлено.
+
+Измерение при одинаковом FastMCP 4.1.4:
+
+| Установка | До | После |
+|---|---:|---:|
+| Внутренние пакеты OAuth, включая сам OAuth | 22 | 10 |
+| Внешние пакеты OAuth | 71 | 64 |
+| Внешнее объединение production-профилей Boba | 161 | 161 |
+
+Из замыкания OAuth исчезли `runtime`, `sandbox`, `toolrun`, `chat`, `canvas`,
+`connection-broker`, `access`, `config`, `db-postgres`, `ldap`, `llm`, `messaging`;
+из внешних — psycopg/psycopg-binary/psycopg-pool, ldap3/pyasn1,
+OmegaConf/antlr4-python3-runtime. Эти пакеты нужны другим приложениям,
+поэтому повторно вычитать их из всей поставки нельзя.
+
+Проверена отдельная установка только `boba-oauth`, без dev extras, через
+`uv sync --frozen --package boba-oauth --no-dev --no-default-groups` в новом
+окружении: **74 пакета**, `uv pip check` проходит, `boba.oauth.server`
+импортируется; `runtime`, `chat`, `canvas`, `toolrun`, `sandbox` отсутствуют
+даже как устанавливаемые модули. Это проверка реального состава, не только
+графа деклараций. Журналы и измерения — `/tmp/boba-refactor-20261102-d04/`.
+Pyright: **989 файлов, 0 ошибок и предупреждений**.
+
+Перенос не засчитывается как сокращение кода: production Python вырос на
+16 строк относительно R05 из-за отдельной границы модуля и импортов.
+После D04 было **156 156** строк; с последующим исправлением ix (§25)
+значение составило **156 159** против исходных **156 653**. Все `src` на этом этапе —
+**186 344 строки** в 564 файлах; последующее измерение — §27.
+Значительное сокращение реализации по-прежнему требует
+устранения дублирования в общих компонентах при сохранении нужных подсистем,
+включая оба самостоятельных KB-контура.
+
+Проверки рабочего дерева после S05/D04; прежние результаты §21 не подменяют
+проверки нового состава:
+
+| Проверка | Результат |
+|---|---|
+| Весь обычный набор workspace | **3258 passed, 2 прежних xfailed** |
+| Интеграции aid | **122 passed** |
+| Смешанный MCP/OAuth, включая браузер | **388 passed, 2 прежних xfailed** |
+| Полный UI из исходников | **216 passed, 8 прежних xfailed** |
+| Функциональный UI собранного aid | **214 passed, 8 прежних xfailed** |
+| Performance/SLA собранного aid | **2 passed**, прежние пороги |
+| Визуальные сценарии | **28 passed**, эталоны не менялись |
+| Pyright кода и тестов | **989 файлов, 0 ошибок и предупреждений** |
+| Ruff для 13 Python-файлов S05/D04 и исправления ix | lint без замечаний, все файлы отформатированы |
+| `sec.sh`, основной и полный диагностический режимы | успешно; SCA и upstream-аудит локальных патчей без известных уязвимостей |
+| Make: aid, MCP с rootfs/плагинами, boba | успешно, включая self-check образов |
+| Бинарные тесты CLI | **4 passed, 1 deselected**: запуск, package data, ACP, история; отдельный `binary_onnx` не входит в этот набор |
+
+Результат security не означает отсутствия всех мягких диагностических находок
+SAST. Новых skip/xfail и исключений security не добавлено. Журналы —
+`/tmp/boba-refactor-20261102-d04/`; отдельный повтор KB после исправления
+ссылок ix записан в §25.
+
+Сборки выполнены с `TAG=refactor-20261102`,
+`OUT=/tmp/boba-refactor-20261102-next/build-out`, `PARALLEL=2 JOBS=4`.
+Готовые образы: `boba-aid:refactor-20261102` (`6c147a555356`),
+`boba-mcp:refactor-20261102` (`e9a9b31a84ef`),
+`boba:refactor-20261102` (`1be02eec4f9c`). Размеры экспортированных деревьев
+сборки — 286 MiB, 2,2 GiB и 364 MiB соответственно; это не размеры Docker-слоёв.
+Работающие развёртывания на эти образы не переключались.
+
+В первом look-прогоне **27 passed**, один отказ до сравнения кадров:
+`test_message_during_the_turn_look` отправлял вопрос до конца `on_chat_start`.
+Завершение стартовой задачи снимало Stop уже начатого ответа. Общий `talk_frames`
+теперь ждёт готовности через существующий `ChatPage.await_start()`; сам сценарий,
+его ожидания и эталоны не изменены. Управление
+задачами самого Chainlit при вводе до готовности этим изменением не исправлялось;
+это отдельная граница lifecycle из R11, которую нельзя считать закрытой.
+Повторный полный look-прогон: **28 passed**, 406,33 с; эталоны не менялись.
+
+
+## 25. R02: удаление последней ссылки при переиндексации страницы
+
+При проверке общей основы KB выявлен независимый дефект `cfl-indexer`: после удаления всех
+ссылок со страницы ix сохранял её старые исходящие рёбра. Очистка выбирала
+страницы из временной таблицы новых ссылок, куда страница без ссылок не попадала.
+Это не последствие обновления FastMCP или переноса SSO.
+
+Интеграционная проверка на ConfluenceStub и PostgreSQL сначала воспроизвела
+ошибку (1 failed). Теперь обход отдельно отмечает перечитанные страницы в
+временной `link_sources`, даже когда список ссылок пуст. Очистка и замена рёбер
+по-прежнему происходят одной транзакцией в `apply_links`; неизменённые страницы
+сохраняют связи. Не добавлены ни новая библиотека, ни постоянная таблица БД.
+
+Изменения:
+[`store.py`](../packages/apps/ix/cfl-indexer/src/boba/cfl_indexer/store.py),
+[`таблицы обхода`](../packages/apps/ix/cfl-indexer/src/boba/cfl_indexer/run/32_links_table.sql),
+[`отметка страницы`](../packages/apps/ix/cfl-indexer/src/boba/cfl_indexer/run/34_links_source.sql),
+[`очистка рёбер`](../packages/apps/ix/cfl-indexer/src/boba/cfl_indexer/run/80_links_clear.sql).
+Новая проверка в
+[`test_index_links.py`](../packages/apps/ix/cfl-indexer/tests/test_index_links.py)
+требует отсутствия прежних исходящих рёбер и сохранности входящей связи другой
+страницы. Все **3 теста связей прошли**. Wheel `boba-cfl-indexer` собран;
+включение и побайтовое совпадение нового SQL с исходником проверены.
+Полный KB-набор после исправления: **178 passed**, 61,29 с. Pyright кода и
+тестов: **989 файлов, 0 ошибок и предупреждений**. `make -C build sec`
+(`sec.sh`, основной режим) завершился успешно. Журналы —
+`/tmp/boba-refactor-20261102-r02/`.
+
+Этот шаг добавляет 3 строки production Python и 9 строк SQL: это исправление
+инварианта индекса, а не сокращение кода или объединение индексаторов. Оба
+контура, их данные и инструменты сохранены. Эта правка касается только
+корректности существующего ix и не вводит связи с chunks/ingest.
+
+## 26. D08/R15: прямые зависимости и библиотечный разбор requirements
+
+Аудитор больше не считает импорт объявленным только потому, что библиотека
+устанавливается через extra другого пакета. Правило действует для `src` и
+тестов. При этом нужный extra владельца импортируемого модуля по-прежнему
+обязателен; это отдельная проверка, сохранённая без ослабления.
+
+Восемь пропусков деклараций исправлены в шести пакетах:
+
+| Потребитель | Прямая зависимость | Область |
+|---|---|---|
+| `boba-ch-meta-scraper` | `clickhouse-connect` | src |
+| `boba-ora-meta-scraper` | локальный pin `oracledb` | src и tests |
+| `boba-tool-oracle` | тот же pin `oracledb` | dev |
+| `boba-stand` | тот же pin `oracledb` | src |
+| `boba-db-postgres` | `psycopg-pool` | src и tests; `psycopg[binary,pool]` заменён на `psycopg[binary]` плюс прямой pool |
+| `boba-aid` | `cryptography` | dev |
+
+Вместе с обходом чужих extras удалены собственные регулярные выражения разбора
+requirements и нормализации имён. Вместо них используются публичные
+[Requirement](https://packaging.pypa.io/en/stable/requirements.html) и
+[canonicalize_name](https://packaging.pypa.io/en/stable/utils.html) из уже
+установленного `packaging` 26.2. Pydantic-модель на границе сохраняет имя/extras;
+ошибка полной строки PEP 508 становится `DepsAuditError` с исходной причиной.
+Ранее строка вроде `pydantic>=` принималась, поскольку regex проверял только
+начало имени. Проверены также markers и прямые URL, без обращения по этим URL.
+
+Почему выбран этот вариант: сохранять частичный parser стандарта невыгодно,
+а `packaging` уже есть в lock и не имеет обязательных транзитивных зависимостей.
+Добавлена его прямая декларация у тестового аудитора; новые внешние пакеты,
+версии, адаптеры инфраструктуры и отдельный checker не появились. Для полной
+замены аудитора на deptry/Import Linter ещё нужно доказать покрытие специфичных
+правил Boba, поэтому она здесь не заявляется выполненной.
+
+[`deps.py`](../packages/core/boba-stand-core/src/boba/stand_core/deps.py)
+сократился **891 → 835 строк**, то есть на 56. Это тестовая инфраструктура,
+не production Python. Список допустимых внешних библиотек `stand-core` дополнен
+`packaging`; запрет зависеть от инфраструктурных пакетов проекта сохранён.
+
+Новые проверки сначала воспроизвели **6 отказов при 10 успешных** на прежней
+реализации. После изменения все **18 тестов аудитора прошли**, включая полный
+workspace. Прежние assertions сохранены; новые случаи проверяют прямые импорты
+в src/tests, extras внутреннего и внешнего пакета и некорректный PEP 508.
+Журналы — `/tmp/boba-refactor-20261102-d08/`.
+
+`uv lock --offline` и полная синхронизация прошли: множество пар
+«имя, версия» **не изменилось**, всего 245 пакетов. `uv pip check` проходит.
+Все семь production-профилей имеют прежний состав; их внешнее объединение —
+**161 имя**. Добавление прямых деклараций здесь исправляет граф, но не считается
+дополнительным сокращением внешних компонентов.
+
+## 27. R08: общие SQL-ресурсы скрапера PostgreSQL/Greenplum
+
+Удалены **17 побайтово одинаковых SQL-файлов, 157 строк**. Несколько вариантов
+каталога используют один запрос сверки; Greenplum 7 использует тот же запрос
+`class`, что PostgreSQL соответствующей версии. Запрос `depend` и его сверка
+также были одинаковыми и теперь хранятся один раз.
+
+Существующий
+[`ScrapeFile`](../packages/infra/ix/ix-core/src/boba/ix_core/scrape.py)
+получил необязательный `verify_query`. Без него сохраняется прежний выбор
+соседнего `<query>.verify.sql`; конкретный источник явно называет общий файл.
+В [`PgSource.files`](../packages/apps/ix/pg-meta-scraper/src/boba/pg_meta_scraper/worker.py)
+сохранены все 46 объявлений вариантов, их порядок, волны, gates, params и collect.
+Новому пакету или SQL-шаблонизатору здесь нет отдельной обязанности: общая модель
+выбора уже находилась в `ix-core`, а содержимое SQL осталось у PG-адаптера.
+
+До удаления сохранены тексты SQL и объявления всех вариантов. После изменения
+для **каждого из 46** проверено равенство параметров и правил выбора, текста
+основного SQL и текста сверки. Это проверяет эквивалентность и для границ версий,
+которые не представлены отдельным живым сервером. Дополнительно тесты
+[`test_pg_scrape_files.py`](../packages/apps/ix/pg-meta-scraper/tests/test_pg_scrape_files.py)
+проверяют наличие ресурсов, выбор PG/GP и прежнее поведение `verify()` по умолчанию.
+
+| Проверка этапов §26–27 | Результат |
+|---|---|
+| Обычный набор workspace | **3277 passed, 2 прежних xfailed**, 407,58 с |
+| Весь автоматический PG-набор без load | **29 passed, 1 deselected**; PG 9.0–19, GP 6/7, прежние golden/invariants и повторное снятие |
+| ClickHouse | **11 passed, 1 deselected**, включая потребителя общей модели `ScrapeFile` |
+| Oracle | **8 passed, 5 deselected**, включая потребителя общей модели `ScrapeFile` |
+| Pyright кода и тестов | **990 файлов, 0 ошибок и предупреждений** |
+| Ruff шести изменённых Python-файлов | без замечаний; форматирование выполнено |
+| `sec.sh` через `make -C build sec` | успешно |
+| Wheels `boba-pg-meta-scraper`, `boba-ix-core` | собраны; все 91 SQL-ресурс PG wheel побайтово совпали с текущими исходниками, удалённых копий нет |
+| Make: MCP с rootfs/плагинами | успешно, включая self-check программы и проверки плагинов |
+
+Deselected относятся к существующим ручным/load-сценариям; новых skip/xfail
+не добавлено. Первый Pyright-прогон выявил неполную типизированную сборку
+`PostgresConfig` в новом тесте: `options` и `pool` теперь передаются явно,
+подавления ошибки нет. Журналы SQL/интеграций/wheels —
+`/tmp/boba-refactor-20261102-r08/`; общий прогон, security и Make —
+`/tmp/boba-refactor-20261102-d08/`.
+
+Make завершил образ `boba-mcp:refactor-20261102` (`6032f594c1b6`) в прежнем
+каталоге `/tmp/boba-refactor-20261102-next/build-out`. Работающий MCP на него
+не переключался. Сборки aid/агента и UI/look из §24 в этом шаге не повторялись:
+их функциональный код и набор установленных внешних версий не менялись.
+
+Чистое изменение этапа: **−193 строки Python src и SQL**, из них **−137** в
+production (+20 Python, −157 SQL), **−56** в тестовом аудиторе. Новые тесты
+учитываются отдельно. Production Python теперь **156 179 строк**, все Python
+`src` — **186 308 строк в 564 файлах**. Это небольшой шаг; он не закрывает цель
+сокращения реализации более чем вдвое. Оба индексатора KB и их данные не менялись.
+
+
+## 28. D02: чистый пакет доступа и общий SQL у владельца хранилища
+
+У `boba-access` удалены три прямых зависимости: `boba-toolkit`,
+`boba-connections`, `boba-identity`. Остались существующий `boba-core` и Pydantic.
+Этому предшествовало разделение двух обязанностей:
+
+- `ConnectionFilter` в `access/grants.py` — внутреннее неизменяемое значение
+  `dataclass`, без SQL и импортов моделей инфраструктуры. Внешние аргументы
+  инструмента по-прежнему проверяются его Pydantic-границей; фильтр не был
+  wire-форматом. Для отбора уникальных имён хранилище использует
+  `dataclasses.replace`, не меняя исходный фильтр.
+- `GrantedIds`, `SubjectGrantsQuery`, ILIKE-экранирование и параметры живут рядом
+  с `ConnectionStore`, в `connection_broker/grants.py`. Общий CTE используют
+  соединения и MCP-серверы чата. Брокер уже был прямой зависимостью aid;
+  обратных импортов из core в services не появилось. Построитель запроса
+  создаётся в конструкторе `ConnectionStore`, данные субъекта передаются
+  на каждый вызов; состояния конкретного пользователя он не хранит.
+
+Изменённые связи компонентов:
+
+```mermaid
+flowchart LR
+    Aid["aid: McpServerStore"] --> Grants["broker: GrantedIds"]
+    Store["broker: ConnectionStore"] --> Query["broker: SubjectGrantsQuery"]
+    Query --> Grants
+    Query --> Filter["access: ConnectionFilter"]
+    Query --> Subject["identity: Subject"]
+    Grants --> Kind["connections: GrantKind"]
+    Access["access: модели грантов"] --> Types["core: StringList"]
+```
+
+Общие `StringList`/`LLMStringList` находятся в
+[`core/types.py`](../packages/core/boba-core/src/boba/core/types.py).
+Их разбирают прежние стандартные `csv`/`json` и Pydantic. Учитываются кавычки
+в CSV, пустые элементы и прежние правила JSON-входа инструмента.
+Runtime, access и инструменты Confluence/KB импортируют типы из core.
+В `toolkit.types` оставлены совместимые импорты типов без второй реализации.
+В runtime явно объявлена новая непосредственная зависимость от core;
+первый запуск аудитора обнаружил её отсутствие, декларация исправлена.
+
+| Установка только `boba-access`, без dev/extras | До | После |
+|---|---:|---:|
+| Внутренние пакеты, включая сам access | 8 | 2 |
+| Внешние пакеты | 10 | 5 |
+| Всего установленных пакетов | **18** | **7** |
+
+Из этой ветки исчезли `cffi`, `cryptography`, `joserfc`, `mcp-types`, `pycparser`
+и шесть внутренних пакетов. Это уменьшение минимальной установки правил
+доступа, **не всей поставки**: приложения используют эти библиотеки по другим
+назначениям. Внешнее объединение семи production-профилей осталось **161**;
+все **245** пар «имя/версия» lock прежние, новых внешних зависимостей нет.
+
+Общий код помещён в два уже существующих пакета с явными обязанностями.
+Дополнительная библиотека здесь не сокращает самостоятельную реализацию
+стандартного механизма: CSV/JSON уже библиотечные, а SQL выражает правила
+выдачи именно существующих таблиц системы. Перенос SQL сам по себе
+сокращением строк не считается. Чистый итог этого этапа — **−10 строк Python**;
+production Python **156 169**, все Python `src` **186 298 строк в 566 файлах**.
+Цель >2× остаётся открытой.
+
+Проверка эквивалентности до/после: **2592 сочетания фильтров** (пустые строки,
+пробелы, регистр, `%`, `_`, обратная косая, SQL-подобный текст, кириллица,
+несколько слов, unique_only) дают тот же SQL, параметры и признак пустого
+фильтра. Общий CTE совпадает побайтово. Для типов списков совпали **32 исхода
+валидации**, включая отказ, и обе JSON-схемы. Это вспомогательное сравнение
+исходников; интеграции отдельно проверяют реальный PostgreSQL.
+
+`uv sync --package boba-access --no-dev --no-default-groups --no-editable
+--frozen` создал изолированное окружение из семи пакетов. В нём проверены CSV
+конфига, разрешение/отказ по роли и профилю, отсутствие ролей, фильтр и его
+неизменяемое копирование. Пакеты исполнения, криптографии и хранилищ отсутствуют.
+В автоматический аудит добавлен запрет возвращать эти зависимости в access.
+Существующие тесты списков перенесены вместе с реализацией; добавлены случаи
+пустых строк, невалидного входа, неверного JSON и JSON-скаляров.
+
+Целевой набор core/access/audit/broker/MCP-store — **139 passed**.
+Pyright кода и тестов — **992 файла, 0 ошибок и предупреждений**.
+Source UI — **216 passed, 8 прежних xfailed**; интеграции aid — **122 passed**;
+MCP/OAuth — **388 passed, 2 прежних xfailed**. Первый `sec.sh` нашёл четыре
+неотсортированных импорта и длинную строку docstring после переноса. Они
+исправлены без подавлений; повторный `make -C build sec` успешен.
+
+В первом общем прогоне было **3284 passed, 1 failed, 2 прежних xfailed**.
+Сбой — существующий сценарий
+`test_command_during_a_turn_waits_for_the_step_boundary`: команда отправлялась
+сразу после `prompt`, а проверка её ожидания полагалась на секундную длительность
+инструмента. Не было гарантии, что команда действительно отправлена во время
+вызова. В тестовом MCP-сервере добавлены события начала/разрешения завершения:
+сценарий ждёт начала инструмента, отправляет команду при удерживаемом вызове,
+проверяет, что ответ ещё не пришёл, и разрешает завершение инструмента.
+Прежние проверки порядка сообщения/инструмента/команды и единственного idle
+сохранены. Production-код очереди не менялся, skip/xfail не добавлены.
+Исправленный сценарий прошёл **5 последовательных запусков**; повторный полный
+набор — **3285 passed, 2 прежних xfailed**, 448,74 с. Финальный Pyright —
+**992 файла, 0 ошибок и предупреждений**; финальный `make -C build sec` успешен.
+`uv pip check`: **245 пакетов совместимы**.
+
+В первом браузерном прогоне бинарника aid — **213 passed, 1 failed,
+8 прежних xfailed**. Проверка живого журнала открыла панель после завершения
+восьмисекундного bash-вызова; параллельно работали Make-компиляции и общий набор.
+Отдельный запуск того же теста против того же бинарника — **1 passed**, 28,44 с.
+Утверждения и длительность команды не менялись. Это указывает на чувствительность
+прогона к нагрузке. Повтор полного браузерного набора после завершения
+компиляции — **214 passed, 8 прежних xfailed**, 418,63 с. Отдельные SLA-тесты
+бинарника — **2 passed**, 131,40 с. Для этого повторного прогона не изменялись
+код UI, тест живого журнала, его утверждения, тайминги и число xdist workers.
+
+Все три реальные Make-сборки завершены:
+
+| Образ `:refactor-20261102` | ID | Дерево поставки |
+|---|---|---:|
+| `boba-aid` | `659e3d1671e5` | 286 MiB |
+| `boba-mcp` | `846d7aabad21` | 2,2 GiB, включая rootfs и плагины |
+| `boba` | `322a01937824` | 364 MiB |
+
+Проверки программы и entry points плагинов прошли. Тесты бинарника агента —
+**4 passed, 1 deselected**, 7,56 с; отдельный `binary_onnx` в этот запуск
+не входил. UI/react-client/copilot присутствуют в штатной Make-сборке;
+их исходники не менялись. Визуальный набор look в этом этапе не повторялся,
+последняя проверка утверждённых эталонов описана в §24.
+
+Итоговый контроль проверил **23 успешных результата**, нулевой Pyright,
+сохранение всех имён/версий lock и метрику исходников. Изменения не развёрнуты
+на работающие сервисы. Образы и бинарники находятся в
+`/tmp/boba-refactor-20261102-next/build-out`; журналы, исходники сравнения и
+`final-check.py` — в `/tmp/boba-refactor-20261102-d02/`.
+Оба KB-индексатора, их API и данные остаются самостоятельными.
+Следующий пункт D03 реализован в §29; первоначальный расчёт выше отделён
+от проверки фактических сборочных окружений.
+
+
+## 29. D03: модели соединений без криптографических реализаций
+
+[`connections/sealed.py`](../packages/core/boba-connections/src/boba/connections/sealed.py)
+содержит `ConnectionOffer`, `SealedParamSchema`, `SealKey`, `SealFeature` и
+`SealedConnection`: описание предложения, ключа, возможности и передаваемого
+профиля. Они не импортируют cryptography/joserfc или broker.
+
+[`connection_broker/crypto.py`](../packages/services/boba-connection-broker/src/boba/connection_broker/crypto.py)
+объединяет два адаптера уже используемых библиотек:
+
+| Компонент | Назначение и потребители | Зависимости |
+|---|---|---|
+| `SecretCipher`, `SecretCryptoError` | SecretStr в сохранённых профилях и OAuth-токенах; ConnectionStore, хранилища aid | Fernet из cryptography, Pydantic |
+| `ConnectionSeal` | Клиент MCP запечатывает профиль открытым ключом сервера | JWE из joserfc, DTO `SealKey`/`SealedConnection` |
+| `SealKeys` | Сервер создаёт ключ на запуск, объявляет открытый ключ и открывает присланный профиль | JWE/ECKey из joserfc, DTO и доменные `ConnectionRefusal`/`RefusalError` |
+
+Runtime, приложения и тестовые стенды импортируют реализации из broker.
+`boba-mcp-client` по-прежнему использует в production только DTO `SealFeature`;
+broker добавлен ему лишь в dev для настоящего шифрования в существующих тестах.
+Нового пакета, шифра, драйвера или криптографической библиотеки не добавлено.
+Нет обратного импорта из core в services. Старые импорты реализаций из
+`boba.connections.secrets` и `boba.connections.sealed` заменены во всех
+потребителях репозитория; инфраструктурный re-export в core не оставлялся.
+
+Прямые `cryptography`/`joserfc` перенесены из pyproject connections в broker.
+Из connections[dev] также удалены три переставшие использоваться декларации:
+`boba-db-clickhouse`, `boba-db-postgres`, `boba-stand-core`. Их обнаружил
+существующий аудитор после переноса тестов. Исполнительное окружение при этом
+не получает тестовую зависимость от broker через connections.
+
+### 29.1. Состав и совместимость
+
+| Область, без dev | Было | Стало |
+|---|---:|---:|
+| Минимальная установка `boba-connections`, все пакеты | 17 | **13** |
+| Внешние пакеты этой установки | 10 | **6** |
+| Внешние пакеты `plugins/docs` | 75 | **71** |
+| Внешние пакеты `plugins/db` | 40 | **39** |
+| Внешнее объединение семи production-профилей | 161 | **161** |
+
+В documents-песочнице и минимальной установке моделей исчезли
+`cryptography`, `cffi`, `pycparser`, `joserfc`; в DB-песочнице — `joserfc`.
+Cryptography у DB остаётся по другому нужному пути. Изменение не уменьшает
+объединение всей поставки: приложениям шифрование по-прежнему нужно.
+Все **245 пар имя/версия** lock остались прежними.
+
+Это подтверждено метаданными фактических Make-образов `/opt/site`:
+`plugins/docs` содержит **98 пакетов, из них 71 внешний**;
+`plugins/db` — **63 пакета, из них 39 внешних**. В первом отсутствуют все
+четыре указанных пакета, во втором — joserfc.
+После реальной компиляции каталог `plugins/docs` уменьшился с **582 874 486
+до 565 217 220 байт** по `du -sb`: **−17 657 266 байт (16,84 MiB)**.
+Размеры `plugins/db`, `plugins/core`, `plugins/shell` и обоих rootfs остались
+прежними. Удаление joserfc из подготовленного DB-окружения не дало отдельного
+уменьшения его уже скомпилированного каталога.
+
+`uv sync --package boba-connections --no-dev --no-default-groups --no-editable
+--frozen` установил 13 пакетов. В этом окружении импортированы **все модули**
+`boba.connections`, проверены wire DTO, срок действия и GrantTarget;
+cryptography/joserfc/cffi/pycparser, broker и PostgreSQL-драйвера в нём нет.
+В автоматический аудит добавлен запрет возвращать crypto/services в зависимости
+пакета моделей.
+
+Для исключения случайной потери возможностей проверен путь чтения PDF в
+`boba-doc`: он использует pypdfium2, не optional crypto backend pypdf.
+Форматы ридеров и их библиотеки не менялись; DB-драйверы также остались прежними.
+Дополнительно в фактическом подготовленном образе `plugins/docs`, без добавления
+тестовых зависимостей, прочитаны **8 настоящих форматов**: PDF, DOCX, XLSX,
+XLS, PPTX, RTF, HTML, TXT. Проверены число страниц и ожидаемое содержимое,
+включая таблицы, заметки слайдов и кириллицу. В этом окружении четыре удалённых
+криптопакета действительно недоступны для импорта. Первый запуск отдельного
+проверочного скрипта не передал обязательный `text_encodings` в DocConfig;
+исправлен только скрипт, настройки продукта не менялись.
+
+Совместимость проверена в обе стороны с сохранённым исходным кодом:
+старый/новый Fernet-читатель открывает данные старого/нового писателя; структура
+вложенных секретов и пропуск дефолтов совпадают. Старый JWE-клиент работает с
+новым сервером и наоборот. Для `SealKey`, `SealFeature`, `SealedConnection`
+совпали обе JSON-схемы: validation и serialization.
+
+В broker перенесены два существующих тестовых файла:
+`test_connection_profiles.py` и `test_connection_crypto.py`. Все **46 тел
+прежних функций**, включая helpers и методы тестов, совпадают по AST;
+проверки не переписывались и не удалялись. Добавлены три проверки границы:
+сохранённый `enc:v1:` от стандартного Fernet читается адаптером; новый токен
+сохраняет этот префикс и читается Fernet; JWE от нашего клиента открывается
+обычной библиотекой. Прежняя обратная JWE-проверка, повреждение, чужой ключ,
+публичность ключа, expiry и ошибки невалидного содержимого сохранены.
+
+### 29.2. Проверки и результат
+
+Целевой набор моделей/audit/broker/хранилищ aid/ошибок пользовательских
+соединений — **156 passed**, 16,75 с. Первый прогон нашёл только три ненужные
+dev-декларации после переноса тестов; они удалены, повторный аудитор чистый.
+Pyright — **992 файла, 0 ошибок и предупреждений**. `make -C build sec` успешен;
+известных уязвимостей в lock и upstream-версиях трёх локальных патчей не найдено.
+Отдельная проверка JSON-отчёта Semgrep подтвердила охват **всех 9 новых Python
+модулей `src`**, ещё не добавленных в Git: **1714 файлов, 0 находок и ошибок
+сканирования**. Сообщение сканера «tracked by git» не означало их исключения.
+
+Полный обычный набор — **3289 passed, 2 прежних xfailed**, 403,01 с;
+MCP/OAuth — **388 passed, 2 прежних xfailed**, 148,24 с;
+интеграции aid — **122 passed**, 101,27 с. Эти прогоны прошли с первого раза.
+Все три реальные Make-сборки завершены:
+
+| Образ `:refactor-20261102` | ID | Дерево поставки |
+|---|---|---:|
+| `boba-aid` | `9bc87c696ced` | 286 MiB |
+| `boba-mcp` | `cacbd3201960` | 2,2 GiB, включая rootfs и плагины |
+| `boba` | `7eddbde6aa5a` | 364 MiB |
+
+Проверки программы и entry points плагинов прошли. Тесты бинарника агента —
+**4 passed, 1 deselected**, 7,82 с; отдельный `binary_onnx` в этот запуск
+не входил. Полный браузерный набор собранного aid — **214 passed,
+8 прежних xfailed**, 407,33 с, с первого раза; отдельные SLA — **2 passed**,
+131,41 с.
+Набор запускался после компиляции, с учётом наблюдения §28.
+UI/react-client/copilot входят в штатную Make-сборку;
+их исходники в D03 не менялись. Отдельный source-UI и визуальный look в этом
+этапе не повторялись; последние результаты описаны в §28 и §24 соответственно.
+
+Метрика кода после переноса: **−7 строк production Python**,
+**156 162 строки** против исходных 156 653. Все Python `src` — **186 291 строка
+в 566 файлах**. Перемещение кода между пакетами не считается его удалением;
+основной результат этого этапа — уменьшение нужного окружения моделей и
+песочниц. Цель более чем двукратного сокращения реализации остаётся открытой.
+
+Итоговый контроль подтвердил **21 успешный результат**, нулевой Pyright,
+сохранение всех имён/версий lock и метрику исходников. `uv pip check` подтвердил
+совместимость всех **245 установленных пакетов**. Все задачи этапа завершились;
+в tmux осталась только исходная сессия `anchor`.
+
+Артефакты проверки совместимости, исходный lock, фактические списки пакетов,
+замеры размеров, журналы и `final-check.py`:
+`/tmp/boba-refactor-20261102-d03/`. Собранные приложения — в
+`/tmp/boba-refactor-20261102-next/build-out`. Работающие сервисы не переключались
+на новые образы. Оба KB-индексатора, их API и данные остаются самостоятельными.
+
+После D03 выполнена граница D01 (§30): отделение исполнения Linux/FD от
+контрактов toolkit с сохранением существующих process/zygote,
+streaming и cancellation сценариев; размер toolkit не считается размером
+удаляемого кода. Проверка R14 в этом этапе завершена решением сохранить
+читаемые исходники overlay: переход на патчи не устранял реализацию (§6, R14).
+
+
+## 30. D01: контракты toolkit и общий I/O-слой инструментов
+
+Реализован один инфраструктурный пакет
+[`boba-tool-io`](../packages/infra/stream/boba-tool-io/pyproject.toml).
+Им пользуются гостевая программа плагина, зигота и обычный процесс; код
+перенесён без создания второй реализации. `toolkit` остаётся контрактным
+основанием инструментов и не импортирует `os`, `fcntl`, `ctypes`, `termios`,
+`subprocess`, `selectors` или `boba.tool_io`.
+
+### 30.1. Компоненты и направления зависимостей
+
+| Компонент | Назначение после изменения | Кто использует |
+|---|---|---|
+| `toolkit.chain` | Проверка совместимости портов, план каналов, модели результата и решения группы | `toolkit.dag`, общий исполнитель группы, сервис исполнения |
+| `tool_io.chain` | Linux tee/fan-out, запуск и завершение группы, ожидание барьера, контекст вызова | `toolrun`, `sandbox`, сборка приложений |
+| `toolkit.frames` | Модели кадра, ограничения, инкрементальный кодек, контракт `FrameTransport` | Порты, вызывающая сторона, реализации транспорта |
+| `tool_io.frames` | Реализация `FrameTransport` через FD (`ToolIo`), writev, очередь кадров `CallInbox` | Гостевая программа, насосы и исполнители |
+| `toolkit.ports` | Типизированные/сырые порты поверх `FrameTransport`, описание портов, модели и правила прогресса, ожидание решения группы через переданный callback | Сигнатуры инструментов, манифесты, стратегии transfer |
+| `tool_io.ports` | `PipeProgress` и `PipeStreamGroup` связывают общие операции с конкретными пайпами | `ToolMain`, интеграционные стенды |
+| `tool_io.entry`, `pump`, `payload`, `closing` | Вход гостевой программы, чтение/запись каналов, гостевой лог, закрытие процессных ресурсов | Программа плагина, process/zygote, драйверы с процессными пулами |
+| `tool_io.arrow` | Адаптеры Arrow IPC поверх потоков | DB-адаптеры и pump-стенд; pyarrow остаётся optional extra `arrow` |
+| `identity.errors.FailureReport` | Неизменяемое значение с представлениями ошибки | Адаптер приложения и обработчики чата |
+| `runtime.errors.FailureReports` | Создаёт представления через существующий `FailurePacker`, учитывает доменные правила видимости, превращает ошибку в HTTP-доменную | HTTP middleware, Kerberos callback, renderer и обработчики ошибок aid |
+
+```mermaid
+flowchart TD
+    Apps[Приложения и runtime] --> Run[toolrun]
+    Apps --> Sandbox[sandbox / зигота]
+    Run --> Io[boba-tool-io]
+    Sandbox --> Io
+    Drivers[DB-адаптеры и тела инструментов] --> Io
+    Io --> Kit[boba-toolkit: контракты и план]
+    Drivers --> Kit
+    Identity[identity / connections] --> Kit
+    Kit --> Models[boba-mcp-models / boba-core]
+    Io --> Cancel[boba-cancellation]
+```
+
+Параметры функций инструментов по-прежнему аннотированы `Inbound`, `Outbound`,
+`ToolProgress`, `StreamGroup` из toolkit. FD-адаптеры создаёт сборка вызова.
+Пакет контрактов больше не зависит от cancellation: этот механизм нужен
+насосу, и прямая декларация теперь принадлежит `boba-tool-io`.
+
+`FailureReport` больше не создаёт и не вызывает упаковщик. Объект
+`FailureReports` создаётся в конструкторах обработчиков; у декоратора callback
+— при оборачивании функции. Общий `FailurePacker` сохраняется в toolkit как
+чистое преобразование ошибок в результат; контракт `ToolRefusalError` сохранён.
+
+### 30.2. Импорты, тестовые стенды и совместимость
+
+Новые пути реализации: `boba.tool_io.entry/pump/payload/closing/arrow`.
+Исполнительные классы `CallAmbient`, `StreamGroupRun`, `NodeSlot`, fan-out
+перешли в `boba.tool_io.chain`; план и модели остались в `boba.toolkit.chain`.
+`ToolIo`, `CallInbox`, `PartsWriter` находятся в `boba.tool_io.frames`;
+`TappedCall` импортируется у его владельца `boba.toolkit.launcher`.
+Обратных инфраструктурных re-export из core нет.
+
+Для самостоятельного построения FD-объектов используются `PipeProgress(fd)`,
+`PipeStreamGroup(gate_fd, verdict_fd)` и `ToolIo(inbound_fd, outbound_fd)`.
+Фабрики `ToolIo.on_channels/detached` заменены конструктором; отвязанные FD
+по-прежнему обозначаются `-1`. Нейтральные `ToolProgress` и `StreamGroup`
+принимают callback либо `None` для отключённого канала. Все потребители
+репозитория переведены; внешние пользовательские плагины вне репозитория
+не проверялись и при обновлении потребуют этих изменений импортов, если
+создают исполнителей непосредственно. Сигнатуры самих инструментов сохраняются.
+Преобразование ошибок выполняют `FailureReports.describe` и `domain` из
+runtime вместо прежних `FailureReport.of` и `identity.errors.to_domain`.
+
+Процессные fake-модули и приёмник прогресса перенесены из `stand-core` в
+`boba-stand`: `fake_toolmod`, `fake_caller`, `progress`. Чистый стенд не получает
+зависимость от нового I/O-пакета. Восемь существующих файлов интеграционных
+тестов перенесены из toolkit в `boba-tool-io/tests`; тест представлений ошибки
+— из identity в runtime. Сценарии и проверки сохранены; ожидаемый путь
+источника в MCP-тесте ошибки обновлён на `boba/tool_io/entry.py`.
+
+Проверка AST подтвердила неизменность **21 определения классов chain** после
+разделения и **7 определений frames**. У `ToolIo` добавлен явный контракт
+`FrameTransport` и удалены две фабрики, дублировавшие конструктор.
+Сравнение старого и нового кода отдельными процессами подтвердило совпадение
+**14 JSON-схем** семи моделей (validation/serialization), полного манифеста
+инструмента с потоками/прогрессом/барьером и байтов кадра при чтении по байту.
+
+### 30.3. Состав пакетов и упаковка
+
+| Измерение | До | После |
+|---|---:|---:|
+| Минимальная установка toolkit, пакетов всего | 10 | **9** |
+| Внешних пакетов в ней | 6 | **6** |
+| Модули toolkit | 27 | **22** |
+| Строки toolkit | 14 034 | **10 568** |
+| Строки нового `boba-tool-io` | — | **3540** |
+| Уникальных внешних пакетов семи production-профилей | 161 | **161** |
+
+Установка без dev/extras из wheel импортирует все 22 модуля при запрещённых
+импортах `boba.tool_io`, `boba.sandbox`, `pyarrow`. В ней нет самого I/O-пакета,
+sandbox, Arrow или cancellation. Статическая проверка дополнительно запрещает
+прямые native I/O импорты из toolkit; обычная стандартная библиотека Python
+может использовать платформенные механизмы внутри asyncio.
+
+В lock добавлен только **один внутренний пакет**; все прежние 245 пар
+имя/версия сохранены. Внешний состав aid/MCP/агента и core/DB/docs/shell
+остаётся соответственно **100/76/83 и 6/39/71/27**. Каждый профиль получил
+общий внутренний I/O-пакет. Extra `arrow` перенесён вместе с адаптером;
+прямые pyarrow-импорты объявлены отдельно, аудитор не разрешает полагаться
+на чужие extras.
+
+Обнаружена и исправлена проблема сборки: setuptools оставлял в локальном
+`build/lib` файлы удалённых модулей. При повторной сборке wheel они попадали
+в поставку, хотя в `src` их уже не было. Подтверждено отдельной установкой:
+в ней оказался старый `toolkit/arrow.py`. Сгенерированные деревья сохранены
+в `/tmp/boba-refactor-20261102-d01/setuptools-builds`, кэш wheel toolkit
+обновлён. В `.dockerignore` добавлено `packages/**/build`, чтобы локальные
+остатки не попадали в чистую Make-сборку. Отслеживаемых Git-файлов в этих
+деревьях нет. Начатая со старым контекстом сборка остановлена и перезапущена.
+
+Общая метрика: **+82 строки production Python**, **156 244** против исходных
+156 653; все Python `src` — **186 374 строки в 570 файлах**. Перенос 3,5 тыс.
+строк не засчитывается как удаление. Этот шаг исправляет направление и состав
+контрактных зависимостей; цель двукратного сокращения остаётся открытой.
+
+### 30.4. Проверки — завершены
+
+Pyright после переноса — **996 файлов, 0 ошибок и предупреждений**.
+Аудит зависимостей и Ruff успешны, `make -C build sec` прошёл.
+Изолированная установка и сравнение схем/провода успешны.
+JSON-отчёт Semgrep подтвердил охват **всех 21 нового исходного Python-файла**:
+**1719 файлов, 0 находок и ошибок сканирования**. Новые модули не исключались
+из анализа из-за отсутствия в индексе Git.
+
+Первый целевой набор: 642 passed, 80 failed, 18 errors. Основная причина —
+отсутствие нового пути в явном PYTHONPATH стенда зиготы; также потребовалось
+обновить разрешённый I/O-слой в проверке изоляции toolrun и убрать ставшие
+ненужными декларации. После исправления — **734 passed, 9 failed**.
+Оставшиеся девять сценариев exposure/network используют актуальный исходник
+shell поверх отдельного Python-rootfs тестового runtime. Повтор после
+успешной пересборки MCP дал те же девять ошибок: MCP-цель не обновляет
+`runtime/rootfs`, образы которого остались от 1 ноября. Нужна также
+пересборка цели `runtime`, а не расширение bind-монтирований теста.
+После успешной сборки runtime целевой набор завершился: **743 passed**,
+84,83 с. Утверждения изоляции, сети, обрезки вывода, отмены и барьера не
+ослаблялись, skip/xfail не добавлены. В руководстве разработчика закреплено,
+что при изменении состава пакетов тестовые rootfs обновляются отдельно.
+
+Все четыре реальные Make-цели — MCP, aid, агент и runtime — успешны.
+Проверено содержимое семи подготовленных сборочных профилей: ровно 22 модуля
+контрактов и 8 модулей I/O, без устаревших файлов toolkit. Число установленных
+пакетов/внешних: MCP **104/76**, aid **130/100**, агент **114/83**,
+core **16/6**, DB **64/39**, docs **99/71**, shell **34/27**.
+CLI собранного агента: **4 passed, 1 deselected**; ONNX-модель этим набором
+не проверялась. `uv pip check`: все **246 пакетов совместимы**.
+Повторный `make -C build sec` также успешен после последних правок тестов
+архитектуры; эти тесты переиспользуют существующий `ImportScan`.
+
+На обновлённом runtime общая регрессия — **3292 passed, 2 xfailed**,
+383,25 с; MCP/OAuth — **388 passed, 2 xfailed**, 141,64 с.
+Прежние xfail сохранены. До его обновления общая регрессия дала
+3283 passed и те же девять падений, MCP/OAuth — 347 passed, 2 xfailed и
+41 ошибку подготовки тех же песочниц, интеграции aid — 122 passed.
+Повтор интеграций aid выявил отдельную нестабильность стенда Canvas:
+после сценария потери сети пять следующих тестов не могли нажать кнопки
+из-за перекрывающего уведомления Sonner. Отдельный модуль воспроизвёл
+**58 passed, 5 failed**; наблюдение за DOM меняло тайминги и давало 63 passed.
+В поставленном JS подтверждено: наведение разворачивает уведомление и
+приостанавливает его таймер закрытия. Сетевой тест теперь уводит указатель
+и **проверяет естественное исчезновение уведомлений** после восстановления
+сокета и обновления файла. Нет force-click, удаления DOM, подавления ошибок
+или изменения UI приложения. Все прежние assertions сохранены.
+Обычный прогон без диагностического плагина после исправления —
+**63 passed**, 88,11 с; Pyright повторён — **996 файлов, 0 ошибок/предупреждений**.
+Полный повтор интеграций aid — **122 passed**, 91,49 с.
+Браузерный набор собранного aid — **214 passed, 8 прежних xfailed**,
+417,81 с. UI performance — **2 passed**, 131,51 с: стоимость длинного
+диалога и хвост кадров после Stop остались в существующих пределах.
+После исправления стенда повторены Ruff, Pyright и `make -C build sec`:
+**263 правила Semgrep, 1719 файлов, 0 находок**; SCA не нашёл известных
+уязвимостей. `git diff --check` успешен.
+
+Финальная сверка подтвердила **28 успешных проверок**, сохранение всех
+245 прежних пар имя/версия и добавление только внутреннего I/O-пакета.
+Собраны образы `:refactor-20261102`: aid `d69c0d9c765c`, MCP `b2d3ee1a1f8a`,
+агент `a519e81a9ac4`. Размеры деревьев поставки — соответственно
+299 307 008, 2 310 135 808 и 380 801 024 байта. Развёртывание production
+не выполнялось. Рабочие tmux-задачи закончены; системная сессия anchor сохранена.
+
+Журналы и проверки: `/tmp/boba-refactor-20261102-d01/`.
+Оба KB-контура сохраняются; их хранилища, API и индексация не объединялись.
+
+## 31. R09: общий владелец пайпов портов и откат незавершённого запуска
+
+Process и зигота используют один
+[`StreamPipes`](../packages/infra/stream/boba-tool-io/src/boba/tool_io/channels.py)
+в существующем `boba-tool-io`. Он создаёт входы/выходы по спецификации порта,
+передаёт дескрипторы `CallInputs` или перекачке, выделяет единственный кадровый
+выход для насоса и дренирует невостребованные выходы. Состояние владения больше
+не повторяется в двух лончерах. Правило «хост читает только один не-raw выход»
+также находится здесь; отдельный `_claimable` зиготы удалён.
+
+| Владелец | Ответственность |
+|---|---|
+| `tool_io.channels.PipeSetup` | Обёртка стандартного `ExitStack`: регистрирует открытые FD и сокеты, откатывает незавершённую сборку; `pop_all()` передаёт ресурсы готовому вызову |
+| `tool_io.channels.StreamPipes` | Пайпы портов, один владелец каждого конца, выбор кадрового выхода и дренирование; настройка буфера через существующий `PipePlumbing` |
+| `toolrun.process._CallPipes` | Служебные result/args/gate/verdict/progress, флаги CLI и `pass_fds`; сохраняет терпимое закрытие уже недоступных FD |
+| `sandbox.zygote._CallChannels` | stdin/stdout/stderr, служебные каналы и control-сокет; сохраняет строгий `os.close` и порядок SCM_RIGHTS |
+| `ZygoteSupervisor.begin` | Отправка запроса, запись выполняющегося вызова и FD cgroup; при отказе снимает запись и закрывает временный FD |
+
+Это инфраструктурная общность. Контракты портов остаются в toolkit; новый
+модуль не зависит от sandbox, toolrun или приложений. Механика запуска,
+ограничения, отмена, ожидание процесса, прогрев зиготы и журналы сохраняют
+своих владельцев. Политика закрытия FD передаётся в `StreamPipes` явно.
+
+Внешняя библиотека здесь не требуется: реестр отката предоставляет уже
+доступный `contextlib.ExitStack`, а открытие и передача FD используют `os` и
+`socket`. Новая абстракция процессов не нужна для удаления обнаруженного
+повторения. Новых пакетов или extras нет, `uv.lock` сохраняется побайтно.
+
+### 31.1. Найденный дефект и сохранение контрактов
+
+В прежних конструкторах отказ `PipePlumbing.require` оставлял открытые пайпы,
+созданные до него. Воспроизведение старого и нового кода отдельными процессами
+на реальном ядре, с размером выше `fs.pipe-max-size`:
+
+| Где отказ | Прежний process, утекло FD | Прежняя зигота, утекло FD | После, оба пути |
+|---|---:|---:|---:|
+| Входной порт | 12 | 18 | **0** |
+| Выходной порт после входа | 14 | 20 | **0** |
+
+`PipeSetup` откатывает все открытые к моменту отказа пайпы и сокеты. Process
+также регистрирует общий комплект каналов и stdin до `Popen`; отказ создания
+процесса закрывает их через тот же стандартный механизм. Зигота снимает
+незавершённую запись `_in_flight`, освобождает FD cgroup, а вызывающий — leaf.
+
+Добавлены **четыре интеграционные проверки** в существующие тесты лончеров:
+отказ входного и выходного буфера, по три последовательных вызова. Они
+проверяют фактический набор `/proc/self/fd`, отсутствие оставшихся cgroup-leaf
+и успешный следующий вызов. Моков ядра, увеличения таймаутов или новых skip
+нет. Старые проверки сохранены.
+
+Отдельное сравнение подтвердило **9 одинаковых раскладок**: ноль, один и три
+порта, кадровые и raw-каналы, cgroup присутствует или отсутствует. Порядок
+передаваемых FD и флаги CLI совпадают с прежним кодом. Формат кадров,
+спецификации вызова и сигнатуры инструментов не менялись.
+
+### 31.2. Измеренный эффект
+
+Process стал короче на **102 строки**, зигота — на **96**, общий модуль содержит
+**145 строк**. Чистое изменение production Python: **−53 строки**,
+**156 244 → 156 191**. Все Python `src`: **571 файл, 186 321 строка**.
+В трёх затронутых production-модулях `tokenize` без пустых строк, комментариев
+и docstring даёт **1810 → 1775 строк кода (−35)**; число `ast.stmt` без
+самих docstring — **1173 → 1134 (−39)**. Экономия не сводится к оформлению.
+Методика и результаты сохранены в `code-metrics.json` каталога этого шага.
+Новые тесты учитываются отдельно; перемещение кода не засчитывается удалением.
+Состав семи профилей остаётся **161 уникальный внешний пакет**.
+
+Использование стандартного `ExitStack` устраняет собственную ручную очистку
+при незавершённой сборке. Общий владелец портов уменьшает число мест, которые
+нужно менять при добавлении правил передачи/закрытия. Этот результат не
+означает завершения всей программы сокращения или достижения >2×.
+
+### 31.3. Проверки — завершены
+
+Первый целевой набор: **488 passed**. После четырёх новых проверок:
+**492 passed**, 82,52 с. Pyright: **997 файлов, 0 ошибок и предупреждений**.
+Ruff и `make -C build sec` прошли. Отдельный отчёт Semgrep подтвердил охват
+всех **22 новых исходных Python-файлов рабочего дерева**: **1720 файлов,
+0 находок и ошибок сканирования**.
+
+Полная регрессия — **3296 passed, 2 прежних xfailed**, 419,22 с;
+MCP/OAuth — **388 passed, 2 прежних xfailed**, 142,97 с. Типы предупреждений
+совпадают с предыдущим этапом. `uv pip check`: все **246 пакетов совместимы**;
+исходный и текущий `uv.lock` имеют одинаковый SHA-256.
+Интеграции aid — **122 passed**, 88,87 с. Реальные Make-сборки
+MCP, aid, агента и runtime завершились успешно. Проверено содержимое семи
+подготовленных профилей: 22 модуля toolkit и **9 модулей tool-io**, включая
+новый `channels`. Число пакетов/внешних не изменилось: MCP **104/76**,
+aid **130/100**, агент **114/83**, core **16/6**, DB **64/39**,
+docs **99/71**, shell **34/27**. CLI собранного агента —
+**4 passed, 1 deselected**, 8,78 с; ONNX-модель этим набором не проверялась.
+Браузерный набор собранного aid — **214 passed, 8 прежних xfailed**,
+407,00 с. UI performance — **2 passed**, 131,96 с: длинный диалог и хвост
+кадров после Stop укладываются в существующие ограничения тестов.
+
+Финальная сверка подтвердила **19 успешных проверок**, неизменность всех
+246 пар имя/версия и побайтное совпадение `uv.lock`. `git diff --check`
+успешен. Собраны образы `:refactor-20261102`: aid `32b7160e90fd`,
+MCP `8c3a0230cb77`, агент `3686d7ddb4f2`. Размеры деревьев поставки —
+соответственно 299 294 720, 2 310 250 496 и 380 829 696 байт.
+Развёртывание production не выполнялось.
+
+Журналы, снимки исходников до изменения, сравнение FD и метрики:
+`/tmp/boba-refactor-20261102-r09/`. Оба KB-контура сохраняются независимо.
+
+## 32. Полный прогон перед продолжением рефакторинга — выполняется
+
+По требованию пользователя сначала проверяются все предусмотренные категории
+тестов и исправляются ошибки существующих функций. Прежние `xfail`, которые
+описывают новые возможности MCP Apps, вынесены в отдельный этап (§10.3).
+Они не считаются успешно работающими сценариями. Новые skip/xfail ради
+прохождения набора не добавляются; утверждения и таймауты не ослабляются.
+
+Полная коллекция `pytest packages -m '' --collect-only` собрала **12 362**
+сценария. Проверки R09 (§31) покрывали выбранные наборы, а не эту коллекцию
+целиком. Разбиение нового прогона исключает двойной учёт look в UI и perf
+в интеграционной матрице:
+
+| Категория | Собрано сценариев | Статус |
+|---|---:|---|
+| Обычная регрессия | 3298 | 3296 passed, 2 прежних xfailed |
+| Интеграции приложений, сервисов и адаптеров, включая собранный агент с ONNX | 835 | ожидает |
+| Интеграционная матрица насосов PG/CH/Oracle | 7914 | ожидает |
+| ACP TCK | 1 | окружение подготовлено, ожидает |
+| UI без look и perf | 234 | ожидает |
+| Визуальные эталоны | 28 | ожидает |
+| Нагрузка и аварийные завершения | 29 | ожидает |
+| Ручные прогоны инструментов | 19 | ожидает |
+| Performance насосов и UI | 4 | ожидает |
+
+Для ACP TCK подготовлено отдельное окружение Python 3.14: upstream
+`acp-tck` 0.2.0, commit `b7f40fb3c003c45926547be5a1f7e2b374035815`.
+Зависимости тестового инструмента не добавлены в lock или поставку Boba.
+ONNX проверяется с имеющимися локальными весами, бинарник агента — из
+`/tmp/boba-refactor-20261102-next/build-out/boba/bin`.
+Look сравнивается с ранее принятыми эталонами
+`/mnt/store/ss/docker/compose/boba-look-baselines/2026-11-02`.
+
+Инвентаризация, журналы, JSONL каждого результата и JUnit XML сохраняются
+в `/tmp/boba-refactor-20261102-full/`. Итог полного прогона ещё не получен.

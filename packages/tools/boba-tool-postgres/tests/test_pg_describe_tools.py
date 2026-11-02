@@ -13,9 +13,9 @@ from pydantic import BaseModel, ConfigDict
 from boba.config import bind
 from boba.db.postgres.connection import PostgresConfig
 from boba.tool.pg import tools as pg
-from boba.toolkit.entry import ToolMain
+from boba.tool_io.entry import ToolMain
+from boba.tool_io.ports import PipeProgress
 from boba.toolkit.facade import PayloadTool
-from boba.toolkit.ports import ToolProgress
 from boba.toolkit.result import SqlResult
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -226,7 +226,7 @@ class TestDescribeTools:
             offset=0,
             limit=10,
             cfg=bind(raw_config, path=pg.PgToolConfig.SECTION, model=pg.PgToolConfig),
-            progress=ToolProgress(-1),
+            progress=PipeProgress(-1),
         )
 
         assert isinstance(result, SqlResult)

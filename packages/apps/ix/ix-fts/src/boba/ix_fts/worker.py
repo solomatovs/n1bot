@@ -13,41 +13,40 @@ import argparse
 import asyncio
 import logging
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
 import psycopg
 from psycopg import sql
-from pydantic import Field
 
 from boba.cancellation import ProcessStop
 from boba.config import ConfigError
-from boba.db.postgres import AsyncPostgresPool, PostgresError
 from boba.db.postgres.query import PgQueryBuilder
-from boba.ix_core.aspects import AspectClass
 from boba.ix_core.database import IxConfigFile, IxDatabase
-from boba.ix_core.registry import IxRegistry
 from boba.ix_core.upgrade import SchemaUpgrade, SchemaUpgradeError
+from boba.ix_core.worker import (
+    CycleReport,
+    IndexerWorkerError,
+    SqlIndexCycle,
+    StepResult,
+)
+from boba.ix_core.worker import WorkerConfig as SqlWorkerConfig
+
+__all__ = [
+    "CycleReport",
+    "FtsWeight",
+    "IndexerWorker",
+    "IndexerWorkerError",
+    "StepResult",
+    "WorkerConfig",
+    "cli",
+    "main",
+    "parse_args",
+    "work",
+]
 
 logger = logging.getLogger("ix-fts")
-
-
-class IndexerWorkerError(Exception):
-    """Ошибка цикла воркера: база или контракт файлов пакета."""
-
-
-class SqlFile(StrEnum):
-    UPSERT = "10_upsert.sql"
-    PRUNE = "20_prune.sql"
-
-
-class Part(StrEnum):
-    """Плейсхолдеры файлов run/, которые заполняет воркер."""
-
-    SOURCES = "sources"
-    WEIGHTS = "weights"
 
 
 class FtsWeight(StrEnum):
@@ -59,65 +58,15 @@ class FtsWeight(StrEnum):
     D = "D"
 
 
-class WorkerConfig(IxDatabase):
-    classes: Sequence[AspectClass]
+class WorkerConfig(SqlWorkerConfig):
     weights: Mapping[str, FtsWeight]
-    batch: int = Field(gt=0, default=500)
 
 
-@dataclass(frozen=True, kw_only=True)
-class StepResult:
-    planned: int
-    applied: int
-
-
-@dataclass(frozen=True, kw_only=True)
-class CycleReport:
-    rounds: int
-    applied: int
-    pruned: int
-
-
-class IndexerWorker:
-    """Цикл индексатора: одна сессия к ix."""
+class IndexerWorker(SqlIndexCycle[WorkerConfig]):
+    """Общий SQL-цикл с весами аспектов полнотекстового индекса."""
 
     def __init__(self, cfg: WorkerConfig, package_dir: Path) -> None:
-        self._cfg = cfg
-        self._dir = package_dir
-        self._registry = IxRegistry(cfg.db_schema)
-
-    async def run(self) -> CycleReport:
-        try:
-            async with await AsyncPostgresPool.dedicated(self._cfg.postgres) as conn:
-                parts = await self._parts(conn)
-                names: dict[str, sql.Composable] = {
-                    "schema": sql.Identifier(self._cfg.db_schema),
-                    **parts,
-                }
-
-                rounds = 0
-                applied = 0
-                while True:
-                    step = await self._upsert(conn, names)
-                    rounds += 1
-                    applied += step.applied
-                    logger.info(
-                        "round %d: planned=%d applied=%d",
-                        rounds,
-                        step.planned,
-                        step.applied,
-                    )
-                    if step.applied == 0:
-                        break
-
-                pruned = await self._prune(conn, names)
-
-                return CycleReport(rounds=rounds, applied=applied, pruned=pruned)
-        except PostgresError as exc:
-            raise IndexerWorkerError(str(exc)) from exc
-        except psycopg.Error as exc:
-            msg = f"ix database {self._cfg.postgres.where()}: {exc}"
-            raise IndexerWorkerError(msg) from exc
+        super().__init__(cfg, package_dir, logger)
 
     def _weights(self) -> sql.Composed:
         """Веса аспектов из конфига как список values для `{weights}`: аспект как
@@ -154,43 +103,9 @@ class IndexerWorker:
     async def _parts(
         self, conn: psycopg.AsyncConnection[Any]
     ) -> dict[str, sql.Composable]:
-        declarations = await self._registry.read_declarations(conn, self._cfg.classes)
-        logger.info(
-            "aspect sources: %d declarations for classes %s",
-            len(declarations),
-            ", ".join(self._cfg.classes),
-        )
-
-        return {
-            str(Part.SOURCES): self._registry.union_sources(declarations),
-            str(Part.WEIGHTS): self._weights(),
-        }
-
-    async def _upsert(
-        self, conn: psycopg.AsyncConnection[Any], names: Mapping[str, sql.Composable]
-    ) -> StepResult:
-        query = (
-            PgQueryBuilder(**names)
-            .from_file(self._dir / SqlFile.UPSERT, batch=self._cfg.batch)
-            .build()
-        )
-        cur = await conn.execute(query.text, query.params)
-        record = await cur.fetchone()
-        if record is None:
-            raise IndexerWorkerError("upsert: expected one summary row, got none")
-
-        return StepResult(planned=int(record[1]), applied=int(record[2]))
-
-    async def _prune(
-        self, conn: psycopg.AsyncConnection[Any], names: Mapping[str, sql.Composable]
-    ) -> int:
-        query = PgQueryBuilder(**names).from_file(self._dir / SqlFile.PRUNE).build()
-        cur = await conn.execute(query.text, query.params)
-        record = await cur.fetchone()
-        if record is None:
-            raise IndexerWorkerError("prune: expected one summary row, got none")
-
-        return int(record[1])
+        parts = await super()._parts(conn)
+        parts["weights"] = self._weights()
+        return parts
 
 
 class Command(StrEnum):

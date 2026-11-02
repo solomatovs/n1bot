@@ -28,11 +28,11 @@ from boba.confluence.models import (
 from boba.confluence.parsing import JsonNode
 from boba.confluence.rest import CflRest, CflRestBuilder, SpaceType
 from boba.core.secrets import SecretRevealing
+from boba.core.types import LLMStringList
 from boba.text.grep import GrepLimits, TextGrep
-from boba.toolkit.entry import ToolMain
+from boba.tool_io.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import MarkdownResult, TableResult
-from boba.toolkit.types import LLMStringList
 from boba.toolkit.window import RowLimit, RowOffset, RowPage, RowWindow
 from boba.transport.http import (
     ByteStream,

@@ -13,8 +13,8 @@ import pytest
 from boba.config import bind
 from boba.db.postgres.connection import PostgresConfig
 from boba.tool.pg.tools import PgToolConfig, pg_list_tables, pg_query
-from boba.toolkit.entry import ToolMain
-from boba.toolkit.ports import ToolProgress
+from boba.tool_io.entry import ToolMain
+from boba.tool_io.ports import PipeProgress
 
 pytestmark = [pytest.mark.run, pytest.mark.anyio]
 
@@ -48,7 +48,7 @@ async def test_run_pg_query(pg_cfg: PgToolConfig, connection: PostgresConfig) ->
         offset=0,
         limit=50,
         cfg=pg_cfg,
-        progress=ToolProgress(-1),
+        progress=PipeProgress(-1),
     )
 
     content = artifact.llm_view()

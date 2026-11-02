@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+from abc import abstractmethod
 from collections.abc import AsyncIterator, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -83,6 +84,7 @@ __all__ = [
     "PgCopyOut",
     "PgCopyProtocol",
     "PgField",
+    "PgLoadTable",
     "PgMatch",
     "PgMatched",
     "PgMatcher",
@@ -716,32 +718,24 @@ class PgTablePlan:
         return planned
 
 
-class PgTransferTable(TransferTable):
-    """Реализация TransferTable для postgres: каталог через PgTableFacts, DDL и
-    delete через PgQueryBuilder на одном соединении, условие where от
-    вызова — raw_query. create table — по шаблону вызывающего: схема, имя и
-    колонки подставляются экранированными psycopg фрагментами."""
+class PgLoadTable(TransferTable):
+    """Общие операции таблицы-приёмника PostgreSQL для COPY и Arrow.
+
+    PgTransferTable и PgArrowTable задают колонки и типы; этот класс исполняет
+    DDL и удаление на переданном соединении и пишет команды в журнал загрузки.
+    """
 
     BACKUP_STAMP: ClassVar[str] = "%Y%m%d_%H%M%S_%f"
-    VARCHAR: ClassVar[str] = "varchar"
-    CREATE_TABLE: ClassVar[str] = "create table {schema_name}.{table_name} ({columns})"
-    TEMPLATE_VARS: ClassVar[TemplateVars] = TemplateVars(
-        offered=(TemplateVar.SCHEMA_NAME, TemplateVar.TABLE_NAME, TemplateVar.COLUMNS)
-    )
-    """Переменные, которые приёмник postgres подставляет в шаблон."""
-    """Шаблон без особенностей таблицы: дефолт фасада pg_stream_in."""
 
     def __init__(
         self,
         conn: psycopg.AsyncConnection[Any],
         table: PgTableRef,
-        plan: PgTablePlan,
         template: CreateTemplate,
         journal: CommandJournal,
     ) -> None:
         self._conn = conn
         self._table = table
-        self._plan = plan
         self._template = template
         self._journal = journal
         self._facts = PgTableFacts(conn, table, journal)
@@ -777,30 +771,6 @@ class PgTransferTable(TransferTable):
         )
 
         return PgQueryBuilder().raw_query(rendered).build()
-
-    def _columns_fragment(self, unknown_as_varchar: bool) -> str:
-        builder = PgQueryBuilder()
-        for position, column in enumerate(self._plan.columns):
-            builder.when(position > 0, ",")
-            builder.add("{name}", name=sql.Identifier(column.name))
-            builder.raw_query(self._type_text(column, unknown_as_varchar))
-            builder.when(not column.nullable, "not null")
-
-        return builder.build().text.as_string(self._conn)
-
-    def _type_text(self, column: PgPlannedColumn, unknown_as_varchar: bool) -> str:
-        if column.type_text:
-            return column.type_text
-
-        if unknown_as_varchar:
-            return self.VARCHAR
-
-        raise TransferError(
-            f"column {column.name}: the target cannot map the source type "
-            f"{column.known}; declare the target type in "
-            f'rules.column_types["{column.name}"] or take unknown_types '
-            f"fallback_as_varchar"
-        )
 
     async def backup(self) -> str:
         stamp = datetime.now(UTC).strftime(self.BACKUP_STAMP)
@@ -875,6 +845,61 @@ class PgTransferTable(TransferTable):
         rows = await self._execute(query)
 
         return DeleteOutcome(effect=f"{rows} rows deleted")
+
+    @abstractmethod
+    def _columns_fragment(self, unknown_as_varchar: bool) -> str:
+        """Экранированные колонки с типами выбранного пути загрузки."""
+        ...
+
+
+class PgTransferTable(PgLoadTable):
+    """Реализация TransferTable для COPY по плану PgTablePlan.
+
+    Выбирает типы колонок и fallback; PgLoadTable выполняет общие операции
+    таблицы на соединении загрузки и ведёт журнал команд.
+    """
+
+    VARCHAR: ClassVar[str] = "varchar"
+    CREATE_TABLE: ClassVar[str] = "create table {schema_name}.{table_name} ({columns})"
+    TEMPLATE_VARS: ClassVar[TemplateVars] = TemplateVars(
+        offered=(TemplateVar.SCHEMA_NAME, TemplateVar.TABLE_NAME, TemplateVar.COLUMNS)
+    )
+    """Переменные, которые приёмник postgres подставляет в шаблон."""
+
+    def __init__(
+        self,
+        conn: psycopg.AsyncConnection[Any],
+        table: PgTableRef,
+        plan: PgTablePlan,
+        template: CreateTemplate,
+        journal: CommandJournal,
+    ) -> None:
+        super().__init__(conn, table, template, journal)
+        self._plan = plan
+
+    def _columns_fragment(self, unknown_as_varchar: bool) -> str:
+        builder = PgQueryBuilder()
+        for position, column in enumerate(self._plan.columns):
+            builder.when(position > 0, ",")
+            builder.add("{name}", name=sql.Identifier(column.name))
+            builder.raw_query(self._type_text(column, unknown_as_varchar))
+            builder.when(not column.nullable, "not null")
+
+        return builder.build().text.as_string(self._conn)
+
+    def _type_text(self, column: PgPlannedColumn, unknown_as_varchar: bool) -> str:
+        if column.type_text:
+            return column.type_text
+
+        if unknown_as_varchar:
+            return self.VARCHAR
+
+        raise TransferError(
+            f"column {column.name}: the target cannot map the source type "
+            f"{column.known}; declare the target type in "
+            f'rules.column_types["{column.name}"] or take unknown_types '
+            f"fallback_as_varchar"
+        )
 
 
 class PgCopyIn(TransferSink):

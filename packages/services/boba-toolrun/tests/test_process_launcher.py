@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import threading
 from collections.abc import Sequence
@@ -15,17 +16,17 @@ from pydantic import SecretStr
 from boba.cancellation import ToolStopped
 from boba.identity.context import CallContexts
 from boba.sandbox.program import PluginCommand, PluginEntry
-from boba.stand.shell import ShellRun
-from boba.stand.toolsetup import ToolSetup
-from boba.stand_core.fake_toolmod import (
+from boba.stand.fake_toolmod import (
     FakeChunkHead,
     FakeConfig,
     fake_echo,
     fake_merge,
     fake_stream,
 )
-from boba.toolkit.chain import CallAmbient
-from boba.toolkit.entry import ToolArgv, ToolMain
+from boba.stand.shell import ShellRun
+from boba.stand.toolsetup import ToolSetup
+from boba.tool_io.chain import CallAmbient
+from boba.tool_io.entry import ToolArgv, ToolMain
 from boba.toolkit.frames import ToolFrame
 from boba.toolkit.launcher import (
     ChannelOverflowError,
@@ -52,7 +53,7 @@ from boba.toolrun.process import (
 
 CFG = FakeConfig(token=SecretStr("t0ken"), limit=5)
 
-PLUGINS = ("boba.stand_core.fake_toolmod:PLUGIN", "boba.tool.shell.plugin:MANIFEST")
+PLUGINS = ("boba.stand.fake_toolmod:PLUGIN", "boba.tool.shell.plugin:MANIFEST")
 """Фейковые инструменты и bash: тела вызовов идут программой плагина."""
 
 PROGRAM = (
@@ -186,6 +187,31 @@ class TestStreamingCall:
             inputs=(CallInputSpec(port="feed", raw=False),),
             outputs=(CallOutputSpec(port="out", raw=False),),
         )
+
+    @pytest.mark.parametrize("input_fails", [True, False])
+    def test_refused_pipe_size_leaks_no_descriptors(
+        self, tmp_path: Path, input_fails: bool
+    ) -> None:
+        launcher = _launcher(tmp_path)
+        valid = self._command("re:")
+        size = int(Path("/proc/sys/fs/pipe-max-size").read_text()) * 2
+        if input_fails:
+            port = valid.inputs[0].model_copy(update={"pipe_bytes": size})
+            command = valid.model_copy(update={"inputs": (port,)})
+        else:
+            output = valid.outputs[0].model_copy(update={"pipe_bytes": size})
+            command = valid.model_copy(update={"outputs": (output,)})
+
+        before = set(os.listdir("/proc/self/fd"))
+        for _ in range(3):
+            with pytest.raises(LauncherError, match="pipe-user-pages-soft"):
+                launcher.open(command)
+
+            assert set(os.listdir("/proc/self/fd")) == before
+
+        outcome = CollectedCall.of(launcher, valid)
+
+        assert isinstance(outcome.reply, ReplyOk)
 
     def test_frames_answer_frames_and_envelope_closes_call(
         self, tmp_path: Path

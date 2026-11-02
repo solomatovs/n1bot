@@ -14,7 +14,7 @@
 вызывающий, тело пишет в каждый своё.
 
 Кроме модельных портов есть истинно сырые — RawInbound и RawOutbound (поток
-Arrow IPC поверх них разбирает boba.toolkit.arrow): никаких структур и
+Arrow IPC поверх них разбирает boba.tool_io.arrow): никаких структур и
 кадрирования, по каналу идут только сами байты
 (passthrough pg->pg, файлы, PCM). Сырой канал совместим только с сырым:
 модельный поток кадрирован, и его рамки попали бы в данные.
@@ -22,7 +22,7 @@ Arrow IPC поверх них разбирает boba.toolkit.arrow): никак
 Декларация — единственный источник правды о каналах инструмента: по ней
 ToolMain строит порты для вызова, хост выводит режим каналов (raw-флаги
 ToolCommand), а StreamSpec.of_schema отдаёт интроспекцию для манифеста и
-проверки стыковки цепочек. Транспортом портам служит ToolIo
+проверки стыковки цепочек. Транспорт портов задаёт FrameTransport
 (boba.toolkit.frames) — наружу он больше не показывается.
 
 Тело, которое фиксирует результат (коммит, запись таблицы), объявляет барьер
@@ -48,10 +48,16 @@ from __future__ import annotations
 
 import asyncio
 import io
-import os
 import threading
 import time
-from collections.abc import AsyncIterable, AsyncIterator, Iterator, Mapping, Sequence
+from collections.abc import (
+    AsyncIterable,
+    AsyncIterator,
+    Callable,
+    Iterator,
+    Mapping,
+    Sequence,
+)
 from dataclasses import dataclass
 from enum import StrEnum
 from types import UnionType
@@ -79,7 +85,7 @@ from pydantic import (
 from pydantic.json_schema import JsonSchemaValue
 from pydantic_core import CoreSchema, core_schema
 
-from boba.toolkit.frames import FrameProtocolError, ToolIo
+from boba.toolkit.frames import FrameProtocolError, FrameTransport
 from boba.toolkit.stream import Chunk
 
 __all__ = [
@@ -145,24 +151,22 @@ class StreamGroup:
     gate, ответ приходит пайпом verdict. Хост отвечает GO, когда каждый
     вызов группы дошёл до барьера или успешно закончился, и ABORT, если
     кто-то сорвался. Вне группы (запуск человеком, одиночный вызов) ready()
-    возвращается сразу. Строится в ToolMain из номеров --fd-gate и
-    --fd-verdict.
+    возвращается сразу. Получает ожидание решения от сборки вызова;
+    None означает запуск вне группы.
     """
 
-    def __init__(self, gate_fd: int, verdict_fd: int) -> None:
-        self._gate_fd = gate_fd
-        self._verdict_fd = verdict_fd
+    def __init__(self, verdict: Callable[[], GateSignal] | None) -> None:
+        self._verdict = verdict
 
     async def ready(self) -> None:
         """Дождаться решения группы; срыв — StreamGroupAbortedError."""
         await asyncio.to_thread(self._wait)
 
     def _wait(self) -> None:
-        if self._gate_fd < 0:
+        if self._verdict is None:
             return
 
-        os.write(self._gate_fd, GateSignal.READY.bytes())
-        answer = GateSignal.of_byte(os.read(self._verdict_fd, 1))
+        answer = self._verdict()
 
         if answer is GateSignal.GO:
             return
@@ -210,7 +214,7 @@ class Inbound(Generic[HeadT]):
     читателя, а не расползается по телу. Строится в ToolMain поверх ToolIo.
     """
 
-    def __init__(self, io: ToolIo, heads: TypeAdapter[HeadT]) -> None:
+    def __init__(self, io: FrameTransport, heads: TypeAdapter[HeadT]) -> None:
         self._io = io
         self._heads = heads
 
@@ -249,7 +253,7 @@ class Outbound(Generic[HeadT]):
     байтами как есть. Строится в ToolMain поверх ToolIo.
     """
 
-    def __init__(self, io: ToolIo) -> None:
+    def __init__(self, io: FrameTransport) -> None:
         self._io = io
 
     def emit(self, head: HeadT, body: Chunk = b"") -> None:
@@ -283,7 +287,7 @@ class RawInbound(io.RawIOBase):
     (ChainCheck). Строится в ToolMain поверх ToolIo.
     """
 
-    def __init__(self, io_: ToolIo) -> None:
+    def __init__(self, io_: FrameTransport) -> None:
         super().__init__()
         self._io = io_
 
@@ -342,7 +346,7 @@ class RawOutbound:
     поверх ToolIo.
     """
 
-    def __init__(self, io_: ToolIo) -> None:
+    def __init__(self, io_: FrameTransport) -> None:
         self._io = io_
 
     def write(self, chunk: memoryview) -> None:
@@ -407,9 +411,9 @@ class ToolProgress:
 
     Тело объявляет объект в подписи и зовёт report(): хост превращает
     отчёты в уведомления о прогрессе вызова, и пользователь видит, что
-    происходит, пока инструмент работает. Строится в ToolMain из номера
-    --fd-progress; при запуске человеком отвязан, и report() ничего не
-    делает. done обязан расти: отчёт, в котором он не вырос, не уходит —
+    происходит, пока инструмент работает. Получает отправитель байтов от
+    сборки вызова; при None report() ничего не делает.
+    done обязан расти: отчёт, в котором он не вырос, не уходит —
     этого требует получатель (прогресс вызова только растёт). Отчётов два
     вида. announce() — этап: что началось или чем кончилось (подключение,
     отправка запроса, ответ сервера); уходит сразу, потому что следом тело
@@ -425,8 +429,8 @@ class ToolProgress:
     """Строка отчёта короче PIPE_BUF: запись в пайп атомарна."""
     ENCODING: ClassVar[str] = "utf-8"
 
-    def __init__(self, fd: int) -> None:
-        self._fd = fd
+    def __init__(self, emit: Callable[[bytes], None] | None) -> None:
+        self._emit = emit
         self._lock = threading.Lock()
         self._sent_done = -1.0
         self._sent_at = 0.0
@@ -434,7 +438,7 @@ class ToolProgress:
 
     def announce(self, done: float, total: float | None, message: str) -> None:
         """Этап работы: message уходит сразу, частота его не держит."""
-        if self._fd < 0:
+        if self._emit is None:
             return
 
         with self._lock:
@@ -446,7 +450,7 @@ class ToolProgress:
     def report(self, done: float, total: float | None, message: str) -> None:
         """Счётчик: сделано done из total (None — итог неизвестен); message —
         что сейчас происходит."""
-        if self._fd < 0:
+        if self._emit is None:
             return
 
         with self._lock:
@@ -470,6 +474,9 @@ class ToolProgress:
             self._send(*held)
 
     def _send(self, done: float, total: float | None, message: str) -> None:
+        if self._emit is None:
+            return
+
         report = ProgressReport(
             done=done, total=total, message=message[: self.MESSAGE_CHARS]
         )
@@ -477,7 +484,7 @@ class ToolProgress:
         self._sent_done = done
         self._sent_at = time.monotonic()
         line = f"{report.model_dump_json()}\n"
-        os.write(self._fd, line.encode(self.ENCODING))
+        self._emit(line.encode(self.ENCODING))
 
     @classmethod
     def __get_pydantic_core_schema__(
@@ -751,7 +758,7 @@ class StreamPorts:
 
     @classmethod
     def build(
-        cls, annotation: Any, io: ToolIo
+        cls, annotation: Any, io: FrameTransport
     ) -> Inbound[Any] | Outbound[Any] | RawInbound | RawOutbound:
         """Порт для вызова над транспортом ToolIo; сырой порт строится своим
         классом, в том числе наследник."""

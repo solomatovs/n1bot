@@ -21,8 +21,8 @@ from boba.db.postgres.connection import PostgresConfig
 from boba.kerberos import KeytabAuth, TicketAuth
 from boba.stand.site import Stand
 from boba.stand.toolstand import ProbeTools
+from boba.tool_io.entry import ToolArgv
 from boba.toolkit.calls import ToolCallBase
-from boba.toolkit.entry import ToolArgv
 from boba.toolkit.manifest import ConfigConnection, InjectedRole
 from boba.toolrun.hosted import PluginSection, ToolInputs
 from boba.toolrun.injected import InjectedConfig

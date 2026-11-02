@@ -162,6 +162,7 @@ class LoginPage:
 
     def password_form(self) -> None:
         expect(self._page.locator(LoginLook.PASSWORD)).to_be_visible()
+        expect(self._page.locator(LoginLook.LOGIN)).to_be_focused()
 
     def sign_in(self, login: str, password: str, error: str) -> None:
         """Вход, который сервер отказал: тот же текст и в баннере, и в уведомлении."""
@@ -231,6 +232,7 @@ def test_login_errors(
         for code in SsoErrorCode:
             login.open(f"?error={code.value}")
             login.banner(texts.text(keys.error_key(code.value)))
+            login.password_form()
             login.sso_button()
             look_pages.settle(page)
             look.frame(body, states.sso(code), theme, size)

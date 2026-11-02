@@ -10,7 +10,7 @@ from pydantic import SecretStr
 
 from boba.db.oracle.connection import OracleConfig, PasswordAuth
 from boba.tool.ora.tools import ora_address
-from boba.toolkit.entry import ToolMain
+from boba.tool_io.entry import ToolMain
 
 pytestmark = [pytest.mark.anyio]
 

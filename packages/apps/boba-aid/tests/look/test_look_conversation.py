@@ -908,6 +908,7 @@ def talk_frames(
             # журнал сокета слушает с открытия: сокет поднимает уже вход
             feed = TalkFeed(page, stand, book)
             look_pages.sign_in(page, stand, TalkLook.LOGIN_USER)
+            feed.chat.await_start()
             yield theme, size, feed
 
 

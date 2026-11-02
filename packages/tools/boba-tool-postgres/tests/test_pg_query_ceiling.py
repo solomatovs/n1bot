@@ -12,9 +12,9 @@ import pytest
 from boba.config import bind
 from boba.db.postgres.connection import PostgresConfig
 from boba.tool.pg.tools import PgToolConfig, pg_query
-from boba.toolkit.entry import ToolMain
+from boba.tool_io.entry import ToolMain
+from boba.tool_io.ports import PipeProgress
 from boba.toolkit.failure import ToolRefusalError
-from boba.toolkit.ports import ToolProgress
 from boba.toolkit.result import SqlResult
 from boba.toolkit.sql import SqlCeiling
 
@@ -46,7 +46,7 @@ class TestQueryCeiling:
             offset=0,
             limit=limit,
             cfg=cfg,
-            progress=ToolProgress(-1),
+            progress=PipeProgress(-1),
         )
 
     async def test_window_of_the_ceiling_is_served_whole(

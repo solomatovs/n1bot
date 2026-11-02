@@ -54,7 +54,7 @@ from boba.db.oracle.query import (
 )
 from boba.db.oracle.target import OraTableRef
 from boba.db.oracle.trace import OraSessionTrace
-from boba.toolkit.arrow import ArrowIpc, ArrowReader
+from boba.tool_io.arrow import ArrowIpc, ArrowReader
 from boba.toolkit.contract import (
     ArrowContract,
     ColumnDeclaration,

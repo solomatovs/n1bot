@@ -14,8 +14,8 @@ import pyarrow.ipc
 import pytest
 
 from boba.pump_stand import Pipe
-from boba.toolkit.arrow import ArrowIpc
-from boba.toolkit.frames import ToolIo
+from boba.tool_io.arrow import ArrowIpc
+from boba.tool_io.frames import ToolIo
 from boba.toolkit.ports import ArrowStreamError, RawInbound, RawOutbound
 
 pytestmark = pytest.mark.anyio
@@ -87,7 +87,7 @@ class TestArrowPorts:
     async def test_wire_is_plain_arrow_ipc(self) -> None:
         """Сырой приёмник на другом конце читает поток обычным pyarrow."""
         read_fd, write_fd = os.pipe()
-        out = RawOutbound(ToolIo.on_channels(-1, write_fd))
+        out = RawOutbound(ToolIo(-1, write_fd))
 
         async def produce() -> None:
             try:
@@ -98,7 +98,7 @@ class TestArrowPorts:
                 os.close(write_fd)
 
         async def consume() -> pyarrow.Table:
-            raw = RawInbound(ToolIo.on_channels(read_fd, -1))
+            raw = RawInbound(ToolIo(read_fd, -1))
             try:
                 data = await asyncio.to_thread(raw.readall)
             finally:
@@ -112,8 +112,8 @@ class TestArrowPorts:
 
     async def test_garbage_is_refused_with_a_format_error(self) -> None:
         read_fd, write_fd = os.pipe()
-        raw = RawOutbound(ToolIo.on_channels(-1, write_fd))
-        feed = RawInbound(ToolIo.on_channels(read_fd, -1))
+        raw = RawOutbound(ToolIo(-1, write_fd))
+        feed = RawInbound(ToolIo(read_fd, -1))
 
         async def produce() -> None:
             try:

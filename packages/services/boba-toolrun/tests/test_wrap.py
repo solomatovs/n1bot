@@ -8,8 +8,8 @@ from collections.abc import Iterator, Sequence
 import pytest
 from pydantic import SecretStr
 
-from boba.stand_core.fake_toolmod import FakeConfig, fake_echo
-from boba.toolkit.chain import CallAmbient
+from boba.stand.fake_toolmod import FakeConfig, fake_echo
+from boba.tool_io.chain import CallAmbient
 from boba.toolkit.frames import ToolFrame
 from boba.toolkit.launcher import (
     CallGate,

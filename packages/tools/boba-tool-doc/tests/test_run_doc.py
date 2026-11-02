@@ -21,8 +21,8 @@ from boba.tool.doc.tools import (
     read_document,
     search_document,
 )
-from boba.toolkit.entry import ToolMain
-from boba.toolkit.ports import ToolProgress
+from boba.tool_io.entry import ToolMain
+from boba.tool_io.ports import PipeProgress
 
 pytestmark = [pytest.mark.run, pytest.mark.anyio]
 
@@ -61,7 +61,7 @@ async def test_run_read_document(doc_cfg: DocToolSection, document: str) -> None
 
     content = (
         await body(
-            progress=ToolProgress(-1), path=document, pages=RunArgs.PAGES, cfg=doc_cfg
+            progress=PipeProgress(-1), path=document, pages=RunArgs.PAGES, cfg=doc_cfg
         )
     ).llm_view()
 

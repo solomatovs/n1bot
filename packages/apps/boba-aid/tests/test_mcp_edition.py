@@ -31,7 +31,7 @@ from aid_stand import TabSession
 
 from boba.aid.agent.client import AgentProcess, AgentRequestError
 from boba.aid.agent.relay import McpRelay
-from boba.mcp_client.client import McpServerConfig, FixedServerConfigs
+from boba.mcp_client.client import FixedServerConfigs, McpServerConfig
 from boba.stand.signin import SignInStand
 from boba.stand.site import Stand
 from boba.stand.ui.fake_llm import ScenarioName

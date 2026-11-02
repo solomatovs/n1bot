@@ -16,7 +16,7 @@ from boba.tool.confluence.tools import (
     confluence_search,
     confluence_spaces,
 )
-from boba.toolkit.entry import ToolMain
+from boba.tool_io.entry import ToolMain
 
 pytestmark = [pytest.mark.run, pytest.mark.anyio]
 

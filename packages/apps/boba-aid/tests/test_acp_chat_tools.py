@@ -41,7 +41,7 @@ from boba.canvas.canvas import CanvasAction, CanvasElement, CanvasKind
 from boba.config import ConfigLoader, bind
 from boba.core.mcp_names import McpToolNames
 from boba.db.postgres.connection import PostgresConfig
-from boba.mcp_client.client import McpServerConfig, FixedServerConfigs
+from boba.mcp_client.client import FixedServerConfigs, McpServerConfig
 from boba.runtime.config import RuntimeConfig, SessionConfig, TokenConfig
 from boba.runtime.http import RequestTokens
 from boba.stand.names import StandNames

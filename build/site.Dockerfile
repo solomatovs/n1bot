@@ -19,7 +19,6 @@ RUN python3 /opt/plugin_rootfs.py libs /tmp/boba/packages ${PLUGINS} > /tmp/libs
 RUN python3 /opt/plugin_rootfs.py names /tmp/boba/packages ${PLUGINS} > /tmp/names.txt \
     && CFLAGS="-g0" uv pip install --python "$(command -v python3)" --target /opt/site \
         --constraint /tmp/wheels/constraints.txt --find-links=/tmp/wheels \
-        --override /tmp/wheels/overrides.txt \
         ${PACKAGES} $(cat /tmp/names.txt) \
     && find /opt/site -name uv_cache.json -delete \
     && sed -i '/uv_cache\.json,/d' /opt/site/*.dist-info/RECORD

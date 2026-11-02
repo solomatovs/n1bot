@@ -20,6 +20,7 @@ from collections.abc import Sequence
 from datetime import timedelta
 from typing import ClassVar
 
+from boba.connection_broker.crypto import ConnectionSeal, SealKeys
 from boba.connection_broker.sealed import SealedConnectionParam
 from boba.connection_broker.tickets import CredentialsRef
 from boba.connection_broker.user_connections import (
@@ -28,7 +29,6 @@ from boba.connection_broker.user_connections import (
     StoreRef,
     TypesRef,
 )
-from boba.connections.sealed import ConnectionSeal, SealKeys
 from boba.connections.whitelist import ConnectionWhitelist
 from boba.identity.context import CallContexts
 from boba.toolrun.hosted import HostedTool

@@ -442,7 +442,7 @@ def asked(chat: ChatPage, llm_port: int) -> QuestionPage:
     return QuestionPage(chat, llm_port)
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def look_dir(stand_workdir: Path) -> Path:
     """Снимки состояний панели и записи для сверки с макетом глазами."""
     return stand_workdir / "question-look"

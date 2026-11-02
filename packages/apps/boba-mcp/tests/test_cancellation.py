@@ -34,7 +34,7 @@ from boba.stand.zygote import (
     ZygoteStand,
 )
 from boba.tool.shell.tools import BashToolConfig
-from boba.toolkit.chain import CallAmbient
+from boba.tool_io.chain import CallAmbient
 from boba.toolkit.dag import DagNode, NodeOutcome
 from boba.toolkit.result import ErrorResult, MarkdownResult, ToolResultBase
 from boba.toolrun.cancellation import CancellableTools

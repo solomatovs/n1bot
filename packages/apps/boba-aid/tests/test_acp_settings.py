@@ -88,7 +88,7 @@ from boba.identity.context import CallContexts
 from boba.kerberos import KeytabAuth
 from boba.krb.credentials import KerberosEnv
 from boba.llm.onnx import OnnxProvider
-from boba.mcp_client.client import McpServerConfig, McpServers, FixedServerConfigs
+from boba.mcp_client.client import FixedServerConfigs, McpServerConfig, McpServers
 from boba.runtime.threads import ThreadsTable
 from boba.runtime.users import UsersTable
 from boba.stand.names import StandNames

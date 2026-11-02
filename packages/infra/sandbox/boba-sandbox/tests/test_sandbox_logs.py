@@ -11,9 +11,9 @@ from boba.sandbox.guest import ZygoteArgs
 from boba.sandbox.runner import SandboxLogRelay, StderrTee
 from boba.sandbox.zygote import ZygoteSpawner
 from boba.stand.zygote import ROOTFS_IMAGE, SandboxCgroup
+from boba.tool_io.payload import PayloadLogging
 from boba.toolkit.channels import JournalChannel, ToolChannel, WrapChannel
 from boba.toolkit.launcher import LaunchPayload
-from boba.toolkit.payload import PayloadLogging
 from boba.toolkit.stream import ChannelSinks, Chunk, StreamSink
 from boba.workspace.images import LauncherMarker
 

@@ -19,8 +19,8 @@ from dataclasses import dataclass
 from typing import ClassVar
 
 from boba.identity.context import CallContexts
+from boba.tool_io.chain import CallAmbient
 from boba.toolkit.calls import FieldMarks, ToolIntent
-from boba.toolkit.chain import CallAmbient
 from boba.toolkit.channels import CallOutcome
 from boba.toolkit.failure import FailurePacker
 from boba.toolkit.result import FailureResult, ToolResultBase

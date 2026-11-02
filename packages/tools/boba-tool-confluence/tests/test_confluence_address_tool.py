@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from boba.tool.confluence.tools import ConfluenceToolsConfig, confluence_address
-from boba.toolkit.entry import ToolMain
+from boba.tool_io.entry import ToolMain
 from boba.transport.http.connection import HttpConnection
 
 pytestmark = [pytest.mark.anyio]

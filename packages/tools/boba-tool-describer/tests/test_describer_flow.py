@@ -25,10 +25,10 @@ from omegaconf import DictConfig
 from psycopg import sql
 
 from boba.config import bind
+from boba.connection_broker.crypto import SecretCipher
 from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.user_connections import ArmedConnections
 from boba.connections.manifest import ConnectionTypes
-from boba.connections.secrets import SecretCipher
 from boba.connections.stored import GrantTarget
 from boba.db.clickhouse.address import ChAddresses, ChTableColumnAddress
 from boba.db.clickhouse.connection import ClickHouseConfig

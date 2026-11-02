@@ -35,7 +35,7 @@ import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, wait
-from contextlib import suppress
+from contextlib import ExitStack, suppress
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -74,15 +74,25 @@ from boba.sandbox.runner import (
     SandboxMountError,
     StderrTee,
 )
-from boba.toolkit.chain import CallAmbient, TappedCall
+from boba.tool_io.chain import CallAmbient
+from boba.tool_io.channels import PipeSetup, StreamPipes
+from boba.tool_io.frames import CallInbox
+from boba.tool_io.pump import (
+    CallInput,
+    CallSinks,
+    ChannelPump,
+    HostGate,
+    OpenRun,
+    PumpedCall,
+)
 from boba.toolkit.channels import ToolChannel
-from boba.toolkit.frames import CallInbox
 from boba.toolkit.launcher import (
     CappedChannel,
     ChannelTail,
     EnvelopeReply,
     LauncherError,
     RunResult,
+    TappedCall,
     ToolCall,
     ToolLauncher,
     ToolOutcome,
@@ -92,15 +102,6 @@ from boba.toolkit.protocol import (
     CallInputSpec,
     CallOutputSpec,
     ToolCommand,
-)
-from boba.toolkit.pump import (
-    CallInput,
-    CallSinks,
-    ChannelPump,
-    HostGate,
-    OpenRun,
-    PipePlumbing,
-    PumpedCall,
 )
 from boba.toolkit.stream import (
     ChannelSinks,
@@ -254,9 +255,9 @@ class _CallChannels:
     Порядок в child_fds() жёсткий — гость раскладывает их по CallFd, за
     ними cgroup, затем входы и выходы, каждый своим пайпом. После отправки child-концы
     закрываются здесь, host-концы разбирают владельцы: stdin и входы
-    забирает CallInputs (take_stdin, take_inputs), канал конфига — писатель
-    аргументов (take_args), выходы — перекачка (take_outputs) либо насос
-    (claim_frames), остальное читает насос и закрывает close_host_ends.
+    забирает CallInputs, канал конфига — писатель аргументов. StreamPipes
+    передаёт выходы перекачке либо насосу. Служебные каналы читает насос,
+    закрывает close_host_ends.
     """
 
     def __init__(
@@ -266,36 +267,27 @@ class _CallChannels:
         outputs: Sequence[CallOutputSpec],
     ) -> None:
         self.cgroup_fd = cgroup_fd
-        self.stdin_r, self.stdin_w = os.pipe()
-        self.stdout_r, self.stdout_w = os.pipe()
-        self.stderr_r, self.stderr_w = os.pipe()
-        self.result_r, self.result_w = os.pipe()
-        self.args_r, self.args_w = os.pipe()
-        self.gate_r, self.gate_w = os.pipe()
-        self.verdict_r, self.verdict_w = os.pipe()
-        self.progress_r, self.progress_w = os.pipe()
-        self.control_host, self.control_child = socket.socketpair(
-            socket.AF_UNIX, socket.SOCK_SEQPACKET
-        )
-        self.control_host.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
         self._stdin_open = True
         self._args_open = True
-        self._outputs_taken = False
-        self._claimed: int | None = None
-        self._inputs_open = True
         self._gate_open = True
 
-        self._ins: list[tuple[int, int]] = []
-        for spec in inputs:
-            read_fd, write_fd = os.pipe()
-            PipePlumbing.require(write_fd, spec.pipe_bytes, spec.port)
-            self._ins.append((read_fd, write_fd))
-
-        self._outs: list[tuple[int, int]] = []
-        for out_spec in outputs:
-            read_fd, write_fd = os.pipe()
-            PipePlumbing.require(write_fd, out_spec.pipe_bytes, out_spec.port)
-            self._outs.append((read_fd, write_fd))
+        with PipeSetup() as setup:
+            self.stdin_r, self.stdin_w = setup.pipe()
+            self.stdout_r, self.stdout_w = setup.pipe()
+            self.stderr_r, self.stderr_w = setup.pipe()
+            self.result_r, self.result_w = setup.pipe()
+            self.args_r, self.args_w = setup.pipe()
+            self.gate_r, self.gate_w = setup.pipe()
+            self.verdict_r, self.verdict_w = setup.pipe()
+            self.progress_r, self.progress_w = setup.pipe()
+            control_host, control_child = socket.socketpair(
+                socket.AF_UNIX, socket.SOCK_SEQPACKET
+            )
+            self.control_host = setup.enter_context(control_host)
+            self.control_child = setup.enter_context(control_child)
+            self.control_host.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+            self.streams = StreamPipes(setup, inputs, outputs, os.close)
+            setup.pop_all()
 
     def child_fds(self) -> list[int]:
         """В порядке CallFd: так их ждёт зигота; cgroup — не всегда, входы
@@ -314,11 +306,8 @@ class _CallChannels:
         if self.cgroup_fd >= 0:
             listed.append(self.cgroup_fd)
 
-        for read_fd, _ in self._ins:
-            listed.append(read_fd)
-
-        for _, write_fd in self._outs:
-            listed.append(write_fd)
+        listed.extend(self.streams.child_inputs())
+        listed.extend(self.streams.child_outputs())
 
         return listed
 
@@ -332,11 +321,7 @@ class _CallChannels:
         os.close(self.gate_w)
         os.close(self.verdict_r)
         os.close(self.progress_w)
-        for read_fd, _ in self._ins:
-            os.close(read_fd)
-
-        for _, write_fd in self._outs:
-            os.close(write_fd)
+        self.streams.close_child_ends()
 
     def stdin_alive(self) -> bool:
         return self._stdin_open
@@ -360,21 +345,6 @@ class _CallChannels:
         self._gate_open = False
         return self.verdict_w
 
-    def take_inputs(self) -> tuple[int, ...]:
-        """Отдать записывающие концы входов их владельцу — CallInputs
-        вызова; каналы их больше не закрывают."""
-        if not self._inputs_open:
-            msg = "call inputs are already taken or closed"
-            raise LauncherError(msg)
-
-        self._inputs_open = False
-
-        fds: list[int] = []
-        for _, write_fd in self._ins:
-            fds.append(write_fd)
-
-        return tuple(fds)
-
     def take_args(self) -> int:
         """Отдать канал конфига писателю: каналы его больше не закрывают."""
         if not self._args_open:
@@ -383,52 +353,6 @@ class _CallChannels:
 
         self._args_open = False
         return self.args_w
-
-    def take_outputs(self) -> tuple[int, ...]:
-        """Отдать читающие концы всех выходов перекачке: насос их не читает,
-        каналы их больше не закрывают; владеет дескрипторами перекачка."""
-        if self._outputs_taken or self._claimed is not None:
-            msg = "call output channels are already taken or claimed"
-            raise LauncherError(msg)
-
-        self._outputs_taken = True
-
-        fds: list[int] = []
-        for read_fd, _ in self._outs:
-            fds.append(read_fd)
-
-        return tuple(fds)
-
-    def claim_frames(self) -> int | None:
-        """Единственный кадровый выход — насосу: его кадры читает хост.
-
-        None — выходов нет, их больше одного либо выход сырой: непрошенные
-        дочитает drain_reads. Сырость выхода называет вызывающий.
-        """
-        if self._outputs_taken:
-            msg = "call output channels are taken, claiming frames is refused"
-            raise LauncherError(msg)
-
-        if len(self._outs) != 1:
-            return None
-
-        self._claimed = 0
-        return self._outs[0][0]
-
-    def drain_reads(self) -> tuple[int, ...]:
-        """Читающие концы выходов без читателя: насос дочитывает их в никуда,
-        чтобы тело не встало на записи."""
-        if self._outputs_taken:
-            return ()
-
-        fds: list[int] = []
-        for index, (read_fd, _) in enumerate(self._outs):
-            if index == self._claimed:
-                continue
-
-            fds.append(read_fd)
-
-        return tuple(fds)
 
     def host_reads(self) -> tuple[tuple[ToolChannel, int], ...]:
         """Читаемые насосом каналы вызова; отданные перекачке не входят."""
@@ -439,8 +363,7 @@ class _CallChannels:
             (ToolChannel.PROGRESS, self.progress_r),
         ]
 
-        if self._claimed is not None:
-            reads.append((ToolChannel.FRAMES, self._outs[self._claimed][0]))
+        reads.extend(self.streams.frame_reads())
 
         return tuple(reads)
 
@@ -453,10 +376,9 @@ class _CallChannels:
 
     def close_host_ends(self) -> None:
         self.close_stdin()
-        self._close_inputs()
+        self.streams.close_host_ends()
         self._close_gate()
         self._close_args()
-        self._close_outputs()
         os.close(self.stdout_r)
         os.close(self.stderr_r)
         os.close(self.result_r)
@@ -472,28 +394,12 @@ class _CallChannels:
         self._gate_open = False
         os.close(self.verdict_w)
 
-    def _close_inputs(self) -> None:
-        if not self._inputs_open:
-            return
-
-        self._inputs_open = False
-        for _, write_fd in self._ins:
-            os.close(write_fd)
-
     def _close_args(self) -> None:
         if not self._args_open:
             return
 
         self._args_open = False
         os.close(self.args_w)
-
-    def _close_outputs(self) -> None:
-        if self._outputs_taken:
-            return
-
-        self._outputs_taken = True
-        for read_fd, _ in self._outs:
-            os.close(read_fd)
 
 
 class ZygoteSupervisor:
@@ -770,25 +676,32 @@ class ZygoteSupervisor:
             inputs=tuple(spec.port for spec in inputs),
             outputs=tuple(spec.port for spec in outputs),
         )
-        channels = _CallChannels(cgroup_fd, inputs, outputs)
-
         try:
-            with self._send_lock:
-                ZygoteWire.send_batched(sock, request, channels.child_fds())
-        except OSError as exc:
-            channels.close_child_ends()
-            channels.close_host_ends()
+            with ExitStack() as cleanup:
+                channels = _CallChannels(cgroup_fd, inputs, outputs)
+                cleanup.callback(channels.close_host_ends)
+                cleanup.callback(channels.close_child_ends)
+                with self._send_lock:
+                    ZygoteWire.send_batched(sock, request, channels.child_fds())
+
+                cleanup.pop_all()
+        except BaseException as exc:
             with self._lock:
                 self._in_flight.pop(call_id, None)
-            msg = (
-                f"zygote {self._name}: sending call {call_id} request "
-                f"over the control socket failed: {exc}"
-            )
-            raise ZygoteUnavailableError(msg) from exc
+
+            if isinstance(exc, OSError):
+                msg = (
+                    f"zygote {self._name}: preparing or sending call {call_id} "
+                    f"over the control socket failed: {exc}"
+                )
+                raise ZygoteUnavailableError(msg) from exc
+
+            raise
+        finally:
+            if cgroup_fd >= 0:
+                os.close(cgroup_fd)
 
         channels.close_child_ends()
-        if cgroup_fd >= 0:
-            os.close(cgroup_fd)
 
         return _WiredCall(request=request, channels=channels)
 
@@ -1105,7 +1018,7 @@ class _ZygotePump(ChannelPump):
 
             self.add_read(fd, sink)
 
-        for fd in channels.drain_reads():
+        for fd in channels.streams.drain_reads():
             self.add_drain(fd)
 
         self.add_event(channels.control_host.fileno(), self._control_event)
@@ -1524,8 +1437,8 @@ class ZygoteToolCaller(ToolLauncher):
         # прочие выходы без читателя насос дочитывает в никуда
         frames_fds: tuple[int, ...] = ()
         if tap:
-            frames_fds = wired.channels.take_outputs()
-        elif self._claimable(command) and wired.channels.claim_frames() is not None:
+            frames_fds = wired.channels.streams.take_outputs()
+        elif wired.channels.streams.claim_frames() is not None:
             own[ToolChannel.FRAMES] = inbox.feed
             journal.append(ToolChannel.FRAMES)
 
@@ -1533,7 +1446,7 @@ class ZygoteToolCaller(ToolLauncher):
 
         inputs = self._sinks.call_inputs(
             wired.channels.take_stdin(),
-            wired.channels.take_inputs(),
+            wired.channels.streams.take_inputs(),
             command.inputs,
             call_journal,
         )
@@ -1576,14 +1489,6 @@ class ZygoteToolCaller(ToolLauncher):
         args_input.finish()
 
         return call, frames_fds
-
-    @staticmethod
-    def _claimable(command: ToolCommand) -> bool:
-        """Кадры единственного кадрового выхода читает хост."""
-        if len(command.outputs) != 1:
-            return False
-
-        return not command.outputs[0].raw
 
     def outcome_of(
         self,

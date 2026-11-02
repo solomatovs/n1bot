@@ -12,7 +12,6 @@ ServerStartError — приложение сервера не поднялось
 HealthCheckError — служба не ответила на пробу готовности успехом.
 """
 
-import html
 import logging
 import socket
 import urllib.error
@@ -28,11 +27,11 @@ from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from uvicorn.lifespan.on import LifespanOn
 
+from boba.auth.http import SsoRequests, SsoResponses
 from boba.cancellation import ProcessStop
-from boba.identity.errors import BaseError, FailureReport, to_domain
+from boba.identity.errors import BaseError
 from boba.identity.session import LogLine
 from boba.identity.signin import ProxyHeaderNames, ProxyRequest
-from boba.identity.sso import OwnRequest, RequestHeader, SsoErrorCode, SsoRequest
 from boba.identity.token import (
     CookieJar,
     CookieSpec,
@@ -40,7 +39,8 @@ from boba.identity.token import (
     TokenRejectedError,
     TokenRejection,
 )
-from boba.toolkit.closing import ProcessClosers
+from boba.runtime.errors import FailureReports
+from boba.tool_io.closing import ProcessClosers
 
 __all__ = [
     "DomainErrorMiddleware",
@@ -174,34 +174,6 @@ class ProxyRequests:
         )
 
 
-class SsoResponses:
-    """Ответы SPNEGO-обмена: 401 Negotiate — браузер домена повторит запрос сам.
-    Создаётся маршрутом входа kerberos приложения и лежит у него полем."""
-
-    NEGOTIATE: ClassVar[str] = "Negotiate"
-    PAGE: ClassVar[str] = (
-        '<!doctype html><meta http-equiv="refresh" content="0;url={url}">'
-    )
-
-    def headers(self) -> dict[str, str]:
-        return {RequestHeader.WWW_AUTHENTICATE.value: self.NEGOTIATE}
-
-    def challenge(self, login_url: str) -> Response:
-        """401 со страницей-переходом: без тикета браузер уйдёт на логин с кодом."""
-        url = html.escape(SsoErrorCode.TICKET.login_url(login_url), quote=True)
-
-        return Response(
-            content=self.PAGE.format(url=url),
-            status_code=401,
-            headers=self.headers(),
-            media_type="text/html",
-        )
-
-    def silent_challenge(self) -> Response:
-        """401 без страницы: ответ читает скрипт обновления, не человек."""
-        return Response(status_code=401, headers=self.headers())
-
-
 class RequestTokens:
     """Токен входа запроса: cookie (целиком либо чанками), иначе Bearer."""
 
@@ -255,6 +227,7 @@ class StaleSessionMiddleware:
         self._cookie = SessionCookie(cookie)
         self._request_tokens = RequestTokens(cookie.name)
         self._logger = logging.getLogger(__name__)
+        self._failures = FailureReports()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -341,6 +314,7 @@ class DomainErrorMiddleware:
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
         self._logger = logging.getLogger(__name__)
+        self._failures = FailureReports()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -359,14 +333,14 @@ class DomainErrorMiddleware:
             await self.app(scope, receive, guarded_send)
         except Exception as e:
             # http-слой пишет в журнал ту же формулировку, что чат и история
-            described = FailureReport.of(e).log
+            described = self._failures.describe(e).log
             request = f"{scope.get('method', '?')} {scope.get('path', '?')}"
             if not isinstance(e, BaseError):
                 self._logger.exception("%s: %s", request, LogLine.safe(described))
             else:
                 self._logger.error("%s: %s", request, LogLine.safe(described))
 
-            domain = to_domain(e)
+            domain = self._failures.domain(e)
 
             if started:
                 # ответ уже начат — подменить его уже нельзя
@@ -379,38 +353,6 @@ class DomainErrorMiddleware:
                     status_code=http.status_code,
                     headers=http.headers,
                 )(scope, receive, send)
-
-
-class SsoRequests:
-    """Запрос SPNEGO-обмена из запроса starlette: заголовки и адрес клиента.
-    Создаётся маршрутом входа приложения и лежит у него полем."""
-
-    def of(self, request: Request) -> SsoRequest:
-        mark = request.headers.get(OwnRequest.HEADER, "")
-
-        return SsoRequest(
-            authorization=request.headers.get(RequestHeader.AUTHORIZATION, ""),
-            own_request=OwnRequest.asked(mark),
-            client=self.client_of(request),
-        )
-
-    def client_of(self, request: Request) -> str:
-        """Лучший идентификатор клиента: реальный IP за прокси, иначе peer.
-
-        X-Forwarded-For и X-Real-IP доверяются, потому что nginx перед
-        приложением перезаписывает их сам.
-        """
-        if xff := request.headers.get(RequestHeader.FORWARDED_FOR):
-            first, _, _ = xff.partition(",")
-            return first.strip()
-
-        if real := request.headers.get(RequestHeader.REAL_IP):
-            return real
-
-        if request.client is not None:
-            return request.client.host
-
-        return SsoRequest.UNKNOWN_CLIENT
 
 
 class ServerStartError(Exception):

@@ -17,10 +17,6 @@ from boba.stand.names import StandSuite
 from boba.stand.site import Stand
 
 pytest_plugins = ["boba.stand.fixtures", "boba.stand.ui.fixtures"]
-collect_ignore = [
-    "services/boba-catalog-service",
-    "core/boba-catalog",
-]
 
 
 class ChainlitTestRoot:

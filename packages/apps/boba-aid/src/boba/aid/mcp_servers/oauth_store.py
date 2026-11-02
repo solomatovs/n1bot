@@ -16,7 +16,7 @@ from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from psycopg import sql
 from pydantic import SecretStr, ValidationError
 
-from boba.connections.secrets import SecretCipher, SecretCryptoError
+from boba.connection_broker.crypto import SecretCipher, SecretCryptoError
 from boba.db.postgres import PostgresPool, PostgresTable
 
 

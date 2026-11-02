@@ -10,6 +10,7 @@ __pycache__
 !/docs/admin-guide.md
 !/docs/mcp-servers-user.md
 !/docs/developer-guide.md
+!/docs/codebase-audit.md
 !/docs/migration-from-dev.md
 !/docs/knowledge-graph-plan.md
 !/docs/knowledge-schema.sql

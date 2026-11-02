@@ -14,10 +14,10 @@ from pathlib import Path
 
 from boba.identity.context import CallContexts
 from boba.identity.run import Runs
+from boba.stand.fake_toolmod import fake_echo
 from boba.stand.refs import StandRefs
-from boba.stand_core.fake_toolmod import fake_echo
+from boba.tool_io.chain import CallAmbient
 from boba.toolkit.calls import ToolIntent
-from boba.toolkit.chain import CallAmbient
 from boba.toolkit.dag import DagNode
 from boba.toolkit.result import MarkdownResult
 from boba.toolrun.call_id import CallFields
@@ -26,7 +26,7 @@ from boba.toolrun.injected import InjectedConfig, StaticSection
 from boba.toolrun.run_log import ToolRunLogger
 from boba.toolrun.streams import CallJournals
 
-PLUGINS = ("boba.stand_core.fake_toolmod:PLUGIN",)
+PLUGINS = ("boba.stand.fake_toolmod:PLUGIN",)
 SECTION = PluginSection(values={"token": "p1p3", "limit": 5})
 
 

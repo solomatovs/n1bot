@@ -87,6 +87,7 @@ from starlette.responses import HTMLResponse, RedirectResponse, Response
 from starlette.routing import BaseRoute, Mount, Route
 
 from boba.auth import SignIns
+from boba.auth.http import SsoRequests, SsoResponses
 from boba.auth.proxy import AssertionRejectedError, ProxyAssertions
 from boba.auth.signin import LoginField
 from boba.identity.errors import (
@@ -96,7 +97,6 @@ from boba.identity.errors import (
 )
 from boba.identity.signin import ProxyRequest, SignedIn, SignInMetadata
 from boba.identity.sso import SsoChallenge
-from boba.runtime.http import SsoRequests, SsoResponses
 
 __all__ = [
     "AuthServer",

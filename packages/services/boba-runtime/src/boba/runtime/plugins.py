@@ -34,11 +34,11 @@ from boba.access import GrantCheck, ToolAccess, ToolGrants
 from boba.chat.profiles import ProfilesSection, RolesSection
 from boba.config import ConfigError, bind
 from boba.connection_broker.tickets import SectionTickets, ServiceTickets
+from boba.core.types import StringList
 from boba.runtime.launchers import PluginLaunch, SectionLaunchers
 from boba.runtime.refs import ExecRefs
 from boba.toolkit.manifest import ToolDecl
 from boba.toolkit.ports import StreamSpecs
-from boba.toolkit.types import StringList
 from boba.toolrun.callvalues import CallContextValues
 from boba.toolrun.dev_null import DevNullTool
 from boba.toolrun.hosted import HostedTool, PluginSection, ToolHosting

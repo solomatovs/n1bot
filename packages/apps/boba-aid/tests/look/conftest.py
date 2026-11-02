@@ -12,6 +12,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from acp_stand import AppsHost
 
 pytest.importorskip("playwright.sync_api", reason="тестам вида нужен playwright")
 
@@ -83,7 +84,7 @@ def look_report(
         report.write()
 
 
-@pytest.fixture(scope="session", autouse=True)
+@pytest.fixture(scope="module", autouse=True)
 def look_ready(browser: Browser, look_settings: LookSettings) -> None:
     """Сборка фронта и окружение снимков те же, что у эталонов: иначе любая
     разница — ложная, и набор отказывает одним сообщением."""
@@ -108,7 +109,17 @@ def look_pages(browser: Browser) -> Iterator[LookPages]:
         pages.close()
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
+def standard_host() -> Iterator[AppsHost]:
+    host = AppsHost(["--no-apps"])
+    try:
+        host.await_listening()
+        yield host
+    finally:
+        host.stop()
+
+
+@pytest.fixture(scope="module")
 def look_llm_port() -> Iterator[int]:
     port = StandPorts().free()
     process = multiprocessing.Process(
@@ -137,13 +148,16 @@ def look_llm_port() -> Iterator[int]:
         process.join(timeout=10)
 
 
-@pytest.fixture(scope="session")
-def look_db() -> StandDatabase:
-    """База стендов вида: тесты сеют в неё треды своего пользователя."""
-    return StandDatabase(StandApp.AID, StandNames().tree_database(LookStand.DATABASE))
+@pytest.fixture(scope="module")
+def look_db(request: pytest.FixtureRequest) -> StandDatabase:
+    """База модуля тестов вида: треды и серверы MCP не переходят в другой модуль."""
+    module = request.node.path.stem.removeprefix("test_look_")
+    name = StandNames().tree_database(f"{LookStand.DATABASE}_{module}")
+
+    return StandDatabase(StandApp.AID, name)
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def look_stands(
     tmp_path_factory: pytest.TempPathFactory, look_llm_port: int, look_db: StandDatabase
 ) -> Iterator[LookStand]:

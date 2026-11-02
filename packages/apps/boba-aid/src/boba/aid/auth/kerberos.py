@@ -18,17 +18,18 @@ from starlette.responses import RedirectResponse, Response
 
 from boba.aid.auth.refresh import PageUrls, SessionRefresh
 from boba.auth import AuthService
+from boba.auth.http import SsoRequests, SsoResponses
 from boba.identity.errors import (
     AuthorizationError,
     BaseError,
-    FailureReport,
 )
 from boba.identity.session import LogLine
 from boba.identity.sso import (
     SsoChallenge,
     SsoErrorCode,
 )
-from boba.runtime.http import SessionCookie, SsoRequests, SsoResponses
+from boba.runtime.errors import FailureReports
+from boba.runtime.http import SessionCookie
 
 
 class KerberosAuth:
@@ -47,6 +48,7 @@ class KerberosAuth:
         self._urls = urls
         self.auth = auth
         self._requests = SsoRequests()
+        self._failures = FailureReports()
         self._responses = SsoResponses()
         self._logger = logging.getLogger(KerberosAuth.__name__)
 
@@ -61,7 +63,7 @@ class KerberosAuth:
         """Исход SSO кодом на страницу логина: браузер пришёл навигацией, не fetch."""
         self._logger.error(
             "sso sign-in failed, redirecting to the login page: %s",
-            LogLine.safe(FailureReport.of(exc).log),
+            LogLine.safe(self._failures.describe(exc).log),
         )
 
         code = SsoErrorCode.FAILED

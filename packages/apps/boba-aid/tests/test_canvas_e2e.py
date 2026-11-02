@@ -34,7 +34,7 @@ from urllib.parse import urlencode
 import httpx
 import pytest
 from aid_stand import AppLanguage, FakeUrl
-from playwright.async_api import Locator, Page, async_playwright
+from playwright.async_api import Locator, Page, async_playwright, expect
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 from pydantic import BaseModel, ConfigDict, SecretStr
 
@@ -43,7 +43,7 @@ from boba.aid.infra.config import AppConfig
 from boba.aid.mcp_servers.sources import McpViewer, StoredServers
 from boba.aid.mcp_servers.store import McpServerStore
 from boba.config import ConfigError, ConfigLoader, bind
-from boba.connections.secrets import SecretCipher
+from boba.connection_broker.crypto import SecretCipher
 from boba.mcp_client.client import (
     HttpEndpoint,
     HttpLocation,
@@ -1866,6 +1866,12 @@ async def test_panel_follows_the_file_after_the_socket_reconnects(
         PanelScript.IMAGE_REVISED,
         before,
         "the image link to get a new revision after the socket reconnected",
+    )
+
+    # Под курсором уведомление обрыва не закрывается и перекрывает следующий тест.
+    await panel.page.mouse.move(0, 0)
+    await expect(panel.page.locator("[data-sonner-toast]")).to_have_count(
+        0, timeout=CanvasPage.TIMEOUT_MS
     )
 
 

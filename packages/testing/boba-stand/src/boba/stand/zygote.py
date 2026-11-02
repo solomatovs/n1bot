@@ -32,7 +32,7 @@ from boba.sandbox.zygote import (
 )
 from boba.stand.shell import ShellRun
 from boba.stand.ui.stand import StandRuntime
-from boba.toolkit.chain import CallAmbient
+from boba.tool_io.chain import CallAmbient
 from boba.toolkit.manifest import ManifestBuilder, WarmupSection
 
 REPO = Path(__file__).resolve().parents[6]
@@ -196,7 +196,9 @@ class SandboxStand:
     SRC_PACKAGES: ClassVar[tuple[str, ...]] = (
         "core/boba-cancellation",
         "core/boba-core",
+        "core/boba-mcp-models",
         "core/boba-toolkit",
+        "infra/stream/boba-tool-io",
         "infra/sandbox/boba-sandbox",
         SHELL_SRC,
     )

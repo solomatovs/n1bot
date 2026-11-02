@@ -49,7 +49,7 @@ from boba.stand.zygote import (
     SandboxStand,
     ZygoteStand,
 )
-from boba.toolkit.chain import CallAmbient
+from boba.tool_io.chain import CallAmbient
 from boba.toolkit.launcher import LauncherError
 from boba.toolkit.result import ShellResult
 from boba.toolkit.stream import Chunk, JournalChannel, StreamSink

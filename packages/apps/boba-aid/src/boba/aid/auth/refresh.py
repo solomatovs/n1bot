@@ -22,8 +22,9 @@ from pydantic import BaseModel, ConfigDict
 
 from boba.aid.infra.session import ChainlitSessions
 from boba.auth import AuthService, IssuedSession
+from boba.auth.http import SsoRequests, SsoResponses
 from boba.identity.sso import OwnRequest, SsoChallenge, SsoRefused
-from boba.runtime.http import RequestTokens, SessionCookie, SsoRequests, SsoResponses
+from boba.runtime.http import RequestTokens, SessionCookie
 
 __all__ = ["PageJsVar", "PageUrls", "SessionRefresh"]
 

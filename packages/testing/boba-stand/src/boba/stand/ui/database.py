@@ -22,9 +22,9 @@ from psycopg.errors import InsufficientPrivilege
 from psycopg.types.json import Jsonb
 
 from boba.config import ConfigLoader, bind
+from boba.connection_broker.crypto import SecretCipher
 from boba.connection_broker.store import ConnectionStore
 from boba.connections.manifest import ConnectionTypes
-from boba.connections.secrets import SecretCipher
 from boba.connections.stored import (
     ConnectionBase,
     ConnectionTable,
@@ -44,7 +44,7 @@ from boba.stand.database import TestDatabase
 from boba.stand.edm import EdmDataset, EdmSource, EdmSources
 from boba.stand.ix_index import IxPage, IxPages, SharedIndexers, StandIxStack
 from boba.stand.stream_sinks import SinkSources, StreamSinks
-from boba.stand.ui.stand import (
+from boba.stand.ui.config import (
     ServerSeed,
     ServerSeedSpec,
     StandApp,
@@ -423,6 +423,11 @@ class StandDatabase:
                             "delete from {table}",
                             table=sql.Identifier(self._schema, table.value),
                         )
+                        .when(
+                            table is ConnectionTable.GRANTS,
+                            "where src_kind = %(kind)s",
+                            kind=GrantKind.CONNECTIONS.value,
+                        )
                         .build()
                     )
                     await cur.execute(query.text, query.params)
@@ -639,7 +644,8 @@ class StandServerSeed(ServerSeed):
                     config = McpServerConfig.model_validate(raw)
                     if isinstance(config.endpoint, StdioCommand):
                         raise StandError(
-                            f"Seeding MCP server {name!r}: expected HTTP or SSE, got stdio"
+                            f"Seeding MCP server {name!r}: "
+                            "expected HTTP or SSE, got stdio"
                         )
 
                     server_id = uuid4()

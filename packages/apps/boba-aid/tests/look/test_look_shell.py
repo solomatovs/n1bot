@@ -25,8 +25,10 @@ from aid_look import (
     LookState,
     LookTheme,
 )
-from playwright.sync_api import Locator, Page, expect
+from playwright.sync_api import Locator, Page, WebSocket, expect
 
+from boba.stand.ui.chat_page import ChatPage
+from boba.stand.ui.socket_log import SocketLog
 from boba.stand.ui.stand import StandAuth, StandProcess
 
 pytestmark = [pytest.mark.ui, pytest.mark.look]
@@ -155,6 +157,12 @@ class ShellPage:
     def __init__(self, page: Page, stand: StandProcess) -> None:
         self._page = page
         self._stand = stand
+        self._log = SocketLog()
+        self._chat = ChatPage(page=page, log=self._log, base_url=stand.config.base_url)
+        page.on("websocket", self._watch)
+
+    def _watch(self, socket: WebSocket) -> None:
+        socket.on("framereceived", self._log.accept)
 
     def sign_in(self) -> None:
         credential = self._stand.config.credential(ShellLook.LOGIN_USER)
@@ -164,6 +172,7 @@ class ShellPage:
         self._page.locator(ShellLook.PASSWORD).fill(credential.password)
         self._page.locator(ShellLook.SUBMIT).click()
         expect(self._page.locator(ShellLook.INPUT)).to_be_visible(timeout=60_000)
+        self._chat.await_start()
         expect(self._page.locator(ShellLook.PROFILE_SELECT)).to_be_visible()
         self._page.wait_for_load_state("networkidle")
         expect(self._page.locator(ShellLook.THREADS)).to_have_count(0)

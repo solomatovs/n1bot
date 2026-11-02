@@ -12,7 +12,7 @@ from boba.db.postgres.connection import (
     PostgresPoolConfig,
 )
 from boba.tool.pg.tools import pg_address
-from boba.toolkit.entry import ToolMain
+from boba.tool_io.entry import ToolMain
 
 pytestmark = [pytest.mark.anyio]
 

@@ -22,8 +22,8 @@ from boba.tool.confluence.ingest_tools import (
     IngestToolConfig,
     confluence_index_page,
 )
-from boba.toolkit.entry import ToolMain
-from boba.toolkit.ports import ToolProgress
+from boba.tool_io.entry import ToolMain
+from boba.tool_io.ports import PipeProgress
 
 pytestmark = [pytest.mark.run, pytest.mark.anyio]
 
@@ -81,7 +81,7 @@ async def test_run_confluence_ingest(ingest_cfg: IngestToolConfig) -> None:
             attachments=RunArgs.ATTACHMENTS,
             ocr=RunArgs.OCR,
             cfg=ingest_cfg,
-            progress=ToolProgress(-1),
+            progress=PipeProgress(-1),
         )
     ).llm_view()
 

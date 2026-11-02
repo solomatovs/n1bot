@@ -55,7 +55,7 @@ from boba.db.oracle.errors import (
     OracleQueryError,
 )
 from boba.db.oracle.trace import OraSessionTrace
-from boba.toolkit.arrow import ArrowColumns, ArrowIpc, SourceFields
+from boba.tool_io.arrow import ArrowColumns, ArrowIpc, SourceFields
 from boba.toolkit.contract import ColumnSpec, ColumnType, TimeUnit, TypeFamily
 
 __all__ = [

@@ -48,17 +48,19 @@ fi
 
 export PATH="$DIR/build/src/uv:$PATH"
 
-# python-oracledb в .venv идёт патченным колесом из build/out/oracledb
-# (find-links в pyproject); без него uv sync не соберёт окружение
-ORACLEDB_WHEELS="$DIR/build/out/oracledb"
+# Локальные патчи закреплены в pyproject и lock. Make воспроизводит колёса
+# из проверенных sdist; find-links одинаков для .venv и сборочных контейнеров.
+for WHEEL_PACKAGE in oracledb literalai chainlit; do
+  if ls "$DIR/build/out/$WHEEL_PACKAGE/$WHEEL_PACKAGE"-*.whl > /dev/null 2>&1; then
+    continue
+  fi
 
-if ! ls "$ORACLEDB_WHEELS"/oracledb-*.whl > /dev/null 2>&1; then
-  echo "dev: собираю колесо python-oracledb: make -C build build APP=oracledb"
-  if ! make -C "$DIR/build" build APP=oracledb; then
-    echo "dev: колесо python-oracledb не собралось, .venv не готовится" >&2
+  echo "dev: собираю колесо $WHEEL_PACKAGE: make -C build build APP=$WHEEL_PACKAGE"
+  if ! make -C "$DIR/build" build APP="$WHEEL_PACKAGE"; then
+    echo "dev: колесо $WHEEL_PACKAGE не собралось, .venv не готовится" >&2
     return 1 2> /dev/null || exit 1
   fi
-fi
+done
 
 # venv без ссылок: интерпретатор копией, lib64 -> lib не нужен (sys.platlibdir = lib),
 # пакеты uv кладёт копиями
@@ -67,7 +69,7 @@ if [ ! -d "$DIR/.venv" ]; then
   rm "$DIR/.venv/lib64"
 fi
 
-(cd "$DIR" && UV_LINK_MODE=copy uv sync -v --system-certs --all-packages --all-extras)
+(cd "$DIR" && UV_LINK_MODE=copy uv sync -v --system-certs --all-packages --all-extras --find-links "$DIR/build/out/oracledb")
 OK=$?
 
 if [ $OK -eq 0 ]; then

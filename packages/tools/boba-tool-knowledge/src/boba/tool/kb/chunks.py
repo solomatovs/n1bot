@@ -29,7 +29,7 @@ from boba.tool.kb.search import (
     ConfluenceCollection,
     KbSearch,
 )
-from boba.toolkit.entry import ToolMain
+from boba.tool_io.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import TableResult
 from boba.toolkit.timing import Elapsed

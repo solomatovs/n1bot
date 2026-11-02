@@ -5,7 +5,7 @@
 Контракт процесса тот же, что в песочнице (argv, кадры на stdin, каналы
 конверта/кадров/аргументов номерами в флагах --fd-*), но изоляции,
 cgroup-лимитов и прогрева модулей нет. Механика исполнения общая с
-песочницей и живёт в boba.toolkit.pump: вход тела пишет вызывающий через
+песочницей и живёт в boba.tool_io.pump: вход тела пишет вызывающий через
 CallInput, каналы читает насос своим потоком.
 
 Ошибки:
@@ -31,29 +31,30 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from boba.cancellation import RunCancellation
 from boba.identity.context import CallContexts
-from boba.toolkit.chain import CallAmbient, TappedCall
+from boba.tool_io.chain import CallAmbient
+from boba.tool_io.channels import PipeSetup, StreamPipes
+from boba.tool_io.entry import EntryFlag, InputWire, OutputWire
+from boba.tool_io.frames import CallInbox
+from boba.tool_io.pump import (
+    CallInput,
+    CallSinks,
+    ChannelPump,
+    HostGate,
+    PumpedCall,
+)
 from boba.toolkit.channels import ToolChannel
-from boba.toolkit.entry import EntryFlag, InputWire, OutputWire
-from boba.toolkit.frames import CallInbox
 from boba.toolkit.launcher import (
     CappedChannel,
     ChannelTail,
     EnvelopeReply,
     LauncherError,
     RunResult,
+    TappedCall,
     ToolCall,
     ToolLauncher,
     ToolOutcome,
 )
 from boba.toolkit.protocol import CallInputSpec, CallOutputSpec, ToolCommand
-from boba.toolkit.pump import (
-    CallInput,
-    CallSinks,
-    ChannelPump,
-    HostGate,
-    PipePlumbing,
-    PumpedCall,
-)
 from boba.toolkit.stream import ChunkSink
 
 __all__ = [
@@ -106,9 +107,8 @@ class _CallPipes:
     свой пайп; stdin процесса порта не несёт. Дескрипторы тела наследуются
     с теми же номерами (pass_fds), и эти номера дописываются в команду
     флагами --fd-result/--args-fd/--fd-gate/--fd-verdict/--fd-progress/
-    --fd-in/--fd-out (argv_flags). Записывающие концы входов забирает CallInputs вызова
-    (take_inputs), концы барьера — HostGate (take_verdict), читающие концы
-    выходов — перекачка (take_outputs) либо насос (claim_frames).
+    --fd-in/--fd-out (argv_flags). Портами владеет StreamPipes: входы забирает
+    CallInputs, выходы — перекачка либо насос. Концы барьера передаются HostGate.
     """
 
     def __init__(
@@ -117,30 +117,18 @@ class _CallPipes:
         self._host_open = True
         self._child_open = True
         self._args_taken = False
-        self._outputs_taken = False
-        self._claimed: int | None = None
-        self._inputs_taken = False
         self._gate_taken = False
         self._specs = tuple(inputs)
         self._out_specs = tuple(outputs)
 
-        self.result_r, self.result_w = os.pipe()
-        self.args_r, self.args_w = os.pipe()
-        self.gate_r, self.gate_w = os.pipe()
-        self.verdict_r, self.verdict_w = os.pipe()
-        self.progress_r, self.progress_w = os.pipe()
-
-        self._ins: list[tuple[int, int]] = []
-        for spec in self._specs:
-            read_fd, write_fd = os.pipe()
-            PipePlumbing.require(write_fd, spec.pipe_bytes, spec.port)
-            self._ins.append((read_fd, write_fd))
-
-        self._outs: list[tuple[int, int]] = []
-        for out_spec in self._out_specs:
-            read_fd, write_fd = os.pipe()
-            PipePlumbing.require(write_fd, out_spec.pipe_bytes, out_spec.port)
-            self._outs.append((read_fd, write_fd))
+        with PipeSetup() as setup:
+            self.result_r, self.result_w = setup.pipe()
+            self.args_r, self.args_w = setup.pipe()
+            self.gate_r, self.gate_w = setup.pipe()
+            self.verdict_r, self.verdict_w = setup.pipe()
+            self.progress_r, self.progress_w = setup.pipe()
+            self.streams = StreamPipes(setup, inputs, outputs, self._close_fd)
+            setup.pop_all()
 
     def argv_flags(self) -> tuple[str, ...]:
         """Флаги каналов для команды тела: номера унаследованных дескрипторов."""
@@ -156,10 +144,12 @@ class _CallPipes:
             EntryFlag.FD_PROGRESS.value,
             str(self.progress_w),
         ]
-        for spec, (read_fd, _) in zip(self._specs, self._ins, strict=True):
+        for spec, read_fd in zip(self._specs, self.streams.child_inputs(), strict=True):
             flags.extend(InputWire(port=spec.port, fd=read_fd).argv())
 
-        for spec, (_, write_fd) in zip(self._out_specs, self._outs, strict=True):
+        for spec, write_fd in zip(
+            self._out_specs, self.streams.child_outputs(), strict=True
+        ):
             flags.extend(OutputWire(port=spec.port, fd=write_fd).argv())
 
         return tuple(flags)
@@ -172,11 +162,8 @@ class _CallPipes:
             self.verdict_r,
             self.progress_w,
         ]
-        for read_fd, _ in self._ins:
-            fds.append(read_fd)
-
-        for _, write_fd in self._outs:
-            fds.append(write_fd)
+        fds.extend(self.streams.child_inputs())
+        fds.extend(self.streams.child_outputs())
 
         return tuple(fds)
 
@@ -193,24 +180,6 @@ class _CallPipes:
         self._gate_taken = True
         return self.verdict_w
 
-    def take_inputs(self) -> tuple[int, ...]:
-        """Отдать записывающие концы входов их владельцу — CallInputs
-        вызова; закрытия каналов их больше не трогают."""
-        if self._inputs_taken:
-            msg = (
-                "process call pipes: the input channels were already taken "
-                "by the call inputs, a second take is refused"
-            )
-            raise LauncherError(msg)
-
-        self._inputs_taken = True
-
-        fds: list[int] = []
-        for _, write_fd in self._ins:
-            fds.append(write_fd)
-
-        return tuple(fds)
-
     def take_args(self) -> int:
         """Отдать канал конфига писателю: закрытия каналов его не трогают."""
         if self._args_taken:
@@ -223,69 +192,13 @@ class _CallPipes:
         self._args_taken = True
         return self.args_w
 
-    def take_outputs(self) -> tuple[int, ...]:
-        """Отдать читающие концы всех выходов перекачке: насос их не читает,
-        закрытия каналов их не трогают; владеет дескрипторами перекачка."""
-        if self._outputs_taken or self._claimed is not None:
-            msg = (
-                "process call pipes: the output channels were already taken "
-                "by a reader, a second take is refused"
-            )
-            raise LauncherError(msg)
-
-        self._outputs_taken = True
-
-        fds: list[int] = []
-        for read_fd, _ in self._outs:
-            fds.append(read_fd)
-
-        return tuple(fds)
-
-    def claim_frames(self) -> int | None:
-        """Единственный кадровый выход — насосу: его кадры читает хост.
-
-        None — выходов нет, их больше одного либо выход сырой: хосту в них
-        смотреть незачем, непрошенные дочитает drain_reads.
-        """
-        if self._outputs_taken:
-            msg = (
-                "process call pipes: the output channels are taken by a "
-                "reader, claiming frames for the host is refused"
-            )
-            raise LauncherError(msg)
-
-        if len(self._out_specs) != 1:
-            return None
-
-        if self._out_specs[0].raw:
-            return None
-
-        self._claimed = 0
-        return self._outs[0][0]
-
-    def drain_reads(self) -> tuple[int, ...]:
-        """Читающие концы выходов без читателя: насос дочитывает их в никуда,
-        чтобы тело не встало на записи."""
-        if self._outputs_taken:
-            return ()
-
-        fds: list[int] = []
-        for index, (read_fd, _) in enumerate(self._outs):
-            if index == self._claimed:
-                continue
-
-            fds.append(read_fd)
-
-        return tuple(fds)
-
     def host_reads(self) -> tuple[tuple[ToolChannel, int], ...]:
         reads: list[tuple[ToolChannel, int]] = [
             (ToolChannel.RESULT, self.result_r),
             (ToolChannel.PROGRESS, self.progress_r),
         ]
 
-        if self._claimed is not None:
-            reads.append((ToolChannel.FRAMES, self._outs[self._claimed][0]))
+        reads.extend(self.streams.frame_reads())
 
         return tuple(reads)
 
@@ -295,42 +208,27 @@ class _CallPipes:
 
         self._child_open = False
         for fd in self.child_fds():
-            with suppress(OSError):
-                os.close(fd)
+            self._close_fd(fd)
 
     def close_host_ends(self) -> None:
         if not self._host_open:
             return
 
         self._host_open = False
-        with suppress(OSError):
-            os.close(self.result_r)
-
-        with suppress(OSError):
-            os.close(self.progress_r)
-
-        if not self._outputs_taken:
-            for read_fd, _ in self._outs:
-                with suppress(OSError):
-                    os.close(read_fd)
-
-        if not self._inputs_taken:
-            for _, write_fd in self._ins:
-                with suppress(OSError):
-                    os.close(write_fd)
-
-        with suppress(OSError):
-            os.close(self.gate_r)
+        self._close_fd(self.result_r)
+        self._close_fd(self.progress_r)
+        self.streams.close_host_ends()
+        self._close_fd(self.gate_r)
 
         if not self._gate_taken:
-            with suppress(OSError):
-                os.close(self.verdict_w)
+            self._close_fd(self.verdict_w)
 
-        if self._args_taken:
-            return
+        if not self._args_taken:
+            self._close_fd(self.args_w)
 
+    def _close_fd(self, fd: int) -> None:
         with suppress(OSError):
-            os.close(self.args_w)
+            os.close(fd)
 
     def close_all(self) -> None:
         self.close_child_ends()
@@ -462,8 +360,8 @@ class ProcessToolCaller(ToolLauncher):
         # прочие выходы без читателя насос дочитывает в никуда
         frames_fds: tuple[int, ...] = ()
         if tap:
-            frames_fds = live.channels.take_outputs()
-        elif live.channels.claim_frames() is not None:
+            frames_fds = live.channels.streams.take_outputs()
+        elif live.channels.streams.claim_frames() is not None:
             own[ToolChannel.FRAMES] = inbox.feed
             journal.append(ToolChannel.FRAMES)
 
@@ -471,7 +369,10 @@ class ProcessToolCaller(ToolLauncher):
         sinks = self._sinks.merged(own, tuple(journal), call_journal)
 
         inputs = self._sinks.call_inputs(
-            live.stdin_w, live.channels.take_inputs(), command.inputs, call_journal
+            live.stdin_w,
+            live.channels.streams.take_inputs(),
+            command.inputs,
+            call_journal,
         )
         gate = HostGate(live.channels.take_verdict(), command.gate)
 
@@ -538,26 +439,24 @@ class ProcessToolCaller(ToolLauncher):
         """
         workdir = self._call_workdir()
 
-        channels = _CallPipes(inputs, outputs)
-        stdin_r, stdin_w = os.pipe()
-
-        started = time.monotonic()
         try:
-            proc = subprocess.Popen(  # noqa: S603 — argv собран контрактом модуля
-                [*argv, *channels.argv_flags()],
-                stdin=stdin_r,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                cwd=workdir,
-                env=dict(os.environ),
-                pass_fds=channels.child_fds(),
-                start_new_session=True,
-            )
+            with PipeSetup() as setup:
+                channels = _CallPipes(inputs, outputs)
+                setup.callback(channels.close_all)
+                stdin_r, stdin_w = setup.pipe()
+                started = time.monotonic()
+                proc = subprocess.Popen(  # noqa: S603 — argv собран контрактом модуля
+                    [*argv, *channels.argv_flags()],
+                    stdin=stdin_r,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    cwd=workdir,
+                    env=dict(os.environ),
+                    pass_fds=channels.child_fds(),
+                    start_new_session=True,
+                )
+                setup.pop_all()
         except OSError as exc:
-            channels.close_all()
-            os.close(stdin_r)
-            os.close(stdin_w)
-
             msg = f"{self._tool}: spawn of {argv[0]} in {workdir} failed: {exc}"
             raise ProcessCallError(msg) from exc
 
@@ -636,7 +535,7 @@ class ProcessToolCaller(ToolLauncher):
 
             pump.add_read(fd, sink)
 
-        for fd in live.channels.drain_reads():
+        for fd in live.channels.streams.drain_reads():
             pump.add_drain(fd)
 
     def _collect(

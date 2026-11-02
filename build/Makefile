@@ -54,6 +54,8 @@ ORDERED_SET_VERSION ?= 4.1.0
 ORACLEDB_VERSION ?= 26.0.0
 ORACLEDB_SHA256 ?= d15728bae7546984203ae17f8296153d52d10ffdaf4929bebe46b70d5819d270
 ORACLEDB_LOCAL  ?= boba.1
+LITERALAI_VERSION ?= 0.1.201
+LITERALAI_SHA256 ?= 29e4ccadd9d68bfea319a7f0b4fc32611b081990d9195f98e5e97a14d24d3713
 CYTHON_VERSION  ?= 3.3.0
 WORKSPACE_SIZE  ?= 1G
 
@@ -69,6 +71,7 @@ LIBFUSE_URL     ?= https://github.com/libfuse/libfuse/releases/download/fuse-$(L
 E2FSPROGS_VERSION ?= 1.47.4
 E2FSPROGS_URL   ?= https://www.kernel.org/pub/linux/kernel/people/tytso/e2fsprogs/v$(E2FSPROGS_VERSION)/e2fsprogs-$(E2FSPROGS_VERSION).tar.xz
 CHAINLIT_VERSION := $(shell cat $(ROOT)/packages/apps/boba-aid/web/chainlit-ui/UPSTREAM)
+CHAINLIT_SHA256 ?= 74b7f801c63f39e7b4d99fd1fa9654df4a97ce01a07c739558566d750b5de3b6
 CHAINLIT_URL    ?= https://codeload.github.com/Chainlit/chainlit/tar.gz/refs/tags/$(CHAINLIT_VERSION)
 KATEX_VERSION   ?= 0.16.22
 KATEX_URL       ?= https://github.com/KaTeX/KaTeX/releases/download/v$(KATEX_VERSION)/katex.tar.gz
@@ -163,9 +166,10 @@ group-rootfs     = $(sort $(foreach e,$(PLUGIN_MAP),$(if $(filter $(1),$(word 2,
 NUITKA_PROGRAMS := mcp boba aid
 SITES           := $(NUITKA_PROGRAMS) $(GROUPS:%=plugins-%)
 
-DETAILS         := mcp boba aid rootfs models runtime testapps oracledb $(GROUPS:%=plugins-%) \
+DETAILS         := mcp boba aid rootfs models runtime frontend testapps oracledb literalai chainlit $(GROUPS:%=plugins-%) \
                    $(GROUPS:%=plugins-%-image)
 APP             ?=
+SEC_MODE        ?= all
 ifneq ($(filter build,$(MAKECMDGOALS)),)
 ifeq ($(filter $(APP),$(DETAILS)),)
 $(error APP=$(APP): such a detail does not exist, the details are: $(DETAILS))
@@ -192,6 +196,8 @@ BUILD_ARGS       = --build-arg PYTHON_VERSION=$(PYTHON_VERSION) --build-arg GLIB
     --build-arg BWRAP_VERSION=$(BWRAP_VERSION) --build-arg LIBFUSE_VERSION=$(LIBFUSE_VERSION)          \
     --build-arg E2FSPROGS_VERSION=$(E2FSPROGS_VERSION) --build-arg ORACLEDB_VERSION=$(ORACLEDB_VERSION) \
     --build-arg ORACLEDB_SHA256=$(ORACLEDB_SHA256) --build-arg ORACLEDB_LOCAL=$(ORACLEDB_LOCAL)        \
+    --build-arg LITERALAI_VERSION=$(LITERALAI_VERSION) --build-arg LITERALAI_SHA256=$(LITERALAI_SHA256) \
+    --build-arg CHAINLIT_VERSION=$(CHAINLIT_VERSION) --build-arg CHAINLIT_SHA256=$(CHAINLIT_SHA256) \
     --build-arg CYTHON_VERSION=$(CYTHON_VERSION) --build-arg NUITKA_VERSION=$(NUITKA_VERSION)          \
     --build-arg PATCHELF_VERSION=$(PATCHELF_VERSION) --build-arg ORDERED_SET_VERSION=$(ORDERED_SET_VERSION)
 
@@ -229,6 +235,7 @@ define HELP
 
 Цели:
   help                  эта справка (цель по умолчанию)
+  sec                   sec/sec.sh: SAST и SCA; SEC_MODE=all|sast|sca|full|rules
   fetch                 всё внешнее, что не из реестров, curl'ом в build/src: uv,
                         bubblewrap, libfuse, e2fsprogs, тег chainlit $(CHAINLIT_VERSION),
                         KaTeX/Inter/mermaid, модели $(MODELS); нужен интернет
@@ -250,8 +257,11 @@ define HELP
   models                каталоги моделей для админа -> build/out/models/{$(subst $(space),$(comma),$(MODELS))}
   runtime               запуск из исходников и тесты -> runtime/ (libexec, workspace, корни с
                         python, программы плагинов на python, модели), фронт чата -> assets boba-aid
+  frontend              полная сборка UI чата и установка в assets boba-aid для запуска из исходников
   testapps              образ boba-testapps:$(TAG) — серверы MCP для тестов, в all не входит
   oracledb              колесо python-oracledb $(ORACLEDB_VERSION)+$(ORACLEDB_LOCAL) для .venv -> build/out/oracledb
+  literalai             колесо LiteralAI $(LITERALAI_VERSION)+boba.1 без Traceloop -> build/out/literalai
+  chainlit              колесо Chainlit $(CHAINLIT_VERSION)+boba.1 для MCP 2 -> build/out/chainlit
 
 Шаги и сеть: fetch — интернет (curl); prepare — docker build, только реестры
 контура: apt из sources.list образов dmp/*, pypi из build/conf/pip.conf и uv.toml,
@@ -267,13 +277,16 @@ empty           :=
 space           := $(empty) $(empty)
 comma           := ,
 
-.PHONY: help all build version version-set fetch FORCE
+.PHONY: help all build version version-set fetch sec FORCE
 help:
 	@:$(info $(HELP))
 
+sec:
+	@bash "$(ROOT)/sec/sec.sh" "$(SEC_MODE)"
+
 FORCE:
 
-all: app-mcp app-boba app-aid app-models app-runtime app-oracledb
+all: app-mcp app-boba app-aid app-models app-runtime app-oracledb app-literalai app-chainlit
 
 build: app-$(APP)
 
@@ -571,7 +584,7 @@ app-models: $(foreach m,$(MODELS),$(MODEL_FILES_$(m)))
 # runtime/ повторяет каталог программы mcp, только корни — с python, а программы
 # плагинов — python исходников; фронт чата — в assets пакета boba-aid
 app-runtime: $(ROOTFS:%=$(OUT)/rootfs-python/%.ext4) $(OUT_MCP)/sandbox/workspace.ext4.gz $(OUT_MCP)/libexec/bwrap \
-        $(foreach m,$(MODELS),$(MODEL_FILES_$(m))) prepare-share
+        $(foreach m,$(MODELS),$(MODEL_FILES_$(m))) app-frontend
 	@mkdir -p "$(RUNTIME)/sandbox" "$(RUNTIME)/rootfs" "$(RUNTIME)/plugins" "$(RUNTIME)/models"
 	rm -rf "$(RUNTIME)/libexec"
 	cp -a "$(OUT_MCP)/libexec" "$(RUNTIME)/libexec"
@@ -583,13 +596,16 @@ app-runtime: $(ROOTFS:%=$(OUT)/rootfs-python/%.ext4) $(OUT_MCP)/sandbox/workspac
 	)
 	$(foreach m,$(MODELS),mkdir -p "$(RUNTIME)/models/$(m)" && cp -a -u "$(SRC)/models/$(m)/." "$(RUNTIME)/models/$(m)/"
 	)
-	rm -rf "$(AID_ASSETS)/ui" "$(AID_ASSETS)/public/vendor"
-	cp -a "$(OUT_AID)/share/ui" "$(AID_ASSETS)/ui"
-	cp -a "$(OUT_AID)/share/public/vendor" "$(AID_ASSETS)/public/vendor"
-	cp "$(OUT_AID)/share/public/page.js" "$(AID_ASSETS)/public/page.js"
 	chmod -R go-w "$(RUNTIME)/libexec"
 	chmod go-w "$(RUNTIME)"
 	echo ">>> runtime: $(RUNTIME), frontend: $(AID_ASSETS)"
+
+app-frontend: prepare-share
+	@rm -rf "$(AID_ASSETS)/ui" "$(AID_ASSETS)/public/vendor"
+	cp -a "$(OUT_AID)/share/ui" "$(AID_ASSETS)/ui"
+	cp -a "$(OUT_AID)/share/public/vendor" "$(AID_ASSETS)/public/vendor"
+	cp "$(OUT_AID)/share/public/page.js" "$(AID_ASSETS)/public/page.js"
+	echo ">>> frontend: $(AID_ASSETS)"
 
 app-testapps: | prepare-nuitka
 	@$(DOCKER_BUILD) $(FRESH) -f $(ROOT)/tests/services/testapps/Dockerfile --build-arg NODE_IMAGE=$(TESTAPPS_NODE_IMAGE) \
@@ -600,3 +616,13 @@ app-oracledb: | prepare-nuitka
 	@$(call base-stage,oracledb,boba-build-oracledb:$(TAG))
 	$(call image-copy,boba-build-oracledb:$(TAG),/out,$(OUT)/oracledb)
 	ls -l $(OUT)/oracledb
+
+app-literalai: | prepare-nuitka
+	@$(call base-stage,literalai,boba-build-literalai:$(TAG))
+	$(call image-copy,boba-build-literalai:$(TAG),/out,$(OUT)/literalai)
+	ls -l $(OUT)/literalai
+
+app-chainlit: | prepare-nuitka
+	@$(call base-stage,chainlit,boba-build-chainlit:$(TAG))
+	$(call image-copy,boba-build-chainlit:$(TAG),/out,$(OUT)/chainlit)
+	ls -l $(OUT)/chainlit

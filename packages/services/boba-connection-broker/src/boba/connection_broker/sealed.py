@@ -37,6 +37,7 @@ from pydantic import AfterValidator, ConfigDict, Field
 from pydantic.fields import FieldInfo
 
 from boba.access import RoleVisibility
+from boba.connection_broker.crypto import SealKeys
 from boba.connection_broker.user_connections import (
     ConnectionParamHooks,
     TypesRef,
@@ -49,7 +50,6 @@ from boba.connections.sealed import (
     OfferedSource,
     SealedConnection,
     SealFeature,
-    SealKeys,
 )
 from boba.connections.whitelist import ConnectionWhitelist
 from boba.identity.context import CallContexts

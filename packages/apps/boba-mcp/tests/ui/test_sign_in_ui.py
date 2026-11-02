@@ -23,7 +23,7 @@ import time
 import tomllib
 import webbrowser
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -33,8 +33,10 @@ from fastmcp import Client
 from fastmcp.client.auth import OAuth
 from fastmcp.client.transports import StreamableHttpTransport
 from key_value.aio.stores.memory import MemoryStore
+from omegaconf import OmegaConf
 from playwright.sync_api import Browser, Page, expect
 
+from boba.auth.service import SignInProviders
 from boba.db.postgres.connection import PostgresConfig
 from boba.stand.database import TestDatabase
 from boba.stand.service_signin import ServiceSignIn
@@ -194,10 +196,58 @@ class LoginPage:
         self._page.goto(url)
         expect(self._page.locator("h1")).to_have_text("Sign in to boba-mcp")
 
+    def begin(self, public: str, endpoint: str) -> None:
+        redirect = "http://127.0.0.1:9/callback"
+        verifier = secrets.token_urlsafe(48)
+        digest = hashlib.sha256(verifier.encode()).digest()
+        challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+        registered = httpx.post(
+            f"{public}/register",
+            json={
+                "redirect_uris": [redirect],
+                "token_endpoint_auth_method": "none",
+                "grant_types": ["authorization_code", "refresh_token"],
+                "response_types": ["code"],
+            },
+            timeout=10.0,
+        )
+        query = httpx.QueryParams(
+            {
+                "response_type": "code",
+                "client_id": registered.json()["client_id"],
+                "redirect_uri": redirect,
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+                "state": "sign-in-state",
+                "resource": endpoint,
+            }
+        )
+
+        self.open(f"{public}/authorize?{query}")
+
     def shows_the_form(self) -> None:
         expect(self._page.locator(LOGIN_FIELD)).to_be_visible()
         expect(self._page.locator(PASSWORD_FIELD)).to_be_visible()
         expect(self._page.locator(SUBMIT)).to_be_visible()
+
+    def refuses_people(self) -> None:
+        assert "no sign-in method for people" in self.alert(), self.dom()
+        expect(self._page.locator(PASSWORD_FIELD)).to_have_count(0)
+        expect(self._page.locator('a[href*="/login/sso"]')).to_have_count(0)
+
+    def shows_providers(self, providers: SignInProviders) -> None:
+        available = providers.password or providers.sso
+        if not available:
+            self.refuses_people()
+            return
+
+        expect(self._page.locator(ALERT)).to_have_count(0)
+        expect(self._page.locator(PASSWORD_FIELD)).to_have_count(
+            int(providers.password)
+        )
+        expect(self._page.locator('a[href*="/login/sso"]')).to_have_count(
+            int(providers.sso)
+        )
 
     def sign_in(self, login: str, password: str) -> None:
         self._page.fill(LOGIN_FIELD, login)
@@ -216,7 +266,12 @@ class LoginPage:
 
 
 def _service(
-    workdir: Path, postgres: PostgresConfig, generation: str, ttl_sec: int
+    workdir: Path,
+    postgres: PostgresConfig,
+    generation: str,
+    ttl_sec: int,
+    *,
+    local_sign_in: bool = True,
 ) -> Iterator[StandProcess[ServiceStand]]:
     db_name = run_blocking(TestDatabase.ensure(postgres))
 
@@ -227,6 +282,7 @@ def _service(
         sandbox=False,
         generation=generation,
         session_ttl_sec=ttl_sec,
+        local_sign_in=local_sign_in,
     )
     process = StandProcess[ServiceStand](config=config, log_path=workdir / "mcp.log")
     process.start(BOOT_SEC)
@@ -242,6 +298,19 @@ def service(
 ) -> Iterator[StandProcess[ServiceStand]]:
     """Сервис со случайным поколением сессий: рестарт снимает все входы."""
     yield from _service(tmp_path_factory.mktemp("sign-in"), stand_postgres, "", 300)
+
+
+@pytest.fixture(scope="module")
+def proxy_only(
+    tmp_path_factory: pytest.TempPathFactory, stand_postgres: PostgresConfig
+) -> Iterator[StandProcess[ServiceStand]]:
+    yield from _service(
+        tmp_path_factory.mktemp("sign-in-proxy"),
+        stand_postgres,
+        "",
+        300,
+        local_sign_in=False,
+    )
 
 
 @pytest.fixture(scope="module")
@@ -387,6 +456,12 @@ class TestBrowserSignIn:
         login_page.returned_to_the_client()
         if TOOL not in session.tools():
             raise AssertionError("the same page signs in with the right password")
+
+    def test_people_sign_in_is_refused_without_providers(
+        self, proxy_only: StandProcess[ServiceStand], login_page: LoginPage
+    ) -> None:
+        login_page.begin(_public(proxy_only), _endpoint(proxy_only))
+        login_page.refuses_people()
 
     def test_made_up_link_is_refused(
         self, service: StandProcess[ServiceStand], login_page: LoginPage
@@ -563,10 +638,11 @@ class DeployedService:
     public: str
     endpoint: str
     client_id: str
-    client_secret: str
-    proxy_secret: str
+    client_secret: str = field(repr=False)
+    proxy_secret: str = field(repr=False)
     login: str
     roles: str
+    providers: SignInProviders
 
     def origin(self) -> str:
         url = httpx.URL(self.public)
@@ -619,6 +695,13 @@ def deployed() -> DeployedService:
             "names no user with roles"
         )
 
+    selected = OmegaConf.select(OmegaConf.create(service), "app.auth")
+    kinds = {provider.type for provider in selected}
+    password = bool(kinds.intersection({"local", "ldap"}))
+    providers = SignInProviders(
+        password=password, sso="kerberos" in kinds, proxy="proxy" in kinds
+    )
+
     return DeployedService(
         public=public,
         endpoint=f"{public}/{ENDPOINT}",
@@ -627,13 +710,14 @@ def deployed() -> DeployedService:
         proxy_secret=str(service["keys"]["mcp_proxy"]),
         login=login,
         roles=",".join(roles),
+        providers=providers,
     )
 
 
 class TestDeployedService:
     """Развёрнутый сервис через nginx: публичный адрес с префиксом, HTTPS,
-    метаданные от корня хоста. Входит в него только чат (proxy): людской
-    вход сервис отклоняет на странице входа."""
+    метаданные от корня хоста. Чат входит через proxy; страница входа
+    человека показывает только провайдеров, выбранных в [app.auth]."""
 
     def test_metadata_names_the_public_issuer(self, deployed: DeployedService) -> None:
         server = httpx.get(
@@ -664,40 +748,11 @@ class TestDeployedService:
 
         assert TOOL in tools, tools
 
-    def test_people_sign_in_is_refused_by_name(
+    def test_sign_in_offers_configured_providers(
         self, deployed: DeployedService, login_page: LoginPage
     ) -> None:
-        redirect = "http://127.0.0.1:9/callback"
-        verifier = secrets.token_urlsafe(48)
-        digest = hashlib.sha256(verifier.encode()).digest()
-        challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
-        registered = httpx.post(
-            f"{deployed.public}/register",
-            json={
-                "redirect_uris": [redirect],
-                "token_endpoint_auth_method": "none",
-                "grant_types": ["authorization_code", "refresh_token"],
-                "response_types": ["code"],
-            },
-            timeout=10.0,
-        )
-        query = httpx.QueryParams(
-            {
-                "response_type": "code",
-                "client_id": registered.json()["client_id"],
-                "redirect_uri": redirect,
-                "code_challenge": challenge,
-                "code_challenge_method": "S256",
-                "state": "deployed-state",
-                "resource": deployed.endpoint,
-            }
-        )
-
-        login_page.open(f"{deployed.public}/authorize?{query}")
-
-        assert "no sign-in method for people" in login_page.alert(), login_page.dom()
-        assert 'name="password"' not in login_page.dom()
-        assert "/login/sso" not in login_page.dom()
+        login_page.begin(deployed.public, deployed.endpoint)
+        login_page.shows_providers(deployed.providers)
 
 
 async def _listed(endpoint: str, token: str) -> Sequence[str]:

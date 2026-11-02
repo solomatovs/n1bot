@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Annotated, Final
 
 from boba.db.postgres.connection import PostgresConfig
-from boba.toolkit.entry import ToolMain
+from boba.tool_io.entry import ToolMain
 from boba.toolkit.facade import UserConnection, tool
 from boba.toolkit.manifest import ToolPlugin
 from boba.toolkit.result import MarkdownResult

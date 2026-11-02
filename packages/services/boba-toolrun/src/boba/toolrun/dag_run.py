@@ -26,12 +26,8 @@ from collections.abc import Iterator, Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict
 
-from boba.toolkit.chain import (
-    CallAmbient,
-    GroupFailureResult,
-    StreamGroupRun,
-    StreamTimings,
-)
+from boba.tool_io.chain import CallAmbient, StreamGroupRun
+from boba.toolkit.chain import GroupFailureResult, StreamTimings
 from boba.toolkit.dag import (
     DagNode,
     DagPlanner,

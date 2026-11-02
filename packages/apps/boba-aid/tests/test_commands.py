@@ -60,20 +60,20 @@ from boba.aid.agent.commands import CommandIcon, MenuCommand
 from boba.aid.agent.relay import ChatTools
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.chat.profiles import ChatProfileConfig, SelectedProfile
+from boba.connection_broker.crypto import SecretCipher
 from boba.connection_broker.store import ConnectionStore
 from boba.connections.manifest import ConnectionTypes
-from boba.connections.secrets import SecretCipher
 from boba.connections.stored import GrantTarget, StoredRole
 from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.context import CallContexts
 from boba.mcp_client.client import (
+    FixedServerConfigs,
     HttpEndpoint,
     McpCaller,
     McpServerConfig,
     McpServerLimits,
     McpServers,
-    FixedServerConfigs,
 )
 from boba.runtime.threads import ThreadsTable
 from boba.runtime.users import UsersTable
@@ -336,9 +336,7 @@ async def tab(  # noqa: PLR0913 — вкладка собирается из ф�
 ) -> AsyncIterator[CommandsTab]:
     """Вкладка с запущенным агентом; auth_token — секрет входа стенда: им
     подписан вход вкладки."""
-    servers = FixedServerConfigs(
-        servers={EXTENDED: extended.config(), PLAIN: standard}
-    )
+    servers = FixedServerConfigs(servers={EXTENDED: extended.config(), PLAIN: standard})
     opened = CommandsTab(
         tmp_path, stand, users, threads, model, servers, store, str(uuid4())
     )

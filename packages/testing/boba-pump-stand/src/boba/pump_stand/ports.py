@@ -7,7 +7,7 @@ import os
 from collections.abc import Iterator
 from typing import Any, ClassVar
 
-from boba.toolkit.frames import ToolIo
+from boba.tool_io.frames import ToolIo
 from boba.toolkit.ports import Chunk, Framed, Outbound, StreamPorts
 from boba.toolkit.transfer import (
     RowsHead,
@@ -89,10 +89,8 @@ class Pipe:
 
     def __init__(self, outbound: Any, inbound: Any) -> None:
         self._read_fd, self._write_fd = os.pipe()
-        self.outbound = StreamPorts.build(
-            outbound, ToolIo.on_channels(-1, self._write_fd)
-        )
-        self.inbound = StreamPorts.build(inbound, ToolIo.on_channels(self._read_fd, -1))
+        self.outbound = StreamPorts.build(outbound, ToolIo(-1, self._write_fd))
+        self.inbound = StreamPorts.build(inbound, ToolIo(self._read_fd, -1))
 
     def close_write(self) -> None:
         os.close(self._write_fd)

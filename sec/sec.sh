@@ -1,7 +1,7 @@
 #!/bin/bash
 # SAST (ruff/bandit/semgrep) и SCA (pip-audit по uv.lock).
-# Сканеры ставятся изолированно через uvx: semgrep тянет mcp/pydantic 2.11,
-# который несовместим с пином pydantic<2.11 в рабочем окружении.
+# Сканеры запускаются через uv tool в отдельных окружениях, чтобы их
+# зависимости не изменяли lock и окружение проверяемого приложения.
 
 set -u
 
@@ -10,9 +10,9 @@ _root=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE:-$0}")/.." 2>/dev/null && pwd
 # semgrep берёт .semgrepignore из корня проверяемого дерева
 cd "$_root" || exit 1
 
-if [ -n "${PYTHONHOME:-}" ] || [ -n "${PYTHONPATH:-}" ]; then
-  unset PYTHONHOME PYTHONPATH
-fi
+# Окружение запуска приложения может подставлять собственный libstdc++ и Python.
+# Сканеры используют библиотеки хоста, а не проверяемой поставки.
+unset PYTHONHOME PYTHONPATH LD_LIBRARY_PATH LD_PRELOAD
 
 _uv="$_root/build/src/uv/uv"
 if [ ! -x "$_uv" ]; then
@@ -38,7 +38,7 @@ _run_bandit() {
   # процессов и есть назначение
   "$_uv" tool run --system-certs bandit \
     -q -r "$_root/packages" \
-    --exclude '**/tests/**,**/.venv/**,**/boba-catalog-service/**,**/boba-catalog/**' \
+    --exclude '**/tests/**,**/.venv/**' \
     --severity-level medium --confidence-level medium || _rc=1
 }
 
@@ -50,7 +50,6 @@ _run_semgrep() {
   SEMGREP_SEND_METRICS=off "$_uv" tool run --system-certs semgrep \
     scan --config="$_root/sec/semgrep" --metrics=off --jobs 1 \
     --exclude=.venv --exclude=build --exclude=release \
-    --exclude=boba-catalog-service --exclude=boba-catalog \
     --error "$_root/packages" || _rc=1
 }
 
@@ -64,7 +63,7 @@ _run_full() {
     --metrics=off --scan-unknown-extensions --jobs 1 --json -q    \
     "$_root" > "$_full_json" || _rc=1
 
-  python3 - "$_full_json" <<'PY'
+  python3 - "$_full_json" <<'PY' || _rc=1
 import collections
 import json
 import sys
@@ -82,11 +81,15 @@ for rule, count in by_rule.most_common():
 PY
 
   echo "== bandit: без порогов, вместе с тестами =="
+  local _bandit_status=0
   "$_uv" tool run --system-certs bandit                     \
     -q -r "$_root/packages" "$_root/build/test"       \
-    --exclude '**/.venv/**' -f json 2>/dev/null > "$_bandit_json" || true
+    --exclude '**/.venv/**' -f json 2>/dev/null > "$_bandit_json" || _bandit_status=$?
+  if [ "$_bandit_status" -gt 1 ]; then
+    _rc=1
+  fi
 
-  python3 - "$_bandit_json" <<'PY'
+  python3 - "$_bandit_json" <<'PY' || _rc=1
 import collections
 import json
 import sys
@@ -118,22 +121,52 @@ _run_audit() {
   echo "== pip-audit =="
   local _req
   _req=$(mktemp)
-  # хэши не выгружаются: колесо oracledb собрано у нас и хэша в uv.lock не имеет;
+  # хэши не выгружаются: локальные колёса собраны у нас и хэша в uv.lock не имеют;
   # зависимости в выгрузке уже полные, поэтому pip-audit их не разрешает заново
-  "$_uv" export --system-certs --frozen --no-dev --no-emit-workspace --no-hashes \
-    --format requirements-txt -o "$_req" --quiet || _rc=1
-  # mcp приходит транзитивно от chainlit, свой MCP-сервер проект не поднимает:
-  # все три CVE про server transport, а апгрейд упирается в пин pydantic<2.11
-  "$_uv" tool run --system-certs pip-audit -r "$_req" --disable-pip --no-deps \
-    --ignore-vuln PYSEC-2026-1617 \
-    --ignore-vuln PYSEC-2026-3482 \
-    --ignore-vuln PYSEC-2026-3483 || _rc=1
+  # Extras содержат production-провайдеры (OCR, readers, ONNX), а не только
+  # разработку. Проверяем весь workspace lock, включая дополнительные наборы.
+  if ! "$_uv" export --system-certs --frozen --all-packages --all-extras \
+    --no-dev --no-emit-workspace --no-hashes \
+    --format requirements-txt -o "$_req" --quiet; then
+    rm -f "$_req"
+    _rc=1
+    return
+  fi
+  "$_uv" tool run --system-certs pip-audit -r "$_req" --disable-pip --no-deps || _rc=1
+
+  # PyPI не знает локальных версий. Отдельно проверяем их upstream из lock;
+  # это проверка известных CVE исходной версии, не сертификация нашего патча.
+  echo "== pip-audit: upstream локальных патчей =="
+  if python3 - > "$_req" <<'PY'
+import pathlib
+import tomllib
+
+lock = tomllib.loads(pathlib.Path("uv.lock").read_text())
+for package in lock["package"]:
+    version, suffix, _ = package["version"].partition("+boba.")
+    if suffix:
+        print(f"{package['name']}=={version}")
+PY
+  then
+    if [ -s "$_req" ]; then
+      "$_uv" tool run --system-certs pip-audit -r "$_req" --disable-pip --no-deps || _rc=1
+    fi
+  else
+    _rc=1
+  fi
   rm -f "$_req"
 }
 
-_full_json=$(mktemp)
-_bandit_json=$(mktemp)
-trap 'rm -f "$_full_json" "$_bandit_json"' EXIT
+umask 077
+if [ -n "${SEC_REPORT_DIR:-}" ]; then
+  mkdir -p "$SEC_REPORT_DIR" || exit 1
+  _full_json="$SEC_REPORT_DIR/semgrep.json"
+  _bandit_json="$SEC_REPORT_DIR/bandit.json"
+else
+  _full_json=$(mktemp) || exit 1
+  _bandit_json=$(mktemp) || exit 1
+  trap 'rm -f "$_full_json" "$_bandit_json"' EXIT
+fi
 
 case "$_mode" in
   full)

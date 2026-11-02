@@ -24,6 +24,8 @@
 #     pg-meta-scraper; ch_meta_* — ch-meta-scraper; ora_meta_* —
 #     ora-meta-scraper; ix_fts, ix_trgm, ix_emb_e5_1024, llm_description —
 #     ix-fts, ix-trgm, ix-vector, ix-llm-describer;
+#   Исторические владельцы таблиц указаны на момент этой миграции.
+#   Удаление пакетов каталога 2026-11-02 не меняет состав dump/restore.
 #   схема studio ([automation].schema, она же [connections].db_schema studio):
 #     users, connections, roles, grants, connection_syncs, connection_versions —
 #     boba-runtime, boba-connection-broker, boba-catalog-service; processes,

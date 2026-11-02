@@ -28,6 +28,7 @@ from boba.confluence.rest import (
     CflRestBuilder,
     ConfluenceConnection,
 )
+from boba.core.types import StringList
 from boba.db.pgvector.config import PostgresStoreConfig
 from boba.db.pgvector.store import (
     PostgresChunkStore,
@@ -73,7 +74,6 @@ from boba.tool.confluence.request_sources import (
     SpaceListing,
 )
 from boba.toolkit.timing import Elapsed
-from boba.toolkit.types import StringList
 from boba.transport.http import HttpTransportConfig
 from boba.transport.http.connection import HttpConnection
 

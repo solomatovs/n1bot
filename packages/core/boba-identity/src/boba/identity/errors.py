@@ -1,8 +1,7 @@
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import ClassVar
 
-from boba.toolkit.failure import FailurePacker, ToolRefusalError
+from boba.toolkit.failure import ToolRefusalError
 
 __all__ = [
     "AuthenticationError",
@@ -15,7 +14,6 @@ __all__ = [
     "ServiceDisabledError",
     "UserInputError",
     "ViewErrorMessage",
-    "to_domain",
 ]
 
 
@@ -117,20 +115,6 @@ class InternalServiceError(BaseError):
         )
 
 
-def to_domain(e: Exception) -> BaseError:
-    "Заворачивает любое НЕ доменное исключение в InternalServiceError"
-    if isinstance(e, BaseError):
-        return e
-
-    wrapped = InternalServiceError(
-        internal_detail=FailureReport.of(e).log,
-        user_detail=None,
-    )
-    # __cause__ хранит оригинал: у wrapped нет __traceback__, у e — есть
-    wrapped.__cause__ = e
-    return wrapped
-
-
 class UserInputError(BaseError):
     "Некорректные данные от пользователя: view видит сообщение, llm и лог — нет"
 
@@ -211,11 +195,8 @@ class RefusalError(ToolRefusalError):
 class FailureReport:
     """Разбор сбоя на три канала: журнал, чат и история LLM.
 
-    Единственное место, где решается, что каждый из них увидит. Обычное
-    исключение упаковывает FailurePacker, и все три канала получают один
-    результат-ошибку: журнал и история — его текст, чат — его markdown.
-    Доменная ошибка меняет это своими представлениями — например, скрывает
-    детали от пользователя или не идёт в историю.
+    Значение создаёт адаптер приложения FailureReports. Оно несёт выбранные
+    представления ошибки, включая отсутствие сообщения для чата или истории.
     """
 
     log: str
@@ -227,23 +208,3 @@ class FailureReport:
 
     history: str | None
     """Текст для истории LLM; None — модели об этом знать незачем."""
-
-    _FAILURES: ClassVar[FailurePacker] = FailurePacker()
-
-    @classmethod
-    def of(cls, error: BaseException) -> "FailureReport":
-        failure = cls._FAILURES.pack(error)
-        described = failure.llm_view()
-
-        if not isinstance(error, BaseError):
-            return cls(
-                log=described,
-                view=failure.markdown(),
-                history=described,
-            )
-
-        view = None
-        if message := error.view_message():
-            view = message.content
-
-        return cls(log=described, view=view, history=error.history_message())

@@ -17,7 +17,7 @@ from enum import StrEnum
 from typing import ClassVar
 
 import pytest
-from acp_stand import standard
+from acp_stand import AppsHost
 from aid_look import (
     LookCheck,
     LookFix,
@@ -31,14 +31,13 @@ from playwright.sync_api import Locator, Page, expect
 from test_look_conversation import TalkFeed, TalkFixes, TalkLook, talk_book
 from test_look_queued import QueuedLook
 
-from boba.mcp_client.client import McpServerConfig
 from boba.stand.ui.chat_page import Selector, StepKind
 from boba.stand.ui.fake_llm import Reply, ReplyBookClient, ReplyCall, ReplyTurn
 from boba.stand.ui.stand import StandProcess
 
 pytestmark = [pytest.mark.ui, pytest.mark.look]
 
-__all__ = ["standard", "talk_book"]
+__all__ = ["talk_book"]
 
 
 class StepsQuestion(StrEnum):
@@ -389,8 +388,9 @@ class QueuedFeed:
 
 
 @pytest.fixture(scope="module")
-def steps_stand(look_stands: LookStand, standard: McpServerConfig) -> StandProcess:
-    server = standard.model_dump(mode="json", exclude_none=True)
+def steps_stand(look_stands: LookStand, standard_host: AppsHost) -> StandProcess:
+    server = standard_host.plain()
+
     return look_stands.served("steps", {"standard": server}, LookStand.FULL_WINDOW)
 
 

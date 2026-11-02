@@ -12,7 +12,7 @@ from pydantic import ValidationError
 from boba.db.clickhouse.connection import ClickHouseConfig, SpnegoHeaders
 from boba.tool.ch.tools import TOOLS as CH_TOOLS
 from boba.tool.ch.tools import ChToolConfig
-from boba.toolkit.entry import ToolMain
+from boba.tool_io.entry import ToolMain
 from boba.toolkit.facade import PayloadTool
 from boba.toolkit.manifest import ManifestBuilder
 

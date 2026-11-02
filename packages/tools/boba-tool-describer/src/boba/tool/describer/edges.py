@@ -39,7 +39,7 @@ from boba.tool.describer.store import (
     ScopeKey,
     WriteAction,
 )
-from boba.toolkit.entry import ToolMain
+from boba.tool_io.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import TableResult
 from boba.toolkit.window import RowLimit, RowOffset, RowPage, RowWindow

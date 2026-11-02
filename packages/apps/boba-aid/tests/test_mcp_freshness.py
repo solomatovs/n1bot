@@ -29,9 +29,9 @@ from drifting_server import DriftingFile
 
 from boba.aid.agent.client import AgentProcess
 from boba.mcp_client.client import (
+    FixedServerConfigs,
     McpServerConfig,
     McpServerLimits,
-    FixedServerConfigs,
     StdioCommand,
 )
 from boba.stand.signin import SignInStand

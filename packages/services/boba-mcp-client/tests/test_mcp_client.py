@@ -42,11 +42,13 @@ from boba.auth.config import ProxyAuthConfig
 from boba.canvas.keys import ObjectKey, ScopeDir, WorkspaceMount
 from boba.canvas.storage import StorageNotFoundError
 from boba.config import ConfigLoader, bind
-from boba.connections.sealed import ConnectionSeal, SealedConnection, SealFeature
+from boba.connection_broker.crypto import ConnectionSeal
+from boba.connections.sealed import SealedConnection, SealFeature
 from boba.core.secrets import SecretReveal
 from boba.db.postgres.connection import PostgresConfig
 from boba.mcp_client.client import (
     BearerAuth,
+    FixedServerConfigs,
     HttpEndpoint,
     HttpLocation,
     McpAuthRequired,
@@ -56,7 +58,6 @@ from boba.mcp_client.client import (
     McpServerConfig,
     McpServerLimits,
     McpServers,
-    FixedServerConfigs,
     McpToolServer,
     McpUnansweredError,
     ProxyAuth,

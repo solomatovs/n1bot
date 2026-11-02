@@ -18,7 +18,7 @@ from boba.aid.infra import providers
 from boba.aid.infra.config import AppConfig
 from boba.aid.infra.session import ChainlitSessions
 from boba.config import bind
-from boba.connections.sealed import SealKeys
+from boba.connection_broker.crypto import SealKeys
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import CallContexts
 from boba.runtime import providers as runtime

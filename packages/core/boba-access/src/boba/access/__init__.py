@@ -16,7 +16,7 @@ from typing import ClassVar, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.toolkit.types import StringList
+from boba.core.types import StringList
 
 __all__ = [
     "AccessSubject",

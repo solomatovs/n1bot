@@ -15,7 +15,7 @@ from boba.sandbox.profile import SandboxProfile
 from boba.sandbox.program import PluginCommand, PluginEntry
 from boba.sandbox.zygote import ZygotePolicy, ZygoteSection
 from boba.stand.zygote import ZygoteStand
-from boba.toolkit.entry import ToolArgv
+from boba.tool_io.entry import ToolArgv
 from boba.toolkit.facade import PayloadTool
 from boba.toolkit.manifest import ManifestBuilder
 from boba.toolkit.protocol import ToolCommand

@@ -59,7 +59,7 @@ def _sso_stand(
         process.stop()
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def sso_stand(
     stand_workdir: Path,
     llm_port: int,
@@ -75,7 +75,7 @@ def sso_stand(
     )
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def sso_only_stand(
     stand_workdir: Path,
     llm_port: int,

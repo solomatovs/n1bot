@@ -41,7 +41,7 @@ class GrantedConnections:
 
     async def rows(self, subject: Subject) -> TableResult:
         """Все соединения субъекта."""
-        return await self.search(subject, ConnectionFilter.none())
+        return await self.search(subject, ConnectionFilter())
 
     async def search(self, subject: Subject, flt: ConnectionFilter) -> TableResult:
         """Соединения субъекта, прошедшие фильтры."""

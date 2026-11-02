@@ -32,8 +32,8 @@ from boba.db.clickhouse.target import (
     InsertMemory,
     InsertMemoryBytes,
 )
+from boba.tool_io.entry import ToolMain
 from boba.toolkit.contract import ColumnDeclaration
-from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
 from boba.toolkit.ports import (
     Inbound,

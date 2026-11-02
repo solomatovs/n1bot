@@ -11,6 +11,7 @@ import asyncio
 import base64
 import hashlib
 import html
+import os
 import re
 import secrets
 import socket
@@ -50,9 +51,9 @@ from boba.auth import SignIns
 from boba.auth.proxy import ProxyAssertions
 from boba.canvas.journal import StreamSlice
 from boba.config import ConfigError, ConfigLoader, bind
+from boba.connection_broker.crypto import ConnectionSeal
 from boba.connections.sealed import (
     ConnectionOffer,
-    ConnectionSeal,
     SealedConnection,
     SealedParamSchema,
     SealFeature,
@@ -71,6 +72,7 @@ from boba.oauth.server import (
     SealedValues,
     ServiceTokens,
 )
+from boba.stand.site import StandConfigEnv
 from boba.stand.ui.stand import StandApp
 from boba.toolkit.calls import CallViews, SchemaMark
 from boba.toolkit.channels import JournalChannels, ToolChannel
@@ -257,12 +259,27 @@ class TestPrompts:
     def _endpoint(config: Path) -> McpEndpoint:
         return bind(ConfigLoader([config]).load(), "mcp.endpoints.all", McpEndpoint)
 
-    def test_debug_prompts_are_read(self) -> None:
-        """Промпты экземпляра отладки читаются под endpoint'ами его конфига."""
+    def test_prompt_files_are_read_from_app_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Промпты endpoint'а загружаются относительно конфига экземпляра."""
+        prompts = tmp_path / "prompts" / "all"
+        prompts.mkdir(parents=True)
+        (prompts / "sql_review.toml").write_text(
+            ServiceStand.PROMPT_FILE, encoding="utf-8"
+        )
+        config = tmp_path / "config.toml"
+        config.write_text(self.ENDPOINT, encoding="utf-8")
+        overlay = tmp_path / "stand.toml"
+        overlay.write_text("", encoding="utf-8")
+        paths = os.pathsep.join((str(config), str(overlay)))
+        monkeypatch.setenv(StandConfigEnv.SERVICE, paths)
+
         raw = StandApp.MCP.raw()
         endpoint = bind(raw, "mcp.endpoints.all", McpEndpoint)
 
         assert "sql_review" in endpoint.prompts
+        assert endpoint.prompts["sql_review"].description == "Review an SQL statement"
 
     @staticmethod
     def _texts(result: mt.GetPromptResult) -> list[tuple[str, str]]:

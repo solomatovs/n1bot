@@ -34,29 +34,32 @@ AGENT_TOOL = "AskUserQuestion"
 """Собственный инструмент агента — вопрос пользователю: чат объявляет агенту
 формы, и модель видит его при любом профиле."""
 
-STAND_TOOLS = frozenset(
+SERVICE_TOOLS = frozenset(
     {
-        AGENT_TOOL,
         "mcp__aid_all__send_file",
         "mcp__aid_all__diagram_save",
         "mcp__aid_all__canvas_open",
-        "mcp__chat__connection_list",
-        "mcp__chat__connection_search",
+        "mcp__aid_search__diagram_save",
+        "mcp__aid_search__canvas_open",
     }
 )
+"""Оба сервера выданы ролям стенда через grants, независимо от профиля чата."""
+
+STAND_TOOLS = SERVICE_TOOLS | {
+    AGENT_TOOL,
+    "mcp__chat__connection_list",
+    "mcp__chat__connection_search",
+}
 """Инструменты профиля general стенда под полными именами, как их видит
 модель: каталог соединений исполняет сам чат (сервер chat), вопрос
-пользователю — агент, остальные отдаёт endpoint general сервиса boba-mcp
+пользователю — агент, остальные отдают выданные серверы boba-mcp
 (песочные секции выключены)."""
 
 DEV_OWN_TOOLS = frozenset({"mcp__chat__connection_list"})
 """Собственные инструменты чата, выданные роли DEV: без connection_search."""
 
-SEARCH_PROFILE_TOOLS = frozenset(
-    {AGENT_TOOL, "mcp__aid_search__diagram_save", "mcp__aid_search__canvas_open"}
-)
-"""Набор endpoint'а search сервиса, который называет профиль search стенда,
-и вопрос пользователю агента."""
+SEARCH_PROFILE_TOOLS = SERVICE_TOOLS | {AGENT_TOOL}
+"""Профиль search скрывает собственные инструменты чата; выдачи серверов остаются."""
 
 
 @dataclass(frozen=True)

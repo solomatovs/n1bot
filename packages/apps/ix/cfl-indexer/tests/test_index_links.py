@@ -65,6 +65,23 @@ async def edges(database: IxStandDatabase) -> list[tuple[Any, ...]]:
 
 
 class TestIndexLinks:
+    async def test_removing_all_links_preserves_other_pages_edges(
+        self,
+        stub: tuple[ConfluenceStub, int],
+        stub_indexer: StubIndexer,
+        ix_database: IxStandDatabase,
+    ) -> None:
+        fake, _ = stub
+        seed(fake)
+        await stub_indexer.run(SPACE)
+
+        fake.pages["100"].edit(html="<p>No links remain on this page.</p>")
+        reports = await stub_indexer.run(SPACE)
+
+        assert reports[0].ok
+        assert reports[0].linked == 0
+        assert await edges(ix_database) == [("101", "100", "title")]
+
     async def test_links_become_edges(
         self,
         stub: tuple[ConfluenceStub, int],

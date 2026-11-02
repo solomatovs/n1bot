@@ -32,16 +32,19 @@ from boba.stand.ui.stand import (
     StandUrl,
 )
 
-DB_NAME = "ui_test"
+DB_NAME = "ui"
 TOKEN_DELAY_SEC = 0.03
 
 
-@pytest.fixture(scope="session")
-def stand_database() -> str:
-    return StandDatabase(StandApp.AID, StandNames().tree_database(DB_NAME)).prepare()
+@pytest.fixture(scope="module")
+def stand_database(request: pytest.FixtureRequest) -> str:
+    module = request.node.path.stem.removeprefix("test_")
+    name = StandNames().tree_database(f"{DB_NAME}_{module}")
+
+    return StandDatabase(StandApp.AID, name).prepare()
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def stand_db(stand_database: str) -> StandDatabase:
     return StandDatabase(StandApp.AID, stand_database)
 
@@ -51,17 +54,17 @@ def chainlit_context() -> None:
     """Стенд живёт отдельным процессом: сессия chainlit в тесте не нужна."""
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def stand_workdir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return tmp_path_factory.mktemp("boba-stand")
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def llm_port() -> int:
     return StandPorts().free()
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def fake_llm(llm_port: int) -> Iterator[None]:
     process = multiprocessing.Process(
         target=serve, args=(StandUrl.HOST.value, llm_port, TOKEN_DELAY_SEC), daemon=True
@@ -91,7 +94,7 @@ def _await_llm(port: int) -> None:
     raise RuntimeError(msg)
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def stand(
     stand_workdir: Path, llm_port: int, fake_llm: None, stand_database: str
 ) -> Iterator[StandProcess]:
@@ -110,12 +113,12 @@ def stand(
         process.stop()
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def auth_cookies(stand: StandProcess) -> list[SetCookieParam]:
     return login_cookies(stand)
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def solo_stand(
     stand_workdir: Path, llm_port: int, fake_llm: None, stand_database: str
 ) -> Iterator[StandProcess]:

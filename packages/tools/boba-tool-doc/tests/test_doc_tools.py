@@ -9,11 +9,11 @@ import pytest
 
 from boba.doc.config import OcrUnavailableError
 from boba.doc.document import BoxedHit, DocumentError
-from boba.stand_core.progress import HeardProgress
+from boba.stand.progress import HeardProgress
 from boba.stand_core.samples import SamplePdf
 from boba.tool.doc.tools import TOOLS, DocToolSection
+from boba.tool_io.ports import PipeProgress
 from boba.toolkit.manifest import InjectedRole, ManifestBuilder
-from boba.toolkit.ports import ToolProgress
 from boba.toolkit.result import MarkdownResult, TableResult
 
 pytestmark = pytest.mark.anyio
@@ -77,7 +77,7 @@ class TestReadDocument:
 
     async def test_returns_all_pages(self, pdf: str) -> None:
         artifact = await _body("read_document")(
-            progress=ToolProgress(-1), path=pdf, pages="1-2", cfg=_cfg()
+            progress=PipeProgress(-1), path=pdf, pages="1-2", cfg=_cfg()
         )
 
         assert isinstance(artifact, MarkdownResult)
@@ -87,7 +87,7 @@ class TestReadDocument:
 
     async def test_selects_subset(self, pdf: str) -> None:
         artifact = await _body("read_document")(
-            progress=ToolProgress(-1), path=pdf, pages="2", cfg=_cfg()
+            progress=PipeProgress(-1), path=pdf, pages="2", cfg=_cfg()
         )
 
         assert SamplePdf.SECOND_PAGE in artifact.text
@@ -96,7 +96,7 @@ class TestReadDocument:
 
     async def test_clips_text_and_marks_for_llm(self, pdf: str) -> None:
         artifact = await _body("read_document")(
-            progress=ToolProgress(-1), path=pdf, pages="1", cfg=_cfg(max_text_chars=5)
+            progress=PipeProgress(-1), path=pdf, pages="1", cfg=_cfg(max_text_chars=5)
         )
 
         assert artifact.metadata["truncated"] == "True"
@@ -107,7 +107,7 @@ class TestReadDocument:
     ) -> None:
         with pytest.raises(OcrUnavailableError, match="provider = 'off'"):
             await _body("read_document")(
-                progress=ToolProgress(-1),
+                progress=PipeProgress(-1),
                 path=pdf,
                 pages="1",
                 ocr_enabled=True,
@@ -117,7 +117,7 @@ class TestReadDocument:
     async def test_bad_pages_spec_is_document_error(self, pdf: str) -> None:
         with pytest.raises(DocumentError, match="numbers and ranges"):
             await _body("read_document")(
-                progress=ToolProgress(-1), path=pdf, pages="a-b", cfg=_cfg()
+                progress=PipeProgress(-1), path=pdf, pages="a-b", cfg=_cfg()
             )
 
 
@@ -171,13 +171,13 @@ class TestExpectedFailures:
 
         with pytest.raises(DocumentError, match="format not recognized"):
             await _body("read_document")(
-                progress=ToolProgress(-1), path=str(doc), pages="1", cfg=_cfg()
+                progress=PipeProgress(-1), path=str(doc), pages="1", cfg=_cfg()
             )
 
     async def test_missing_file_raises_declared_error(self, tmp_path: Path) -> None:
         with pytest.raises(DocumentError, match="cannot open the file"):
             await _body("read_document")(
-                progress=ToolProgress(-1),
+                progress=PipeProgress(-1),
                 path=str(tmp_path / "absent.pdf"),
                 pages="1",
                 cfg=_cfg(),

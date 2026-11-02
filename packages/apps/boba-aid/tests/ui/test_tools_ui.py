@@ -308,6 +308,11 @@ class ToolCall:
         default_factory=StandToolNames, repr=False, compare=False
     )
     """Полные имена инструментов стенда: под ними их зовёт фейковая модель."""
+    endpoint: str = StandToolNames.ENDPOINT
+
+    @property
+    def full_name(self) -> str:
+        return self.names.full(self.tool, self.endpoint)
 
     @property
     def intent(self) -> str:
@@ -327,7 +332,7 @@ class ToolCall:
 
     def request(self) -> dict[str, Any]:
         """Вызов для сценария фейка: инструмент под полным именем."""
-        return {"name": self.names.full(self.tool), "arguments": self.sent_arguments()}
+        return {"name": self.full_name, "arguments": self.sent_arguments()}
 
     def message(self) -> str:
         request = json.dumps(self.request(), ensure_ascii=False)
@@ -579,7 +584,7 @@ class ToolFeed:
         timeout_sec: float = TURN_TIMEOUT_SEC,
     ) -> ToolStep:
         """Ход с вызовом инструмента; шаг сверяется с ожиданием и отдаётся."""
-        Coverage.called.add(call.tool)
+        Coverage.called.add(call.full_name)
         log_mark = self.stand.log_lines()
 
         self.chat.ask(call.message())
@@ -622,7 +627,7 @@ class ToolFeed:
         ожиданием."""
         nodes: list[dict[str, Any]] = []
         for index, (call, _) in enumerate(calls):
-            Coverage.nodes.add(call.tool)
+            Coverage.nodes.add(call.full_name)
             nodes.append(
                 {
                     "key": f"n{index}",
@@ -631,8 +636,8 @@ class ToolFeed:
                 }
             )
 
-        Coverage.called.add(WorkflowTool.NAME)
         workflow = ToolCall(tool=WorkflowTool.NAME, arguments={"nodes": nodes})
+        Coverage.called.add(workflow.full_name)
         requests = [workflow.request()]
 
         log_mark = self.stand.log_lines()
@@ -2302,18 +2307,46 @@ class TestDescriberTools:
 class TestCanvasTools:
     """Тулы ленты без песочницы: диаграмма, панель, вложение файла в чат."""
 
-    def test_diagram_save(self, saved_diagram: DiagramProbe) -> None:
-        """Сам вызов проверен фикстурой: здесь важен путь сохранённого файла."""
+    @pytest.mark.parametrize("endpoint", ["all", "search"])
+    def test_diagram_save(
+        self, canvas_feed: ToolFeed, saved_diagram: DiagramProbe, endpoint: str
+    ) -> None:
+        """Оба выданных endpoint сохраняют диаграмму в workspace этого треда."""
+        call = ToolCall(
+            tool="diagram_save",
+            endpoint=endpoint,
+            arguments={
+                "name": ProbeDiagram.NAME.value,
+                "spec": ProbeDiagram.SPEC.value,
+            },
+            code="spec",
+            language="mermaid",
+        )
+        result = CanvasResult(
+            path=saved_diagram.path,
+            label=ProbeDiagram.NAME.value,
+            summary=f"diagram saved: {saved_diagram.path}",
+            note=DiagramPrompt.SAVED_NOTE.value,
+        )
+        canvas_feed.call(
+            call, ToolExpect.of(result, dom=[f"diagram saved: {saved_diagram.path}"])
+        )
+
         if ProbeDiagram.NAME.value not in saved_diagram.path:
             raise AssertionError(f"diagram path is odd: {saved_diagram.path}")
 
+    @pytest.mark.parametrize("endpoint", ["all", "search"])
     def test_canvas_open_renders_diagram(
         self,
         canvas_feed: ToolFeed,
         saved_diagram: DiagramProbe,
+        endpoint: str,
     ) -> None:
-
-        call = ToolCall(tool="canvas_open", arguments={"path": saved_diagram.path})
+        call = ToolCall(
+            tool="canvas_open",
+            endpoint=endpoint,
+            arguments={"path": saved_diagram.path},
+        )
         result = CanvasResult(
             path=saved_diagram.path,
             label=ProbeDiagram.NAME.value,
@@ -2595,10 +2628,7 @@ class TestCoverage:
 
         offered = OfferedTools(requests[-1], McpToolNames()).visible()
 
-        called: set[str] = set()
-        for tool in Coverage.called | Coverage.nodes:
-            called.add(call.names.full(tool))
-
+        called = Coverage.called | Coverage.nodes
         missing = offered - called - self.AGENT_TOOLS
         if missing:
             raise AssertionError(f"tools without a stand call: {sorted(missing)}")

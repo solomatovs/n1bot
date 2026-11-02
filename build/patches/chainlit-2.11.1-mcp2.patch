@@ -1,0 +1,48 @@
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -42,7 +42,8 @@
+     "aiofiles>=23.1.0",
+     "syncer>=2.0.3,<3.0.0",
+     "asyncer>=0.0.8,<0.1.0",
+-    "mcp>=1.11.0,<2.0.0",
++    "mcp>=2.3,<3",
++    "httpx2>=2.10,<3",
+     "nest-asyncio>=1.6.0,<2.0.0",
+     "click>=8.1.3,<9.0.0",
+     "tomli>=2.0.1,<3.0.0",
+--- a/chainlit/version.py
++++ b/chainlit/version.py
+@@ -1 +1 @@
+-__version__ = "2.11.1"
++__version__ = "2.11.1+boba.1"
+--- a/chainlit/server.py
++++ b/chainlit/server.py
+@@ -1303,7 +1303,8 @@
+         get_default_environment,
+         stdio_client,
+     )
+-    from mcp.client.streamable_http import streamablehttp_client
++    from httpx2 import AsyncClient, Timeout
++    from mcp.client.streamable_http import streamable_http_client
+ 
+     from chainlit.context import init_ws_context
+     from chainlit.mcp import (
+@@ -1430,10 +1431,16 @@
+                         stdio_client(server_params)
+                     )
+                 elif isinstance(mcp_connection, HttpMcpConnection):
++                    http_client = await exit_stack.enter_async_context(
++                        AsyncClient(
++                            headers=mcp_connection.headers,
++                            timeout=Timeout(30.0, read=300.0),
++                        )
++                    )
+                     transport = await exit_stack.enter_async_context(
+-                        streamablehttp_client(
++                        streamable_http_client(
+                             url=mcp_connection.url,
+-                            headers=mcp_connection.headers,
++                            http_client=http_client,
+                         )
+                     )
+                 else:

@@ -300,7 +300,7 @@ class CallInputPort(Protocol):
     скорости тела; писать можно из любого потока, записи атомарны. finish
     даёт телу EOF. take_fd отдаёт дескриптор раздаче каналов группы:
     дальше входом владеет она, send и finish больше не работают.
-    Реализация — FrameInput (boba.toolkit.pump).
+    Реализация — FrameInput (boba.tool_io.pump).
     """
 
     @abstractmethod
@@ -331,7 +331,7 @@ class CallGate(Protocol):
     результат и ждёт ответа. В режиме CallGateMode.AUTO хост разрешает
     сразу; в HELD ответ держит владелец — группа вызовов: claim отдаёт ей
     сигнал готовности, release разрешает фиксацию, refuse запрещает.
-    Реализация — HostGate (boba.toolkit.pump).
+    Реализация — HostGate (boba.tool_io.pump).
     """
 
     @abstractmethod
@@ -353,7 +353,7 @@ class CallGate(Protocol):
 class ToolCall(Protocol):
     """Протокол одного открытого вызова инструмента: входы кадрами, кадры
     наружу, конверт результата в конце. Реализация — PumpedCall
-    (boba.toolkit.pump), создаётся ToolLauncher.open().
+    (boba.tool_io.pump), создаётся ToolLauncher.open().
 
     Конфиг команды лончер отправляет телу сам, своим каналом. inputs —
     входы вызова в порядке ToolCommand.inputs, у каждого свой пайп;

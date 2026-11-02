@@ -45,7 +45,7 @@ from boba.aid.infra.stale_action import StaleActionMiddleware
 from boba.auth import AuthService
 from boba.cancellation import ProcessStop, StopReason
 from boba.config import ConfigError
-from boba.connections.sealed import SealKeys
+from boba.connection_broker.crypto import SealKeys
 from boba.identity.context import CallContexts
 from boba.identity.run import Runs
 from boba.runtime import providers as runtime

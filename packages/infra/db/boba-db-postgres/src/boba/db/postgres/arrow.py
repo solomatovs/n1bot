@@ -47,7 +47,7 @@ from boba.db.postgres.errors import PgArrowError, PgDescribeError
 from boba.db.postgres.query import PgQuery, PgQueryBuilder
 from boba.db.postgres.trace import PgCommandReport, PgSessionTrace
 from boba.db.postgres.transfer import PgCopyProtocol
-from boba.toolkit.arrow import (
+from boba.tool_io.arrow import (
     ArrowColumns,
     ArrowIpc,
     ArrowReader,

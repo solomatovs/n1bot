@@ -34,7 +34,16 @@ class GoldenScope:
         if self.SERVER not in item.fixturenames:
             return False
 
-        return item.nodeid.partition("::")[2] not in self.UNSTABLE
+        return self.identity(item).partition("::")[2] not in self.UNSTABLE
+
+    def identity(self, item: pytest.Item) -> str:
+        """Имя эталона из коллектора: группа xdist не является частью теста."""
+        names = [str(item.path)]
+        for node in item.listchain():
+            if isinstance(node, pytest.Class | pytest.Function):
+                names.append(node.name)
+
+        return "::".join(names)
 
 
 @pytest.hookimpl(wrapper=True)
@@ -69,5 +78,5 @@ def golden_requests(request: pytest.FixtureRequest) -> Generator[None, None, Non
 
     update = bool(request.config.getoption(GoldenOption.UPDATE.dest))
     GoldenRequests(GoldenScope.ROOT, update).check(
-        request.node.nodeid, server.requests()
+        scope.identity(request.node), server.requests()
     )

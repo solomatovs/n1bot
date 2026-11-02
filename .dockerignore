@@ -15,13 +15,12 @@ build/cache
 
 **/__pycache__
 packages/**/*.egg-info
+packages/**/build
 packages/**/node_modules
 packages/**/tests
 packages/**/conftest.py
 packages/**/.pytest_cache
 
-packages/services/boba-catalog-service
-packages/core/boba-catalog
 packages/apps/boba-aid/assets/public/page.js
 packages/apps/boba-aid/assets/public/vendor
 packages/apps/boba-aid/assets/ui

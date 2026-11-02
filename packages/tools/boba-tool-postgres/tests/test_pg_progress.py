@@ -13,8 +13,9 @@ import pytest
 from boba.config import bind
 from boba.db.postgres.connection import PostgresConfig
 from boba.tool.pg.tools import PgToolConfig, pg_query
-from boba.toolkit.entry import ToolMain
-from boba.toolkit.ports import ProgressReport, ToolProgress
+from boba.tool_io.entry import ToolMain
+from boba.tool_io.ports import PipeProgress
+from boba.toolkit.ports import ProgressReport
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -94,7 +95,7 @@ async def test_stages_and_server_messages_are_reported(
             offset=0,
             limit=10,
             cfg=PgToolConfig.model_validate({"max_rows": 500, "max_bytes": 1_000_000}),
-            progress=ToolProgress(write_fd),
+            progress=PipeProgress(write_fd),
         )
         os.close(write_fd)
         raw = b""

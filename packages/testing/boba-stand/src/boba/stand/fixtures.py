@@ -14,6 +14,7 @@ from omegaconf import DictConfig
 from boba.config import ConfigLoader, bind
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
+from boba.llm.providers import LlmProviderTypes
 from boba.runtime.config import ProcessConfig, RawConfig, RuntimeConfig
 from boba.stand.apps_slot import AppsDocker, AppsSlot
 from boba.stand.database import TestDatabase
@@ -24,9 +25,16 @@ from boba.stand.toolsetup import ToolSetup
 from boba.stand.ui.stand import StandApp
 from boba.stand.zygote import ZygoteStand
 from boba.stand_core.context import CallStand, call_stand
-from boba.toolkit.chain import CallAmbient
+from boba.tool_io.chain import CallAmbient
 
 __all__ = ["call_stand"]
+
+
+@pytest.fixture(autouse=True)
+def isolated_llm_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Встроенная служба агента объявляет свой реестр процесса. После теста
+    возвращается исходный состав, нужный другим стендам и провайдерам."""
+    monkeypatch.setattr(LlmProviderTypes, "_installed", LlmProviderTypes.installed())
 
 
 @pytest.fixture

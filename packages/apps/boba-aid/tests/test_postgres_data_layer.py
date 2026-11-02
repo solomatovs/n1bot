@@ -21,7 +21,7 @@ from boba.chat.threads import DataRejectedError, ThreadUpsert
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import Scope
 from boba.identity.session import UserMetadataField
-from boba.mcp_client.client import McpServers, FixedServerConfigs
+from boba.mcp_client.client import FixedServerConfigs, McpServers
 from boba.messaging import (
     Envelope,
     FeedbackChanged,

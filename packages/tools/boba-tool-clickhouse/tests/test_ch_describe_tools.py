@@ -19,7 +19,7 @@ from boba.db.clickhouse.query import ChQueryBuilder
 from boba.stand.edm import EdmSource, EdmSources
 from boba.stand.names import StandNames
 from boba.tool.ch import tools as ch
-from boba.toolkit.entry import ToolMain
+from boba.tool_io.entry import ToolMain
 from boba.toolkit.facade import PayloadTool
 from boba.toolkit.result import SqlResult
 

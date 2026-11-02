@@ -25,7 +25,7 @@ from boba.aid.mcp_servers.store import (
     McpServerStoreError,
     StoredServer,
 )
-from boba.connections.secrets import SecretCipher
+from boba.connection_broker.crypto import SecretCipher
 from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.mcp_client.client import (
     BearerAuth,
@@ -161,7 +161,7 @@ class TestStoredServers:
         assert await stored.store.by_name("personal") is None
         assert await stored.source.config_of("renamed", stored.owner.caller()) is None
 
-    @pytest.mark.parametrize("auth", ("bearer", "proxy"))
+    @pytest.mark.parametrize("auth", ["bearer", "proxy"])
     async def test_role_grant_is_visible_but_read_only(
         self, stored: StoreStand, auth: Literal["bearer", "proxy"]
     ) -> None:
@@ -184,7 +184,8 @@ class TestStoredServers:
             )
             query = sql.SQL("""
                 insert into {}.grants (src_kind, src_kind_id, tgt_kind, tgt_kind_id)
-                select 'mcp_servers', %s, 'roles', id from {}.roles where role = 'reader'
+                select 'mcp_servers', %s, 'roles', id
+                from {}.roles where role = 'reader'
             """).format(schema, schema)
             await conn.execute(query, (server_id,))
 
@@ -242,7 +243,8 @@ class TestStoredServers:
         assert "owner-bearer-secret" not in str(refused.value)
         assert "owner-header-secret" not in str(refused.value)
         query = sql.SQL(
-            "update {}.mcp_servers set data = jsonb_set(data, '{{endpoint,transport}}', '\"secret-invalid-transport\"')"
+            "update {}.mcp_servers set data = jsonb_set("
+            "data, '{{endpoint,transport}}', '\"secret-invalid-transport\"')"
         ).format(sql.Identifier(stored.schema))
         async with stored.pool.connection() as conn:
             await conn.execute(query)

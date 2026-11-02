@@ -31,8 +31,8 @@ from boba.auth.credentials import NoRefresh
 from boba.auth.proxy import ProxyAssertions
 from boba.cancellation import ProcessStop, StopReason
 from boba.config import ConfigLoader, bind
+from boba.connection_broker.crypto import SealKeys
 from boba.connection_broker.sealed import ServerConnection
-from boba.connections.sealed import SealKeys
 from boba.identity.context import CallContexts
 from boba.identity.run import Runs
 from boba.mcp_server.auth import ServiceMark

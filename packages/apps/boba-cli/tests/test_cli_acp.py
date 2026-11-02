@@ -311,6 +311,9 @@ class StandRegistration:
         self.sourced: list[ToolSourceRequest] = []
         self.cancelled: list[str] = []
         self.unreachable = False
+        self.progress_started = asyncio.Event()
+        self.progress_release = asyncio.Event()
+        self.progress_release.set()
 
     async def answer(self, message: McpMessage) -> McpOutcome:
         self.received.append(message)
@@ -497,6 +500,9 @@ class StandRegistration:
             )
         )
         try:
+            self.progress_started.set()
+            await self.progress_release.wait()
+
             for step in range(1, steps + 1):
                 progress = mt.ProgressNotification(
                     params=mt.ProgressNotificationParams(
@@ -5280,6 +5286,7 @@ class TestClientCommands:
         """Команда посреди вызова инструмента ложится после его итога, до
         ответа модели того же хода; ход кончается одним idle."""
         client = AcpClient()
+        registration.progress_release.clear()
         document = boba.settings_document(mode="bypassPermissions", allow_bypass=True)
         conn = await boba.start(client, registration, document)
         try:
@@ -5293,18 +5300,24 @@ class TestClientCommands:
                 "arguments": {"steps": 1, "seconds": 1.0},
             }
             first = await conn.prompt(session_id=session_id, prompt=[*call(slow)])
+            await asyncio.wait_for(
+                registration.progress_started.wait(), READ_TIMEOUT_SEC
+            )
+
             recording = asyncio.create_task(
                 self.record(conn, session_id, "/connections", self.CONNECTIONS)
             )
             await asyncio.sleep(0.3)
             assert not recording.done()
 
+            registration.progress_release.set()
             recorded = await recording
             ended = await client.idle(session_id)
             assert ended.stop_reason == StopReason.END_TURN
             order = TestQueueAndCancel.order(client.updates_of(session_id))
             idles = order.count("idle")
         finally:
+            registration.progress_release.set()
             await conn.close()
             await boba.close_stdin()
 

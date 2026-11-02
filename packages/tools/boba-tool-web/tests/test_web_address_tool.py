@@ -8,7 +8,7 @@ import pytest
 from pydantic import SecretStr
 
 from boba.tool.web.tools import web_address
-from boba.toolkit.entry import ToolMain
+from boba.tool_io.entry import ToolMain
 from boba.transport.http.connection import HttpConnection
 
 pytestmark = [pytest.mark.anyio]

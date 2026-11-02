@@ -50,9 +50,9 @@ from boba.aid.mcp_servers.store import McpServerStore
 from boba.aid.rendering.renderer import TabSurfaces
 from boba.auth import JwtTokens
 from boba.chat.profiles import ChatProfiles, SelectedProfile
+from boba.connection_broker.crypto import SecretCipher
 from boba.connection_broker.sealing import CallSealing
 from boba.connection_broker.user_connections import ArmedConnections
-from boba.connections.secrets import SecretCipher
 from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.identity.api import UserRows
 from boba.identity.context import CallContexts, Scope
@@ -374,7 +374,8 @@ class McpUpdates:
             await self._bus.publish(Scope.user(user_id), changed, LockToken.local())
         except MessageBusError as exc:
             raise McpAppError(
-                f"MCP server change was saved for user {user_id}, but notifying other chats failed: {exc}"
+                f"MCP server change was saved for user {user_id}, "
+                f"but notifying other chats failed: {exc}"
             ) from exc
 
     async def received(self, user_id: UUID, envelope: Envelope) -> None:

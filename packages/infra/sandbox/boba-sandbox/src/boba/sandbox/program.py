@@ -37,7 +37,7 @@ from typing import Any, ClassVar
 
 from boba.core.package_data import PackageDataCheck, PackageDataError
 from boba.sandbox.guest import ZygoteArgs, ZygoteMain
-from boba.toolkit.entry import ToolMain
+from boba.tool_io.entry import ToolMain
 from boba.toolkit.manifest import (
     ManifestBuilder,
     ManifestError,

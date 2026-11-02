@@ -16,9 +16,9 @@ import pytest
 from omegaconf import DictConfig, OmegaConf
 
 from boba.config import ConfigError, bind
+from boba.connection_broker.crypto import SealKeys
 from boba.connection_broker.sealed import SealedConnectionParams, ServerConnection
 from boba.connections.manifest import ConnectionTypes
-from boba.connections.sealed import SealKeys
 from boba.mcp_server.app import McpAppConfig
 from boba.runtime.plugins import PluginKit, PluginMeta, ToolLoader
 from boba.runtime.refs import ExecRefs
@@ -120,9 +120,7 @@ class TestConnectionConfigRefusesStart:
     def test_unknown_name_in_a_tool_list_is_refused(
         self, config_overlay: ConfigOverlay, runtime_stand: StandRefs
     ) -> None:
-        raw = config_overlay.tree(
-            {"tool.pg.connections": {"pg_query": ["ghost"]}}
-        )
+        raw = config_overlay.tree({"tool.pg.connections": {"pg_query": ["ghost"]}})
         loader = self._loader(raw, runtime_stand, runtime_stand.none().execution())
 
         with pytest.raises(ToolConfigError, match=r"'ghost'.*not among"):
@@ -134,9 +132,7 @@ class TestConnectionConfigRefusesStart:
         runtime_stand: StandRefs,
         call_stand: CallStand,
     ) -> None:
-        raw = config_overlay.tree(
-            {"tool.pg.connections": {"pg_query": ["site"]}}
-        )
+        raw = config_overlay.tree({"tool.pg.connections": {"pg_query": ["site"]}})
         params = SealedConnectionParams(
             SealKeys(),
             ConnectionTypes.discover,

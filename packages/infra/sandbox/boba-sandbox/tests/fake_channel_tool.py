@@ -20,7 +20,7 @@ from typing import Annotated, ClassVar, Final, Literal
 
 from pydantic import BaseModel, Field, SecretStr
 
-from boba.toolkit.entry import ToolMain
+from boba.tool_io.entry import ToolMain
 from boba.toolkit.facade import Injected, tool, warmup
 from boba.toolkit.manifest import ToolPlugin
 from boba.toolkit.ports import Inbound, Outbound, StreamGroup

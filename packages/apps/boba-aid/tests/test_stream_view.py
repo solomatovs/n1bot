@@ -59,7 +59,7 @@ from boba.runtime.journal import DirVault, StreamJournal
 from boba.runtime.storage import LocalStorageClient
 from boba.stand.refs import StandRefs
 from boba.stand_core.context import CallStand
-from boba.toolkit.chain import CallAmbient
+from boba.tool_io.chain import CallAmbient
 from boba.toolkit.channels import CallOutcome, ToolChannel, WrapChannel
 from boba.toolkit.dag import DagNode
 from boba.toolkit.facade import PayloadTool, tool

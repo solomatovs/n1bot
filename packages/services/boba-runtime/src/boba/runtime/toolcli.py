@@ -29,7 +29,7 @@ from boba.config import ConfigLoader, bind
 from boba.krb import KerberosWorkspaceConfig
 from boba.runtime.plugins import PluginSections
 from boba.sandbox.program import PluginCommand, PluginEntry, PluginEntryError
-from boba.toolkit.entry import EntryFlag, ToolMain
+from boba.tool_io.entry import EntryFlag, ToolMain
 from boba.toolkit.manifest import InjectedRole, ManifestBuilder, ToolDecl, ToolPlugin
 
 __all__ = ["HostConfig", "ToolCli", "ToolCliError"]

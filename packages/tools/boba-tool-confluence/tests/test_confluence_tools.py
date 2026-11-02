@@ -13,7 +13,7 @@ from boba.tool.confluence.tools import (
     ConfluenceToolsConfig,
     SpaceList,
 )
-from boba.toolkit.entry import ToolMain
+from boba.tool_io.entry import ToolMain
 from boba.transport.http import TransportError
 from boba.transport.http.connection import HttpConnection, UrlScheme
 

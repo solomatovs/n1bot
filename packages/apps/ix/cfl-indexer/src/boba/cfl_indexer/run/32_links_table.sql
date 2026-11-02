@@ -11,3 +11,7 @@ create temp table if not exists links (
     kind          varchar not null
 );
 truncate links;
+create temp table if not exists link_sources (
+    src_node bigint primary key
+);
+truncate link_sources;

@@ -239,7 +239,7 @@ class TestRefusal:
         "ToolEntryError: tool 'fake_echo': arguments do not match its declaration: "
     )
 
-    RAISED_AT: ClassVar[str] = "raised at: boba/toolkit/entry.py"
+    RAISED_AT: ClassVar[str] = "raised at: boba/tool_io/entry.py"
 
     def _check(self, result: Any, reasons: tuple[str, ...]) -> None:
         if not result.is_error:

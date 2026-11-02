@@ -32,7 +32,8 @@ from boba.stand.toolstand import ToolStand
 from boba.stand_core.context import CallStand, StandIdentity
 from boba.tool.ch import tools as ch
 from boba.tool.pg import tools as pg
-from boba.toolkit.chain import CallAmbient, GroupCall, GroupFailureResult
+from boba.tool_io.chain import CallAmbient
+from boba.toolkit.chain import GroupCall, GroupFailureResult
 from boba.toolkit.dag import DagNode, WorkflowResult
 from boba.toolkit.result import (
     FailureResult,

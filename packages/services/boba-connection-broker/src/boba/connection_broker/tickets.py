@@ -26,7 +26,7 @@ from boba.connections.credentials import (
 from boba.connections.manifest import ConnectionTypes, ConnectionTypesError
 from boba.identity.context import NoUserCredential
 from boba.kerberos import DelegatedAuth
-from boba.toolkit.entry import ToolArgv
+from boba.tool_io.entry import ToolArgv
 from boba.toolkit.manifest import ConfigConnection
 from boba.toolrun.hosted import PluginSection
 from boba.toolrun.injected import ConfigArming, SectionArming, ToolConfigError

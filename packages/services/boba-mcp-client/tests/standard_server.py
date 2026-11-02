@@ -327,6 +327,9 @@ class StandardServer:
         self._mcp.tool()(self.area)
         self._mcp.tool()(self.retitle)
         self._mcp.tool()(self.retire_modern)
+        if not apps:
+            self._mcp.tool(name="orders")(self.orders_text)
+
         self._mcp.resource(self.NOTES, mime_type="text/plain")(self.notes)
         self._mcp.resource(self.LOGO, mime_type="image/png")(self.logo)
         self._mcp.resource(self.COUNTER, mime_type="text/plain")(self.counter)
@@ -661,6 +664,10 @@ class StandardServer:
         if client_supports_apps(ctx):
             return f"{len(rows)} orders are shown by their app"
 
+        return self.orders_text(rows)
+
+    def orders_text(self, rows: list[OrderRow]) -> str:
+        """Shows the given orders as text without an app."""
         lines = [f"{len(rows)} orders:"]
         for row in rows:
             lines.append(f"#{row.id} {row.customer} {row.status} {row.total:.2f}")

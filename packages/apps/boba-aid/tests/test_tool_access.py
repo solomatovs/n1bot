@@ -11,7 +11,7 @@ from boba.access import ProfileGrant, RoleConfig, ToolAccess
 from boba.runtime.plugins import PluginMeta
 from boba.stand.refs import StandRefs
 from boba.stand.toolstand import ProbeTools
-from boba.toolkit.chain import CallAmbient
+from boba.tool_io.chain import CallAmbient
 from boba.toolkit.dag import NodeOutcome
 from boba.toolkit.ports import StreamSpecs
 from boba.toolkit.result import MarkdownResult, ToolResultBase

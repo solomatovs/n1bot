@@ -24,7 +24,7 @@ from typing import Annotated, BinaryIO, ClassVar, Final
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.toolkit.entry import ToolMain
+from boba.tool_io.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
 from boba.toolkit.launcher import ClippedText
 from boba.toolkit.result import MarkdownResult, ShellResult

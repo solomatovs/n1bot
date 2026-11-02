@@ -14,7 +14,7 @@ from boba.identity.run import Runs
 from boba.sandbox.runner import FailureLog
 from boba.stand.toolstand import ProbeTools
 from boba.stand_core.context import CallStand
-from boba.toolkit.chain import CallAmbient
+from boba.tool_io.chain import CallAmbient
 from boba.toolkit.facade import NotLogged, ToolFacadeError, tool
 from boba.toolkit.launcher import RunResult
 from boba.toolkit.result import MarkdownResult

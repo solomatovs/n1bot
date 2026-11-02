@@ -426,9 +426,12 @@ class FailTab:
         self._chat.await_event(ChatEvent.TASK_START, FailLook.TURN_SEC)
         self._wait(lambda: self._log.last_step(StepKind.USER.value) is not None)
 
-    def await_tool(self) -> None:
-        """Ход дошёл до вызова инструмента."""
-        self._wait(lambda: self._log.last_step(StepKind.TOOL.value) is not None)
+    def await_tool(self, name: str) -> None:
+        """Свёрнутый ход показывает исполняемый инструмент name в заголовке."""
+        turn = self._page.locator(Selector.of_type(StepKind.RUN.value)).last
+        heading = turn.get_by_role("heading").first
+
+        expect(heading).to_contain_text(name, timeout=FailLook.WAIT_MS)
 
     def thread_id(self) -> str:
         return self._log.thread_id()
@@ -708,7 +711,7 @@ def test_lost_agent_look(
     tab.shots(look, tab.feed, FailLook.TURN_LOST_RETRIED)
 
     tab.ask_running(questions.call("sleep_for", {"seconds": 60}))
-    tab.await_tool()
+    tab.await_tool("sleep_for")
     agents.killed()
     tab.banner()
     tab.retried()

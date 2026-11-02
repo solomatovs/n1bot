@@ -13,9 +13,9 @@ from pydantic import BaseModel, ConfigDict
 
 from boba.db.oracle import OraIdentifier, OraQueryBuilder
 from boba.tool.ora import tools as ora
-from boba.toolkit.entry import ToolMain
+from boba.tool_io.entry import ToolMain
+from boba.tool_io.ports import PipeProgress
 from boba.toolkit.facade import PayloadTool
-from boba.toolkit.ports import ToolProgress
 from boba.toolkit.result import SqlResult
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -182,7 +182,7 @@ class TestQuery:
         sql = _sql("select id, email from ", " order by id")
         first = await body(
             cfg=self.CEILINGS,
-            progress=ToolProgress(-1),
+            progress=PipeProgress(-1),
             connection=target.oracle,
             sql=sql,
             offset=0,
@@ -190,7 +190,7 @@ class TestQuery:
         )
         second = await body(
             cfg=self.CEILINGS,
-            progress=ToolProgress(-1),
+            progress=PipeProgress(-1),
             connection=target.oracle,
             sql=sql,
             offset=10,
@@ -210,7 +210,7 @@ class TestQuery:
         update = _sql("update ", " set note = 'x' where id <= 3")
         result = await body(
             cfg=self.CEILINGS,
-            progress=ToolProgress(-1),
+            progress=PipeProgress(-1),
             connection=target.demo_owner,
             sql=update,
             offset=0,
@@ -223,7 +223,7 @@ class TestQuery:
         check = _sql("select count(*) as n from ", " where note = 'x'")
         seen = await body(
             cfg=self.CEILINGS,
-            progress=ToolProgress(-1),
+            progress=PipeProgress(-1),
             connection=target.oracle,
             sql=check,
             offset=0,
@@ -238,7 +238,7 @@ class TestQuery:
 
         result = await body(
             cfg=self.CEILINGS,
-            progress=ToolProgress(-1),
+            progress=PipeProgress(-1),
             connection=target.oracle,
             sql="begin null; end;",
             offset=0,
