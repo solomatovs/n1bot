@@ -40,9 +40,9 @@ from mcp_types.jsonrpc import (
     ErrorData,
     JSONRPCError,
 )
-from pydantic import Field, TypeAdapter, ValidationError
+from pydantic import BaseModel as StrictModel
+from pydantic import ConfigDict, Field, TypeAdapter, ValidationError
 
-from acp import schema as v1_schema
 from acp._transport import Transport
 from acp.connection import Connection, JsonValue
 from acp.exceptions import RequestError
@@ -88,6 +88,9 @@ __all__ = [
     "DeclaredPrompt",
     "ElicitationRound",
     "ErrorDataKey",
+    "HistoryNotice",
+    "HistoryTurnEnd",
+    "HistoryUpdate",
     "McpErrorOutcome",
     "McpMessage",
     "McpOutcome",
@@ -146,6 +149,7 @@ class AcpErrorCode(IntEnum):
     INTERNAL_ERROR = -32603
     REQUEST_CANCELLED = -32800
     RESOURCE_NOT_FOUND = -32002
+    UNSUPPORTED_PROTOCOL_VERSION = -32022
     UNKNOWN_SERVER = -33001
     BACKEND_FAILED = -33002
 
@@ -247,6 +251,39 @@ class BobaExtension(StrEnum):
     COMMAND_OUTCOME = "_boba/command_outcome"
     COMMANDS = "_boba/commands"
     TOOL_SOURCE = "_boba/tool_source"
+    HISTORY = "_boba/history"
+
+
+class HistoryTurnEnd(BaseModel):
+    """Исход прошлого хода для ленты; текущее состояние сессии не меняет."""
+
+    kind: Literal["turn_end"] = "turn_end"
+    stop_reason: Annotated[str, Field(alias="stopReason")]
+
+
+class HistoryNotice(BaseModel):
+    """Сохранённая пометка для ленты, отдельно от живого уведомления notice."""
+
+    kind: Literal["notice"] = "notice"
+    notice: schema.Notice
+
+
+class HistoryUpdate(BaseModel):
+    """Данные истории для клиента, объявившего `_boba/history` в capabilities.
+
+    Агент передаёт исходы и пометки прошлых ходов при replay; клиент рисует
+    их без обработки как живых переходов состояния или новых предупреждений.
+    """
+
+    session_update: Annotated[
+        Literal[BobaExtension.HISTORY], Field(alias="sessionUpdate")
+    ] = BobaExtension.HISTORY
+    event: Annotated[HistoryTurnEnd | HistoryNotice, Field(discriminator="kind")]
+
+    def wire(self) -> schema.OtherSessionUpdate:
+        dumped = self.model_dump(mode="json", by_alias=True, exclude_none=True)
+
+        return schema.OtherSessionUpdate.model_validate(dumped)
 
 
 class CommandKind(StrEnum):
@@ -666,21 +703,41 @@ class BatchTransport(Transport):
         await self._writer.drain()
 
 
+class InitializationParams(StrictModel):
+    """Версия запроса initialize до преобразований моделей SDK."""
+
+    model_config = ConfigDict(extra="allow")
+    protocol_version: Annotated[
+        int, Field(alias="protocolVersion", strict=True, ge=0, le=65535)
+    ]
+
+
+class ReplayCursor(StrictModel):
+    """Обязательный строковый вид курсора до нормализации replayFrom в SDK."""
+
+    type: Annotated[str, Field(strict=True)]
+
+
+class ResumeParams(StrictModel):
+    """Проверка формы replayFrom, не допускающая подстановки другого курсора."""
+
+    replay_from: Annotated[ReplayCursor | None, Field(alias="replayFrom")] = None
+
+
 class AgentSide:
-    """Сторона агента ACP v2 на AgentSideConnection.attach SDK. На чужую версию и
-    рукопожатие v1 отвечает своей, уведомление mcp/message отдаёт получателю его
-    активного запроса, остальное — роутеру SDK; шлёт запрос mcp/message и idle
-    с ошибкой. listening — соединение само читает транспорт (так его ждёт
-    сервер HTTP SDK); иначе чтение ведёт serve (stdio, WebSocket)."""
+    """Сторона агента ACP v2 на AgentSideConnection.attach SDK.
+
+    Проверяет версию и курсор до нормализации SDK, уведомления mcp/message
+    отдаёт получателю активного запроса, остальное — роутеру SDK. listening
+    включает чтение соединением (HTTP); иначе чтение ведёт serve (stdio, WS).
+    """
 
     def __init__(
         self,
         agent_factory: Callable[[AgentSide, AgentSideConnection], object],
-        info: schema.Implementation,
         transport: Transport,
         listening: bool = False,
     ) -> None:
-        self._info = info
         self._receivers: dict[str, Callable[[McpMessage], Awaitable[None]]] = {}
         self._outcomes: TypeAdapter[McpOutcome] = TypeAdapter(McpOutcome)
         self._connection = Connection(self, transport, listening=listening)
@@ -710,18 +767,29 @@ class AgentSide:
             await receiver(message)
             return None
 
-        initialize = not is_notification and method == AGENT_METHODS["initialize"]
-        if not initialize:
-            return await self._router(method, params, is_notification)
+        if not is_notification:
+            if method == AGENT_METHODS["initialize"]:
+                params = self._negotiate(params)
 
-        request = v1_schema.InitializeRequest.model_validate(params)
-        known = list(AcpVersion)
-        if request.protocol_version in known:
-            return await self._router(method, params, is_notification)
+            if method == AGENT_METHODS["session_resume"]:
+                ResumeParams.model_validate(params)
 
-        return schema.InitializeResponse(
-            protocol_version=max(AcpVersion), info=self._info
-        )
+        return await self._router(method, params, is_notification)
+
+    @staticmethod
+    def _negotiate(params: JsonValue) -> dict[str, Any]:
+        request = InitializationParams.model_validate(params)
+        if request.protocol_version < AcpVersion.V2:
+            raise RequestError(
+                AcpErrorCode.UNSUPPORTED_PROTOCOL_VERSION,
+                "Unsupported protocol version",
+                {"requested": request.protocol_version, "supported": [AcpVersion.V2]},
+            )
+
+        selected = request.model_dump(by_alias=True)
+        selected["protocolVersion"] = AcpVersion.V2.value
+
+        return selected
 
     async def request(
         self,

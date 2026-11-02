@@ -22,7 +22,7 @@ from boba.stand.scraper import ScraperStandDatabase
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
-STAND = IxStand.required()
+STAND = IxStand.required(owner="pgscr")
 
 COLUMNS = """(
     i int, big bigint, num numeric(18,4), dbl double precision, flag boolean,

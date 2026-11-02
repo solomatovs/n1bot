@@ -17,7 +17,7 @@ def pytest_configure(config: pytest.Config) -> None:
 
 @pytest.fixture(scope="session")
 def ix_stand() -> IxStand:
-    return IxStand.required()
+    return IxStand.required(owner="pgscr")
 
 
 @pytest.fixture(scope="session")

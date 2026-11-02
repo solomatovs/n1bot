@@ -2,7 +2,8 @@
 тысяч. Каждый прогон идёт в своём процессе, и пик его RSS не должен расти с объёмом
 словаря: строки текут из курсора Oracle в COPY по одной, а не собираются в память.
 
-Ошибки стенда: IxStandError — секции [ix_stand] нет, модуль пропускается.
+Ошибки стенда: IxStandError — секции [ix_stand] нет, сбор тестов завершается
+    ошибкой конфигурации.
 """
 
 from __future__ import annotations
@@ -12,18 +13,21 @@ import multiprocessing
 from concurrent.futures import ProcessPoolExecutor
 
 import pytest
-from ora_scraper_stand import LAYOUT, IxSource, IxStand, SchemaUser, StandSchema
+from ora_scraper_stand import (
+    IxSource,
+    IxStand,
+    SchemaUser,
+    StandSchema,
+    scrape_in_child,
+)
 
 from boba.db.oracle.connection import OracleConfig
 from boba.db.oracle.payload import PayloadOracle
 from boba.ix_core.database import IxDatabase
-from boba.ix_core.scrape import scrape_source
-from boba.ora_meta_scraper.worker import OraSource
-from boba.stand.ix import peak_rss_mib
 
 pytestmark = [pytest.mark.load, pytest.mark.anyio]
 
-STAND = IxStand.required()
+STAND = IxStand.required(owner="orascr")
 
 BULK_TABLES = 2000
 BULK_COLUMNS = 10
@@ -64,15 +68,6 @@ async def create_bulk(source: IxSource, tables: int) -> None:
         pass
 
 
-def scrape_in_child(database: IxDatabase, oracle: OracleConfig) -> tuple[int, int]:
-    """Вход процесса прогона: сколько строк применено и пик RSS процесса в MiB."""
-    report = asyncio.run(
-        scrape_source(database, OraSource(oracle), LAYOUT.package_dir, ATTEMPTS)
-    )
-
-    return report.applied(), peak_rss_mib()
-
-
 def scrape_apart(database: IxDatabase, oracle: OracleConfig) -> tuple[int, int]:
     """Прогон в свежем процессе, чтобы пик RSS был пиком одного прогона."""
     with ProcessPoolExecutor(
@@ -80,7 +75,7 @@ def scrape_apart(database: IxDatabase, oracle: OracleConfig) -> tuple[int, int]:
         mp_context=multiprocessing.get_context("spawn"),
         max_tasks_per_child=1,
     ) as pool:
-        return pool.submit(scrape_in_child, database, oracle).result()
+        return pool.submit(scrape_in_child, database, oracle, ATTEMPTS).result()
 
 
 class TestStreamingMemory:

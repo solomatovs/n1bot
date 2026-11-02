@@ -71,7 +71,7 @@ from boba.toolkit.transfer import Engine, SchemaHead, StreamWire
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
-STAND = PumpStand.required()
+STAND = PumpStand.required(owner="pump")
 
 
 NEWEST = STAND.newest_postgres()

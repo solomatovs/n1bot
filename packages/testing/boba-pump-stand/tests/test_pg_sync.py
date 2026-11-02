@@ -26,7 +26,7 @@ from boba.toolrun.dag_run import DagOutcome
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
-STAND = PumpStand.required()
+STAND = PumpStand.required(owner="pump")
 ROWS = 60
 PG_SCHEMA = StandNames().of("pump_sync")
 ARRAYSIZE = 500

@@ -122,7 +122,7 @@ async def acp_pair() -> AsyncIterator[AcpPair]:
     stand_client = StandClient()
     frames = Frames()
 
-    agent = AgentSide(StandAgent, info, agent_end)
+    agent = AgentSide(StandAgent, agent_end)
     serving = asyncio.create_task(agent.serve())
 
     client = ClientConnection(
@@ -151,8 +151,7 @@ async def batch_wire() -> AsyncIterator[
     agent_socket, client_socket = socket.socketpair()
     agent_reader, agent_writer = await asyncio.open_connection(sock=agent_socket)
     client_reader, client_writer = await asyncio.open_connection(sock=client_socket)
-    info = schema.Implementation(name="stand-agent", version="0")
-    agent = AgentSide(StandAgent, info, BatchTransport(agent_reader, agent_writer))
+    agent = AgentSide(StandAgent, BatchTransport(agent_reader, agent_writer))
     serving = asyncio.create_task(agent.serve())
 
     yield client_reader, client_writer
@@ -264,31 +263,119 @@ class TestVersionNegotiation:
             protocol_version=3, info=schema.Implementation(name="future", version="3")
         )
 
-    @pytest.mark.parametrize(
-        "params",
-        [
-            {"protocolVersion": 3, "info": {"name": "future", "version": "3"}},
-            {
-                "protocolVersion": 1,
-                "clientInfo": {"name": "legacy", "version": "1"},
-                "clientCapabilities": {},
-            },
-        ],
-        ids=["foreign-version", "v1-handshake"],
-    )
-    async def test_agent_answers_its_own_version(self, params: dict[str, Any]) -> None:
+    @pytest.mark.parametrize("version", [2, 3, 65535])
+    async def test_agent_selects_a_supported_version(self, version: int) -> None:
         agent_end, client_end = memory_transport_pair()
-        info = schema.Implementation(name="stand-agent", version="0")
-        agent = AgentSide(StandAgent, info, agent_end)
+        agent = AgentSide(StandAgent, agent_end)
         serving = asyncio.create_task(agent.serve())
 
         async with Connection(self._reply_version_3, client_end) as raw:
+            params = {
+                "protocolVersion": version,
+                "info": {"name": "future", "version": "3"},
+            }
             answer = await raw.send_request(AGENT_METHODS["initialize"], params)
+            with pytest.raises(RequestError) as unsupported:
+                await raw.send_request(AGENT_METHODS["session_list"], {})
+
+            assert unsupported.value.code == AcpErrorCode.METHOD_NOT_FOUND
 
         await serving
 
         assert answer["protocolVersion"] == AcpVersion.V2
         assert answer["info"] == {"name": "stand-agent", "version": "0"}
+
+    @pytest.mark.parametrize("version", [0, 1])
+    async def test_lower_version_does_not_initialize_the_connection(
+        self,
+        batch_wire: tuple[asyncio.StreamReader, asyncio.StreamWriter],
+        version: int,
+    ) -> None:
+        reader, writer = batch_wire
+        request = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": AGENT_METHODS["initialize"],
+            "params": {
+                "protocolVersion": version,
+                "clientInfo": {"name": "legacy", "version": "1"},
+            },
+        }
+        writer.write(json.dumps(request).encode() + b"\n")
+        async with asyncio.timeout(5):
+            answer = json.loads(await reader.readline())
+
+        assert answer["error"] == {
+            "code": AcpErrorCode.UNSUPPORTED_PROTOCOL_VERSION,
+            "message": "Unsupported protocol version",
+            "data": {"requested": version, "supported": [2]},
+        }
+
+        followup = {"jsonrpc": "2.0", "id": 2, "method": AGENT_METHODS["session_list"]}
+        writer.write(json.dumps(followup).encode() + b"\n")
+        async with asyncio.timeout(5):
+            refused = json.loads(await reader.readline())
+
+        assert refused["error"]["code"] == -32600
+
+    @pytest.mark.parametrize(
+        "params",
+        [
+            {},
+            {"protocolVersion": None},
+            {"protocolVersion": "2"},
+            {"protocolVersion": True},
+            {"protocolVersion": False},
+            {"protocolVersion": 2.5},
+            {"protocolVersion": -1},
+            {"protocolVersion": 65536},
+        ],
+    )
+    async def test_malformed_version_is_invalid_params(
+        self,
+        batch_wire: tuple[asyncio.StreamReader, asyncio.StreamWriter],
+        params: dict[str, Any],
+    ) -> None:
+        reader, writer = batch_wire
+        request = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": AGENT_METHODS["initialize"],
+            "params": params,
+        }
+        writer.write(json.dumps(request).encode() + b"\n")
+        async with asyncio.timeout(5):
+            answer = json.loads(await reader.readline())
+
+        assert answer["error"]["code"] == AcpErrorCode.INVALID_PARAMS
+
+    @pytest.mark.parametrize(
+        "cursor",
+        ["start", {}, {"type": 5}, {"type": None}, {"type": True}, [], 5, False],
+    )
+    async def test_malformed_replay_is_not_normalized(
+        self,
+        batch_wire: tuple[asyncio.StreamReader, asyncio.StreamWriter],
+        cursor: Any,
+    ) -> None:
+        reader, writer = batch_wire
+        initialize = {**TestBatches.INITIALIZE, "id": 1}
+        writer.write(json.dumps(initialize).encode() + b"\n")
+        async with asyncio.timeout(5):
+            initialized = json.loads(await reader.readline())
+
+        assert "result" in initialized
+        request = {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": AGENT_METHODS["session_resume"],
+            "params": {"sessionId": "existing", "cwd": "/", "replayFrom": cursor},
+        }
+        writer.write(json.dumps(request).encode() + b"\n")
+        async with asyncio.timeout(5):
+            answer = json.loads(await reader.readline())
+
+        assert answer["error"]["code"] == AcpErrorCode.INVALID_PARAMS
 
     async def test_client_closes_on_foreign_version(self) -> None:
         agent_end, client_end = memory_transport_pair()

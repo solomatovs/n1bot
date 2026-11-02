@@ -30,7 +30,7 @@ class OraStand(IxStand):
     ora_sources: Sequence[OraStandSource]
 
 
-STAND = OraStand.required()
+STAND = OraStand.required(owner="ora_payload")
 
 
 class TestPayloadOracle:

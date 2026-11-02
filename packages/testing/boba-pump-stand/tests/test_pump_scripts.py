@@ -41,7 +41,7 @@ from boba.toolrun.dag_run import DagOutcome
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
-STAND = PumpStand.required()
+STAND = PumpStand.required(owner="pump")
 
 OLD_ROWS = ((1, "old1"), (2, "old2"))
 UPSERTED = [(1, "new1"), (2, "old2"), (3, "new3")]

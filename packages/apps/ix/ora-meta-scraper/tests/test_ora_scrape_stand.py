@@ -11,7 +11,7 @@ from boba.stand.scraper import Golden, ScraperStandDatabase
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
-STAND = IxStand.required()
+STAND = IxStand.required(owner="orascr")
 
 
 class TestScrapeStand:

@@ -23,7 +23,7 @@ def pytest_configure(config: pytest.Config) -> None:
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """Группы ставятся раньше хука xdist: он читает их в том же событии. Хук
     получает тесты всего прогона, группы набора идут только его тестам."""
-    groups = ScraperGroups(IxStand.required())
+    groups = ScraperGroups(IxStand.required(owner="orascr"))
     for item in SuiteItems(Path(__file__)).own(items):
         item.add_marker(pytest.mark.xdist_group(groups.of(item)))
 
@@ -61,7 +61,7 @@ class ScraperGroups:
 
 @pytest.fixture(scope="session")
 def ix_stand() -> IxStand:
-    return IxStand.required()
+    return IxStand.required(owner="orascr")
 
 
 @pytest.fixture(scope="session")

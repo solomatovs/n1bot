@@ -22,7 +22,7 @@ from boba.stand.scraper import ScraperStandDatabase
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
-STAND = IxStand.required()
+STAND = IxStand.required(owner="chscr")
 
 DDL = """
 create table zz_fmt.probe (

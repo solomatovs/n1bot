@@ -24,7 +24,7 @@ from boba.stand.scraper import ScraperStandDatabase
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
-STAND = IxStand.required()
+STAND = IxStand.required(owner="orascr")
 
 DDL = """
 create table edge_demo.fmt_probe (

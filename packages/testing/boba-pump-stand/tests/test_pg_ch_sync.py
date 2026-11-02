@@ -40,7 +40,7 @@ from boba.toolkit.result import SqlFailureResult
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
-STAND = PumpStand.required()
+STAND = PumpStand.required(owner="pump")
 PG_SCHEMA = StandNames().of("pump_pg_ch")
 CH_DATABASE = StandNames().of("pump_pg_ch")
 ROWS = 60

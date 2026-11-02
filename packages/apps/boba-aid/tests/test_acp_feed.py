@@ -96,6 +96,8 @@ from boba.transport.acp.protocol import (
     CommandOutcome,
     CommandOutcomeUpdate,
     CommandText,
+    HistoryTurnEnd,
+    HistoryUpdate,
     MetaKey,
 )
 
@@ -719,7 +721,8 @@ class TestContainerLabel:
         replay = _view(runtime_stand, storage, RemoteJournals())
         await replay.apply(_question())
         await replay.apply(_call(CALL, "mcp__boba__bash", {"cmd": "sleep 9"}))
-        await replay.apply(idle)
+        history = HistoryUpdate(event=HistoryTurnEnd(stop_reason="cancelled"))
+        await replay.apply(history.wire())
         await replay.finish_turn()
 
         assert _labels(recorded)[-1] == stopped
@@ -2298,9 +2301,7 @@ class TestBlockDrawings:
         name: str = "mcp__boba__probe",
     ) -> None:
         view = ChatView(THREAD, LiveSink(), "u-1", storage, TEXTS)
-        updates = UpdateView(
-            view, THREAD, RemoteJournals(), ToolMedia(SANDBOX_URL)
-        )
+        updates = UpdateView(view, THREAD, RemoteJournals(), ToolMedia(SANDBOX_URL))
         await updates.apply(_question())
         await updates.apply(_call(CALL, name, {}))
         await updates.apply(_done(CALL, "text for the model", raw))

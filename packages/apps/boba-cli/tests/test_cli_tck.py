@@ -452,7 +452,7 @@ class TckSuite:
 class TestTck:
     WITHOUT_AUTH: ClassVar[frozenset[str]] = frozenset({"ACP-AUTH-206", "ACP-AUTH-207"})
     """Обязательные требования входа, которые агент без authMethods пропускает
-    по праву; прочие обязательные требования TCK обязан проверить."""
+    по праву. Форма ответа v1 проверяется только у агента, выбирающего v1."""
 
     async def test_v2_suite_is_conformant(
         self, tck_executable: Path, answering_model: FakeModel, tmp_path: Path
@@ -474,6 +474,15 @@ class TestTck:
         for requirement in report.with_status(TckStatus.SKIPPED):
             print(f"skipped {requirement.id}: {requirement.tests[0].message}")
             if requirement.tier is not TckTier.MANDATORY:
+                continue
+
+            if requirement.id == "ACP-INIT-208":
+                assert report.by_id("ACP-INIT-202").status is TckStatus.PASS
+                assert report.by_id("ACP-INIT-205").status is TckStatus.PASS
+                (skipped,) = requirement.tests
+                assert (
+                    "initialize(protocolVersion=1) did not select 1" in skipped.message
+                )
                 continue
 
             assert requirement.id in self.WITHOUT_AUTH, requirement

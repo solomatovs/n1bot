@@ -45,7 +45,7 @@ from boba.toolrun.streams import CallJournals
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
-STAND = PumpStand.required()
+STAND = PumpStand.required(owner="pump")
 PG_SCHEMA = "pump_channels"
 CH_DATABASE = "pump_channels"
 ROWS = 20000

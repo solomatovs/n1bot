@@ -468,7 +468,7 @@ class ServeRouter(AgentProtocolRouter):
         admission = self._admission.get()
         listening = bool(connection_kwargs.get("listening", True))
         agent, store = self._agents.agent(admission.caller)
-        side = AgentSide(agent.attach, self._agents.info, input_stream, listening)
+        side = AgentSide(agent.attach, input_stream, listening)
         connection = ServeConnection(side.connection, agent, store)
         admission.connection = connection
         self._connections.add(connection)

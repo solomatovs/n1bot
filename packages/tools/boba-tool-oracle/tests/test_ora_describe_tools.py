@@ -20,7 +20,7 @@ from boba.toolkit.result import SqlResult
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
-STAND = IxStand.required()
+STAND = IxStand.required(owner="ora_tool")
 ROWS = 25
 CUSTOMERS = OraIdentifier(f"{DemoUser.NAME}.customers")
 

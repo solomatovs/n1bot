@@ -943,7 +943,7 @@ class AgentProcess:
         threads = SessionThreads(settings.sessions.max_open)
         agent = AcpAgent(assembly, info, settings.mcp, threads, ())
         reader, writer = await self._streams.open()
-        side = AgentSide(agent.attach, info, BatchTransport(reader, writer))
+        side = AgentSide(agent.attach, BatchTransport(reader, writer))
         self._stop.on_stop(self._stopper(agent))
         try:
             await side.serve()

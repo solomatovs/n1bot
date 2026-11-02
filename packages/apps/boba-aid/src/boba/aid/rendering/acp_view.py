@@ -91,6 +91,9 @@ from boba.transport.acp.protocol import (
     CommandOutcomeUpdate,
     CommandText,
     ElicitationRound,
+    HistoryNotice,
+    HistoryTurnEnd,
+    HistoryUpdate,
     MetaKey,
     StopReason,
     ToolSourceContent,
@@ -977,12 +980,23 @@ class UpdateView:
         raise TypeError(msg)
 
     async def _extension(self, update: schema.OtherSessionUpdate) -> None:
-        """Уведомление вида расширения: итог команды, которую исполнила
-        вкладка, — под её строкой вопроса; прочие виды лента не рисует.
+        """Данные истории и итоги команд рисуются под своим вопросом.
 
         Ошибки:
-        ValidationError — итог команды не по форме расширения.
+        ValidationError — данные не по форме объявленного расширения.
         """
+        if update.session_update == BobaExtension.HISTORY.value:
+            dumped = update.model_dump(mode="json", by_alias=True, exclude_none=True)
+            history = HistoryUpdate.model_validate(dumped)
+            if isinstance(history.event, HistoryTurnEnd):
+                await self._end(self._ending(history.event.stop_reason))
+                return
+
+            if isinstance(history.event, HistoryNotice):
+                await self._notice(history.event.notice)
+
+            return
+
         if update.session_update != BobaExtension.COMMAND_OUTCOME.value:
             logger.debug(
                 "thread %s: update %s is not drawn",
@@ -1067,7 +1081,9 @@ class UpdateView:
 
     def ending(self, idle: schema.IdleSessionStateUpdate) -> TurnEnding:
         """Исход хода и пометка ленты по его idle."""
-        stop_reason = idle.stop_reason
+        return self._ending(idle.stop_reason)
+
+    def _ending(self, stop_reason: str | None) -> TurnEnding:
         if stop_reason is None:
             return TurnEnding(outcome=TurnOutcome.OK, note="")
 
@@ -1092,7 +1108,9 @@ class UpdateView:
     async def _ended(self, idle: schema.IdleSessionStateUpdate) -> None:
         """Пометка конца хода: остановка — подписью контейнера или к ответу,
         сбой — шагом ошибки."""
-        ending = self.ending(idle)
+        await self._end(self.ending(idle))
+
+    async def _end(self, ending: TurnEnding) -> None:
         if ending.outcome is TurnOutcome.STOPPED:
             await self._stopped(ending)
             return
@@ -1221,7 +1239,7 @@ class UpdateView:
         self._answer_id = update.message_id
         await self._view.stream_answer(text, self._turn_key)
 
-    async def _notice(self, notice: schema.SessionNotice) -> None:
+    async def _notice(self, notice: schema.Notice) -> None:
         """Пометка агента — своим сообщением хода."""
         detail = ""
         if notice.description:

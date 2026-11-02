@@ -43,7 +43,7 @@ from boba.stand.names import StandNames
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
-STAND = PumpStand.required()
+STAND = PumpStand.required(owner="pump")
 PG_SCHEMA = StandNames().of("pump_arrow_ch")
 CH_DATABASE = StandNames().of("pump_arrow_ch")
 ROWS = 60

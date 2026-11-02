@@ -33,7 +33,7 @@ from boba.toolkit.transfer import StreamWire
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
-STAND = PumpStand.required()
+STAND = PumpStand.required(owner="pump")
 
 
 class BigStream:

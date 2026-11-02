@@ -20,7 +20,7 @@ from omegaconf import DictConfig
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from boba.agent.agent import Agent, AgentParts
-from boba.agent.history import SessionId
+from boba.agent.history import SessionId, StoredLine
 from boba.agent.profile import CompactionSettings, ModelProfile, TurnLimits
 from boba.agent.queue import QueueEntry, QueueKind
 from boba.agent.records import (
@@ -29,6 +29,8 @@ from boba.agent.records import (
     CompactBoundaryRecord,
     CompactSummaryRecord,
     MetaRecord,
+    Record,
+    RecordCodec,
     ReplyStopReason,
     TurnEndRecord,
     TurnOutcome,
@@ -148,7 +150,14 @@ class TestLocalModel:
     ) -> None:
         sink = Collected()
         served = Served(
-            agent(agent_stand, tmp_path / "history", 256, sink, system_turns)
+            agent(
+                agent_stand,
+                tmp_path / "history",
+                256,
+                sink,
+                system_turns,
+                questions=False,
+            )
         )
         session = await served.open(SESSION, resume=False)
 
@@ -236,7 +245,7 @@ class TestLocalModel:
                 questions=False,
             )
         )
-        session = await served.open(SESSION, resume=False)
+        await served.open(SESSION, resume=False)
 
         sentence = "Погода сегодня тихая, и река несёт листья к старому мосту. "
         story = sentence * 150
@@ -252,7 +261,16 @@ class TestLocalModel:
             await served.close()
 
         assert list(served.agent.outcomes) == [TurnOutcome.COMPLETED] * 4
-        chain = session.records()
+        store = JsonlHistoryStore(tmp_path / "history")
+        codec = RecordCodec()
+        chain: list[Record] = []
+        async for line in store.read(SESSION):
+            assert isinstance(line, StoredLine), line
+
+            chain.append(codec.parse(line.raw))
+
+        await store.close()
+
         assert not any(
             isinstance(r, TurnEndRecord) and r.outcome.refused for r in chain
         )

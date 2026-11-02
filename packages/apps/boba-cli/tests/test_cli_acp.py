@@ -83,6 +83,9 @@ from boba.transport.acp.protocol import (
     CommandOutcomeUpdate,
     CommandText,
     ErrorDataKey,
+    HistoryNotice,
+    HistoryTurnEnd,
+    HistoryUpdate,
     McpErrorOutcome,
     McpMessage,
     McpOutcome,
@@ -889,42 +892,49 @@ class Timeline:
     ) -> Iterator[tuple[tuple[str, str], tuple[Any, ...], bool]]:
         """Элементы ленты уведомления: ключ места, элемент и заменяет ли он
         прежний элемент на этом месте целиком."""
-        if isinstance(update, schema.UserMessageUpdate):
-            key = ("user", update.message_id)
-            yield key, (*key, FeedView.text_of(update)), True
+        match update:
+            case schema.OtherSessionUpdate():
+                yield from self._history(update)
+            case schema.UserMessageUpdate():
+                key = ("user", update.message_id)
+                yield key, (*key, FeedView.text_of(update)), True
+            case schema.AgentThoughtChunk() | schema.AgentMessageChunk():
+                key = (self._kind(update), update.message_id)
+                yield key, (*key, FeedView.text_of(update)), False
+            case schema.AgentThoughtUpdate() | schema.AgentMessageUpdate():
+                key = (self._kind(update), update.message_id)
+                yield key, (*key, FeedView.text_of(update)), True
+            case schema.SessionToolCallUpdate():
+                key = ("tool", update.tool_call_id)
+                yield key, self._call(update), False
+            case schema.SessionNotice():
+                key = ("notice", str(id(update)))
+                notice = ("notice", update.severity, update.title, update.description)
+                yield key, notice, True
+            case schema.IdleSessionStateUpdate():
+                yield from self._idle(update)
+            case schema.SessionCompactionUpdate():
+                key = ("compaction", update.compaction_id)
+                summary = self._summary(update)
+                yield key, (*key, update.status, summary, update.error), True
+
+    @staticmethod
+    def _history(
+        update: schema.OtherSessionUpdate,
+    ) -> Iterator[tuple[tuple[str, str], tuple[Any, ...], bool]]:
+        if update.session_update != BobaExtension.HISTORY.value:
             return
 
-        if isinstance(update, schema.AgentThoughtChunk | schema.AgentMessageChunk):
-            key = (self._kind(update), update.message_id)
-            yield key, (*key, FeedView.text_of(update)), False
+        history = HistoryUpdate.model_validate(update.model_dump(by_alias=True))
+        event = history.event
+        if isinstance(event, HistoryTurnEnd):
+            key = ("idle", str(id(update)))
+            yield key, ("idle", event.stop_reason), True
             return
 
-        if isinstance(update, schema.AgentThoughtUpdate | schema.AgentMessageUpdate):
-            key = (self._kind(update), update.message_id)
-            yield key, (*key, FeedView.text_of(update)), True
-            return
-
-        if isinstance(update, schema.SessionToolCallUpdate):
-            key = ("tool", update.tool_call_id)
-            yield key, self._call(update), False
-            return
-
-        if isinstance(update, schema.SessionNotice):
-            key = ("notice", str(id(update)))
-            yield (
-                key,
-                ("notice", update.severity, update.title, update.description),
-                True,
-            )
-            return
-
-        if isinstance(update, schema.IdleSessionStateUpdate):
-            yield from self._idle(update)
-            return
-
-        if isinstance(update, schema.SessionCompactionUpdate):
-            key = ("compaction", update.compaction_id)
-            yield key, (*key, update.status, self._summary(update), update.error), True
+        notice = event.notice
+        key = ("notice", str(id(update)))
+        yield key, ("notice", notice.severity, notice.title, notice.description), True
 
     @staticmethod
     def _kind(
@@ -1262,7 +1272,10 @@ class AcpProcess:
 
 
 async def handshake(
-    conn: ClientConnection, forms: bool = False, sources: bool = False
+    conn: ClientConnection,
+    forms: bool = False,
+    sources: bool = False,
+    history: bool = True,
 ) -> schema.InitializeResponse:
     """Рукопожатие; forms — клиент объявляет формы `elicitation.form`,
     sources — расширение источника вызова `_boba/tool_source`."""
@@ -1272,9 +1285,12 @@ async def handshake(
             form=schema.ElicitationFormCapabilities()
         )
 
-    meta = None
+    meta: dict[str, Any] = {}
     if sources:
-        meta = {BobaExtension.TOOL_SOURCE.value: True}
+        meta[BobaExtension.TOOL_SOURCE.value] = True
+
+    if history:
+        meta[BobaExtension.HISTORY.value] = True
 
     capabilities = schema.ClientCapabilities(elicitation=elicitation, field_meta=meta)
 
@@ -2220,6 +2236,16 @@ class TestQueueAndCancel:
         kinds: list[str] = []
         answers: set[str] = set()
         for update in updates:
+            if isinstance(update, schema.OtherSessionUpdate):
+                if update.session_update != BobaExtension.HISTORY.value:
+                    continue
+
+                history = HistoryUpdate.model_validate(update.model_dump(by_alias=True))
+                if isinstance(history.event, HistoryTurnEnd):
+                    kinds.append("idle")
+
+                continue
+
             if isinstance(update, schema.UserMessageUpdate):
                 kinds.append(update.message_id)
                 continue
@@ -2239,7 +2265,8 @@ class TestQueueAndCancel:
                 continue
 
             if isinstance(update, schema.IdleSessionStateUpdate):
-                kinds.append("idle")
+                if update.stop_reason is not None:
+                    kinds.append("idle")
 
         return kinds
 
@@ -3212,6 +3239,24 @@ class TestHistory:
         kinds: list[str] = []
         notices: list[schema.SessionNotice] = []
         for update in updates:
+            if isinstance(update, schema.OtherSessionUpdate):
+                if update.session_update != BobaExtension.HISTORY.value:
+                    continue
+
+                history = HistoryUpdate.model_validate(update.model_dump(by_alias=True))
+                if isinstance(history.event, HistoryTurnEnd):
+                    kinds.append(history.event.stop_reason)
+                    continue
+
+                if isinstance(history.event, HistoryNotice):
+                    kinds.append("notice")
+                    notice = schema.SessionNotice.model_validate(
+                        history.event.notice.model_dump(by_alias=True)
+                    )
+                    notices.append(notice)
+
+                continue
+
             if isinstance(update, schema.UserMessageUpdate):
                 kinds.append("user")
                 continue
@@ -3222,7 +3267,8 @@ class TestHistory:
                 continue
 
             if isinstance(update, schema.IdleSessionStateUpdate):
-                kinds.append(str(update.stop_reason))
+                if update.stop_reason is not None:
+                    kinds.append(str(update.stop_reason))
 
         return kinds, notices
 
@@ -3234,8 +3280,8 @@ class TestHistory:
         tmp_path: Path,
     ) -> None:
         """Ход, остановленный посреди вызова, и ход, сорванный отказом модели:
-        воспроизведение кончает каждый тем же idle, что видел живой клиент, —
-        лента истории ставит по нему те же пометки."""
+        воспроизведение передаёт те же исходы данными истории, и лента
+        ставит по ним те же пометки без живых переходов состояния."""
         client = AcpClient()
         document = boba.settings_document(mode="bypassPermissions", allow_bypass=True)
         document["limits"]["apiRetries"] = 0
@@ -3475,7 +3521,9 @@ class TestHistory:
                 session_id=session_id,
                 mcp_servers=[StandRegistration.STAND],
             )
-            assert client.turn_updates_of(session_id) == []
+            assert client.turn_updates_of(session_id) == [
+                schema.IdleSessionStateUpdate()
+            ]
 
             _, idle = await second.turn(
                 client,
@@ -4146,7 +4194,9 @@ class TestSessionSettings:
                 cwd=str(tmp_path), session_id=session_id, mcp_servers=[]
             )
             self.check_state(resumed, "default", "fake")
-            assert client.unannounced() == []
+            assert client.unannounced() == [
+                (session_id, schema.IdleSessionStateUpdate())
+            ]
         finally:
             await conn.close()
             await boba.close_stdin()
@@ -4461,7 +4511,7 @@ class TestServiceUpdates:
             assert self._activity(loader) == []
             assert len(loader.of(schema.UsageUpdate)) == 1
             kinds = update_kinds(second.frames, "session/resume")
-            assert kinds[-2:] == ["usage_update", "session_info_update"]
+            assert kinds[-3:] == ["usage_update", "session_info_update", "state_update"]
             assert kinds[0] == "user_message"
         finally:
             await conn.close()
@@ -4838,7 +4888,8 @@ class TestFork:
             )
             assert FeedView().render(client.unannounced_of(branch_id)) == []
             assert [type(u) for u in client.unannounced_of(branch_id)] == [
-                schema.UsageUpdate
+                schema.UsageUpdate,
+                schema.IdleSessionStateUpdate,
             ]
 
             _, idle = await second.turn(
@@ -5177,6 +5228,9 @@ class TestClientCommands:
             if not isinstance(update, schema.OtherSessionUpdate):
                 continue
 
+            if update.session_update != BobaExtension.COMMAND_OUTCOME.value:
+                continue
+
             dumped = update.model_dump(mode="json", by_alias=True)
             outcome = CommandOutcomeUpdate.model_validate(dumped)
             body = adapter.validate_python(outcome.outcome)
@@ -5204,6 +5258,7 @@ class TestClientCommands:
             assert meta == {
                 BobaExtension.SESSION_RECORD.value: True,
                 BobaExtension.COMMANDS.value: True,
+                BobaExtension.HISTORY.value: True,
             }, meta
 
             session = await conn.new_session(

@@ -1,15 +1,16 @@
 """Стенд базы ix для тестов приложений ix: секция [ix_stand] stand.toml и база
 прогонов, которую тест пересоздаёт с ядром ix-core и схемами нужных пакетов.
 
-Имя базы прогонов несёт метку набора и процесса (StandNames): наборы идут
-параллельно и пересоздают каждый свою базу.
+Имя базы прогонов несёт владельца схемы и метки набора и процесса
+(StandNames): наборы идут параллельно и пересоздают каждый свою базу.
 
 Модель секции — общая часть: профиль сервера, kerberos-каталог, имя базы прогонов,
 схема графа и кэш моделей эмбеддинга; стенд конкретного пакета наследует её и
 добавляет своё (источники скрапера, спейсы Confluence).
 
 Ошибки:
-IxStandError — секция [ix_stand] отсутствует или неполна, база стенда недоступна.
+IxStandError — секция [ix_stand] отсутствует или неполна, владелец базы не задан
+    либо база стенда недоступна.
 """
 
 from __future__ import annotations
@@ -56,7 +57,12 @@ class IxStand(BaseModel):
     embedding_cache_dir: str
 
     @classmethod
-    def load(cls) -> Self:
+    def load(cls, *, owner: str) -> Self:
+        if not owner:
+            raise IxStandError(
+                "ix stand: naming a test database requires its schema owner"
+            )
+
         section = "ix_stand"
         config = StandConfigPaths(StandConfigEnv.RUN)
         try:
@@ -68,14 +74,14 @@ class IxStand(BaseModel):
 
         stand.krb.apply()
 
-        database = StandNames().database(stand.database)
+        database = StandNames().database(f"{stand.database}_{owner}")
 
         return stand.model_copy(update={"database": database})
 
     @classmethod
-    def required(cls) -> Self:
+    def required(cls, *, owner: str) -> Self:
         """Стенд для модуля тестов; без конфига сбор модуля падает с причиной."""
-        return cls.load()
+        return cls.load(owner=owner)
 
     @property
     def ix_profile(self) -> PostgresConfig:

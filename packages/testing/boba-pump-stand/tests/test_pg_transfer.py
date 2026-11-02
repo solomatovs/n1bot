@@ -50,7 +50,7 @@ from boba.toolrun.dag_run import DagOutcome
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
-STAND = PumpStand.required()
+STAND = PumpStand.required(owner="pump")
 S = StandNames().of("pump_transfer")
 ROWS = 60
 

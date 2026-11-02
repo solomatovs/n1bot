@@ -53,7 +53,7 @@ from boba.stand.names import StandNames
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
-STAND = PumpStand.required()
+STAND = PumpStand.required(owner="pump")
 SRC = StandNames().of("shop_pg")
 DW = StandNames().of("shop_pg_dw")
 CUSTOMERS = 12

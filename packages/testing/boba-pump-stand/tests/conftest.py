@@ -29,7 +29,7 @@ def pytest_configure(config: pytest.Config) -> None:
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """Группы ставятся раньше хука xdist: он читает их в том же событии. Хук
     получает тесты всего прогона, группы набора идут только его тестам."""
-    order = StandOrder(PumpStand.required())
+    order = StandOrder(PumpStand.required(owner="pump"))
     groups = StandGroups(order)
     for item in SuiteItems(Path(__file__)).own(items):
         order.align(item)

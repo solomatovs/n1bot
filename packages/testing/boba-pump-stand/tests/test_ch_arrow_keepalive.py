@@ -32,7 +32,7 @@ from boba.toolkit.stream import Chunk
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
-STAND = PumpStand.required()
+STAND = PumpStand.required(owner="pump")
 
 
 class LateEndInsert:

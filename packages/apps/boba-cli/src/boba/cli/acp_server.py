@@ -91,13 +91,14 @@ import time
 from abc import abstractmethod
 from collections.abc import (
     AsyncGenerator,
+    AsyncIterator,
     Awaitable,
     Callable,
     Iterator,
     Mapping,
     Sequence,
 )
-from contextlib import AsyncExitStack, aclosing
+from contextlib import AsyncExitStack, aclosing, asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -221,6 +222,9 @@ from boba.transport.acp.protocol import (
     DeclaredCommand,
     ElicitationRound,
     ErrorDataKey,
+    HistoryNotice,
+    HistoryTurnEnd,
+    HistoryUpdate,
     McpErrorOutcome,
     McpMessage,
     McpOutcome,
@@ -336,9 +340,26 @@ Update: TypeAlias = (
     | schema.RunningSessionStateUpdate
     | schema.RequiresActionSessionStateUpdate
     | schema.IdleSessionStateUpdate
+    | schema.OtherSessionStateUpdate
     | schema.AvailableCommandsUpdate
     | schema.OtherSessionUpdate
 )
+
+StateUpdate: TypeAlias = (
+    schema.RunningSessionStateUpdate
+    | schema.RequiresActionSessionStateUpdate
+    | schema.IdleSessionStateUpdate
+    | schema.OtherSessionStateUpdate
+)
+
+
+@dataclass(frozen=True)
+class SessionFeatures:
+    """Возможности клиента, нужные сессии и её приёмнику уведомлений."""
+
+    elicits: bool = False
+    commands: bool = False
+    history: bool = False
 
 
 class SessionRefusedError(Exception):
@@ -3466,16 +3487,15 @@ class SessionRelay(EventSink, ToolHintSource):
         session_id: str,
         link: ClientLink,
         mapping: AcpMapping,
-        elicits: bool,
-        declares: bool,
+        features: SessionFeatures,
     ) -> None:
         self._session_id = session_id
         self._link = link
         self._mapping = mapping
-        self._elicits = elicits
-        self._declares = declares
-        """Клиент объявил приём команд сессии целиком (`_boba/commands`)."""
+        self._features = features
         self._forms = CommandForms()
+        self._state: StateUpdate = schema.OtherSessionStateUpdate(state="unknown")
+        self._waiting_actions = 0
         self._announcing: asyncio.Task[None] | None = None
         self._announced = False
         """Команды сессии уже объявлены клиенту: дальше каждая их смена
@@ -3493,6 +3513,7 @@ class SessionRelay(EventSink, ToolHintSource):
 
     def attach(self, agent: Agent) -> None:
         self._agent = agent
+        self._state = schema.IdleSessionStateUpdate()
 
     def insertion(self, message_id: str) -> asyncio.Future[None]:
         """Ожидание вставки вопроса message_id: его решает запись `user` с
@@ -3520,7 +3541,7 @@ class SessionRelay(EventSink, ToolHintSource):
     @property
     def elicits(self) -> bool:
         """Клиент объявил формы `elicitation.form`."""
-        return self._elicits
+        return self._features.elicits
 
     @property
     def session_id(self) -> str:
@@ -3529,6 +3550,42 @@ class SessionRelay(EventSink, ToolHintSource):
     async def notify(self, update: Update) -> None:
         """Уведомление вне хода: смена настроек сессии."""
         await self._send(update)
+
+    async def replay(self, update: Update) -> None:
+        """Данные прошлого хода: исходы и пометки не меняют живое состояние."""
+        if isinstance(update, schema.IdleSessionStateUpdate):
+            if not self._features.history:
+                return
+
+            if update.stop_reason is None:
+                return
+
+            event = HistoryTurnEnd(stop_reason=update.stop_reason)
+            await self._send(HistoryUpdate(event=event).wire())
+
+            return
+
+        if isinstance(update, StateUpdate):
+            return
+
+        if isinstance(update, schema.SessionNotice):
+            if not self._features.history:
+                return
+
+            notice = HistoryNotice(notice=update)
+            await self._send(HistoryUpdate(event=notice).wire())
+
+            return
+
+        await self._send(update)
+
+    async def snapshot(self) -> None:
+        """Текущее состояние перед ответом на resume, в цикле сессии."""
+        state = self._state
+        if isinstance(state, schema.IdleSessionStateUpdate):
+            state = schema.IdleSessionStateUpdate()
+
+        await self._send(state)
 
     def announce_later(self) -> None:
         """Команды сессии из истории клиенту отдельной задачей, после ответа на
@@ -3566,7 +3623,7 @@ class SessionRelay(EventSink, ToolHintSource):
 
         entries = self._agent.commands.history().entries()
         updates: list[Update] = []
-        if self._declares:
+        if self._features.commands:
             updates.append(self._forms.declared(entries).wire())
 
         updates.append(self._forms.available(entries))
@@ -3750,6 +3807,9 @@ class SessionRelay(EventSink, ToolHintSource):
             await self._send(update)
 
     async def _send(self, update: Update) -> None:
+        if isinstance(update, StateUpdate):
+            self._state = update
+
         if self._detached:
             return
 
@@ -3828,7 +3888,7 @@ class SessionRelay(EventSink, ToolHintSource):
         сессия на время вопроса в `requires_action`. Клиент без форм, ушедший
         клиент и ответ ошибкой — отмена (`cancel`) с записью в журнал; снятие
         вопроса отменой хода снимает и запрос."""
-        if not self._elicits:
+        if not self._features.elicits:
             logger.info(
                 "session %s: call %s asks the user, but the client declared no "
                 "form elicitation; the question is cancelled",
@@ -3837,11 +3897,11 @@ class SessionRelay(EventSink, ToolHintSource):
             )
             return schema.CancelElicitationResponse()
 
-        await self._send(schema.RequiresActionSessionStateUpdate())
         try:
-            response = await self._link.create_elicitation(
-                message, self._session_id, tool_call_id, requested, meta
-            )
+            async with self._action():
+                response = await self._link.create_elicitation(
+                    message, self._session_id, tool_call_id, requested, meta
+                )
         except ConnectionError as exc:
             logger.warning(
                 "session %s: the question of call %s cannot be asked, the client "
@@ -3861,9 +3921,21 @@ class SessionRelay(EventSink, ToolHintSource):
             )
             return schema.CancelElicitationResponse()
 
-        await self._send(schema.RunningSessionStateUpdate())
-
         return response
+
+    @asynccontextmanager
+    async def _action(self) -> AsyncIterator[None]:
+        self._waiting_actions += 1
+        try:
+            if self._waiting_actions == 1:
+                await self._send(schema.RequiresActionSessionStateUpdate())
+
+            yield
+        finally:
+            self._waiting_actions -= 1
+            if self._waiting_actions == 0:
+                if self._running:
+                    await self._send(schema.RunningSessionStateUpdate())
 
     async def _permission(self, event: ControlRequestEvent) -> None:
         agent = self._agent
@@ -3876,7 +3948,9 @@ class SessionRelay(EventSink, ToolHintSource):
             request, self.tool_hints(request.tool_name)
         )
         try:
-            response = await self._link.request_permission(self._session_id, ask)
+            async with self._action():
+                response = await self._link.request_permission(self._session_id, ask)
+
             answer = self._mapping.permission_answer(response, request)
         except ConnectionError as exc:
             logger.warning(
@@ -4437,10 +4511,7 @@ class AcpAgent(AcpAgentProtocol):
         — токен службы, проверенный транспортом до подключения; у stdio их
         нет."""
         self._link: ClientLink | None = None
-        self._elicits = False
-        """Клиент объявил формы `elicitation.form` в initialize."""
-        self._declares = False
-        """Клиент объявил в initialize приём команд сессии целиком."""
+        self._features = SessionFeatures()
         self._sessions: dict[str, HostedSession] = {}
         self._mapping = AcpMapping()
         self._options = SessionOptions()
@@ -4484,10 +4555,15 @@ class AcpAgent(AcpAgentProtocol):
         if capabilities is not None:
             elicitation = capabilities.elicitation
 
+        elicits = False
         if elicitation is not None:
-            self._elicits = elicitation.form is not None
+            elicits = elicitation.form is not None
 
-        self._declares = self._receives_commands(capabilities)
+        self._features = SessionFeatures(
+            elicits=elicits,
+            commands=self._receives(capabilities, BobaExtension.COMMANDS),
+            history=self._receives(capabilities, BobaExtension.HISTORY),
+        )
         self._linked().declared(capabilities)
         session = schema.SessionCapabilities(
             prompt=schema.PromptCapabilities(),
@@ -4507,6 +4583,7 @@ class AcpAgent(AcpAgentProtocol):
             field_meta={
                 BobaExtension.SESSION_RECORD.value: True,
                 BobaExtension.COMMANDS.value: True,
+                BobaExtension.HISTORY.value: True,
             },
         )
 
@@ -4518,8 +4595,10 @@ class AcpAgent(AcpAgentProtocol):
         )
 
     @staticmethod
-    def _receives_commands(capabilities: schema.ClientCapabilities | None) -> bool:
-        """Клиент объявил приём `_boba/commands` в `capabilities._meta`."""
+    def _receives(
+        capabilities: schema.ClientCapabilities | None, extension: BobaExtension
+    ) -> bool:
+        """Клиент объявил приём расширения в `capabilities._meta`."""
         if capabilities is None:
             return False
 
@@ -4527,7 +4606,7 @@ class AcpAgent(AcpAgentProtocol):
         if meta is None:
             return False
 
-        return meta.get(BobaExtension.COMMANDS.value) is True
+        return meta.get(extension.value) is True
 
     async def login(self, method_id: str, **kwargs: Any) -> schema.LoginAuthResponse:
         """Вход объявленным способом: подключение уже вошло токеном, который
@@ -4626,7 +4705,7 @@ class AcpAgent(AcpAgentProtocol):
                     mcp,
                     relay,
                     resume=False,
-                    questions=self._elicits,
+                    questions=self._features.elicits,
                 )
             except SessionRefusedError as exc:
                 raise RequestError.invalid_params(
@@ -4647,7 +4726,10 @@ class AcpAgent(AcpAgentProtocol):
 
     def _relay(self, session_id: str) -> SessionRelay:
         return SessionRelay(
-            session_id, self._linked(), self._mapping, self._elicits, self._declares
+            session_id,
+            self._linked(),
+            self._mapping,
+            self._features,
         )
 
     def _thread_for(self, session_id: str) -> LoopThread:
@@ -4946,10 +5028,13 @@ class AcpAgent(AcpAgentProtocol):
 
         logger.info("session %s: resumed", session_id)
         if isinstance(held, ObserverSession):
+            await hosted.thread.run(held.relay.snapshot())
             return schema.ResumeSessionResponse()
 
         if replay:
             await hosted.thread.run(held.relay.announce_loaded())
+
+        await hosted.thread.run(held.relay.snapshot())
 
         return schema.ResumeSessionResponse(
             config_options=self._options.config_options(self._settings(held))
@@ -4991,7 +5076,7 @@ class AcpAgent(AcpAgentProtocol):
             live = held.agent.session.state is SessionState.COMPACTING
 
         for update in painter.unfinished(live):
-            await held.relay.notify(update)
+            await held.relay.replay(update)
 
         logger.info("session %s: %d record(s) replayed", session_id, replayed)
 
@@ -4999,7 +5084,7 @@ class AcpAgent(AcpAgentProtocol):
         self, held: HeldSession, record: ChainRecord, painter: FeedPainter
     ) -> None:
         for update in painter.updates(record):
-            await held.relay.notify(update)
+            await held.relay.replay(update)
 
     async def _open_stored(
         self,
@@ -5090,7 +5175,7 @@ class AcpAgent(AcpAgentProtocol):
                 mcp,
                 relay,
                 resume=True,
-                questions=self._elicits,
+                questions=self._features.elicits,
             )
         except SessionHeldError as exc:
             logger.info(
@@ -5099,7 +5184,7 @@ class AcpAgent(AcpAgentProtocol):
                 exc,
             )
             observed = await self._assembly.observe(
-                stored, directory, mcp, mcp, relay, self._elicits
+                stored, directory, mcp, mcp, relay, self._features.elicits
             )
 
             return ObserverSession(stored.value, observed, relay, self._mapping, mcp)
@@ -5455,7 +5540,7 @@ class AcpAgent(AcpAgentProtocol):
                     mcp,
                     relay,
                     resume=resume,
-                    questions=self._elicits,
+                    questions=self._features.elicits,
                 )
             except SessionRefusedError as exc:
                 await self._dropped_fork(target, exc)

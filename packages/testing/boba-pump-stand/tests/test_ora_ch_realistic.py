@@ -55,7 +55,7 @@ from boba.toolkit.result import FailureResult
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
-STAND = PumpStand.required()
+STAND = PumpStand.required(owner="pump")
 OWNER = PumpUser().name
 DW = StandNames().of("shop_ora_dw")
 ARRAYSIZE = 2000

@@ -58,7 +58,7 @@ from boba.toolkit.result import FailureResult, SqlFailureResult
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
-STAND = PumpStand.required()
+STAND = PumpStand.required(owner="pump")
 OWNER = PumpUser().name
 ARRAYSIZE = 2000
 BOOLEAN_SINCE = 23

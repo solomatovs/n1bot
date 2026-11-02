@@ -42,7 +42,7 @@ from boba.toolrun.dag_run import DagOutcome
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
-STAND = PumpStand.required()
+STAND = PumpStand.required(owner="pump")
 S = StandNames().of("pump_edges")
 EXT = PostgresSide.EXTENSION_SCHEMA
 ROWS = 7
@@ -1560,7 +1560,9 @@ async def vector_db() -> AsyncIterator[PostgresSide]:
     """Сервер ix стенда с pgvector: стендовые контейнеры насосов расширения
     vector не имеют. Берётся служебная база сервера, а не базы прогонов ix —
     их пересоздают наборы ix; своя схема процесса изолирует данные."""
-    side = PostgresSide(PgSource(name="ix", postgres=IxStand.required().postgres), S)
+    side = PostgresSide(
+        PgSource(name="ix", postgres=IxStand.required(owner="pump").postgres), S
+    )
     await side.connect()
     await side.ensure_extensions(["vector"])
     await side.recreate_schema()

@@ -1,6 +1,7 @@
 """Кадры соединения ACP v2 в тестах и их сверка со схемой ACP.
 
-Данные: `acp_schema/` — схема ACP v2, тег schema-v2.0.0-alpha.8.
+Данные: `acp_schema/` — схема ACP v2 из acp-tck 0.2.0,
+revision beac4ba96190018e9f6d82e148ff275084c5aa3e.
 """
 
 from __future__ import annotations

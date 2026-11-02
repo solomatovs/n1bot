@@ -8,4 +8,4 @@ from ora_tool_stand import IxStand
 
 @pytest.fixture(scope="session")
 def ix_stand() -> IxStand:
-    return IxStand.required()
+    return IxStand.required(owner="ora_tool")

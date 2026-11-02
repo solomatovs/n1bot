@@ -50,7 +50,7 @@ from boba.toolkit.result import FailureResult, SqlFailureResult
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
-STAND = PumpStand.required()
+STAND = PumpStand.required(owner="pump")
 ROWS = 60
 ARRAYSIZE = 500
 PG_SCHEMA = StandNames().of("pump_ora_sync")

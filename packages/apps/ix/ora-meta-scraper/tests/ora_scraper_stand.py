@@ -9,6 +9,7 @@ boba.stand.scraper.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 from enum import StrEnum
 from pathlib import Path
@@ -20,18 +21,42 @@ from pydantic import BaseModel, ConfigDict, SecretStr
 from boba.db.oracle import OracleQueryError
 from boba.db.oracle.connection import OracleConfig, PasswordAuth
 from boba.db.oracle.payload import PayloadOracle
-from boba.ix_core.scrape import ScrapeSource, parse_version
+from boba.ix_core.database import IxDatabase
+from boba.ix_core.scrape import ScrapeSource, parse_version, scrape_source
 from boba.ora_meta_scraper import worker as scraper
 from boba.ora_meta_scraper.worker import OraSource, source_address
-from boba.stand.ix import IxStandError
+from boba.stand.ix import IxStandError, peak_rss_mib
 from boba.stand.scraper import DdlFile, DemoRecreate, ScraperStand, StandLayout
 
-__all__ = ["LAYOUT", "DemoDataset", "IxSource", "IxStand", "SchemaUser", "StandSchema"]
+__all__ = [
+    "LAYOUT",
+    "DemoDataset",
+    "IxSource",
+    "IxStand",
+    "SchemaUser",
+    "StandSchema",
+    "scrape_in_child",
+]
 
 LAYOUT = StandLayout(
     stand_dir=Path(__file__).resolve().parent / "stand",
     package_dir=Path(scraper.__file__).resolve().parent,
 )
+
+
+def scrape_in_child(
+    database: IxDatabase, oracle: OracleConfig, attempts: int
+) -> tuple[int, int]:
+    """Вход процесса измерения RSS: конфиг приходит от pytest-родителя.
+
+    ProcessPoolExecutor импортирует этот модуль при spawn без загрузки
+    модулей тестов и их конфигурации стенда.
+    """
+    report = asyncio.run(
+        scrape_source(database, OraSource(oracle), LAYOUT.package_dir, attempts)
+    )
+
+    return report.applied(), peak_rss_mib()
 
 
 class SchemaUser(StrEnum):

@@ -39,7 +39,7 @@ from boba.toolrun.dag_run import DagOutcome
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
-STAND = PumpStand.required()
+STAND = PumpStand.required(owner="pump")
 SRC = StandNames().of("shop")
 DW = StandNames().of("shop_dw")
 BACK = StandNames().of("shop_back")

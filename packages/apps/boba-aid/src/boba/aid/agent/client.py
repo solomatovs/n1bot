@@ -866,6 +866,7 @@ class AgentLink:
             field_meta={
                 BobaExtension.TOOL_SOURCE.value: True,
                 BobaExtension.COMMANDS.value: True,
+                BobaExtension.HISTORY.value: True,
             },
         )
 
