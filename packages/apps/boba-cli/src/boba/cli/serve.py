@@ -85,7 +85,7 @@ from boba.cli.app import (
 )
 from boba.cli.settings import Arguments, EffectiveSettings, Settings, SettingsError
 from boba.cli.threads import LoopThread, SessionThreads, ThreadedHistoryStore
-from boba.config import ConfigError, ConfigLoader, bind
+from boba.config import ConfigError, bind
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import LibpqConnection, PostgresConfig
 from boba.history.postgres import PostgresHistoryStore, SessionLocks
@@ -937,7 +937,9 @@ class ServeEntry:
         SystemExit — конфиг не прочитан или служба не ответила успехом.
         """
         try:
-            section = bind(ConfigLoader(self._paths).load(), "agent", ServeSection)
+            section = bind(
+                ServeConfig.loader(self._paths).load(), "agent", ServeSection
+            )
             probe = HealthProbe(section.port, section.url_prefix, ServeMark.HEALTH)
             checked = probe.check()
         except (ConfigError, HealthCheckError) as exc:

@@ -60,7 +60,11 @@ async def store(
     )
     config = bind(raw, "app", McpAppConfig)
     plan = MigrationScripts(schema).packages(
-        ("boba.identity_postgres", "boba.connection_broker")
+        (
+            "boba.identity_postgres",
+            "boba.access_postgres",
+            "boba.connection_broker",
+        )
     )
     await PostgresMigrations().apply((MigrationTarget(test_postgres, plan),))
     try:
@@ -264,13 +268,13 @@ async def test_role_cannot_call_a_tool_from_another_users_catalog(
     assert dag.is_error
 
 
-async def test_stored_offer_cannot_resolve_a_hidden_static_profile(
+async def test_stored_offer_cannot_resolve_an_ungranted_profile(
     service: ServiceStand,
 ) -> None:
     calls = CatalogCalls(service)
     async with await calls.client(analyst=True) as client:
         result = await client.call_tool_mcp(
-            calls.TOOL, {"connection": ServiceStand.DWH}
+            calls.TOOL, {"connection": "not-granted"}
         )
     assert result.is_error
     assert "not offered" in calls.text(result)

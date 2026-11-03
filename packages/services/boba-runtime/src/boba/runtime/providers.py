@@ -20,7 +20,7 @@ from boba.auth.credentials import KerberosCredentialSource
 from boba.chat.profiles import ChatProfiles
 from boba.config import bind
 from boba.connection_broker.crypto import SecretCipher
-from boba.connection_broker.params import ConnectionParams, ServerConnection
+from boba.connection_broker.params import ConnectionParams
 from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.tickets import ServiceTickets
 from boba.connection_broker.user_connections import ArmedConnections
@@ -252,12 +252,6 @@ def connection_types_ref() -> ConnectionTypes:
     return _root().resolved(connection_types)
 
 
-def server_connections() -> Mapping[str, ServerConnection]:
-    """Заданные соединения сервера [connections.<имя>]: у чата их нет,
-    сервис boba-mcp кладёт свои через provide."""
-    return {}
-
-
 def stored_connections() -> ArmedConnections | None:
     """Resolver соединений хранилища; владелец каталога задаёт его явно."""
     return None
@@ -265,14 +259,12 @@ def stored_connections() -> ArmedConnections | None:
 
 def connection_params(
     contexts: Annotated[CallContexts, Depends(call_contexts)],
-    servers: Annotated[Mapping[str, ServerConnection], Depends(server_connections)],
     stored: Annotated[ArmedConnections | None, Depends(stored_connections)],
 ) -> ConnectionParams:
-    """Соединения инструментов процесса: каталог с проверкой grants и
-    заданные соединения сервера под сервисными кредами; одни на процесс."""
+    """Соединения инструментов процесса: каталог MCP с проверкой grants."""
     tickets = ServiceTickets(credential_source_ref)
 
-    return ConnectionParams(connection_types_ref, contexts, servers, tickets, stored)
+    return ConnectionParams(connection_types_ref, contexts, tickets, stored)
 
 
 def exec_refs(params: ConnectionParams) -> ExecRefs:

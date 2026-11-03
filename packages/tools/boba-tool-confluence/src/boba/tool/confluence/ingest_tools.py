@@ -66,12 +66,17 @@ from boba.tool.confluence.ingest_base import (
     PageScope,
     SpaceScope,
 )
-from boba.tool.confluence.tools import ConfluenceHttp, ConfluenceToolsConfig
+from boba.tool.confluence.tools import (
+    ConfluenceHttp,
+    ConfluenceToolsConfig,
+    WebTarget,
+)
 from boba.tool_io.entry import ToolMain
 from boba.toolkit.facade import Injected, tool, warmup
 from boba.toolkit.ports import DownloadProgress, ToolProgress
 from boba.toolkit.result import MarkdownResult, TableResult
 from boba.toolkit.timing import Elapsed
+from boba.transport.http.connection import HttpConnection
 
 logger = logging.getLogger("boba.tool.confluence.ingest")
 
@@ -258,11 +263,18 @@ class IngestRun:
     вызова, счётчики прогресса, ридеры по media-type и сборка конвейера."""
 
     def __init__(
-        self, cfg: IngestToolConfig, progress: ToolProgress, *, ocr: bool
+        self,
+        cfg: IngestToolConfig,
+        connection: HttpConnection,
+        progress: ToolProgress,
+        *,
+        ocr: bool,
     ) -> None:
         self._cfg = cfg.with_ocr(ocr=ocr)
         self._progress = IngestProgress(logger, progress)
-        self._assembly = IngestAssembly(self._cfg, self._progress, self._routes())
+        self._assembly = IngestAssembly(
+            self._cfg, connection, self._progress, self._routes()
+        )
 
     def _routes(self) -> dict[str, Reader[str]]:
         """HTML читает bs4-ридер, документы — boba-doc, txt/md/csv — decode.
@@ -300,7 +312,7 @@ class IngestRun:
 
 
 @tool(destructive=False)
-async def confluence_index_page(
+async def confluence_index_page(  # noqa: PLR0913 — бизнес-параметры плюс инъекции
     page_id: Annotated[
         str,
         Field(
@@ -314,6 +326,7 @@ async def confluence_index_page(
     attachments: Annotated[bool, Field(description=_ATTACHMENTS_DESCRIPTION)] = False,
     ocr: Annotated[bool, Field(description=_OCR_DESCRIPTION)] = False,
     *,
+    connection: WebTarget,
     cfg: Annotated[IngestToolConfig, Injected],
     progress: Annotated[ToolProgress, Injected],
 ) -> TableResult:
@@ -324,7 +337,7 @@ async def confluence_index_page(
     менялось, skipped — отсечено правилами, failed — сорвалось, причина в
     колонке error. found без indexed это норма: содержимое не менялось.
     """
-    report = await IngestRun(cfg, progress, ocr=ocr).run(
+    report = await IngestRun(cfg, connection, progress, ocr=ocr).run(
         PageScope(page_id), attachments=attachments
     )
 
@@ -332,7 +345,7 @@ async def confluence_index_page(
 
 
 @tool(destructive=False)
-async def confluence_index_space(
+async def confluence_index_space(  # noqa: PLR0913 — бизнес-параметры плюс инъекции
     space_key: Annotated[
         str,
         Field(
@@ -343,6 +356,7 @@ async def confluence_index_space(
     attachments: Annotated[bool, Field(description=_ATTACHMENTS_DESCRIPTION)] = False,
     ocr: Annotated[bool, Field(description=_OCR_DESCRIPTION)] = False,
     *,
+    connection: WebTarget,
     cfg: Annotated[IngestToolConfig, Injected],
     progress: Annotated[ToolProgress, Injected],
 ) -> TableResult:
@@ -353,7 +367,7 @@ async def confluence_index_space(
     менялось, skipped — отсечено правилами, failed — сорвалось, причина в
     колонке error. found без indexed это норма: содержимое не менялось.
     """
-    report = await IngestRun(cfg, progress, ocr=ocr).run(
+    report = await IngestRun(cfg, connection, progress, ocr=ocr).run(
         SpaceScope(space_key), attachments=attachments
     )
 
@@ -363,7 +377,7 @@ async def confluence_index_space(
 
 
 @tool(destructive=False)
-async def confluence_attachment(
+async def confluence_attachment(  # noqa: PLR0913 — бизнес-параметры плюс инъекции
     page_id: Annotated[
         str,
         Field(min_length=1, description="ID страницы Confluence."),
@@ -374,6 +388,7 @@ async def confluence_attachment(
     ],
     ocr: Annotated[bool, Field(description=_OCR_DESCRIPTION)] = False,
     *,
+    connection: WebTarget,
     cfg: Annotated[IngestToolConfig, Injected],
     progress: Annotated[ToolProgress, Injected],
 ) -> MarkdownResult:
@@ -381,11 +396,10 @@ async def confluence_attachment(
     run_cfg = cfg.with_ocr(ocr=ocr)
 
     rest_cfg = ConfluenceToolsConfig(
-        confluence=run_cfg.confluence,
         body_format=run_cfg.body_format,
         transport=run_cfg.transport,
     )
-    async with ConfluenceHttp(rest_cfg) as http:
+    async with ConfluenceHttp(rest_cfg, connection) as http:
         attachments = PageAttachments(await http.page_json(page_id))
 
         link = attachments.link(filename)

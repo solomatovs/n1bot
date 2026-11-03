@@ -42,15 +42,19 @@ class TestConfluenceTools:
         # перезагружают модуль инструментов, и класс с import'а модуля устаревает
         import boba.tool.confluence.tools as confluence_tools
 
-        cfg = ConfluenceToolsConfig(
-            confluence=HttpConnection(scheme=UrlScheme.HTTP, host="127.0.0.1", port=1),
-        )
+        cfg = ConfluenceToolsConfig()
 
         body = ToolMain.toolset(confluence_tools.confluence_fetch)[0].coroutine
         if body is None:
             raise AssertionError("body is not None")
         with pytest.raises(TransportError):
-            await body(page_id="1", cfg=cfg)
+            await body(
+                page_id="1",
+                connection=HttpConnection(
+                    scheme=UrlScheme.HTTP, host="127.0.0.1", port=1
+                ),
+                cfg=cfg,
+            )
 
 
 class TestSpaceList:

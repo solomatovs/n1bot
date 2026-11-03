@@ -281,7 +281,12 @@ async def store(pool: AsyncPostgresPool) -> AsyncIterator[ConnectionStore]:
 
     async with pool.connection() as conn:
         await PostgresSchema(CONNECTIONS_SCHEMA).apply_packages(
-            conn, ("boba.identity_postgres", "boba.connection_broker")
+            conn,
+            (
+                "boba.identity_postgres",
+                "boba.access_postgres",
+                "boba.connection_broker",
+            ),
         )
 
     built = ConnectionStore(

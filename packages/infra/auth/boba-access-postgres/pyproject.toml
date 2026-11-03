@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-access-postgres"
+version = "0.0.33.dev1"
+description = "PostgreSQL schema for shared user and role grants."
+requires-python = ">=3.11,<4"
+
+[tool.setuptools.package-data]
+"boba.access_postgres" = ["schema/*.sql"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

@@ -61,7 +61,10 @@ async def stored(
 ) -> StoreStand:
     schema = app_config.db_schema
     async with pool.connection() as conn:
-        for package in ("boba.connection_broker", "boba.aid.mcp_servers"):
+        for package in (
+            "boba.access_postgres",
+            "boba.aid.mcp_servers",
+        ):
             await PostgresSchema(schema).apply_files(
                 conn, files(package) / "schema", {}
             )

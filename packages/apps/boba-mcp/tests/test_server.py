@@ -2175,7 +2175,7 @@ class TestWorkspaceFiles:
 
 
 class TestConnectionOffers:
-    """Схема параметра зависит от ролей и источников connections endpoint'а."""
+    """Endpoint выдаёт строковый аргумент, который разрешается из каталога."""
 
     TOOL: ClassVar[str] = "fake_connection_host"
 
@@ -2203,10 +2203,8 @@ class TestConnectionOffers:
         tool = next(tool for tool in listed if tool.name == self.TOOL)
         field = tool.input_schema["properties"]["connection"]
         assert field["x-boba-connection"] == "postgres"
-        assert field["anyOf"] == [
-            {"type": "string"},
-            {"type": "string", "enum": [ServiceStand.DWH]},
-        ]
+        assert field["type"] == "string"
+        assert "enum" not in field
 
     async def test_nothing_offered_hides_the_tool(
         self, stand: ServiceStand, offers: str
@@ -2222,25 +2220,25 @@ class TestConnectionOffers:
         if "fake_echo" not in names:
             raise AssertionError(f"tools without connections stay: {names}")
 
-    async def test_server_connection_reaches_the_body(
+    async def test_name_without_a_catalog_grant_does_not_reach_the_body(
         self, stand: ServiceStand, offers: str
     ) -> None:
         token = await self._token(stand, True)
         async with self._client(offers, token) as client:
-            result = await client.call_tool_mcp(
-                self.TOOL, {"connection": ServiceStand.DWH}
+            result = await client.call_tool_mcp(self.TOOL, {"connection": "dwh"})
+
+        if not result.is_error:
+            raise AssertionError(f"a name outside the catalog was accepted: {result}")
+
+        if "connection catalog is unavailable" not in _text(result):
+            raise AssertionError(
+                f"the server resolves names from its catalog: {result}"
             )
 
-        if result.is_error:
-            raise AssertionError(f"the server connection is taken: {result}")
-
-        if _text(result) != "dwh.local|dwh":
-            raise AssertionError(f"the body gets the server profile: {result}")
-
-    async def test_plain_client_sees_server_names_and_the_scope(
+    async def test_plain_client_sees_catalog_names_and_the_scope(
         self, stand: ServiceStand, offers: str
     ) -> None:
-        """Клиент без расширений видит enum имён сервера и параметр scope_id,
+        """Схема параметра имени не раскрывает профили и сохраняет scope_id,
         а список инструментов помечен личным со сроком свежести: он зависит
         от ролей токена и возможностей запроса, а реестр собран на старте."""
         token = await self._token(stand, True)
@@ -2255,8 +2253,11 @@ class TestConnectionOffers:
 
         tool = next(tool for tool in listed.tools if tool.name == self.TOOL)
         properties = tool.input_schema["properties"]
-        if ServiceStand.DWH not in str(properties["connection"]):
-            raise AssertionError(f"the server names are an enum: {properties}")
+        if properties["connection"]["type"] != "string":
+            raise AssertionError(f"the connection is selected by name: {properties}")
+
+        if "enum" in properties["connection"]:
+            raise AssertionError(f"the profile names stay in the catalog: {properties}")
 
         if SchemaMark.SCOPE.value not in properties[CallFields.SCOPE]:
             raise AssertionError(f"the scope parameter is shown: {properties}")

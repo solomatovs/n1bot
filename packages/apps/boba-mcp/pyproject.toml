@@ -9,6 +9,7 @@ description = "Boba mcp: MCP-сервер с инструментами boba —
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba-identity-postgres==0.0.33.dev1",
+    "boba-access-postgres==0.0.33.dev1",
     "boba-core==0.0.33.dev1",
     "fastmcp-slim[server]>=4.1.4,<5",
     "mcp-types>=2.3,<3",

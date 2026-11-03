@@ -21,7 +21,7 @@ from psycopg import sql
 from psycopg.errors import InsufficientPrivilege
 from psycopg.types.json import Jsonb
 
-from boba.config import ConfigLoader, bind
+from boba.config import bind
 from boba.connection_broker.crypto import SecretCipher
 from boba.connection_broker.store import ConnectionStore
 from boba.connections.manifest import ConnectionTypes
@@ -162,8 +162,8 @@ class StandDatabase:
 
     def __init__(self, app: StandApp, name: str) -> None:
         self._name = name
-        self._built = ConfigLoader(app.paths()).load()
-        self._tools = ConfigLoader(app.tools_app().paths()).load()
+        self._built = app.config_files().loader().load()
+        self._tools = app.tools_app().config_files().loader().load()
         """Конфиг процесса, исполняющего инструменты: секции [tool.*]."""
         postgres = bind(self._built, path="postgres", model=PostgresConfig)
         pool = postgres.pool.model_copy(update=self.POOL_OVERRIDE)
@@ -204,7 +204,7 @@ class StandDatabase:
                 (
                     "boba.identity_postgres",
                     "boba.runtime",
-                    "boba.connection_broker",
+                    "boba.access_postgres",
                     "boba.aid.mcp_servers",
                 ),
             )
@@ -225,7 +225,12 @@ class StandDatabase:
         tool_migrations = ApplicationMigrations((plugin_sources,))
         targets.extend(
             await tool_migrations.targets(
-                tools, ("boba.identity_postgres", "boba.connection_broker")
+                tools,
+                (
+                    "boba.identity_postgres",
+                    "boba.access_postgres",
+                    "boba.connection_broker",
+                ),
             )
         )
         isolated: list[MigrationTarget] = []
@@ -692,7 +697,11 @@ class StandServerSeed(ServerSeed):
         run_blocking(self._seed())
 
     async def _seed(self) -> None:
-        built = ConfigLoader(self._config.files.paths(self._config.app)).load()
+        built = (
+            self._config.app.config_files()
+            .loader(self._config.files.paths(self._config.app))
+            .load()
+        )
         runtime = bind(built, RuntimeConfig.SECTION, RuntimeConfig)
         cipher = SecretCipher(runtime.connections.cipher.get_secret_value())
         pool = AsyncPostgresPool(runtime.postgres)

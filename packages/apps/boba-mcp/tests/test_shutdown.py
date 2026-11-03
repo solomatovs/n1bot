@@ -106,7 +106,11 @@ def service(
     config.write()
     storage = StandSchema(
         config.files.paths(config.app),
-        ("boba.identity_postgres", "boba.connection_broker"),
+        (
+            "boba.identity_postgres",
+            "boba.access_postgres",
+            "boba.connection_broker",
+        ),
     )
     run_blocking(storage.create())
     process = StandProcess[ServiceStand](config=config, log_path=tmp_path / "mcp.log")

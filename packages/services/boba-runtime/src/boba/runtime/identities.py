@@ -19,7 +19,7 @@ from typing import Annotated, ClassVar, Literal
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from boba.chat.threads import DataUnavailableError
-from boba.config import ConfigError, ConfigLoader, bind
+from boba.config import ConfigError, ConfigLoader, ConfigSchema, bind
 from boba.core.validation import ValidationText
 from boba.db.postgres import AsyncPostgresPool, PostgresError
 from boba.db.postgres.connection import PostgresConfig
@@ -121,7 +121,9 @@ class IdentityMigrationEntry:
 
     async def run(self, arguments: Sequence[str] | None = None) -> None:
         call = self._calls.validate_python(vars(self._parser.parse_args(arguments)))
-        raw = ConfigLoader(call.configs).load()
+        raw = ConfigLoader(
+            call.configs, schema=ConfigSchema(IdentityStorageConfig)
+        ).load()
         config = bind(raw, "app", IdentityStorageConfig)
         config.instance.layout(call.configs[0].resolve().parent).apply()
         pool = await AsyncPostgresPool.get(config.postgres)

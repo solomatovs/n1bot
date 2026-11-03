@@ -1099,7 +1099,12 @@ async def store(pool: AsyncPostgresPool) -> ConnectionStore:
     cipher = SecretCipher(secrets.token_bytes(32))
     async with pool.connection() as conn:
         await PostgresSchema(schema).apply_packages(
-            conn, ("boba.identity_postgres", "boba.connection_broker")
+            conn,
+            (
+                "boba.identity_postgres",
+                "boba.access_postgres",
+                "boba.connection_broker",
+            ),
         )
 
     return ConnectionStore(pool, schema, cipher, ConnectionTypes.discover())
@@ -1126,54 +1131,27 @@ class TestRelayConnections:
 
     ENVELOPE: ClassVar[dict[str, Any]] = TestMcpRelay.ENVELOPE
 
-    @pytest.mark.parametrize(
-        ("owned", "logged", "case"),
-        [
-            (
-                [],
-                [],
-                RelayCall(
-                    name="fake_connection_host",
-                    arguments={"connection": "dwh"},
-                    errored=False,
-                    expected=["dwh.local|dwh"],
-                ),
-            ),
-            (
-                ["dwh"],
-                [],
-                RelayCall(
-                    name="fake_connection_host",
-                    arguments={"connection": "dwh"},
-                    errored=False,
-                    expected=["dwh.local|dwh"],
-                ),
-            ),
-        ],
-        ids=["server-name-as-is", "local-catalog-is-not-consulted"],
-    )
-    async def test_server_connections_are_offered(  # noqa: PLR0913 — случай собирается фикстурами стендов
+    async def test_relay_does_not_fall_back_to_local_connections(
         self,
         service_process: ServiceProcess,
         store: ConnectionStore,
         call_stand: CallStand,
         tab: TabSession,
-        owned: Sequence[str],
-        logged: Sequence[str],
-        case: RelayCall,
-        caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """Каталог AID не меняет смысл имени, принадлежащего серверу MCP."""
+        """MCP не берёт профиль из старого локального каталога соединений."""
         offers = service_process.servers("/offers")
         tab.password_sign_in(frozenset({"analyst"}))
-        answer = await self._called(offers, store, call_stand, tab, owned, case)
+        case = RelayCall(
+            name="fake_connection_host",
+            arguments={"connection": "dwh"},
+            errored=True,
+            expected=["connection catalog is unavailable"],
+        )
+        answer = await self._called(offers, store, call_stand, tab, ["dwh"], case)
 
-        assert answer.is_error is case.errored, answer
+        assert answer.is_error, answer
         for part in case.expected:
             assert part in str(answer.content), answer
-
-        for part in logged:
-            assert part in caplog.text, caplog.text
 
     async def _called(  # noqa: PLR0913 — вызов собирается фикстурами стендов
         self,

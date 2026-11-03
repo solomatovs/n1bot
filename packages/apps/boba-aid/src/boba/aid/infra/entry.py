@@ -20,8 +20,8 @@ from typing import ClassVar
 
 from omegaconf import DictConfig
 
-from boba.aid.infra.config import AidSection
-from boba.config import ConfigError, ConfigLoader, bind
+from boba.aid.infra.config import AidSection, AppConfig
+from boba.config import ConfigError, ConfigSchema, bind
 from boba.core.package_data import PackageDataCheck, PackageDataError
 from boba.runtime.config import (
     ConfigArguments,
@@ -144,12 +144,14 @@ class AppEntry:
 
                 try:
                     asyncio.run(
-                        ApplicationMigrations().run(
+                        ApplicationMigrations(
+                            schema=ConfigSchema(AppConfig, values=("auth",))
+                        ).run(
                             call.paths,
                             (
                                 identity_schema.__name__,
                                 "boba.runtime",
-                                "boba.connection_broker",
+                                "boba.access_postgres",
                                 "boba.aid.mcp_servers",
                             ),
                         )
@@ -167,7 +169,7 @@ class AppEntry:
         return ConfigArguments(parser).call()
 
     def serve(self, paths: Sequence[Path]) -> None:
-        raw = RawConfig.load(paths)
+        raw = RawConfig.load(paths, schema=ConfigSchema(AppConfig, values=("auth",)))
         self.export_env(raw)
         self.attachments(raw).install()
 
@@ -183,7 +185,7 @@ class AppEntry:
         SystemExit — конфиг не прочитан или чат не ответил успехом.
         """
         try:
-            aid = bind(ConfigLoader(paths).load(), self.SECTION, AidSection)
+            aid = bind(AppConfig.loader(paths).load(), self.SECTION, AidSection)
             checked = HealthProbe(aid.port, aid.url_prefix, self.HEALTH).check()
         except (ConfigError, HealthCheckError) as exc:
             raise SystemExit(f"boba-aid health: {exc}") from exc

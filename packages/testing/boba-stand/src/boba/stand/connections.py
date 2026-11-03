@@ -32,9 +32,7 @@ class StandUserConnections:
         contexts: CallContexts,
     ) -> None:
         resolver = ArmedConnections(store_ref, credentials_ref, contexts)
-        self._params = ConnectionParams(
-            types_ref, contexts, {}, StaticConfig(), resolver
-        )
+        self._params = ConnectionParams(types_ref, contexts, StaticConfig(), resolver)
 
     def bind_all(self, tools: Sequence[HostedTool]) -> None:
         self._params.bind_all(tools)

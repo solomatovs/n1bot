@@ -31,7 +31,7 @@ from boba.core.secrets import SecretRevealing
 from boba.core.types import LLMStringList
 from boba.text.grep import GrepLimits, TextGrep
 from boba.tool_io.entry import ToolMain
-from boba.toolkit.facade import Injected, tool
+from boba.toolkit.facade import Injected, UserConnection, tool
 from boba.toolkit.result import MarkdownResult, TableResult
 from boba.toolkit.window import RowLimit, RowOffset, RowPage, RowWindow
 from boba.transport.http import (
@@ -49,9 +49,6 @@ class ConfluenceToolsConfig(SecretRevealing):
 
     SECTION: ClassVar[str] = "tool.confluence"
 
-    confluence: HttpConnection = Field(
-        description='Web-профиль Confluence ссылкой `confluence = "${web.<name>}"`.',
-    )
     body_format: Literal["view", "export_view", "storage"] = Field(
         default="view",
         description="Confluence body-формат: view/export_view/storage.",
@@ -70,6 +67,10 @@ class ConfluenceToolsConfig(SecretRevealing):
     )
 
 
+WebTarget = Annotated[HttpConnection, UserConnection]
+"""Имя web connection от модели; MCP подставляет профиль после проверки grant."""
+
+
 class AddressColumn(StrEnum):
     """Колонки выдачи confluence_address."""
 
@@ -80,10 +81,10 @@ class ConfluenceHttp:
     """REST Confluence на время одного вызова инструмента: транспорт по
     соединению и секции, адреса — CflRestBuilder, обмен — CflRest."""
 
-    def __init__(self, cfg: ConfluenceToolsConfig) -> None:
+    def __init__(self, cfg: ConfluenceToolsConfig, connection: HttpConnection) -> None:
         self._cfg = cfg
         self._builder = CflRestBuilder()
-        self._http = HttpTransport(cfg.confluence, cfg.transport)
+        self._http = HttpTransport(connection, cfg.transport)
         self._rest = CflRest(self._http)
 
     async def __aenter__(self) -> Self:
@@ -302,10 +303,11 @@ async def confluence_fetch(
         ),
     ] = True,
     *,
+    connection: WebTarget,
     cfg: Annotated[ConfluenceToolsConfig, Injected],
 ) -> MarkdownResult:
     """Скачивает одну Confluence-страницу и возвращает её контент."""
-    async with ConfluenceHttp(cfg) as http:
+    async with ConfluenceHttp(cfg, connection) as http:
         pages = ConfluencePageText(cfg, http)
         text = await pages.of_page(page_id, as_markdown=as_markdown)
 
@@ -351,10 +353,11 @@ async def confluence_grep(  # noqa: PLR0913 — независимые флаг�
         Field(description="Литеральный поиск без regex. По умолчанию false."),
     ] = False,
     *,
+    connection: WebTarget,
     cfg: Annotated[ConfluenceToolsConfig, Injected],
 ) -> MarkdownResult:
     """Ищет совпадения по тексту одной Confluence-страницы."""
-    async with ConfluenceHttp(cfg) as http:
+    async with ConfluenceHttp(cfg, connection) as http:
         pages = ConfluencePageText(cfg, http)
         text = await pages.of_page(page_id, as_markdown=as_markdown)
 
@@ -395,6 +398,7 @@ async def confluence_search(  # noqa: PLR0913 — окно выдачи зада
     *,
     offset: RowOffset,
     limit: RowLimit,
+    connection: WebTarget,
     cfg: Annotated[ConfluenceToolsConfig, Injected],
 ) -> TableResult:
     """Ищет страницы в Confluence через CQL и возвращает таблицу hits.
@@ -403,8 +407,8 @@ async def confluence_search(  # noqa: PLR0913 — окно выдачи зада
     """
     window = RowWindow(offset=offset, limit=limit)
 
-    async with ConfluenceHttp(cfg) as http:
-        search = CqlSearch(cfg.confluence, ConfluencePageText(cfg, http), snippet_chars)
+    async with ConfluenceHttp(cfg, connection) as http:
+        search = CqlSearch(connection, ConfluencePageText(cfg, http), snippet_chars)
         data = await http.search_json(
             CqlQuery(query, spaces).render(),
             limit=window.served_probe(),
@@ -440,6 +444,7 @@ async def confluence_spaces(
         Field(ge=1, le=1000, description="Максимум спейсов в ответе."),
     ] = 200,
     *,
+    connection: WebTarget,
     cfg: Annotated[ConfluenceToolsConfig, Injected],
 ) -> TableResult:
     """Список spaces Confluence с опциональным glob-фильтром.
@@ -450,10 +455,10 @@ async def confluence_spaces(
     но поиск Confluence его не отдаёт, поэтому по CQL такой спейс выглядит
     пустым.
     """
-    async with ConfluenceHttp(cfg) as http:
+    async with ConfluenceHttp(cfg, connection) as http:
         data, path = await http.spaces_json(SpaceType(space_type), limit=limit)
 
-    spaces = SpaceList(pattern, cfg.confluence)
+    spaces = SpaceList(pattern, connection)
     rows: list[dict[str, Any]] = []
     for space in spaces.items(data, path):
         if not spaces.matches(space):
@@ -466,14 +471,14 @@ async def confluence_spaces(
 
 @tool(read_only=True, destructive=False)
 async def confluence_address(
-    cfg: Annotated[ConfluenceToolsConfig, Injected],
+    connection: WebTarget,
 ) -> TableResult:
     """Корневой url Confluence без учётных данных и формы url его объектов.
 
     Ничего не запрашивает. Спейс, страница и вложение адресуются REST-путями
     под этим корнем; формы перечислены в подписи ответа.
     """
-    row = {AddressColumn.URL.value: str(cfg.confluence.public_url())}
+    row = {AddressColumn.URL.value: str(connection.public_url())}
 
     return TableResult(rows=[row], note=ConfluenceAddresses.prompt())
 

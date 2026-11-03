@@ -16,7 +16,7 @@ from typing import Protocol
 from omegaconf import DictConfig
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.config import bind
+from boba.config import ConfigSchema, bind
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.migrate import (
     MigrationScripts,
@@ -41,6 +41,12 @@ class MigrationSources(Protocol):
     async def targets(self, raw: DictConfig) -> Sequence[MigrationTarget]: ...
 
 
+class MigrationConfig(MigrationLocation):
+    """Минимальные секции команды migrate, включая окружение Kerberos."""
+
+    instance: InstanceConfig
+
+
 class ApplicationMigrations:
     """Собирает планы по конфигу и создаёт пустые схемы без запуска приложения.
 
@@ -48,9 +54,15 @@ class ApplicationMigrations:
     SQL и ссылку на подключение; учётные данные остаются у команды приложения.
     """
 
-    def __init__(self, sources: Sequence[MigrationSources] = ()) -> None:
+    def __init__(
+        self,
+        sources: Sequence[MigrationSources] = (),
+        *,
+        schema: ConfigSchema | None = None,
+    ) -> None:
         self._migrations = PostgresMigrations()
         self._sources = tuple(sources)
+        self._schema = schema or ConfigSchema(MigrationConfig)
 
     async def run(
         self,
@@ -59,7 +71,7 @@ class ApplicationMigrations:
         *,
         section: str = "app",
     ) -> None:
-        raw = RawConfig.load(paths)
+        raw = RawConfig.load(paths, schema=self._schema)
         instance = bind(raw, "app.instance", InstanceConfig)
         instance.layout(paths[0].resolve().parent).apply()
         targets = await self.targets(raw, packages, section=section)

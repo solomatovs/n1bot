@@ -11,7 +11,7 @@ from enum import StrEnum
 import pytest
 from omegaconf import DictConfig
 
-from boba.config import ConfigLoader, bind
+from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.llm.providers import LlmProviderTypes
@@ -110,14 +110,15 @@ class ServiceData(StrEnum):
 def raw_config() -> DictConfig:
     """Конфиг прогона: файлы BOBA_CONFIG_PATH — конфиг приложения и наложение
     стенда stand.toml поверх; он же — дерево процесса (RawConfig)."""
-    return RawConfig.load(StandConfigPaths(StandConfigEnv.RUN).paths())
+    files = StandConfigPaths(StandConfigEnv.RUN)
+    return RawConfig.load(files.paths(), schema=files.schema())
 
 
 @pytest.fixture(scope="session")
 def config_overlay() -> ConfigOverlay:
     """Файлы прогона BOBA_CONFIG_PATH для тестов, которым нужны свои ключи
     поверх конфига: дерево с изменениями собирает config_overlay.tree."""
-    return ConfigOverlay(ConfigLoader(StandConfigPaths(StandConfigEnv.RUN).paths()), {})
+    return ConfigOverlay(StandConfigPaths(StandConfigEnv.RUN).loader(), {})
 
 
 @pytest.fixture(scope="session")
@@ -141,7 +142,7 @@ def service_overlay(tmp_path_factory: pytest.TempPathFactory) -> ConfigOverlay:
 
     base = {"instance.data_dir": str(data)}
 
-    return ConfigOverlay(ConfigLoader(StandApp.MCP.paths()), base)
+    return ConfigOverlay(StandApp.MCP.config_files().loader(), base)
 
 
 @pytest.fixture(scope="session")

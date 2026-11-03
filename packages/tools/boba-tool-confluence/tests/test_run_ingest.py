@@ -15,15 +15,21 @@ from omegaconf import DictConfig
 from psycopg import sql
 
 from boba.config import bind
+from boba.connection_broker.crypto import SecretCipher
+from boba.connection_broker.store import ConnectionStore
+from boba.connections.manifest import ConnectionTypes
 from boba.db.pgvector.migrations import Migrations
 from boba.db.postgres import AsyncPostgresPool, PostgresSchema
+from boba.mcp_server.app import McpAppConfig
 from boba.stand.database import TestDatabase
+from boba.stand.ui.stand import StandApp
 from boba.tool.confluence.ingest_tools import (
     IngestToolConfig,
     confluence_index_page,
 )
 from boba.tool_io.entry import ToolMain
 from boba.tool_io.ports import PipeProgress
+from boba.transport.http.connection import HttpConnection
 
 pytestmark = [pytest.mark.run, pytest.mark.anyio]
 
@@ -70,7 +76,32 @@ async def ingest_cfg(raw_config: DictConfig) -> IngestToolConfig:
     return store
 
 
-async def test_run_confluence_ingest(ingest_cfg: IngestToolConfig) -> None:
+@pytest.fixture(scope="module")
+async def confluence_connection() -> HttpConnection:
+    raw = StandApp.MCP.config_files().loader().load()
+    app = bind(raw, "app", McpAppConfig)
+    pool = AsyncPostgresPool(app.postgres)
+    await pool.open()
+    try:
+        store = ConnectionStore(
+            pool,
+            app.db_schema,
+            SecretCipher(app.connection_store.cipher.get_secret_value()),
+            ConnectionTypes.discover(),
+        )
+        rows = [row for row in await store.list_all() if row.name == "confluence"]
+    finally:
+        await pool.close()
+
+    if len(rows) != 1 or not isinstance(rows[0].connection, HttpConnection):
+        raise AssertionError("MCP must contain one web connection named confluence")
+
+    return rows[0].connection
+
+
+async def test_run_confluence_ingest(
+    ingest_cfg: IngestToolConfig, confluence_connection: HttpConnection
+) -> None:
     body = ToolMain.toolset(confluence_index_page)[0].coroutine
     if body is None:
         raise AssertionError("body is not None")
@@ -78,6 +109,7 @@ async def test_run_confluence_ingest(ingest_cfg: IngestToolConfig) -> None:
     content = (
         await body(
             page_id=RunArgs.PAGE_ID,
+            connection=confluence_connection,
             attachments=RunArgs.ATTACHMENTS,
             ocr=RunArgs.OCR,
             cfg=ingest_cfg,

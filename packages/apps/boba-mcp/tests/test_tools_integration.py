@@ -19,11 +19,14 @@ from psycopg import sql
 
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.config import bind
+from boba.connection_broker.crypto import SecretCipher
+from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.tickets import SectionTickets, ServiceTickets
 from boba.connections.manifest import ConnectionTypes
 from boba.db.pgvector.migrations import Migrations
 from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.db.postgres.connection import PostgresConfig
+from boba.mcp_server.app import McpAppConfig
 from boba.stand.database import TestDatabase
 from boba.stand.sandbox import plugin_launch, section_profile
 from boba.stand.shell import ShellRun
@@ -163,16 +166,44 @@ class GivenConnections(ParamSource):
 
 
 @pytest.fixture(scope="module")
-def web_connection(raw_config) -> HttpConnection:
-    """Соединение web-тестов: тело проверит, что URL под него попадает."""
-    return ToolSetup.web_connection(raw_config)
+async def confluence_connection(raw_config) -> HttpConnection:
+    """Профиль берётся из каталога MCP, где хранится production connection."""
+    config = bind(raw_config, path="app", model=McpAppConfig)
+    pool = AsyncPostgresPool(config.postgres)
+    await pool.open()
+    try:
+        store = ConnectionStore(
+            pool,
+            config.db_schema,
+            SecretCipher(config.connection_store.cipher.get_secret_value()),
+            ConnectionTypes.discover(),
+        )
+        rows = [row for row in await store.list_all() if row.name == "confluence"]
+    finally:
+        await pool.close()
+
+    if len(rows) != 1:
+        raise AssertionError(
+            f"expected one Confluence profile in MCP connections, found {len(rows)}"
+        )
+
+    connection = rows[0].connection
+    if not isinstance(connection, HttpConnection):
+        raise AssertionError("the Confluence profile must be a web connection")
+
+    return connection
 
 
 @pytest.fixture(scope="module")
-def covered_url(raw_config) -> str:
+def web_connection(confluence_connection: HttpConnection) -> HttpConnection:
+    """Web tests use the same named web profile stored in MCP."""
+    return confluence_connection
+
+
+@pytest.fixture(scope="module")
+def covered_url(confluence_connection: HttpConnection) -> str:
     """Адрес под хостом соединения: другие хосты тело отвергнет."""
-    host = ToolSetup.web_connection(raw_config).host
-    return f"https://{host}/"
+    return f"{confluence_connection.public_url()}/"
 
 
 @pytest.fixture(scope="module")
@@ -188,7 +219,10 @@ def confluence_tools(zygote_stand: ZygoteStand, raw_config, sandbox_raw_config):
     config = InjectedConfig(StaticSection())
 
     return ToolSetup.launched(
-        module.TOOLS, launcher, (config,), _section(sandbox_raw_config, "confluence")
+        module.TOOLS,
+        launcher,
+        (GivenConnections(), config),
+        _section(sandbox_raw_config, "confluence"),
     )
 
 
@@ -324,7 +358,9 @@ def ingest_tools(
     launcher = ToolSetup.caller(zygote_stand, sandbox_raw_config, "ingest")
     section = _section(sandbox_raw_config, "ingest", kb_collection, kb_store)
 
-    return ToolSetup.launched(module.TOOLS, launcher, (_ticketed(),), section)
+    return ToolSetup.launched(
+        module.TOOLS, launcher, (_ticketed(), GivenConnections()), section
+    )
 
 
 def _credentials() -> KerberosCredentialSource:
@@ -427,13 +463,18 @@ async def workspace_pdf(bash_tool, workspace_image) -> str:
 
 
 @pytest.fixture(scope="module")
-async def confluence_page(confluence_tools) -> dict[str, str]:
+async def confluence_page(confluence_tools, confluence_connection) -> dict[str, str]:
     """Страница берётся из живого поиска: жёсткие id ломаются со стендом."""
-    spaces = await Call.ok(confluence_tools["confluence_spaces"], limit=10)
+    spaces = await Call.ok(
+        confluence_tools["confluence_spaces"],
+        connection=confluence_connection,
+        limit=10,
+    )
     if not (spaces.rows):
         raise AssertionError("в Confluence нет ни одного space")
     found = await Call.ok(
         confluence_tools["confluence_search"],
+        connection=confluence_connection,
         query="данные",
         limit=10,
         snippet_chars=200,
@@ -453,10 +494,13 @@ async def confluence_page(confluence_tools) -> dict[str, str]:
 
 
 @pytest.fixture(scope="module")
-async def confluence_attachment_ref(confluence_tools) -> dict[str, str]:
+async def confluence_attachment_ref(
+    confluence_tools, confluence_connection
+) -> dict[str, str]:
     """Вложение ищется по расширению; page_id страницы лежит в ссылке."""
     found = await Call.ok(
         confluence_tools["confluence_search"],
+        connection=confluence_connection,
         query="docx",
         limit=20,
         snippet_chars=100,
@@ -775,8 +819,12 @@ class TestWebTools:
 class TestConfluenceTools:
     """confluence: REST-запрос и разбор ответа — целиком в песочнице."""
 
-    async def test_spaces(self, confluence_tools) -> None:
-        result = await Call.ok(confluence_tools["confluence_spaces"], limit=10)
+    async def test_spaces(self, confluence_tools, confluence_connection) -> None:
+        result = await Call.ok(
+            confluence_tools["confluence_spaces"],
+            connection=confluence_connection,
+            limit=10,
+        )
         if not (isinstance(result, TableResult)):
             raise AssertionError("isinstance(result, TableResult)")
         if not (result.rows):
@@ -784,9 +832,10 @@ class TestConfluenceTools:
         if set(result.rows[0]) < {"key", "name", "type"}:
             raise AssertionError('set(result.rows[0]) >= {"key", "name", "type"}')
 
-    async def test_search(self, confluence_tools) -> None:
+    async def test_search(self, confluence_tools, confluence_connection) -> None:
         result = await Call.ok(
             confluence_tools["confluence_search"],
+            connection=confluence_connection,
             query="данные",
             limit=5,
             snippet_chars=200,
@@ -797,9 +846,12 @@ class TestConfluenceTools:
         if set(result.rows[0]) < {"page_id", "title", "space_key", "url"}:
             raise AssertionError('set(result.rows[0]) >= {"page_id", "title", "space_…')
 
-    async def test_fetch_page(self, confluence_tools, confluence_page) -> None:
+    async def test_fetch_page(
+        self, confluence_tools, confluence_connection, confluence_page
+    ) -> None:
         result = await Call.ok(
             confluence_tools["confluence_fetch"],
+            connection=confluence_connection,
             page_id=confluence_page["page_id"],
             as_markdown=True,
         )
@@ -808,10 +860,13 @@ class TestConfluenceTools:
         if not (result.text.strip()):
             raise AssertionError("result.text.strip()")
 
-    async def test_grep_page(self, confluence_tools, confluence_page) -> None:
+    async def test_grep_page(
+        self, confluence_tools, confluence_connection, confluence_page
+    ) -> None:
         word = confluence_page["title"].split()[0]
         result = await Call.ok(
             confluence_tools["confluence_grep"],
+            connection=confluence_connection,
             page_id=confluence_page["page_id"],
             pattern=word,
             case_insensitive=True,
@@ -824,11 +879,16 @@ class TestConfluenceTools:
         if confluence_page["page_id"] not in result.note:
             raise AssertionError("подпись называет страницу")
 
-    async def test_unknown_page_reports_error(self, confluence_tools) -> None:
+    async def test_unknown_page_reports_error(
+        self, confluence_tools, confluence_connection
+    ) -> None:
         """Несуществующая страница — объявленный отказ с kind'ом инструмента."""
         with pytest.raises(PayloadFailureError) as failure:
             await Call.result(
-                confluence_tools["confluence_fetch"], page_id="0", as_markdown=True
+                confluence_tools["confluence_fetch"],
+                connection=confluence_connection,
+                page_id="0",
+                as_markdown=True,
             )
 
         request_errors = {"HttpStatusError", "TransportError", "ConfluencePayloadError"}
@@ -1060,10 +1120,11 @@ class TestIngestTools:
     """ingest: обход Confluence, чтение вложений и запись в KB — в песочнице."""
 
     async def test_index_pages(
-        self, ingest_tools, confluence_page, kb_collection
+        self, ingest_tools, confluence_connection, confluence_page, kb_collection
     ) -> None:
         result = await Call.ok(
             ingest_tools["confluence_index_page"],
+            connection=confluence_connection,
             page_id=confluence_page["page_id"],
             attachments=True,
         )
@@ -1078,11 +1139,12 @@ class TestIngestTools:
             raise AssertionError(f"nothing failed: {pages}, {attachments}")
 
     async def test_index_spaces(
-        self, ingest_tools, confluence_page, kb_collection
+        self, ingest_tools, confluence_connection, confluence_page, kb_collection
     ) -> None:
         """Обход целого space'а: страницы уже в коллекции — переиндексации нет."""
         result = await Call.ok(
             ingest_tools["confluence_index_space"],
+            connection=confluence_connection,
             space_key=confluence_page["space_key"],
         )
         pages, attachments = _ingest_lines(result)
@@ -1093,11 +1155,14 @@ class TestIngestTools:
         if pages["unchanged"] < 1:
             raise AssertionError(f"pages already in the index: {pages}")
 
-    async def test_unknown_space_reports_error(self, ingest_tools) -> None:
+    async def test_unknown_space_reports_error(
+        self, ingest_tools, confluence_connection
+    ) -> None:
         """Несуществующий space — объявленный отказ с kind'ом инструмента."""
         with pytest.raises(PayloadFailureError) as failure:
             await Call.result(
                 ingest_tools["confluence_index_space"],
+                connection=confluence_connection,
                 space_key="NOSUCHSPACE",
             )
 
@@ -1106,10 +1171,11 @@ class TestIngestTools:
             raise AssertionError(f"failure: {failure.value.failure()!r}")
 
     async def test_fetch_attachment(
-        self, ingest_tools, confluence_attachment_ref
+        self, ingest_tools, confluence_connection, confluence_attachment_ref
     ) -> None:
         result = await Call.ok(
             ingest_tools["confluence_attachment"],
+            connection=confluence_connection,
             page_id=confluence_attachment_ref["page_id"],
             filename=confluence_attachment_ref["filename"],
         )
@@ -1123,10 +1189,11 @@ class TestKbTools:
     """kb: эмбеддинг и SQL идут в песочнице, ищут по свежему индексу."""
 
     async def test_fts_search_finds_indexed_page(
-        self, kb_tools, ingest_tools, confluence_page
+        self, kb_tools, ingest_tools, confluence_connection, confluence_page
     ) -> None:
         await Call.ok(
             ingest_tools["confluence_index_page"],
+            connection=confluence_connection,
             page_id=confluence_page["page_id"],
         )
         result = await Call.ok(
@@ -1143,10 +1210,11 @@ class TestKbTools:
             raise AssertionError('confluence_page["page_id"] in found')
 
     async def test_vector_search_returns_hits(
-        self, kb_tools, ingest_tools, confluence_page
+        self, kb_tools, ingest_tools, confluence_connection, confluence_page
     ) -> None:
         await Call.ok(
             ingest_tools["confluence_index_page"],
+            connection=confluence_connection,
             page_id=confluence_page["page_id"],
         )
         result = await Call.ok(

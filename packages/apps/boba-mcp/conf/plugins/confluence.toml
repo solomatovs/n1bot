@@ -11,8 +11,6 @@ max_text_chars  = 6000
 
 transport       = "${http}"
 
-confluence      = "${confluence}"
-
 [sandbox]
     program   = "plugins/docs"
     rootfs    = "rootfs/base.ext4"

@@ -16,6 +16,7 @@ from __future__ import annotations
 import socket
 from enum import StrEnum
 from typing import ClassVar
+from urllib.parse import urlsplit
 
 import pytest
 from omegaconf import DictConfig, OmegaConf
@@ -67,11 +68,12 @@ class SandboxToolProfiles:
         return profiles
 
     def http_hosts(self) -> list[str]:
-        """Хосты сервисных профилей плагинов: по ним инструменты и ходят."""
+        """Хост из публичного адреса сервиса для DNS-пробы в сети песочницы."""
         hosts: list[str] = []
-        host = OmegaConf.select(self._raw, "tool.ingest.confluence.host")
+        address = OmegaConf.select(self._raw, "mcp.public_url")
+        host = urlsplit(str(address)).hostname if address else None
         if host:
-            hosts.append(str(host))
+            hosts.append(host)
 
         return hosts
 

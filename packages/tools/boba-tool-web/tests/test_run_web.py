@@ -1,14 +1,16 @@
-"""Ручной прогон web-инструментов: функции вызываются напрямую.
-
-Профиль соединения в бою подаёт хост; здесь он берётся из
-[tool.ingest.confluence] конфига приложения и передаётся параметром.
-"""
+"""Ручной прогон web-инструментов с web-профилем из каталога MCP."""
 
 from __future__ import annotations
 
 import pytest
 
 from boba.config import bind
+from boba.connection_broker.crypto import SecretCipher
+from boba.connection_broker.store import ConnectionStore
+from boba.connections.manifest import ConnectionTypes
+from boba.db.postgres import AsyncPostgresPool
+from boba.mcp_server.app import McpAppConfig
+from boba.stand.ui.stand import StandApp
 from boba.tool.web.tools import WebToolsConfig, web_fetch_page, web_grep_page
 from boba.tool_io.entry import ToolMain
 from boba.tool_io.ports import PipeProgress
@@ -24,14 +26,31 @@ def web_cfg(raw_config) -> WebToolsConfig:
 
 
 @pytest.fixture(scope="module")
-def connection(raw_config) -> HttpConnection:
-    """Профиль соединения: в бою его подаёт хост из строк пользователя."""
-    return bind(raw_config, path="tool.ingest.confluence", model=HttpConnection)
+async def connection() -> HttpConnection:
+    raw = StandApp.MCP.config_files().loader().load()
+    app = bind(raw, "app", McpAppConfig)
+    pool = AsyncPostgresPool(app.postgres)
+    await pool.open()
+    try:
+        store = ConnectionStore(
+            pool,
+            app.db_schema,
+            SecretCipher(app.connection_store.cipher.get_secret_value()),
+            ConnectionTypes.discover(),
+        )
+        rows = [row for row in await store.list_all() if row.name == "confluence"]
+    finally:
+        await pool.close()
+
+    if len(rows) != 1 or not isinstance(rows[0].connection, HttpConnection):
+        raise AssertionError("MCP must contain one web connection named confluence")
+
+    return rows[0].connection
 
 
 @pytest.fixture(scope="module")
 def covered_url(connection: HttpConnection) -> str:
-    return f"https://{connection.host}/"
+    return f"{connection.public_url()}/"
 
 
 async def test_run_web_fetch(

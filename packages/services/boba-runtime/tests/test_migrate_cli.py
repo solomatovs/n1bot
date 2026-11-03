@@ -71,6 +71,11 @@ async def test_migrate_uses_only_storage_config_and_refuses_repeat(  # noqa: PLR
         assert b"migrate: completed" in output
         async with pool.connection() as conn:
             assert await PostgresSchema(name).has_table(conn, table)
+            if module == "boba.aid.main":
+                assert await PostgresSchema(name).has_table(conn, "grants")
+                assert not await PostgresSchema(name).has_table(conn, "connections")
+            if module == "boba.mcp_server.program":
+                assert await PostgresSchema(name).has_table(conn, "grants")
 
         repeat = await asyncio.create_subprocess_exec(
             sys.executable,

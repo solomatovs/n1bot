@@ -1,12 +1,3 @@
-create table if not exists {schema}.connections (
-    id   uuid primary key default gen_random_uuid(),
-    name text not null,
-    data jsonb not null default '{{}}'::jsonb
-);
-
-create index if not exists idx_connections_kind
-    on {schema}.connections ((data ->> 'kind'));
-
 create table if not exists {schema}.grants (
     id          uuid primary key default gen_random_uuid(),
     src_kind    varchar not null,
@@ -18,3 +9,6 @@ create table if not exists {schema}.grants (
 
 create index if not exists idx_grants_target
     on {schema}.grants (tgt_kind, tgt_kind_id);
+
+comment on table {schema}.grants is
+    'Shared grants between users and roles and polymorphic resources managed by an application.';

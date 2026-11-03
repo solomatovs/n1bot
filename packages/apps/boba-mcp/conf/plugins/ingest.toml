@@ -42,7 +42,6 @@ page_workers           = 4
 
 transport              = "${http}"
 
-confluence             = "${confluence}"
 tables                 = "${kb_tables}"
 embedding              = "${embedding.main}"
 ocr                    = "${ocr}"

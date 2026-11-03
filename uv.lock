@@ -11,6 +11,7 @@ supported-markers = [
 [manifest]
 members = [
     "boba-access",
+    "boba-access-postgres",
     "boba-agent",
     "boba-aid",
     "boba-auth",
@@ -450,6 +451,11 @@ requires-dist = [
 provides-extras = ["dev"]
 
 [[package]]
+name = "boba-access-postgres"
+version = "0.0.33.dev1"
+source = { editable = "packages/infra/auth/boba-access-postgres" }
+
+[[package]]
 name = "boba-agent"
 version = "0.0.33.dev1"
 source = { editable = "packages/core/boba-agent" }
@@ -498,6 +504,7 @@ source = { editable = "packages/apps/boba-aid" }
 dependencies = [
     { name = "agent-client-protocol", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "anyio", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-access-postgres", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-auth", extra = ["http"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-cancellation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-canvas", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -569,6 +576,7 @@ requires-dist = [
     { name = "agent-client-protocol", specifier = "==1.0.0rc3" },
     { name = "anyio", specifier = ">=4,<5" },
     { name = "boba-access", marker = "extra == 'dev'", editable = "packages/core/boba-access" },
+    { name = "boba-access-postgres", editable = "packages/infra/auth/boba-access-postgres" },
     { name = "boba-agent", marker = "extra == 'dev'", editable = "packages/core/boba-agent" },
     { name = "boba-auth", extras = ["http"], editable = "packages/services/boba-auth" },
     { name = "boba-cancellation", editable = "packages/core/boba-cancellation" },
@@ -1787,6 +1795,7 @@ version = "0.0.33.dev1"
 source = { editable = "packages/apps/boba-mcp" }
 dependencies = [
     { name = "boba-access", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-access-postgres", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-auth", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-cancellation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-canvas", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -1844,6 +1853,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "boba-access", editable = "packages/core/boba-access" },
+    { name = "boba-access-postgres", editable = "packages/infra/auth/boba-access-postgres" },
     { name = "boba-auth", editable = "packages/services/boba-auth" },
     { name = "boba-cancellation", editable = "packages/core/boba-cancellation" },
     { name = "boba-canvas", editable = "packages/core/boba-canvas" },
@@ -4791,7 +4801,6 @@ dependencies = [
 ]
 wheels = [
     { path = "/mnt/store/ss/docker/compose/boba/build/out/oracledb/oracledb-26.0.0+boba.1-cp311-cp311-linux_x86_64.whl" },
-    { path = "oracledb-26.0.0+boba.1-cp311-cp311-linux_x86_64.whl" },
 ]
 
 [[package]]

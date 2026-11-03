@@ -28,7 +28,6 @@ from boba.toolkit.facade import PayloadTool
 from boba.toolkit.launcher import ToolLauncher
 from boba.toolrun.hosted import PluginSection
 from boba.toolrun.injected import ParamSource
-from boba.transport.http.connection import HttpConnection
 
 __all__ = ["ZYGOTE", "Call", "ToolSetup"]
 
@@ -86,11 +85,6 @@ class ToolSetup:
     def web_config(raw: Any) -> WebToolsConfig:
         """Лимиты выдачи [tool.web]: соединение приходит параметром вызова."""
         return bind(raw, path="tool.web", model=WebToolsConfig)
-
-    @staticmethod
-    def web_connection(raw: Any) -> HttpConnection:
-        """Профиль соединения теста: в бою его подаёт хост из строк субъекта."""
-        return bind(raw, path="tool.ingest.confluence", model=HttpConnection)
 
     @staticmethod
     def sandbox_changes() -> dict[str, object]:

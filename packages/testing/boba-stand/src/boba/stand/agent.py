@@ -204,9 +204,7 @@ class StandTools(ToolServer):
             StandArg.CONNECTION.value: {
                 "type": "string",
                 **ConnectionParamSchema().declared(
-                    ConnectionOffer(
-                        kind=StandKind.POSTGRES.value, names={}, stored=True
-                    )
+                    ConnectionOffer(kind=StandKind.POSTGRES.value)
                 ),
             },
             StandArg.STATEMENT.value: {"type": "string"},

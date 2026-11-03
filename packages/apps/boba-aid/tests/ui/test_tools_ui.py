@@ -41,7 +41,7 @@ from boba.aid.rendering.chat_view import (
 )
 from boba.canvas.canvas import CanvasElement, CanvasErrorKind
 from boba.canvas.diagram import DiagramPrompt
-from boba.config import ConfigLoader, bind
+from boba.config import bind
 from boba.confluence.html import MarkdownRender, SectionsRender
 from boba.confluence.models import (
     ConfluenceSpaceItem,
@@ -1247,7 +1247,7 @@ class TablePattern:
 def _connection_catalog(stand_database: str, llm_port: int) -> TableResult:
     """Выдача connection_list: все строки стенда, по виду и имени; url каждой
     строит пакет её типа по тому же профилю, что посеял стенд."""
-    built = ConfigLoader(StandApp.AID.paths()).load()
+    built = StandApp.AID.config_files().loader().load()
     stand_postgres = bind(built, path="postgres", model=PostgresConfig)
     postgres = stand_postgres.model_copy(update={"dbname": stand_database})
     clickhouse = bind(built, path="clickhouse", model=ClickHouseConfig)
@@ -2182,7 +2182,7 @@ class TestAddressTools:
         feed.call(call, expect)
 
     def test_ora_address(self, feed: ToolFeed) -> None:
-        oracle = StandOracle(ConfigLoader(StandApp.AID.paths()).load())
+        oracle = StandOracle(StandApp.AID.config_files().loader().load())
         url = re.escape(f"oracle://{oracle.host}:{oracle.port}/{oracle.service}")
         call = ToolCall(tool="ora_address", arguments={"connection": "main"})
         feed.call(call, self._expect("main", url))

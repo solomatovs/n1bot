@@ -35,7 +35,7 @@ from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.auth.proxy import ProxyAssertionVerifier
 from boba.canvas.keys import WorkspaceMount
 from boba.config import ConfigLoader, bind
-from boba.connection_broker.params import ConnectionParams, ServerConnection
+from boba.connection_broker.params import ConnectionParams
 from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.tools import ConnectionTools
 from boba.connection_broker.user_connections import ArmedConnections
@@ -116,8 +116,8 @@ class ServiceStand:
     Вход — proxy сервиса входа: роли вошедшего называет доверенный клиент;
     dev_token(), weak_token() и analyst_token() входят так пользователями
     стенда alice, bob и dave. Вход формой — пользователь local. port — порт,
-    на котором стенд слушает. Заданное соединение сервера DWH видно только
-    роли ANALYST и стоит в списке fake_connection_host."""
+    на котором стенд слушает. Endpoint offers публикует имена из каталога
+    только роли ANALYST."""
 
     PROMPT: ClassVar[str] = "sql_review"
     PROMPT_FILE: ClassVar[str] = (
@@ -144,9 +144,7 @@ class ServiceStand:
 
     OFFERS: ClassVar[str] = "offers"
     STORED: ClassVar[str] = "stored"
-    """Endpoint с правилами предложения соединений по таблице 6.8: аналитику с
-    ролями analyst — каталог и заданные соединения, остальным — только
-    заданные соединения, видимые их ролям."""
+    """Endpoint с именованными соединениями из каталога для роли analyst."""
 
     ANALYST: ClassVar[str] = "analyst"
 
@@ -156,21 +154,6 @@ class ServiceStand:
         "boba.stand.fake_connection:PLUGIN",
     )
     """Объявления фейковых модулей: тела идут их программой плагина."""
-
-    DWH: ClassVar[str] = "dwh"
-
-    SERVER_CONNECTIONS: ClassVar[dict[str, ServerConnection]] = {
-        DWH: ServerConnection(
-            kind="postgres",
-            description="data warehouse, read only",
-            roles=[ANALYST],
-            connection={
-                "host": "dwh.local",
-                "dbname": "dwh",
-                "auth": {"method": "trust", "user": "u"},
-            },
-        )
-    }
 
     STORAGE: ClassVar[ConnectionOfferRule] = ConnectionOfferRule(
         roles=["*"], offer=[OfferedSource.STORED]
@@ -206,11 +189,9 @@ class ServiceStand:
         params = ConnectionParams(
             ConnectionTypes.discover,
             contexts,
-            self.SERVER_CONNECTIONS,
             StaticConfig(),
             stored=resolver,
         )
-        params.listed({"fake_connection_host": [self.DWH]})
         journals = CallJournals(
             StreamJournal(DirVault(str(workdir / "journal")), 0), runs
         )
@@ -253,11 +234,7 @@ class ServiceStand:
         for tool in tools:
             names.append(tool.name)
 
-        both = ConnectionOfferRule(
-            roles=[self.ANALYST],
-            offer=[OfferedSource.STORED, OfferedSource.SERVER],
-        )
-        plain = ConnectionOfferRule(roles=["*"], offer=[OfferedSource.SERVER])
+        both = ConnectionOfferRule(roles=[self.ANALYST], offer=[OfferedSource.STORED])
         granted = {
             PROFILE: McpEndpoint(
                 tools=["*"],
@@ -274,7 +251,7 @@ class ServiceStand:
             self.OFFERS: McpEndpoint(
                 tools=["*"],
                 roles=["*"],
-                connections=[both, plain],
+                connections=[both],
                 prompts={},
             ),
         }

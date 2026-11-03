@@ -68,7 +68,13 @@ def test_module_loads_and_validates_config(
     про импорт."""
     cfg = _section(sandbox_raw_config)
     cfg.pop("page_workers")
-    args = json.dumps({"page_id": "1", "cfg": cfg}).encode("utf-8")
+    args = json.dumps(
+        {
+            "page_id": "1",
+            "connection": {"kind": "web", "host": "confl.example"},
+            "cfg": cfg,
+        }
+    ).encode("utf-8")
     command = ToolCommand(argv=("confluence_index_page",), args=args)
 
     try:
@@ -118,19 +124,18 @@ def test_ingest_zygote_warms_up_without_profiles_and_tokens(
 
 @needs_sandbox
 @needs_userns
-def test_confluence_zygote_without_warmups_gets_an_empty_section(
+def test_confluence_zygote_starts_without_user_connection_profile(
     zygote_stand: ZygoteStand,
     sandbox_raw_config: DictConfig,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """У плагина confluence прогревов нет: его зигота не видит ни одного
-    ключа секции, в том числе профиля Confluence с токеном."""
+    """Плагин confluence не передаёт web-профиль через свою секцию."""
     caplog.set_level(logging.INFO, logger="boba")
     sandbox = SandboxToolConfig.model_validate(
         {"profile": sandbox_profile("confluence")}
     )
     section = plugin_launch(sandbox_raw_config, "confluence").section
-    assert "confluence" in section
+    assert "confluence" not in section
 
     try:
         zygote_stand.caller(

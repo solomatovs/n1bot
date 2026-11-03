@@ -5,7 +5,7 @@ from pathlib import Path
 
 from psycopg import sql
 
-from boba.config import ConfigLoader, bind
+from boba.config import ConfigLoader, ConfigSchema, bind
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.migrate import (
@@ -14,7 +14,11 @@ from boba.db.postgres.migrate import (
     MigrationTarget,
     PostgresMigrations,
 )
-from boba.runtime.migrate import ApplicationMigrations, MigrationLocation
+from boba.runtime.migrate import (
+    ApplicationMigrations,
+    MigrationConfig,
+    MigrationLocation,
+)
 
 
 class StandMigrations:
@@ -45,7 +49,7 @@ class StandSchema:
         self._paths = tuple(paths)
         self._packages = tuple(packages)
         self._migrations = ApplicationMigrations()
-        self._config = ConfigLoader(paths)
+        self._config = ConfigLoader(paths, schema=ConfigSchema(MigrationConfig))
         self._created: MigrationLocation | None = None
 
     async def create(self) -> None:

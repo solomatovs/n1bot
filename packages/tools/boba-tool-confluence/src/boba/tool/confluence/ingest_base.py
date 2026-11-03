@@ -103,7 +103,6 @@ class ConfluenceIngestConfig(PostgresStoreConfig, ChunkerParams, DocSection):
     model_config = ConfigDict(extra="ignore")
 
     embedding: EmbeddingModelConfig
-    confluence: HttpConnection
     transport: HttpTransportConfig = Field(
         description=(
             "Поведение HTTP-транспорта процесса: таймауты, пул, дамп обмена; "
@@ -474,6 +473,7 @@ class IngestAssembly:
     def __init__(
         self,
         cfg: ConfluenceIngestConfig,
+        connection: HttpConnection,
         progress: IngestProgress,
         routes: Mapping[str, Reader[str]],
     ) -> None:
@@ -492,7 +492,7 @@ class IngestAssembly:
         )
         self._stamp = IngestStamp(cfg, routes)
         self._conn = ConfluenceConnection(
-            connection=cfg.confluence,
+            connection=connection,
             body_format=cfg.body_format,
             transport=cfg.transport,
         )

@@ -33,7 +33,7 @@ from typing import Any, ClassVar, Protocol
 from omegaconf import DictConfig, OmegaConf
 from pydantic import ValidationError
 
-from boba.config import ConfigError, ConfigLoader
+from boba.config import ConfigError
 from boba.core.mcp_names import McpToolNames
 from boba.runtime.config import ProgramDir, ProgramRoot, ProgramRoots
 from boba.runtime.launchers import PluginSandbox
@@ -263,7 +263,7 @@ class StandApp(StrEnum):
         берёт таблицы, которые переписывает в наложении целиком."""
         try:
             files = self.app_paths()
-            return ConfigLoader(files).load()
+            return self.config_files().loader(files).load()
         except (ConfigError, SiteStandError) as exc:
             msg = f"stand: loading the config of {self.value}: {exc}"
             raise StandError(msg) from exc
@@ -1069,7 +1069,7 @@ class StandConfig(StandService, ServerSeedSpec):
     def _use_fake_llm(self, overlay: StandOverlay) -> None:
         """Провайдер стенда: fake llm процесса тестов рядом с секциями [llm]
         конфига; профили стенда ссылаются только на него."""
-        overlay.set(("agent_http", "dump", "enable"), False)
+        overlay.set(("http", "dump", "enable"), False)
         overlay.set(
             ("model_limits", "fake"),
             {
@@ -1082,7 +1082,7 @@ class StandConfig(StandService, ServerSeedSpec):
             ("llm", "fake"),
             {
                 "kind": "openai",
-                "transport": "${agent_http}",
+                "transport": "${http}",
                 "connection": {
                     "scheme": "http",
                     "host": StandUrl.HOST.value,

@@ -9,24 +9,14 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
-from typing import Any, ClassVar
-
 import pytest
 from omegaconf import DictConfig, OmegaConf
 
 from boba.config import ConfigError, bind
-from boba.connection_broker.params import ConnectionParams, ServerConnection
-from boba.connections.manifest import ConnectionTypes
 from boba.mcp_server.app import McpAppConfig
-from boba.runtime.plugins import PluginKit, PluginMeta, ToolLoader
-from boba.runtime.refs import ExecRefs
+from boba.runtime.plugins import PluginMeta
 from boba.stand.overlay import ConfigOverlay
-from boba.stand.refs import StandRefs
-from boba.stand.sandbox import plugin_launch, section_profile
-from boba.stand_core.context import CallStand
-from boba.toolrun.hosted import PluginSection
-from boba.toolrun.injected import StaticConfig, ToolConfigError
+from boba.stand.sandbox import section_profile
 
 HEAVY_SECTIONS = ("tool.ingest", "tool.kb")
 """Секции с нативным инференсом: их душит квота базового профиля."""
@@ -72,23 +62,28 @@ class TestHeavyToolsGetTheirCpu:
             )
 
 
-class TestConnectionConfigRefusesStart:
-    """Конфиг заданных соединений и правил предложения проверяется на старте:
-    сервис не поднимается и называет причину (6.8)."""
+class TestStaticConnectionConfigIsRemoved:
+    """Сервис принимает профили connections только из своего каталога БД."""
 
-    WEB: ClassVar[dict[str, Any]] = {
-        "kind": "web",
-        "description": "public web",
-        "roles": ["*"],
-        "connection": {"host": "example.org"},
-    }
-
-    def test_connection_name_with_a_dot_is_refused(
+    def test_profiles_cannot_be_configured_in_toml(
         self, config_overlay: ConfigOverlay
     ) -> None:
-        raw = config_overlay.tree({"connections": {"site.ro": self.WEB}})
+        raw = config_overlay.tree(
+            {"app.connections": {"confluence": {"host": "example.org"}}}
+        )
 
-        with pytest.raises(ConfigError, match=r"site\.ro"):
+        with pytest.raises(ConfigError, match="connections"):
+            bind(raw, path="app", model=McpAppConfig)
+
+    @pytest.mark.parametrize("source", ["server", "sealed"])
+    def test_obsolete_connection_sources_are_refused(
+        self, config_overlay: ConfigOverlay, source: str
+    ) -> None:
+        path = "mcp.endpoints.all.connections"
+        rules = [{"roles": ["*"], "offer": [source]}]
+        raw = config_overlay.tree({path: rules})
+
+        with pytest.raises(ConfigError, match="offer"):
             bind(raw, path="app", model=McpAppConfig)
 
     @pytest.mark.parametrize(
@@ -119,53 +114,3 @@ class TestConnectionConfigRefusesStart:
 
         with pytest.raises(ConfigError, match=key):
             bind(raw, path="app", model=McpAppConfig)
-
-    def test_unknown_name_in_a_tool_list_is_refused(
-        self, config_overlay: ConfigOverlay, runtime_stand: StandRefs
-    ) -> None:
-        raw = config_overlay.tree({"tool.pg.connections": {"pg_query": ["ghost"]}})
-        loader = self._loader(raw, runtime_stand, runtime_stand.none().execution())
-
-        with pytest.raises(ToolConfigError, match=r"'ghost'.*not among"):
-            loader.load()
-
-    def test_connection_of_another_kind_in_a_tool_list_is_refused(
-        self,
-        config_overlay: ConfigOverlay,
-        runtime_stand: StandRefs,
-        call_stand: CallStand,
-    ) -> None:
-        raw = config_overlay.tree({"tool.pg.connections": {"pg_query": ["site"]}})
-        params = ConnectionParams(
-            ConnectionTypes.discover,
-            call_stand.contexts,
-            {"site": ServerConnection.model_validate(self.WEB)},
-            StaticConfig(),
-        )
-        refs = replace(runtime_stand.none().execution(), connection_params=params)
-        loader = self._loader(raw, runtime_stand, refs)
-
-        with pytest.raises(
-            ToolConfigError, match="'site' in its list is of kind 'web'"
-        ):
-            loader.load()
-
-    @staticmethod
-    def _loader(raw: DictConfig, stand: StandRefs, refs: ExecRefs) -> ToolLoader:
-        launch = plugin_launch(raw, "pg")
-        kit = PluginKit(
-            launch=launch,
-            meta=bind(raw, path="tool.pg", model=PluginMeta),
-            section=PluginSection(
-                values=launch.section,
-                connections=launch.manifest.connections_in_config,
-            ),
-        )
-
-        return ToolLoader(
-            raw,
-            {"pg": kit},
-            refs,
-            stand.launchers(raw),
-            stand.granted("general", ["*"]),
-        )

@@ -64,7 +64,7 @@ from boba.cancellation import RunCancellation
 from boba.canvas.canvas import CanvasSignal, SignalTransport
 from boba.canvas.journal import StreamSlice
 from boba.canvas.keys import WorkspaceMount
-from boba.config import ConfigLoader, bind
+from boba.config import bind
 from boba.connection_broker.crypto import SecretCipher
 from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.tools import ConnectionTools
@@ -304,7 +304,11 @@ class ToolService(ServerConfigs):
         )
         self._storage = StandSchema(
             self._config.files.paths(self._config.app),
-            ("boba.identity_postgres", "boba.connection_broker"),
+            (
+                "boba.identity_postgres",
+                "boba.access_postgres",
+                "boba.connection_broker",
+            ),
         )
 
     @classmethod
@@ -331,7 +335,7 @@ class ToolService(ServerConfigs):
         run_blocking(self._storage.create())
         self._process.start(self.BOOT_TIMEOUT_SEC)
         self._app = bind(
-            ConfigLoader(self._config.files.paths(self._config.app)).load(),
+            McpAppConfig.loader(self._config.files.paths(self._config.app)).load(),
             "app",
             McpAppConfig,
         )
@@ -990,7 +994,7 @@ async def layer(
             (
                 "boba.identity_postgres",
                 "boba.runtime",
-                "boba.connection_broker",
+                "boba.access_postgres",
                 "boba.aid.mcp_servers",
             ),
         )

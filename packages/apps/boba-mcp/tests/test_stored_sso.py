@@ -26,7 +26,7 @@ from fastmcp.client.transports import StreamableHttpTransport
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from pydantic import BaseModel, RootModel
 
-from boba.config import ConfigLoader, bind
+from boba.config import bind
 from boba.connection_broker.crypto import SecretCipher
 from boba.connection_broker.store import ConnectionStore
 from boba.connections.manifest import ConnectionTypes
@@ -126,12 +126,19 @@ async def service(
     )
     config.write()
     paths = config.files.paths(config.app)
-    schema = StandSchema(paths, ("boba.identity_postgres", "boba.connection_broker"))
+    schema = StandSchema(
+        paths,
+        (
+            "boba.identity_postgres",
+            "boba.access_postgres",
+            "boba.connection_broker",
+        ),
+    )
     process = StandProcess(config, tmp_path / "mcp.log")
     await schema.create()
     try:
         await asyncio.to_thread(process.start, 180.0)
-        app = bind(ConfigLoader(paths).load(), "app", McpAppConfig)
+        app = bind(McpAppConfig.loader(paths).load(), "app", McpAppConfig)
         cipher = SecretCipher(app.connection_store.cipher.get_secret_value())
         store = ConnectionStore(pool, app.db_schema, cipher, ConnectionTypes.discover())
         session = app.session

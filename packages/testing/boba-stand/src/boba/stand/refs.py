@@ -131,7 +131,6 @@ class StandRefs:
         params = ConnectionParams(
             ConnectionTypes.discover,
             self.contexts,
-            {},
             ServiceTickets(credentials),
             ArmedConnections(store, credentials, self.contexts),
         )

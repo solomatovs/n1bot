@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Coroutine, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Coroutine, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
@@ -63,17 +63,13 @@ logger = logging.getLogger(__name__)
 
 
 class PluginMeta(BaseModel):
-    """Ключи фреймворка в [tool.<id>]: включён ли плагин, его инструменты и
-    заданные соединения сервера. Остальные ключи секции проверяет сам
-    плагин подкомандой manifest."""
+    """Ключи фреймворка в [tool.<id>]: включён ли плагин и какие инструменты
+    он предоставляет. Остальные ключи секции проверяет плагин подкомандой manifest."""
 
     model_config = ConfigDict(extra="ignore")
 
     enable: bool = False
     tools: StringList = []
-    connections: dict[str, StringList] = {}
-    """Списки заданных соединений сервера у инструментов плагина: имя
-    инструмента → имена из [connections]."""
 
 
 class PluginSections:
@@ -296,10 +292,7 @@ class ToolLoader:
     def load(self) -> ToolRegistry:
         tools: list[HostedTool] = []
         specs = StreamSpecs({})
-        for plugin_id, kit in self._kits.items():
-            meta = kit.meta
-            self._connection_params.listed(meta.connections)
-
+        for kit in self._kits.values():
             launcher = self._launchers.launcher_of(
                 kit.launch, self._contexts, self._ambient
             )
@@ -307,8 +300,6 @@ class ToolLoader:
             built = plugged.tools
             tools.extend(built)
             specs = specs.merged(plugged.specs)
-            self._listed(plugin_id, "connections", meta.connections, built)
-
             # живой вывод есть у отдельных процессов: кнопка потока
             # рисуется на шагах инструментов
             streamable: list[str] = []
@@ -383,26 +374,6 @@ class ToolLoader:
             raise StreamGroupsConfigError(msg)
 
         return bind(self._raw, section, StreamGroupsConfig)
-
-    @staticmethod
-    def _listed(
-        name: str, key: str, listed: Iterable[str], built: Sequence[HostedTool]
-    ) -> set[str]:
-        """Инструменты плагина name, названные в его списке key: имя вне
-        собранных — отказ."""
-        known: set[str] = set()
-        for tool in built:
-            known.add(tool.name)
-
-        stray = sorted(set(listed) - known)
-        if stray:
-            msg = (
-                f"[tool.{name}] {key} names {stray} are not among its enabled "
-                f"tools {sorted(known)}"
-            )
-            raise RuntimeError(msg)
-
-        return set(listed)
 
     def _access_of(self, tools: Sequence[HostedTool]) -> ToolAccess:
         """Права по грантам процесса; опечатка в имени инструмента — отказ.

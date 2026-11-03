@@ -16,6 +16,7 @@ StandError — переменная файлов конфига не задан�
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
 from enum import StrEnum
 from pathlib import Path
 from typing import ClassVar
@@ -23,7 +24,7 @@ from typing import ClassVar
 from omegaconf import DictConfig
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
-from boba.config import ConfigError, ConfigLoader, bind
+from boba.config import ConfigError, ConfigLoader, ConfigSchema, bind
 from boba.identity.directory import SimpleBind
 
 __all__ = ["Stand", "StandConfigEnv", "StandConfigPaths", "StandError"]
@@ -95,10 +96,26 @@ class StandConfigPaths:
         """Главный файл приложения: рядом с ним conf/krb экземпляра."""
         return self.paths()[0]
 
+    def schema(self) -> ConfigSchema:
+        """Та же модель конфигурации, которую использует вход приложения."""
+        if self._env is StandConfigEnv.SERVICE:
+            from boba.mcp_server.app import McpAppConfig  # noqa: PLC0415
+
+            return ConfigSchema(McpAppConfig, values=("auth",))
+
+        from boba.aid.infra.config import AppConfig  # noqa: PLC0415
+
+        return ConfigSchema(AppConfig, values=("auth",))
+
+    def loader(self, paths: Sequence[Path] | None = None) -> ConfigLoader:
+        return ConfigLoader(
+            self.paths() if paths is None else paths, schema=self.schema()
+        )
+
     def load(self) -> DictConfig:
         paths = self.paths()
         try:
-            return ConfigLoader(paths).load()
+            return self.loader(paths).load()
         except ConfigError as exc:
             msg = f"stand: loading the config files of {self._env.value}: {exc}"
             raise StandError(msg) from exc

@@ -40,7 +40,7 @@ from standard_server import StandardServer
 from boba.auth.config import ProxyAuthConfig
 from boba.canvas.keys import ObjectKey, ScopeDir, WorkspaceMount
 from boba.canvas.storage import StorageNotFoundError
-from boba.config import ConfigLoader, bind
+from boba.config import bind
 from boba.mcp_client.client import (
     BearerAuth,
     FixedServerConfigs,
@@ -1778,7 +1778,7 @@ class BobaMcpService:
             self.port = int(probe.getsockname()[1])
 
         self._files = StandApp.MCP.app_paths()
-        raw = ConfigLoader(self._files).load()
+        raw = StandApp.MCP.config_files().loader(self._files).load()
         self._proxy = bind(raw, "auth.proxy", ProxyAuthConfig)
         self._client = bind(raw, f"mcp.clients.{self.CLIENT}", TrustedClient)
 
@@ -1803,7 +1803,11 @@ class BobaMcpService:
 
         self._storage = StandSchema(
             (*self._files, overlay),
-            ("boba.identity_postgres", "boba.connection_broker"),
+            (
+                "boba.identity_postgres",
+                "boba.access_postgres",
+                "boba.connection_broker",
+            ),
         )
         run_blocking(self._storage.create())
         self._log = (workdir / "mcp.log").open("wb")

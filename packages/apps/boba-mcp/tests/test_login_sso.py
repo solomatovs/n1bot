@@ -31,7 +31,7 @@ from boba.auth import SignIns
 from boba.auth.config import KerberosAuthConfig
 from boba.auth.proxy import ProxyAssertionVerifier
 from boba.auth.sso import SpnegoGate
-from boba.config import ConfigLoader, bind
+from boba.config import bind
 from boba.krb import KerberosEnv
 from boba.ldap import Ldap3Directory
 from boba.mcp_server.auth import ServiceMark
@@ -77,7 +77,7 @@ def krb5_env() -> Iterator[None]:
 @pytest.fixture
 def chat_config() -> DictConfig:
     """Конфиг чата с наложением стенда: в нём живёт секция [auth.kerberos]."""
-    return ConfigLoader(StandApp.AID.paths()).load()
+    return StandApp.AID.config_files().loader().load()
 
 
 @pytest.fixture

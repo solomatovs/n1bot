@@ -62,7 +62,7 @@ async def app_container(
             (
                 "boba.identity_postgres",
                 "boba.runtime",
-                "boba.connection_broker",
+                "boba.access_postgres",
                 "boba.aid.mcp_servers",
             ),
         )

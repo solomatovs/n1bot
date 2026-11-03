@@ -226,7 +226,7 @@ class RoleToolServers(RoleTools[tuple[frozenset[str], str]], CallerServers):
         if OfferedSource.STORED not in sources:
             for name in ConnectionTool:
                 tools.pop(name, None)
-        offered = self._params.offered(list(tools.values()), roles, sources)
+        offered = self._params.offered(list(tools.values()), sources)
 
         return self._registry.server(offered, self._calls)
 

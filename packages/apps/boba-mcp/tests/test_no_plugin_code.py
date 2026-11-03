@@ -39,7 +39,11 @@ class ProbedService:
         self._log_path = log_path
         self._storage = StandSchema(
             config.files.paths(config.app),
-            ("boba.identity_postgres", "boba.connection_broker"),
+            (
+                "boba.identity_postgres",
+                "boba.access_postgres",
+                "boba.connection_broker",
+            ),
         )
 
     def run(self) -> str:

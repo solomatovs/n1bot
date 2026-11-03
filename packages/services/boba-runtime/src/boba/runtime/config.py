@@ -36,7 +36,7 @@ from boba.auth.config import (
     ProxyAuthConfig,
 )
 from boba.chat.profiles import ChatProfileConfig, ChatRoleConfig
-from boba.config import ConfigError, ConfigLoader, bind
+from boba.config import ConfigError, ConfigLoader, ConfigSchema, bind
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.token import CookieSpec, SessionRenewal
 from boba.krb import KerberosWorkspace, KerberosWorkspaceConfig
@@ -494,8 +494,10 @@ class RawConfig:
     _raw: ClassVar[DictConfig | None] = None
 
     @classmethod
-    def load(cls, paths: Sequence[Path]) -> DictConfig:
-        cls._raw = ConfigLoader(paths).load()
+    def load(
+        cls, paths: Sequence[Path], *, schema: ConfigSchema | None = None
+    ) -> DictConfig:
+        cls._raw = ConfigLoader(paths, schema=schema).load()
 
         return cls._raw
 
@@ -787,9 +789,15 @@ class ProcessConfig(BaseModel):
     session: TokenConfig
 
     @classmethod
+    def loader(cls, paths: Sequence[Path]) -> ConfigLoader:
+        """Defaults и связи секций приложения до раскрытия ссылок."""
+        return ConfigLoader(paths, schema=ConfigSchema(cls, values=("auth",)))
+
+    @classmethod
     def load(cls, paths: Sequence[Path]) -> Self:
         """Читает файлы конфигурации и ставит процессу kerberos и CA."""
-        return cls.of(RawConfig.load(paths), paths[0].resolve().parent)
+        raw = RawConfig.load(paths, schema=ConfigSchema(cls, values=("auth",)))
+        return cls.of(raw, paths[0].resolve().parent)
 
     @classmethod
     def of(cls, raw: DictConfig, conf_dir: Path) -> Self:

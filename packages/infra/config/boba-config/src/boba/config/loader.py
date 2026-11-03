@@ -20,9 +20,11 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar
 
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, Node, OmegaConf
 from omegaconf.basecontainer import BaseContainer
 from omegaconf.errors import OmegaConfBaseException
+
+from boba.config.schema import ConfigSchema
 
 __all__ = ["ConfigError", "ConfigLoader", "ConfigResolver"]
 
@@ -76,7 +78,9 @@ class ConfigLoader:
 
     Создают его вход программы (по путям --config) и стенды тестов. Файлы
     сливаются OmegaConf.merge, резолверы ${toml:…}/${toml_dir:…}
-    регистрируются на время загрузки, и всё дерево один раз разрешается
+    регистрируются на время загрузки. Если передана ConfigSchema, defaults
+    моделей и связи известных секций добавляются после наложений. Затем дерево
+    разрешается
     OmegaConf.to_container(resolve=True): ссылки, переменные окружения и
     подключённые файлы читаются здесь, неразрешимое роняет старт. Программа
     получает разрешённое дерево только для чтения, ссылок в нём больше нет.
@@ -85,7 +89,9 @@ class ConfigLoader:
     следуют за ними.
     """
 
-    def __init__(self, paths: Sequence[Path]) -> None:
+    def __init__(
+        self, paths: Sequence[Path], *, schema: ConfigSchema | None = None
+    ) -> None:
         if not paths:
             msg = "config: expected at least one config file, got none"
             raise ConfigError(msg)
@@ -93,18 +99,21 @@ class ConfigLoader:
         self._paths = tuple(paths)
         self._base = paths[0].resolve().parent
         self._files = TomlFiles()
+        self._schema = schema
+        self._included: dict[int, tuple[Node, DictConfig]] = {}
 
     def load(self) -> DictConfig:
         return self._resolved(list(self._layers()))
 
     def load_over(self, overlay: DictConfig) -> DictConfig:
-        """Файлы и поверх них наложение в памяти, затем разрешение."""
+        """Файлы, наложение в памяти, defaults схемы, затем разрешение."""
         layers = list(self._layers())
         layers.append(overlay)
 
         return self._resolved(layers)
 
     def _resolved(self, layers: Sequence[DictConfig]) -> DictConfig:
+        self._included.clear()
         OmegaConf.register_new_resolver(
             ConfigResolver.TOML.value, self._toml, replace=True
         )
@@ -114,6 +123,8 @@ class ConfigLoader:
 
         try:
             merged = OmegaConf.merge(*layers)
+            if isinstance(merged, DictConfig) and self._schema is not None:
+                self._schema.apply(merged)
             resolved = OmegaConf.to_container(merged, resolve=True)
             tree = OmegaConf.create(resolved)
         except OmegaConfBaseException as exc:
@@ -136,12 +147,22 @@ class ConfigLoader:
         for path in self._paths:
             yield OmegaConf.create(self._files.read(path))
 
-    def _toml(self, path: str, _parent_: BaseContainer) -> DictConfig:
-        return OmegaConf.create(self._files.read(self._base / path), parent=_parent_)
+    def _toml(self, path: str, _parent_: BaseContainer, _node_: Node) -> DictConfig:
+        if id(_node_) not in self._included:
+            self._included[id(_node_)] = (
+                _node_,
+                OmegaConf.create(self._files.read(self._base / path), parent=_parent_),
+            )
+        return self._included[id(_node_)][1]
 
-    def _toml_dir(self, path: str, _parent_: BaseContainer) -> DictConfig:
-        files = self._files.read_dir(self._base / path)
-        return OmegaConf.create(files, parent=_parent_)
+    def _toml_dir(self, path: str, _parent_: BaseContainer, _node_: Node) -> DictConfig:
+        if id(_node_) not in self._included:
+            files = self._files.read_dir(self._base / path)
+            self._included[id(_node_)] = (
+                _node_,
+                OmegaConf.create(files, parent=_parent_),
+            )
+        return self._included[id(_node_)][1]
 
     def _named(self) -> str:
         names: list[str] = []

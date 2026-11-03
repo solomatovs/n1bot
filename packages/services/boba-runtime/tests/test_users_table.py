@@ -75,7 +75,12 @@ async def test_setup_creates_the_schema_and_users_round_trip(users: UsersTable) 
 async def broker(users: UsersTable, pool: AsyncPostgresPool) -> ConnectionStore:
     async with pool.connection() as conn:
         await PostgresSchema(SCHEMA).apply_packages(
-            conn, ("boba.identity_postgres", "boba.connection_broker")
+            conn,
+            (
+                "boba.identity_postgres",
+                "boba.access_postgres",
+                "boba.connection_broker",
+            ),
         )
 
     return ConnectionStore(

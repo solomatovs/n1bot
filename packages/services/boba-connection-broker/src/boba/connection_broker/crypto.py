@@ -11,7 +11,7 @@ import base64
 from typing import Any, ClassVar, Literal, get_origin
 
 from cryptography.fernet import Fernet, InvalidToken
-from pydantic import BaseModel, SecretStr
+from pydantic import BaseModel, RootModel, SecretStr
 
 __all__ = ["SecretCipher", "SecretCryptoError"]
 
@@ -34,6 +34,9 @@ class SecretCipher:
             ciphertext = self._fernet.encrypt(plaintext).decode()
 
             return self.PREFIX + ciphertext
+
+        if isinstance(value, RootModel):
+            return self.encrypt(value.root)
 
         if isinstance(value, BaseModel):
             return self._encrypt_model(value)

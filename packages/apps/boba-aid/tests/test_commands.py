@@ -211,7 +211,12 @@ async def store(pool: AsyncPostgresPool) -> ConnectionStore:
     """Соединения чата в схеме теста; роль dev вкладки известна хранилищу."""
     async with pool.connection() as conn:
         await PostgresSchema(CONNECTIONS_SCHEMA).apply_packages(
-            conn, ("boba.identity_postgres", "boba.connection_broker")
+            conn,
+            (
+                "boba.identity_postgres",
+                "boba.access_postgres",
+                "boba.connection_broker",
+            ),
         )
 
     cipher = SecretCipher(token_bytes(32))

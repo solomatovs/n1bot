@@ -22,15 +22,14 @@ from pathlib import Path
 from typing import Annotated, Self
 
 import uvicorn
-from pydantic import ConfigDict, Field, StringConstraints
+from pydantic import ConfigDict, Field
 
 from boba.access import RoleConfig
 from boba.auth.credentials import NoRefresh
 from boba.auth.proxy import ProxyAssertionVerifier
 from boba.cancellation import ProcessStop, StopReason
-from boba.config import ConfigLoader, bind
+from boba.config import ConfigSchema, bind
 from boba.connection_broker.crypto import SecretCipher
-from boba.connection_broker.params import ServerConnection
 from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.tools import ConnectionTools
 from boba.connection_broker.user_connections import ArmedConnections
@@ -99,7 +98,9 @@ class McpSection(ServiceAddress):
 
 class McpAppConfig(ProcessConfig):
     """Секции процесса сервиса: секции процесса, [mcp], хранилище workspace и
-    заданные соединения сервера."""
+    каталоги соединений и пользователей."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     mcp: McpSection
     roles: dict[str, RoleConfig]
@@ -110,12 +111,6 @@ class McpAppConfig(ProcessConfig):
     storage: StorageConfig
     """Хранилище workspace: туда пишут маршруты файлов и оттуда читают
     инструменты."""
-    connections: dict[
-        Annotated[str, StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_-]*$")],
-        ServerConnection,
-    ]
-    """Заданные соединения сервера [connections.<имя>]: имя — идентификатор
-    с явной видимостью по ролям."""
 
     @classmethod
     def load(cls, paths: Sequence[Path]) -> Self:
@@ -207,7 +202,6 @@ class McpHost:
         self._config = config
         self._container = Container(level="app")
         self._container.provide(providers.get_process_config, config)
-        self._container.provide(providers.server_connections, config.connections)
         contexts = CallContexts()
         self._container.provide(providers.call_contexts, contexts)
         resolver = ArmedConnections(
@@ -349,9 +343,16 @@ class McpEntry:
                 from boba.runtime.plugins import PluginMigrations  # noqa: PLC0415
 
                 sources = PluginMigrations()
-                migration = ApplicationMigrations((sources,))
+                migration = ApplicationMigrations(
+                    (sources,), schema=ConfigSchema(McpAppConfig, values=("auth",))
+                )
                 await migration.run(
-                    call.paths, ("boba.identity_postgres", "boba.connection_broker")
+                    call.paths,
+                    (
+                        "boba.identity_postgres",
+                        "boba.access_postgres",
+                        "boba.connection_broker",
+                    ),
                 )
 
     async def serve(self, paths: Sequence[Path]) -> None:
@@ -362,7 +363,7 @@ class McpEntry:
 
     def health(self, paths: Sequence[Path]) -> None:
         """Проба готовности по [mcp]: порт и префикс сервиса."""
-        section = bind(ConfigLoader(paths).load(), "mcp", McpSection)
+        section = bind(McpAppConfig.loader(paths).load(), "mcp", McpSection)
         probe = HealthProbe(section.port, section.url_prefix, McpEndpoints.HEALTH)
 
         sys.stdout.write(f"{probe.check()}\n")

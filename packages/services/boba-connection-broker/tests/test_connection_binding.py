@@ -40,7 +40,12 @@ async def store(pool: AsyncPostgresPool) -> AsyncIterator[ConnectionStore]:
     schema = f"binding_{uuid4().hex[:12]}"
     async with pool.connection() as conn:
         await PostgresSchema(schema).apply_packages(
-            conn, ("boba.identity_postgres", "boba.connection_broker")
+            conn,
+            (
+                "boba.identity_postgres",
+                "boba.access_postgres",
+                "boba.connection_broker",
+            ),
         )
 
     try:
@@ -67,7 +72,6 @@ class BindingStand:
         self.params = ConnectionParams(
             ConnectionTypes.discover,
             calls.contexts,
-            {},
             StaticConfig(),
             ArmedConnections(lambda: store, lambda: self.credentials, calls.contexts),
         )

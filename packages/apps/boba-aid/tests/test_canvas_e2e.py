@@ -42,7 +42,7 @@ from boba.aid.canvas.panel import CanvasNote
 from boba.aid.infra.config import AppConfig
 from boba.aid.mcp_servers.sources import McpViewer, StoredServers
 from boba.aid.mcp_servers.store import McpServerStore
-from boba.config import ConfigError, ConfigLoader, bind
+from boba.config import ConfigError, bind
 from boba.connection_broker.crypto import SecretCipher
 from boba.mcp_client.client import (
     HttpEndpoint,
@@ -126,7 +126,7 @@ class E2eStand(ServerSeedSpec):
         return self._files(StandApp.AID)
 
     def server_records(self) -> Mapping[str, Mapping[str, Any]]:
-        raw = ConfigLoader(self.paths(StandApp.AID)).load()
+        raw = AppConfig.loader(self.paths(StandApp.AID)).load()
         keys = bind(raw, "keys", E2eKeys)
         location = HttpLocation(
             scheme=self.SERVICE_SCHEME,
@@ -534,7 +534,7 @@ async def _cookie_header(context: Any) -> str:
 
 
 def _app_config(stand: E2eStand) -> AppConfig:
-    raw = ConfigLoader(stand.paths(StandApp.AID)).load()
+    raw = AppConfig.loader(stand.paths(StandApp.AID)).load()
     return bind(raw, path="app", model=AppConfig)
 
 

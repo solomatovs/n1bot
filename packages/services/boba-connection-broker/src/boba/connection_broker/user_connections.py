@@ -12,7 +12,6 @@ import logging
 from collections.abc import Callable, Sequence
 from typing import Annotated, Any
 
-from pydantic import AfterValidator
 from pydantic.fields import FieldInfo
 
 from boba.access.grants import ConnectionFilter
@@ -87,7 +86,7 @@ class ConnectionParamHooks:
             self._require_kind(tool.name, param, kind)
 
             self._bodies.hook_all([tool], make(tool.name, param, kind))
-            shown[param] = self.field(ConnectionOffer(kind=kind, names={}, stored=True))
+            shown[param] = self.field(kind)
 
             logger.info(
                 "tool %s: %s is a %s connection of the caller", tool.name, param, kind
@@ -95,14 +94,11 @@ class ConnectionParamHooks:
 
         tool.args_schema = self._schemas.rebuild(tool.args_schema, shown, ())
 
-    def field(
-        self, offer: ConnectionOffer, *checks: AfterValidator
-    ) -> tuple[Any, FieldInfo]:
-        """Строковое поле имени со схемой предложения и проверками на входе."""
+    def field(self, kind: str) -> tuple[Any, FieldInfo]:
+        """Строковое поле имени с видом connection и подсказкой каталога."""
         marked = Annotated[str, NotLogged]
-        declared = self._declared.declared(offer)
+        declared = self._declared.declared(ConnectionOffer(kind))
         info = FieldInfo(min_length=1, json_schema_extra=declared)
-        info.metadata.extend(checks)
 
         return marked, info
 

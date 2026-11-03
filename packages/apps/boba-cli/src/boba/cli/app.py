@@ -1044,6 +1044,8 @@ async def main(argv: Sequence[str] | None = None) -> None:
     invocation = ArgumentParser().parse(argv)
     if isinstance(invocation, ServeInvocation):
         if invocation.command is Command.MIGRATE:
+            from boba.cli.serve import ServeConfig  # noqa: PLC0415
+            from boba.config import ConfigSchema  # noqa: PLC0415
             from boba.history.postgres.migrations import (  # noqa: PLC0415 — служебный режим
                 HistorySchema,
             )
@@ -1052,7 +1054,9 @@ async def main(argv: Sequence[str] | None = None) -> None:
             )
 
             try:
-                await ApplicationMigrations().run(
+                await ApplicationMigrations(
+                    schema=ConfigSchema(ServeConfig, values=("auth",))
+                ).run(
                     invocation.config,
                     tuple(HistorySchema),
                     section="app.agent.history",

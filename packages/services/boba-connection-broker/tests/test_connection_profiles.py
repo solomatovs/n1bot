@@ -38,6 +38,7 @@ from boba.transport.http.connection import (
     DigestAuth,
     HttpConnection,
     NoneAuth,
+    RetryStatuses,
 )
 
 
@@ -259,6 +260,26 @@ class TestRealProfiles:
             raise AssertionError(
                 "HttpConnection.model_validate(cipher.decrypt(sealed)).…"
             )
+
+    def test_root_model_roundtrips_without_wrapper(self) -> None:
+        cipher = _cipher()
+        statuses = RetryStatuses({429: 4})
+        connection = HttpConnection(
+            host="x",
+            port=443,
+            retry_statuses=statuses,
+        )
+
+        sealed = cipher.encrypt(connection)
+        stored_statuses = sealed["retry_statuses"]
+        if stored_statuses != {429: 4}:
+            raise AssertionError(
+                "RootModel value must be stored without a root wrapper"
+            )
+
+        restored = HttpConnection.model_validate(cipher.decrypt(sealed))
+        if restored.retry_statuses != statuses:
+            raise AssertionError("RootModel value must survive profile roundtrip")
 
     def test_httpx_auth_still_built(self) -> None:
         bearer = BearerAuth(method="bearer", token=SecretStr(FakeSecret.HTTP_BEARER))
