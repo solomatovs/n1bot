@@ -11,7 +11,7 @@ services:
     pids_limit: 1024
     restart: unless-stopped
     stop_grace_period: 30s
-    image: boba:0.0.32.dev1
+    image: boba:0.0.33.dev1
     hostname: boba
     container_name: boba
     networks:
