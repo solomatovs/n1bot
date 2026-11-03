@@ -15,7 +15,6 @@ from boba.stand.refs import StandRefs
 from boba.stand.toolsetup import ToolSetup
 from boba.stand_core.context import CallStand
 from boba.toolkit.manifest import InjectedRole
-from boba.toolrun.injected import StaticSection
 
 pytestmark = pytest.mark.anyio
 
@@ -46,7 +45,7 @@ async def test_manifests_come_from_the_plugin_programs(
 ) -> None:
     raw = config_overlay.tree(_enabled_only(raw_config, ENABLED, launcher))
 
-    kits = await PluginKits(raw, runtime_stand.launchers(raw), StaticSection()).load()
+    kits = await PluginKits(raw, runtime_stand.launchers(raw)).load()
 
     assert set(kits) == set(ENABLED)
 
@@ -76,7 +75,7 @@ async def test_plugin_without_its_root_is_left_out(
     changes["tool.pg.sandbox.rootfs"] = "rootfs/nope.ext4"
     raw = config_overlay.tree(changes)
 
-    kits = await PluginKits(raw, runtime_stand.launchers(raw), StaticSection()).load()
+    kits = await PluginKits(raw, runtime_stand.launchers(raw)).load()
 
     assert set(kits) == {"bash"}
     assert "plugin pg is not started" in caplog.text
@@ -114,7 +113,7 @@ async def test_plugin_section_is_checked_by_the_plugin(
     changes["tool.pg.max_rows"] = 0
     raw = config_overlay.tree(changes)
 
-    kits = await PluginKits(raw, runtime_stand.launchers(raw), StaticSection()).load()
+    kits = await PluginKits(raw, runtime_stand.launchers(raw)).load()
 
     assert "pg" not in kits
     assert "does not fit PgToolConfig" in caplog.text

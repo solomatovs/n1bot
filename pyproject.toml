@@ -22,6 +22,7 @@ pythonpath = [
     "packages/infra/stream/boba-stream-ch-to-pg/src",
     "packages/infra/sandbox/boba-sandbox/src",
     "packages/infra/stream/boba-tool-io/src",
+    "packages/infra/auth/boba-identity-postgres/src",
     "packages/infra/auth/boba-krb/src",
     "packages/infra/auth/boba-ldap/src",
     "packages/core/boba-cancellation/src",
@@ -120,6 +121,7 @@ extraPaths = [
     "packages/infra/stream/boba-stream-ch-to-pg/src",
     "packages/infra/sandbox/boba-sandbox/src",
     "packages/infra/stream/boba-tool-io/src",
+    "packages/infra/auth/boba-identity-postgres/src",
     "packages/infra/auth/boba-krb/src",
     "packages/infra/auth/boba-ldap/src",
     "packages/core/boba-cancellation/src",
@@ -253,6 +255,7 @@ members = [
 ]
 
 [tool.uv.sources]
+boba-identity-postgres = { workspace = true }
 boba-config         = { workspace = true }
 boba-cancellation   = { workspace = true }
 boba-core           = { workspace = true }

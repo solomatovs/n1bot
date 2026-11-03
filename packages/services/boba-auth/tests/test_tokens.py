@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 import time
 from collections.abc import Callable
 
@@ -9,11 +10,12 @@ import jwt
 import pytest
 
 from boba.auth import JwtTokens
+from boba.identity.principal import UserIdentity
 from boba.identity.session import Login
 from boba.identity.signin import SignedIn, SignInMetadata
 from boba.identity.token import ClaimKey, TokenRejectedError, TokenRejection
 
-SECRET = "stand-secret"
+SECRET = secrets.token_urlsafe(32)
 
 
 def _encode(secret: str, identifier: str, ttl_sec: int) -> str:
@@ -26,9 +28,12 @@ class TestJwtTokens:
     def test_issued_token_reads_back(self) -> None:
         tokens = JwtTokens(SECRET, 60, "stand-generation")
         signed = SignedIn(
-            identifier=Login("alice"),
+            identifier=Login("corporate:alice"),
             display_name="Alice",
-            sign_in=SignInMetadata(roles=frozenset({"DEV"})),
+            sign_in=SignInMetadata(
+                identity=UserIdentity(realm="corporate", login=Login("alice")),
+                roles=frozenset({"DEV"}),
+            ),
         )
 
         claims = tokens.read(tokens.issue(signed))
@@ -39,7 +44,11 @@ class TestJwtTokens:
 
     def test_token_of_another_generation_is_refused(self) -> None:
         signed = SignedIn(
-            identifier=Login("alice"), display_name="Alice", sign_in=SignInMetadata()
+            identifier=Login("corporate:alice"),
+            display_name="Alice",
+            sign_in=SignInMetadata(
+                identity=UserIdentity(realm="corporate", login=Login("alice"))
+            ),
         )
         token = JwtTokens(SECRET, 60, "generation-a").issue(signed)
 
@@ -58,7 +67,11 @@ class TestJwtTokens:
 
     def test_claims_match_the_peer_layout(self) -> None:
         signed = SignedIn(
-            identifier=Login("alice"), display_name="Alice", sign_in=SignInMetadata()
+            identifier=Login("corporate:alice"),
+            display_name="Alice",
+            sign_in=SignInMetadata(
+                identity=UserIdentity(realm="corporate", login=Login("alice"))
+            ),
         )
         token = JwtTokens(SECRET, 60, "stand-generation").issue(signed)
 
@@ -89,3 +102,21 @@ class TestJwtTokens:
     def test_empty_secret_is_a_build_error(self) -> None:
         with pytest.raises(ValueError, match="secret"):
             JwtTokens("", 60, "stand-generation")
+
+
+@pytest.mark.parametrize("identifier", ["alice", "corporate:alice"])
+def test_current_generation_without_verified_identity_is_refused(
+    identifier: str,
+) -> None:
+    token = jwt.encode(
+        {
+            "identifier": identifier,
+            "metadata": {"generation": "stand-generation"},
+            "exp": int(time.time()) + 60,
+        },
+        SECRET,
+        algorithm="HS256",
+    )
+    with pytest.raises(TokenRejectedError) as caught:
+        JwtTokens(SECRET, 60, "stand-generation").read(token)
+    assert caught.value.reason is TokenRejection.IDENTITY

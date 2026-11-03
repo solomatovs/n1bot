@@ -17,13 +17,13 @@ from omegaconf import DictConfig
 from boba.access import GrantCheck, ToolGrants
 from boba.auth import AuthService, JwtTokens, SignIns
 from boba.auth.credentials import KerberosCredentialSource
-from boba.auth.sso import SpnegoGate
 from boba.chat.profiles import ChatProfiles
 from boba.config import bind
-from boba.connection_broker.crypto import SealKeys, SecretCipher
-from boba.connection_broker.sealed import SealedConnectionParams, ServerConnection
+from boba.connection_broker.crypto import SecretCipher
+from boba.connection_broker.params import ConnectionParams, ServerConnection
 from boba.connection_broker.store import ConnectionStore
-from boba.connection_broker.tickets import SectionTickets, ServiceTickets
+from boba.connection_broker.tickets import ServiceTickets
+from boba.connection_broker.user_connections import ArmedConnections
 from boba.connections.manifest import ConnectionTypes
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import CallContexts
@@ -32,6 +32,7 @@ from boba.identity.locks import LiveLocks, MemoryLiveLocks, StaleLock
 from boba.identity.run import Runs
 from boba.identity.signin import ProfileCatalog
 from boba.identity.sso import RefreshSignal
+from boba.identity_postgres import UsersTable as IdentityUsers
 from boba.ldap import Ldap3Directory
 from boba.messaging import (
     MemoryMessageBus,
@@ -56,7 +57,7 @@ from boba.runtime.journal import DirVault, StreamJournal
 from boba.runtime.launchers import SectionLaunchers, ToolLaunchers
 from boba.runtime.locks import LockReaper, PgLiveLocks
 from boba.runtime.payloads import PgPayloadStore
-from boba.runtime.plugins import ConfigGrants, PluginKit, PluginKits, ToolLoader
+from boba.runtime.plugins import PluginKit, PluginKits, ToolLoader
 from boba.runtime.refresh import BusRefreshSignal, LiveSessions, SessionKeeper
 from boba.runtime.refs import ExecRefs
 from boba.runtime.signin import SignInAssembly
@@ -251,36 +252,30 @@ def connection_types_ref() -> ConnectionTypes:
     return _root().resolved(connection_types)
 
 
-def seal_keys() -> SealKeys:
-    """Ключевая пара исполнителя для запечатанных соединений; кладёт процесс."""
-    msg = (
-        "DI provider seal_keys resolved before the process supplied SealKeys "
-        "via Container.provide"
-    )
-    raise RuntimeError(msg)
-
-
 def server_connections() -> Mapping[str, ServerConnection]:
     """Заданные соединения сервера [connections.<имя>]: у чата их нет,
     сервис boba-mcp кладёт свои через provide."""
     return {}
 
 
+def stored_connections() -> ArmedConnections | None:
+    """Resolver соединений хранилища; владелец каталога задаёт его явно."""
+    return None
+
+
 def connection_params(
-    keys: Annotated[SealKeys, Depends(seal_keys)],
     contexts: Annotated[CallContexts, Depends(call_contexts)],
     servers: Annotated[Mapping[str, ServerConnection], Depends(server_connections)],
-) -> SealedConnectionParams:
-    """Соединения инструментов процесса: приём запечатанных значений и
+    stored: Annotated[ArmedConnections | None, Depends(stored_connections)],
+) -> ConnectionParams:
+    """Соединения инструментов процесса: каталог с проверкой grants и
     заданные соединения сервера под сервисными кредами; одни на процесс."""
     tickets = ServiceTickets(credential_source_ref)
 
-    return SealedConnectionParams(
-        keys, connection_types_ref, contexts, servers, tickets
-    )
+    return ConnectionParams(connection_types_ref, contexts, servers, tickets, stored)
 
 
-def exec_refs(params: SealedConnectionParams) -> ExecRefs:
+def exec_refs(params: ConnectionParams) -> ExecRefs:
     """Входы исполнения инструментов: ссылки в корневой контейнер и
     соединения инструментов params."""
     return ExecRefs(
@@ -306,13 +301,10 @@ def tool_launchers(
         launchers.stop()
 
 
-def tool_grants(
-    raw: Annotated[DictConfig, Depends(get_raw_config)],
-    check: Annotated[GrantCheck, Depends(grant_check)],
-) -> ToolGrants:
-    """Гранты процесса: по умолчанию секции [roles.*] и [profiles.*]; приложение
-    с другим источником (endpoint'ы boba-mcp) отдаёт свои через provide."""
-    return ConfigGrants(raw).grants(check)
+def tool_grants() -> ToolGrants:
+    """MCP задаёт политику tools из своих endpoint'ов и ролей."""
+    msg = "tool grants must be supplied by the MCP application"
+    raise RuntimeError(msg)
 
 
 def profile_catalog(
@@ -329,9 +321,7 @@ async def plugin_kits(
 ) -> Mapping[str, PluginKit]:
     """Включённые плагины процесса: манифесты от их программ и готовые
     хранилища. Процесс без [tool.*] секций плагинов не имеет."""
-    arming = SectionTickets(ServiceTickets(credential_source_ref), connection_types_ref)
-
-    return await PluginKits(raw, launchers, arming).load()
+    return await PluginKits(raw, launchers).load()
 
 
 def tool_registry(  # noqa: PLR0913 — реестр собирается всеми входами процесса
@@ -340,7 +330,7 @@ def tool_registry(  # noqa: PLR0913 — реестр собирается все
     grants: Annotated[ToolGrants, Depends(tool_grants)],
     own: Annotated[Sequence[HostedTool], Depends(own_tools)],
     launchers: Annotated[SectionLaunchers, Depends(tool_launchers)],
-    params: Annotated[SealedConnectionParams, Depends(connection_params)],
+    params: Annotated[ConnectionParams, Depends(connection_params)],
 ) -> ToolRegistry:
     loader = ToolLoader(raw, kits, exec_refs(params), launchers, grants, own)
 
@@ -423,12 +413,14 @@ def call_journals(
     return CallJournals(StreamJournal(vault, section.reserve_bytes), active)
 
 
-def users_table(
+async def users_table(
     config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
     pool: Annotated[AsyncPostgresPool, Depends(postgres_pool)],
 ) -> UsersTable:
     """Строки users и авторы тредов в схеме приложения на пуле процесса."""
-    return UsersTable(config.postgres, config.db_schema, pool)
+    table = UsersTable(config.postgres, config.db_schema, pool)
+    await table.sync_roles(config.roles)
+    return table
 
 
 def threads_table(
@@ -460,32 +452,25 @@ def sign_ins(
     провайдерами ролей и профилей."""
     assembly = SignInAssembly(directory, profiles)
 
-    sso = None
-    if kerberos := config.kerberos():
-        sso = SpnegoGate(assembly.sso(kerberos, config.session.auth_secret))
-
-    proxy = None
-    if proxy_config := config.proxy():
-        proxy = assembly.proxy(proxy_config)
-
-    return SignIns(assembly.password(config.auth), sso, proxy)
+    return assembly.build(config.auth, config.session.auth_secret)
 
 
 def auth_service(
     config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
-    table: Annotated[UsersTable, Depends(users_table)],
+    pool: Annotated[AsyncPostgresPool, Depends(postgres_pool)],
     tokens: Annotated[JwtTokens, Depends(session_tokens)],
     entries: Annotated[SignIns, Depends(sign_ins)],
 ) -> AuthService:
     """Сессия приложения с браузером: способы входа, токен и cookie из
     [session], строки users."""
     session = config.session
+    users = IdentityUsers(config.postgres, config.db_schema, pool)
 
     return AuthService(
         sign_ins=entries,
         tokens=tokens,
         cookie=session.cookie_spec(),
-        users=table,
+        users=users,
         renewal=session.renewal(),
     )
 

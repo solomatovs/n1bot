@@ -1,11 +1,11 @@
 """Общее для хранилищ одной схемы postgres: ленивый пул, сборщик запросов со
-схемой стоящим именем, граница ошибок слоя, транзакция с курсором словарей и
-проверка раскладки таблиц. Работа транзакцией, у которой соединение
+схемой стоящим именем, граница ошибок слоя и транзакция с курсором словарей.
+Работа транзакцией, у которой соединение
 оборвалось до commit, повторяется один раз на новом соединении пула.
 
 Ошибки:
 PostgresError — пул, соединение или запрос отказали, строка не сложилась в
-    модель или раскладка таблицы расходится с ожидаемой; наследник переводит
+    модель; наследник переводит
     её в ошибку своего слоя, подменив _failure.
 """
 
@@ -224,41 +224,3 @@ class PostgresTable:
     async def _advisory_lock(self, cur: Cursor, key: str) -> None:
         """Транзакционный advisory-замок по ключу; снимается с концом транзакции."""
         await AdvisoryLock(key).acquire(cur.connection)
-
-    async def _check_layouts(
-        self, layouts: Mapping[str, Iterable[str]], schema: str | None = None
-    ) -> None:
-        """Колонки таблиц ровно те, что ожидает код: таблица старого выпуска,
-        которую `create table if not exists` оставил как есть, — ошибка с
-        расхождением и советом снести схему, а не тихая работа до первого
-        запроса. schema — чужая схема таблиц; пусто — своя."""
-        where = self._schema
-        if schema is not None:
-            where = PostgresSchema(schema)
-
-        async with self._guarded("checking table layouts"):
-            pool = await self._pool()
-            async with pool.connection() as conn:
-                for table, columns in layouts.items():
-                    await self._check_layout(conn, where, table, set(columns))
-
-    async def _check_layout(
-        self,
-        conn: psycopg.AsyncConnection[Any],
-        where: PostgresSchema,
-        table: str,
-        expected: set[str],
-    ) -> None:
-        actual = await where.columns_of(conn, table)
-        missing = sorted(expected - actual)
-        unexpected = sorted(actual - expected)
-        if not missing and not unexpected:
-            return
-
-        msg = (
-            f"table {where.name}.{table} has a layout the code does not "
-            f"expect: missing columns {missing}, unexpected columns "
-            f"{unexpected}; the table was created by another release and "
-            f"is not migrated, drop the schema ({where.name}) and restart"
-        )
-        raise PostgresError(msg)

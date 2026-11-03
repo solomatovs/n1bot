@@ -17,8 +17,6 @@ from collections.abc import (
     Sequence,
 )
 from dataclasses import dataclass
-from datetime import timedelta
-from importlib.resources import files
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar
@@ -33,10 +31,10 @@ from chainlit.step import Step, StepDict
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
 from psycopg import sql
+from pydantic import SecretStr
 
 from boba.aid.agent.commands import CommandMenus
 from boba.aid.agent.relay import (
-    ChatTools,
     McpRegistration,
     McpRegistrations,
     McpRelay,
@@ -55,6 +53,7 @@ from boba.aid.infra.session import (
 )
 from boba.aid.infra.thread_room import ThreadSurfaces
 from boba.aid.mcp_servers import McpAppError, McpOrigin
+from boba.aid.mcp_servers.catalog import McpConnectionCatalogs
 from boba.aid.mcp_servers.sources import McpViewer, ServerRecord, ServerSource
 from boba.aid.mcp_servers.store import StoredServer
 from boba.aid.rendering.chat_view import ChatSink, ChatView, StepRole
@@ -65,37 +64,41 @@ from boba.cancellation import RunCancellation
 from boba.canvas.canvas import CanvasSignal, SignalTransport
 from boba.canvas.journal import StreamSlice
 from boba.canvas.keys import WorkspaceMount
-from boba.config import bind
-from boba.connection_broker.sealing import CallSealing
+from boba.config import ConfigLoader, bind
+from boba.connection_broker.crypto import SecretCipher
 from boba.connection_broker.store import ConnectionStore
-from boba.connection_broker.tickets import CredentialsRef
 from boba.connection_broker.tools import ConnectionTools
-from boba.connection_broker.user_connections import ArmedConnections, StoreRef
+from boba.connections.manifest import ConnectionTypes
 from boba.core.mcp_names import McpToolNames
 from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.identity.api import StoredUser, UserRows
 from boba.identity.context import (
     CallContext,
-    CallContexts,
     ChatInitiator,
     Scope,
     Subject,
 )
 from boba.identity.errors import InternalServiceError
 from boba.identity.locks import MemoryLiveLocks
+from boba.identity.principal import UserIdentity
 from boba.identity.session import Login, SignInProvider, UserMetadataField
 from boba.identity.signin import SignedIn, SignInMetadata
 from boba.identity.token import SessionClaims, TokenReader
 from boba.kerberos import DelegationMode, SignInTicket
 from boba.krb.seal import SsoTickets, TicketSealer
 from boba.mcp_client.client import (
+    BearerAuth,
     FixedServerConfigs,
     McpCaller,
     McpDescription,
     McpServerConfig,
     McpServers,
+    ServerConfigs,
 )
+from boba.mcp_server.app import McpAppConfig
+from boba.mcp_server.auth import ServiceMark
 from boba.messaging import MemoryMessageBus, MemoryPayloadStore
+from boba.oauth.server import ServiceTokens
 from boba.runtime.elements import FeedbacksTable
 from boba.runtime.storage import (
     LocalStorageClient,
@@ -104,12 +107,14 @@ from boba.runtime.storage import (
 )
 from boba.runtime.threads import ThreadsTable
 from boba.runtime.users import UsersTable
+from boba.stand.migrate import StandSchema
 from boba.stand.refs import StandRefs
 from boba.stand.service_signin import ServiceSignIn
-from boba.stand.signin import SignInStand
 from boba.stand.site import StandConfigEnv, StandConfigPaths
 from boba.stand.storage import StorageSeed
+from boba.stand.ui.database import run_blocking
 from boba.stand.ui.stand import ServiceStand, StandPorts, StandProcess
+from boba.stand.ui.toml_text import TomlText
 from boba.stand.zygote import ROOTFS_IMAGE, SandboxCgroup
 from boba.stand_core.context import CallStand, StandIdentity
 from boba.stand_core.context import FakeTurn as FakeTurn
@@ -127,16 +132,16 @@ from boba.transport.acp.protocol import (
     McpVersion,
     ToolSourceContent,
 )
-from boba.workspace.launcher import MountingConfig, ReadWindow
+from boba.workspace.launcher import ReadWindow
 
-AUTH_USER = "test-user"
+AUTH_USER = "corporate:test-user"
 
 
 class TabSession:
     """Сессия вкладки в объёме, который читает регистрация сервера: объект с
     токеном входа, который обновление сессии заменяет на месте."""
 
-    LOGIN: ClassVar[str] = "ivanov"
+    LOGIN: ClassVar[str] = "corporate:ivanov"
     PRINCIPAL: ClassVar[str] = "ivanov@STAND.LOCAL"
     SERVER: ClassVar[str] = "aid_all"
 
@@ -183,7 +188,7 @@ class ServiceProcess:
     )
     SECRET: ClassVar[str] = "stand-proxy-secret"
 
-    OWNER: ClassVar[str] = str(uuid5(NAMESPACE_URL, "boba-mcp:alice"))
+    OWNER: ClassVar[str] = str(uuid5(NAMESPACE_URL, "boba-user:corporate:alice"))
     """Под этим id сервис держит журналы и файлы пользователя alice, чьим
     токеном входит token_servers()."""
 
@@ -213,12 +218,12 @@ class ServiceProcess:
 
         raise AssertionError(f"the service did not listen on port {self.port}")
 
-    def servers(self) -> FixedServerConfigs:
+    def servers(self, path: str = "/service") -> FixedServerConfigs:
         service = {"scheme": "http", "host": "127.0.0.1", "port": self.port, "path": ""}
         endpoint = {
             "transport": "streamable-http",
             "service": service,
-            "path": "/service",
+            "path": path,
             "auth": {
                 "auth": "proxy",
                 "issuer": service,
@@ -261,16 +266,21 @@ class ServiceProcess:
         self._process.wait(timeout=10)
 
 
-class ToolService:
-    """Сервис boba-mcp стенда с настоящими плагинами в песочнице, отдельным
-    процессом на модуль тестов.
+class ToolServiceConfig(ServiceStand):
+    """Сервер тестов credentials: каталог MCP и открыватель SSO-билетов MCP."""
 
-    Нужен тестам, которые проверяют путь вызова целиком: чат запечатывает
-    соединение пользователя, сервис открывает его и исполняет тело
-    инструмента в песочнице. Создаётся модульной фикстурой теста из
-    рабочего каталога и тестовой базы набора; порты к нему собирает
-    ServiceTools.
-    """
+    def write(self) -> None:
+        super().write()
+        document = tomllib.loads(self.files.overlay.read_text())
+        document["app"]["auth"].append("${auth.kerberos}")
+        self.files.overlay.write_text(TomlText.dumps(document))
+
+
+class ToolService(ServerConfigs):
+    """Настоящий MCP с плагинами в песочнице, каталогом и тестовым издателем JWT.
+
+    Тесты создают profiles и grants в его схеме и SSO-билеты его ключом.
+    Полный HTTP OAuth-вход отдельно проверяет test_stored_sso."""
 
     ENDPOINT: ClassVar[str] = "all"
     PLUGINS: ClassVar[tuple[str, ...]] = ("pg", "ch", "web")
@@ -279,15 +289,22 @@ class ToolService:
     BOOT_TIMEOUT_SEC: ClassVar[float] = 300.0
 
     def __init__(self, workdir: Path, db_name: str) -> None:
-        self._config = ServiceStand(
+        self._config = ToolServiceConfig(
             workdir=workdir,
             app_port=StandPorts().free(),
             db_name=db_name,
             sandbox=True,
             plugins=self.PLUGINS,
+            db_schema=f"mcp_tools_{uuid4().hex[:12]}",
+            role_tools={"*": ("*",)},
+            generation="connection-tools",
         )
         self._process = StandProcess[ServiceStand](
             config=self._config, log_path=workdir / "mcp.log"
+        )
+        self._storage = StandSchema(
+            self._config.files.paths(self._config.app),
+            ("boba.identity_postgres", "boba.connection_broker"),
         )
 
     @classmethod
@@ -310,10 +327,28 @@ class ToolService:
         return self._config.server_name(self.ENDPOINT)
 
     def start(self) -> None:
+        self._config.write()
+        run_blocking(self._storage.create())
         self._process.start(self.BOOT_TIMEOUT_SEC)
+        self._app = bind(
+            ConfigLoader(self._config.files.paths(self._config.app)).load(),
+            "app",
+            McpAppConfig,
+        )
+        session = self._app.session
+        self._tokens = ServiceTokens(
+            self._app.mcp.public_url,
+            session.auth_secret,
+            session.session_ttl_sec,
+            session.session_max_sec,
+            session.session_generation(),
+            ServiceMark.TOKEN_SALT,
+        )
+        self._signed: dict[str, McpServerConfig] = {}
 
     def stop(self) -> None:
         self._process.stop()
+        run_blocking(self._storage.drop())
 
     def servers(self) -> FixedServerConfigs:
         """Секция [mcp.servers] чата с одним сервером — этим сервисом."""
@@ -321,61 +356,87 @@ class ToolService:
 
         return FixedServerConfigs.model_validate({"servers": servers})
 
+    async def catalog(self, pool: AsyncPostgresPool) -> ConnectionStore:
+        """Очищает только каталог изолированного сервера перед тестом."""
+        schema = self._app.db_schema
+        async with pool.connection() as conn:
+            await conn.execute(
+                sql.SQL("delete from {}.grants").format(sql.Identifier(schema))
+            )
+            await conn.execute(
+                sql.SQL("delete from {}.connections").format(sql.Identifier(schema))
+            )
+
+        cipher = SecretCipher(self._app.connection_store.cipher.get_secret_value())
+        return ConnectionStore(pool, schema, cipher, ConnectionTypes.discover())
+
+    def tickets(self) -> SsoTickets:
+        tickets = self._app.sso_tickets()
+        assert tickets is not None, "the MCP test service must open SSO tickets"
+        return tickets
+
+    async def config_of(self, name: str, caller: McpCaller) -> McpServerConfig | None:
+        if name != self.server_name:
+            return None
+
+        session = current_session()
+        cached = self._signed.get(session.token)
+        if cached is not None:
+            return cached
+
+        sign_in = session.sign_in.model_copy(
+            update={"profiles": frozenset({self.ENDPOINT})}
+        )
+        signed = SignedIn(
+            identifier=Login(session.identifier),
+            display_name=session.label,
+            sign_in=sign_in,
+        )
+        assert session.user_id is not None
+        resource = f"{self._app.mcp.public_url}/{self.ENDPOINT}"
+        holder = self._tokens.holder(signed, resource, UUID(session.user_id))
+        token = self._tokens.access(holder, self._config.CLIENT_ID).access_token
+        configured = self.servers().servers[name]
+        endpoint = configured.endpoint.model_copy(
+            update={"auth": BearerAuth(token=SecretStr(token))}
+        )
+        configured = configured.model_copy(update={"endpoint": endpoint})
+        self._signed[session.token] = configured
+        return configured
+
     def tail(self) -> str:
         return self._process.tail()
 
 
 class RelayStand:
-    """Ретранслятор mcp/message стенда (McpRelay) в сборке, как у провайдера
-    процесса: регистрации серверов, запечатывание соединений
-    пользователя из хранилища store с кредами credentials и сервер chat —
-    собственные инструменты чата над тем же хранилищем.
+    """Ретранслятор AID без локального каталога connections."""
 
-    Им собирают ретранслятор тесты ретранслятора, вызовы сервиса
-    (ServiceTools) и процессы агента стенда (Agents); серверы профиля каждый
-    тест открывает сам. Инструменты chat видят роль ROLE и профиль стенда
-    SignInStand.PROFILE.
-    """
-
-    SEAL_TTL: ClassVar[timedelta] = timedelta(minutes=2)
     ROLE: ClassVar[str] = "dev"
     VERSION: ClassVar[str] = "0.0"
     """Версия чата стенда в serverInfo ретранслятора и сервера chat."""
 
-    def __init__(
-        self, store: StoreRef, credentials: CredentialsRef, contexts: CallContexts
-    ) -> None:
+    def __init__(self) -> None:
         self.registrations = McpRegistrations()
-        self._contexts = contexts
-        self._store = store
-        connections = ArmedConnections(store, credentials, contexts)
-        self.sealing = CallSealing(connections, self.SEAL_TTL)
-        refs = StandRefs(contexts)
-        tools = refs.tool_stand(())
-        tools.adopt(ConnectionTools(store, contexts).build())
-        registry = tools.registry(tools.access(self.ROLE, SignInStand.PROFILE), ())
-        self.chat = ChatTools(registry, refs.runs, self.VERSION)
         self.canvas = CanvasOpener(ThreadSurfaces())
         self.bus = MemoryMessageBus("relay-stand")
 
     def relay(self, servers: McpServers) -> McpRelay:
-        return self.relay_with(servers, self.chat, self.canvas)
+        return self.relay_with(servers, self.canvas)
 
-    def menus(self, servers: McpServers) -> CommandMenus:
+    def menus(
+        self, servers: McpServers, source: ServerSource | None = None
+    ) -> CommandMenus:
         """Реестры команд вкладок над ретранслятором серверов servers и
-        хранилищем соединений стенда."""
-        return CommandMenus(self.relay(servers), self._store)
+        каталогами серверов из API."""
+        if source is None:
+            source = FixedServers({})
+        return CommandMenus(self.relay(servers), McpConnectionCatalogs(servers, source))
 
-    def relay_with(
-        self, servers: McpServers, chat: ChatTools, canvas: CanvasOpener
-    ) -> McpRelay:
-        """Ретранслятор стенда со своими инструментами chat и панелью."""
+    def relay_with(self, servers: McpServers, canvas: CanvasOpener) -> McpRelay:
+        """Ретранслятор стенда с указанной панелью."""
         return McpRelay(
             self.registrations,
             servers,
-            self.sealing,
-            self._contexts,
-            chat,
             canvas,
             self.bus,
             self.VERSION,
@@ -422,32 +483,19 @@ class ServiceTool:
 
 
 class ServiceTools:
-    """Чат к сервису инструментов стенда тем же путём, что вызов агента:
-    ретранслятор mcp/message (McpRelay) запечатывает соединения
-    (CallSealing) и зовёт MCP-порт сервиса от имени пользователя текущей
-    сессии chainlit.
+    """Тестовый клиент MCP через ретранслятор AID с именами connections.
 
-    Создаётся фикстурой теста из сервиса (ToolService), хранилища соединений
-    пользователя, его кредов и контекстов вызова; ретранслятор собирает
-    RelayStand. Регистрация сервера выдаётся на вызов и снимается после
-    него; ответ сервера — текст для модели (McpResults): у таблиц и выборок
-    это JSON строк.
-    """
+    ToolService выпускает bearer-токен MCP по личности тестового входа."""
 
-    def __init__(
-        self,
-        service: ToolService,
-        store: StoreRef,
-        credentials: CredentialsRef,
-        contexts: CallContexts,
-    ) -> None:
+    def __init__(self, service: ToolService) -> None:
         self._service = service
         self._names = McpToolNames()
-        self._servers = McpServers(service.servers())
-        self._stand = RelayStand(store, credentials, contexts)
+        self._servers = McpServers(service)
+        self._stand = RelayStand()
         self._relay = self._stand.relay(self._servers)
         self._results = McpResults()
         self._decoder = json.JSONDecoder()
+        self._client = McpServers.OWN
         self._heard: asyncio.Queue[McpMessage] = asyncio.Queue()
 
     async def stop(self) -> None:
@@ -498,7 +546,9 @@ class ServiceTools:
         registered = registrations.register(registration, [server])[0]
         envelope = {
             mt.PROTOCOL_VERSION_META_KEY: McpVersion.V2026_07_28.value,
-            mt.CLIENT_CAPABILITIES_META_KEY: {},
+            mt.CLIENT_CAPABILITIES_META_KEY: self._client.capabilities.model_dump(
+                mode="json", by_alias=True, exclude_none=True
+            ),
         }
         message = McpMessage(
             server_id=registered.server_id,
@@ -519,15 +569,6 @@ class ServiceTools:
         full = self._names.full(server, tool)
 
         return self._results.result(full, call_id, reply)
-
-
-class NoConnectionStore:
-    """Ссылка на хранилище соединений стенда, которому соединения не нужны:
-    обращение к ней — ошибка теста."""
-
-    def __call__(self) -> ConnectionStore:
-        msg = "the stand of this test holds no user connections"
-        raise AssertionError(msg)
 
 
 @pytest.fixture(scope="module")
@@ -919,14 +960,6 @@ def storage(files_dir: Path) -> LocalStorageClient:
     boba-mcp, тестам слоя данных достаточно каталога."""
     config = LocalStorageConfig(
         files_dir=str(files_dir),
-        mounting=MountingConfig(
-            mount_wait_sec=1.0,
-            mount_poll_sec=0.1,
-            shutdown_wait_sec=1.0,
-            lock_wait_sec=1.0,
-            copy_chunk_bytes=65536,
-        ),
-        mount_dir=str(files_dir),
     )
 
     return LocalStorageClient(config)
@@ -951,9 +984,16 @@ async def layer(
         await conn.execute(
             sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(schema))
         )
-    schema_dir = files("boba.runtime") / "schema"
     async with pool.connection() as conn:
-        await PostgresSchema(schema).apply_files(conn, schema_dir, {})
+        await PostgresSchema(schema).apply_packages(
+            conn,
+            (
+                "boba.identity_postgres",
+                "boba.runtime",
+                "boba.connection_broker",
+                "boba.aid.mcp_servers",
+            ),
+        )
 
     data_layer = PostgresDataLayer(
         users=UsersTable(app_config.postgres, schema, pool),
@@ -993,7 +1033,7 @@ async def chainlit_context(auth_token: str) -> AsyncIterator[None]:
 @pytest.fixture
 async def seeded(layer: PostgresDataLayer) -> Seed:
     user = await layer.create_user(
-        ChainlitUser(identifier="user-1", metadata={"role": "tester"})
+        StandTokens.user("corporate:user-1", {"role": "tester"})
     )
     if user is None:
         raise AssertionError("user is not None")
@@ -1049,11 +1089,19 @@ class StandTokens(TokenReader):
         cls, identifier: str, metadata: dict[str, Any] | None = None
     ) -> ChainlitUser:
         """cl.User стенда с поколением сессий в metadata, как его помечает вход."""
-        marked: dict[str, Any] = {UserMetadataField.GENERATION: cls.GENERATION}
+        if ":" not in identifier:
+            identity = UserIdentity(realm="corporate", login=Login(identifier))
+        else:
+            identity = UserIdentity.model_validate(identifier)
+
+        marked: dict[str, Any] = {
+            UserMetadataField.GENERATION: cls.GENERATION,
+            UserMetadataField.IDENTITY: identity.model_dump(mode="json"),
+        }
         if metadata is not None:
             marked.update(metadata)
 
-        return ChainlitUser(identifier=identifier, metadata=marked)
+        return ChainlitUser(identifier=identity.identifier, metadata=marked)
 
     def read(self, token: str) -> SessionClaims:
         return self.tokens().read(token)
@@ -1088,16 +1136,19 @@ class SessionStub:
         if name is None:
             name = f"user-{user_id}"
 
+        if ":" not in name:
+            name = f"corporate:{name}"
+
+        identity = UserIdentity.model_validate(name)
+        sign_in = SignInMetadata(identity=identity)
         self.user = PersistedUser(
             id=user_id or str(UUID(int=0)),
             identifier=name,
             createdAt="2026-01-01T00:00:00Z",
-            metadata={},
+            metadata=sign_in.render(),
         )
         # токен входа как у живой сессии: без него ход отказывает
-        signed = SignedIn(
-            identifier=Login(name), display_name="", sign_in=SignInMetadata()
-        )
+        signed = SignedIn(identifier=Login(name), display_name="", sign_in=sign_in)
         self.token = StandTokens.tokens().issue(signed)
 
 

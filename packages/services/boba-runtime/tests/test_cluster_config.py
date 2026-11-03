@@ -23,7 +23,7 @@ def _cluster(**overrides: object) -> ClusterConfig:
 
 
 def test_instance_names_differ_per_application() -> None:
-    cluster = _cluster()
+    cluster = ClusterConfig(node_id="node1", host="host-a")
 
     assert cluster.instance_of(AppName.AID) == "node1-aid"
     assert cluster.instance_of(AppName.MCP) == "node1-mcp"
@@ -40,3 +40,8 @@ def test_node_id_is_required_and_safe() -> None:
 def test_heartbeat_must_fit_into_the_ttl() -> None:
     with pytest.raises(ValidationError, match="half"):
         _cluster(lock_ttl_sec=10, heartbeat_sec=6)
+
+
+def test_explicit_ttl_must_fit_the_default_heartbeat() -> None:
+    with pytest.raises(ValidationError, match="half"):
+        ClusterConfig(node_id="node1", host="host-a", lock_ttl_sec=10)

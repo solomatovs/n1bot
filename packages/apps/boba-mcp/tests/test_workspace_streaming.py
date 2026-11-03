@@ -24,7 +24,7 @@ import pytest
 
 from boba.canvas.storage import OpenedStream
 from boba.runtime.config import ProgramRoots
-from boba.runtime.storage import ImageStorageClient, LocalStorageConfig
+from boba.runtime.storage import ImageStorageClient, ImageStorageConfig
 from boba.sandbox import WorkspaceSpec
 from boba.stand.storage import StorageSeed
 from boba.stand.zygote import SandboxStand
@@ -212,7 +212,7 @@ def storage(
     }
     workspace = WorkspaceSpec.model_validate(fields.pop("workspace"))
     client = ImageStorageClient(
-        LocalStorageConfig.model_validate(fields), workspace, ProgramRoots().locate()
+        ImageStorageConfig.model_validate(fields), workspace, ProgramRoots().locate()
     )
     asyncio.run(client.upload_stream(KEY, payload.source()))
 
@@ -309,7 +309,7 @@ class TestStreamingReads:
             },
         }
         workspace = WorkspaceSpec.model_validate(fields.pop("workspace"))
-        config = LocalStorageConfig.model_validate(fields)
+        config = ImageStorageConfig.model_validate(fields)
         client = ImageStorageClient(config, workspace, ProgramRoots().locate())
 
         with MemoryProbe() as probe:
@@ -509,7 +509,7 @@ class TestStreamingReads:
             },
         }
         workspace = WorkspaceSpec.model_validate(fields.pop("workspace"))
-        config = LocalStorageConfig.model_validate(fields)
+        config = ImageStorageConfig.model_validate(fields)
         client = ImageStorageClient(config, workspace, ProgramRoots().locate())
 
         async def abandon_then_write() -> int:

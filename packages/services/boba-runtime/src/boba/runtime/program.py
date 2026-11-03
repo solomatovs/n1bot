@@ -16,6 +16,7 @@ class ProgramTool(StrEnum):
     LAUNCHER = "launcher"
     PROBE = "probe"
     SELF_CHECK = "self-check"
+    IDENTITIES = "identities"
 
 
 class ProgramExit(IntEnum):

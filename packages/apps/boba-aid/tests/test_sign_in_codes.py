@@ -39,7 +39,7 @@ class RefusingAuth(AuthService):
         # от сервиса входа колбэку нужен только sign_in
         self._error = error
 
-    async def sign_in(self, username: str, password: str) -> SignedIn:
+    async def sign_in(self, username: str, password: str, realm: str = "") -> SignedIn:
         raise self._error
 
 

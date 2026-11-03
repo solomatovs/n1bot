@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from importlib.resources import files
 from uuid import UUID, uuid4
 
 import pytest
@@ -38,9 +37,10 @@ async def tables(
         )
     postgres = runtime_config.postgres
     cfg = postgres.model_copy(update={"dbname": test_database})
-    schema_dir = files("boba.runtime") / "schema"
     async with pool.connection() as conn:
-        await PostgresSchema(SCHEMA).apply_files(conn, schema_dir, {})
+        await PostgresSchema(SCHEMA).apply_packages(
+            conn, ("boba.identity_postgres", "boba.runtime")
+        )
 
     return UsersTable(cfg, SCHEMA, pool), ThreadsTable(cfg, SCHEMA, pool)
 
@@ -225,10 +225,13 @@ async def test_threads_without_updated_at_are_migrated_in_place(
             (thread_id, created, "old"),
         )
 
-    schema_dir = files("boba.runtime") / "schema"
     async with pool.connection() as conn:
-        await PostgresSchema(schema).apply_files(conn, schema_dir, {})
-        await PostgresSchema(schema).apply_files(conn, schema_dir, {})
+        await PostgresSchema(schema).apply_packages(
+            conn, ("boba.identity_postgres", "boba.runtime")
+        )
+        await PostgresSchema(schema).apply_packages(
+            conn, ("boba.identity_postgres", "boba.runtime")
+        )
         cur = await conn.execute(
             sql.SQL(
                 "select is_nullable from information_schema.columns "

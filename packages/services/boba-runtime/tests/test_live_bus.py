@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-from importlib.resources import files
 from uuid import UUID, uuid4
 
 import pytest
@@ -91,9 +90,10 @@ async def _bus(
         bus_config.cluster,
     )
     bus._pool_ref = pool
-    schema_dir = files("boba.runtime") / "schema"
     async with pool.connection() as conn:
-        await PostgresSchema(bus_config.db_schema).apply_files(conn, schema_dir, {})
+        await PostgresSchema(bus_config.db_schema).apply_packages(
+            conn, ("boba.identity_postgres", "boba.runtime")
+        )
 
     await bus.start()
     return bus
@@ -505,9 +505,10 @@ async def test_bus_survives_all_its_connections_terminated_on_the_server(
         cfg, bus_config.db_schema, "node1-aid", AppName.AID, bus_config.cluster
     )
     bus._pool_ref = pool
-    schema_dir = files("boba.runtime") / "schema"
     async with pool.connection() as conn:
-        await PostgresSchema(bus_config.db_schema).apply_files(conn, schema_dir, {})
+        await PostgresSchema(bus_config.db_schema).apply_packages(
+            conn, ("boba.identity_postgres", "boba.runtime")
+        )
 
     await bus.start()
     try:

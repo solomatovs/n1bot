@@ -60,7 +60,7 @@ from boba.aid.agent.commands import (
     ExecutedCommand,
 )
 from boba.aid.agent.config import AgentCommandConfig, AgentConfig, AgentServiceConfig
-from boba.aid.agent.relay import ChatTools, McpRegistration, McpRegistrations, McpRelay
+from boba.aid.agent.relay import McpRegistration, McpRegistrations, McpRelay
 from boba.aid.agent.settings import (
     AgentSettingsError,
     AgentWorkdirs,
@@ -910,7 +910,7 @@ class ServiceLinks(AgentLinks):
 
 class AgentLauncher:
     """Запуск агента под тред: заготовка из текущего профиля треда →
-    регистрации серверов профиля и сервера chat → агент: свой процесс или
+    регистрации серверов профиля → агент: свой процесс или
     служба (AgentLinks). Удалению треда даёт агента для `session/delete` по
     профилю из threads.meta и текущему конфигу.
 
@@ -962,8 +962,7 @@ class AgentLauncher:
     ) -> AgentLaunch:
         """Заготовка запуска по текущему профилю треда и серверам, выданным
         его пользователю: то, что может отказать до остановки прежнего
-        процесса. Набор серверов — включённые записи таблицы mcp_servers плюс
-        сервер chat.
+        процесса. Набор серверов — включённые записи таблицы mcp_servers.
 
         Ошибки:
         AgentSettingsError — профиль не годится агенту.
@@ -987,8 +986,6 @@ class AgentLauncher:
         names: list[str] = []
         for record in granted:
             names.append(record.name)
-
-        names.append(ChatTools.NAME)
 
         return AgentLaunch(
             profile=profile.name,
@@ -1018,7 +1015,7 @@ class AgentLauncher:
         AgentProcessError — агент не запустился или не ответил.
         PostgresError — билет роли истории не получен.
         """
-        registration = identity.registration(ChatTools.NAME)
+        registration = identity.registration("")
         servers = self._registrations.register(registration, launch.servers)
         caller = McpCaller(login=identity.login, roles=identity.roles)
         try:
@@ -1116,7 +1113,7 @@ class ThreadAgent:
         self._launcher = launcher
         self._meta = meta
         self._renderer = renderer
-        registration = identity.registration(ChatTools.NAME)
+        registration = identity.registration("")
         self._menu = menus.menu(registration, renderer)
         self._questions = AskedQuestions(renderer, self._menu)
         self._launched: LaunchedAgent | None = None

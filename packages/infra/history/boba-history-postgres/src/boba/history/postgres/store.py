@@ -19,11 +19,9 @@
 записи уходят каскадом, а сессию работающего процесса удалить нельзя. Копия
 (ветвление) — одна транзакция `insert … select` записей источника до записи
 среза под новым идентификатором; замок источника не берётся. Схема и таблицы
-создаются файлами schema/*.sql пакета под замком DDL (колонка владельца
-добавляется к таблицам прежнего выпуска на месте), раскладка таблиц
-сверяется с ожидаемой.
+создаются отдельной командой migrate; хранилище выполняет только запросы данных.
 
-Хранилище с владельцем (логин пользователя, от имени которого работает
+Хранилище с владельцем (UUID пользователя, от имени которого работает
 процесс) заводит сессии на него и видит только его сессии: чужая сессия и
 сессия без владельца для него не существуют — чтение пусто, в списке её нет,
 захват, копия и удаление отвечают как на сессию без записей. Хранилище без
@@ -54,8 +52,8 @@ from collections.abc import (
 )
 from dataclasses import dataclass
 from enum import StrEnum
-from importlib.resources import files
 from typing import Any, ClassVar
+from uuid import UUID
 
 import psycopg
 from psycopg.rows import dict_row
@@ -113,7 +111,7 @@ class SessionColumn(StrEnum):
 
     ID = "id"
     CREATED_AT = "created_at"
-    OWNER = "owner"
+    USER_ID = "user_id"
 
 
 class HistoryColumn(StrEnum):
@@ -436,7 +434,7 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
     Создаёт вход процесса по настройке `history` вида `postgres`; пул берётся
     по конфигу подключения при первом обращении, как у остальных таблиц.
     Раскладку записи по колонкам и сборку обратно ведёт RecordFrames.
-    owner — логин владельца сессий процесса (ключ `history.owner`); None —
+    user_id — UUID строки users (ключ `history.userId`); None —
     процесс без владельца, ему видны все сессии. Замки сессий (locks) общие
     у всех хранилищ одного процесса: хранилища разных владельцев одного
     процесса делят соединение замков и реестр захваченных сессий.
@@ -452,20 +450,17 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
         self,
         postgres: PostgresConfig,
         db_schema: str,
-        owner: str | None,
+        user_id: UUID | None,
         locks: SessionLocks,
         pool: PostgresPool | None = None,
     ) -> None:
         super().__init__(postgres, db_schema, pool)
-        self._config = postgres
-        self._owner = owner
+        self._user_id = user_id
         self._frames = RecordFrames()
         self._locks = locks
         self._held: dict[str, HeldSession] = {}
-        self._ready = False
 
     async def acquire(self, session: SessionId) -> SessionLease:
-        await self._prepare()
         await self._check_owner(session)
         grant = await self._locks.take(session)
         try:
@@ -495,13 +490,13 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
             self._query()
             .add(
                 """
-                insert into {schema}.session (id, created_at, owner)
-                values (%(session_id)s, %(created_at)s, %(owner)s)
+                insert into {schema}.session (id, created_at, user_id)
+                values (%(session_id)s, %(created_at)s, %(user_id)s)
                 on conflict (id) do nothing
                 """,
                 session_id=held.session.value,
                 created_at=fresh[0].timestamp,
-                owner=self._owner,
+                user_id=self._user_id,
             )
             .build()
         )
@@ -529,7 +524,6 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
         held.last_seq = fresh[-1].seq
 
     async def read(self, session: SessionId) -> AsyncGenerator[HistoryLine, None]:
-        await self._prepare()
         query = (
             self._query()
             .add(
@@ -550,7 +544,7 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
                 stamp=self.STAMP,
                 session_id=session.value,
             )
-            .when(self._owned(), "and s.owner = %(owner)s", owner=self._owner)
+            .when(self._owned(), "and s.user_id = %(user_id)s", user_id=self._user_id)
             .add(
                 """
                 order by
@@ -585,7 +579,6 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
             await self._locks.give(self._held.pop(key).grant)
 
     async def list(self, cursor: str | None, limit: int) -> StoredPage:
-        await self._prepare()
         query = (
             self._query()
             .add(
@@ -612,7 +605,7 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
                 """,
                 stamp=self.STAMP,
             )
-            .when(self._owned(), "and s.owner = %(owner)s", owner=self._owner)
+            .when(self._owned(), "and s.user_id = %(user_id)s", user_id=self._user_id)
             .when(cursor is not None, "and s.id > %(cursor)s", cursor=cursor)
             .add(
                 """
@@ -643,7 +636,6 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
         return StoredPage(sessions=sessions, next_cursor=sessions[-1].session.value)
 
     async def delete(self, session: SessionId) -> None:
-        await self._prepare()
         probe = (
             self._query()
             .add(
@@ -664,7 +656,7 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
                 """,
                 session_id=session.value,
             )
-            .when(self._owned(), "and owner = %(owner)s", owner=self._owner)
+            .when(self._owned(), "and user_id = %(user_id)s", user_id=self._user_id)
             .build()
         )
 
@@ -689,7 +681,6 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
     async def copy(
         self, source: SessionId, target: SessionId, up_to: str | None
     ) -> int:
-        await self._prepare()
 
         async def work(cur: Cursor) -> int:
             if not await self._exists(cur, source, self._owned()):
@@ -732,11 +723,11 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
                     """
                     ),
                     opened as (
-                        insert into {schema}.session (id, created_at, owner)
+                        insert into {schema}.session (id, created_at, user_id)
                         select
                             %(target)s,
                             min(recorded_at),
-                            %(owner)s
+                            %(user_id)s
                         from
                             copied
                         having
@@ -754,7 +745,7 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
                         copied
                     """,
                     target=target.value,
-                    owner=self._owner,
+                    user_id=self._user_id,
                 )
                 .build()
             )
@@ -783,7 +774,7 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
                 """,
                 session_id=session.value,
             )
-            .when(owned, "and owner = %(owner)s", owner=self._owner)
+            .when(owned, "and user_id = %(user_id)s", user_id=self._user_id)
             .add(
                 """
                     ) as present
@@ -800,7 +791,7 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
 
     def _owned(self) -> bool:
         """Хранилище видит только сессии своего владельца."""
-        return self._owner is not None
+        return self._user_id is not None
 
     async def _check_owner(self, session: SessionId) -> None:
         """Захват сессии, заведённой на другого владельца или без него,
@@ -825,11 +816,11 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
                             {schema}.session
                         where
                             id = %(session_id)s
-                            and owner is distinct from %(owner)s
+                            and user_id is distinct from %(user_id)s
                     ) as present
                 """,
                 session_id=session.value,
-                owner=self._owner,
+                user_id=self._user_id,
             )
             .build()
         )
@@ -842,7 +833,7 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
         if foreign:
             msg = (
                 f"Session '{session.value}' is not found among the sessions of "
-                f"'{self._owner}': it has no records this process may open."
+                f"'{self._user_id}': it has no records this process may open."
             )
             raise SessionNotFoundError(msg)
 
@@ -881,36 +872,6 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
 
     def _failure(self, action: str, exc: Exception) -> Exception:
         return HistoryError(self._detail(action, exc))
-
-    async def _prepare(self) -> None:
-        """Файлы схемы пакета и сверка раскладки — один раз на хранилище:
-        агент — отдельная программа, таблицы истории создаёт сам."""
-        if self._ready:
-            return
-
-        schema_dir = files("boba.history.postgres") / "schema"
-        conn = await self._dedicated()
-        try:
-            await self._schema.apply_files(conn, schema_dir, {})
-        except PostgresError as exc:
-            raise self._failure("applying the history schema files", exc) from exc
-        finally:
-            await conn.close()
-
-        session_columns = [column.value for column in SessionColumn]
-        history_columns = [column.value for column in HistoryColumn]
-        await self._check_layouts(
-            {
-                HistoryTable.SESSION.value: session_columns,
-                HistoryTable.SESSION_RECORDS.value: history_columns,
-            }
-        )
-        self._ready = True
-
-    async def _dedicated(self) -> psycopg.AsyncConnection[Any]:
-        """Соединение вне пула для файлов схемы: DDL идёт под своим замком."""
-        async with self._guarded("opening the schema connection"):
-            return await AsyncPostgresPool.dedicated(self._config)
 
     async def _last_seq(self, session: SessionId) -> int:
         """Ошибки:

@@ -2,15 +2,14 @@
 серверам, которые чат aid объявил ему записями type "acp", и реестр этих
 регистраций (serverId → пользователь, тред, сервер). Сервер профиля
 отвечает своим портом McpServers с личностью агента в каждом запросе (его
-clientInfo и clientCapabilities из _meta запроса), сервер chat —
-собственными инструментами чата прямо в процессе, без своего HTTP-входа.
+clientInfo и clientCapabilities из _meta запроса).
 
 Ошибки:
 RequestError (acp.exceptions) — ошибка доставки MCP-over-ACP:
     UNKNOWN_SERVER — serverId не выдан этим чатом или снят;
     INVALID_PARAMS — requestId уже в работе;
     BACKEND_FAILED — сервер за регистрацией недоступен, ответил не по схеме,
-    оборвал поток подписки, имена инструментов сервера chat совпали либо
+    оборвал поток подписки либо
     вход пользователя вкладки больше не годен, исхода MCP нет.
 Запросы приложений MCP Apps (app_call, app_read) ошибок наружу не выпускают:
 app_answer отдаёт приложению ошибку JSON-RPC с причиной. Источник вызова
@@ -72,23 +71,17 @@ from boba.aid.rendering.tool import (
     AppUnread,
     ToolSource,
 )
-from boba.cancellation import RunCancellation, StopReason
+from boba.cancellation import RunCancellation
 from boba.canvas.canvas import CanvasScope
-from boba.connection_broker.sealing import CallSealing, McpServerInfo
-from boba.connections.stored import ConnectionStoreError
 from boba.core.mcp_names import McpToolNames
 from boba.core.validation import ValidationText
 from boba.identity.context import (
     CallContext,
-    CallContexts,
     HumanInitiator,
     Scope,
     Subject,
 )
-from boba.identity.errors import AuthenticationError, RefusalError
-from boba.identity.run import Runs
-from boba.kerberos import KerberosError
-from boba.mcp_adapter import McpTool, RoleTools
+from boba.identity.errors import AuthenticationError
 from boba.mcp_client.client import (
     JournalHeard,
     McpCaller,
@@ -104,12 +97,7 @@ from boba.mcp_client.client import (
 )
 from boba.messaging import JournalOpened, LockToken, MessageBus, MessageBusError
 from boba.toolkit.chain import StreamPlanError
-from boba.toolkit.dag import DagNode, ToolServer, ToolServersError
-from boba.toolkit.failure import InvokeErrorKind
 from boba.toolkit.wire import JournalNotice
-from boba.toolrun.hosted import DirectCalls
-from boba.toolrun.injected import ToolConfigError
-from boba.toolrun.registry import ToolRegistry
 from boba.transport.acp.protocol import (
     AcpErrorCode,
     BobaExtension,
@@ -125,8 +113,6 @@ from boba.transport.acp.protocol import (
 __all__ = [
     "AppAction",
     "AppRequest",
-    "ChatToolPort",
-    "ChatTools",
     "ClientName",
     "HeldCall",
     "McpRegistration",
@@ -268,9 +254,8 @@ class McpRegistration:
 
     Создаётся запуском агента (AgentLauncher) и хранится в McpRegistrations
     на каждый сервер, который процесс получает объявлением type "acp".
-    profile — профиль треда: по нему сервер chat выбирает набор
-    инструментов. session — живой вход пользователя вкладки. server — имя
-    сервера либо ChatTools.NAME; выдачу сервера пользователю проверяет
+    profile — профиль треда. session — живой вход пользователя вкладки.
+    server — имя сервера; выдачу сервера пользователю проверяет
     клиент в момент подключения, а не регистрация. Контекст вызова от
     агента ретранслятор строит из регистрации (context).
     """
@@ -365,115 +350,6 @@ class RelayedRequest:
 
     server_id: str
     client: McpClientIdentity
-
-
-class ChatToolPort(McpToolPort):
-    """Реализация McpToolPort собственными инструментами чата в его процессе
-    на один запрос mcp/message.
-
-    Создаёт ChatTools.port из инструментов McpTool пары «роли, профиль»
-    вызывающего и контекста вызова регистрации. Карточки и ответы — общего
-    адаптера boba.mcp_adapter; вызов идёт под открытым запуском контекста:
-    тела читают субъекта из контекста, как в ходе чата. Сервер chat
-    объявляет одни инструменты: список их неизменен, ресурсов, промптов,
-    подсказок, файлов, хода, журналов и расширений у него нет.
-    """
-
-    def __init__(
-        self,
-        tools: Mapping[str, McpTool],
-        context: CallContext,
-        runs: Runs,
-        info: mt.Implementation,
-    ) -> None:
-        self._tools = tools
-        self._context = context
-        self._runs = runs
-        self._info = info
-
-    async def described(self, client: McpClientIdentity) -> McpDescription:
-        capabilities = mt.ServerCapabilities(
-            tools=mt.ToolsCapability(list_changed=False)
-        )
-        info = self._info.model_dump(mode="json", by_alias=True, exclude_none=True)
-        result = mt.DiscoverResult(
-            supported_versions=list(MODERN_PROTOCOL_VERSIONS),
-            capabilities=capabilities,
-            _meta={mt.SERVER_INFO_META_KEY: info},
-        )
-
-        return McpDescription(f"server {ChatTools.NAME!r} of the chat", result)
-
-    async def tools(self, client: McpClientIdentity) -> mt.ListToolsResult:
-        listed: list[mt.Tool] = []
-        for tool in self._tools.values():
-            listed.append(tool.to_mcp_tool())
-
-        return mt.ListToolsResult(tools=listed)
-
-    async def call(  # noqa: PLR0913 — вызов несёт приёмники хода, журналов и вопросов
-        self,
-        client: McpClientIdentity,
-        params: mt.CallToolRequestParams,
-        card: mt.Tool | None,
-        progress: ProgressHeard | None,
-        journals: JournalHeard | None,
-        asked: QuestionHeard | None,
-    ) -> mt.CallToolResult | mt.InputRequiredResult:
-        tool = self._tools[params.name]
-
-        arguments: dict[str, object] = {}
-        if params.arguments is not None:
-            arguments = dict(params.arguments)
-
-        with self._runs.open(self._context):
-            try:
-                result = await tool.run(arguments)
-            except asyncio.CancelledError:
-                self._context.cancellation.cancel(StopReason.ABORTED)
-                raise
-
-        return mt.CallToolResult(
-            content=result.content,
-            structured_content=result.structured_content,
-            is_error=result.is_error,
-            _meta=result.meta,
-        )
-
-
-class ChatTools(RoleTools[tuple[frozenset[str], str]]):
-    """Собственные инструменты чата (connection_list, connection_search) как
-    сервер chat, объявленный агенту, на базе RoleTools.
-
-    Создаётся провайдером ретранслятора и живёт в нём рядом с McpServers:
-    на запрос регистрации chat ретранслятор берёт порт ChatToolPort по
-    контексту вызова. Порт пары «роли, профиль» — инструменты хода чата
-    реестра с прямым вызовом тел (DirectCalls): ленты у вызова от агента
-    нет, шаг рисует агент по своим уведомлениям. version — версия чата в
-    serverInfo сервера chat.
-    """
-
-    NAME: ClassVar[str] = "chat"
-
-    def __init__(self, registry: ToolRegistry, runs: Runs, version: str) -> None:
-        super().__init__()
-        self._registry = registry
-        self._runs = runs
-        self._calls = DirectCalls()
-        self._info = mt.Implementation(name=self.NAME, version=version)
-
-    def port(self, context: CallContext) -> ChatToolPort:
-        """Порт инструментов вызывающего context."""
-        subject = context.subject
-        tools = self.tools((subject.roles, subject.profile))
-
-        return ChatToolPort(tools, context, self._runs, self._info)
-
-    def _server(self, key: tuple[frozenset[str], str]) -> ToolServer:
-        roles, profile = key
-        tools = self._registry.for_session(roles, profile)
-
-        return self._registry.server(tools, self._calls)
 
 
 HeldReply = mt.CallToolResult | mt.InputRequiredResult
@@ -702,17 +578,14 @@ class McpRelay:
     server/discover отдаёт возможности, инструкции и serverInfo сервера за
     регистрацией;
     сервер профиля зовётся портом McpServers от имени пользователя вкладки
-    с личностью агента (RelayedRequest), сервер chat — собственными
-    инструментами чата в процессе (ChatTools) и знает только инструменты.
+    с личностью агента (RelayedRequest).
     Ресурсы, шаблоны, промпты, подсказки и потоки
     subscriptions/listen идут серверу профиля как есть, вместе с просьбами
     о вводе (input_required) в ответах; ход запроса уходит агенту
     уведомлением notifications/progress под его токеном. Логи сервера
     (notifications/message, устаревшие в 2026-07-28) ретранслятор не
-    несёт и возможность logging агенту не объявляет. Соединения в
-    аргументах запечатывает CallSealing в контексте вызова регистрации, у
-    инструмента со вложенными вызовами (расширение NestedCallsFeature
-    сервера) — и в аргументах каждого узла по схеме его инструмента.
+    несёт и возможность logging агенту не объявляет. Имена connections
+    передаются как есть, в том числе внутри DAG: их разрешает сервер MCP.
     Журналы, которые вызов открыл на сервере, ретранслятор называет ленте
     треда сообщением JournalOpened шины (bus). Ответ на вызов уходит как
     есть, кроме файлов, которые сервер просит показать сразу: их открывает
@@ -738,22 +611,16 @@ class McpRelay:
     SIGN_IN_EXPIRED: ClassVar[str] = "the sign-in of this chat is no longer valid"
     """Короткая причина агенту, когда вход пользователя вкладки больше не годен."""
 
-    def __init__(  # noqa: PLR0913 — ретранслятор собирается всеми входами процесса
+    def __init__(
         self,
         registrations: McpRegistrations,
         servers: McpServers,
-        sealing: CallSealing,
-        contexts: CallContexts,
-        chat: ChatTools,
         canvas: CanvasOpener,
         bus: MessageBus,
         version: str,
     ) -> None:
         self._registrations = registrations
         self._servers = servers
-        self._sealing = sealing
-        self._contexts = contexts
-        self._chat = chat
         self._canvas = canvas
         self._bus = bus
         self._names = McpToolNames()
@@ -869,13 +736,6 @@ class McpRelay:
             raise RequestError(
                 AcpErrorCode.BACKEND_FAILED, msg, self._brief(exc)
             ) from exc
-        except ToolServersError as exc:
-            msg = (
-                f"mcp/message {message.method!r} to server {message.server_id!r}: "
-                f"the tools of the server cannot be offered, expected every tool "
-                f"name once: {exc}"
-            )
-            raise RequestError(AcpErrorCode.BACKEND_FAILED, msg) from exc
         finally:
             self._active.discard(active)
 
@@ -1003,7 +863,6 @@ class McpRelay:
             send = partial(
                 self._called,
                 registration,
-                context,
                 port,
                 request.client,
                 params,
@@ -1016,9 +875,6 @@ class McpRelay:
         held.follow(forwarded)
         reply = await self._waited(held)
         if not isinstance(reply, mt.CallToolResult):
-            return reply
-
-        if registration.server == ChatTools.NAME:
             return reply
 
         subject = context.subject
@@ -1239,7 +1095,7 @@ class McpRelay:
         context = registration.context()
         port = await self._app_server(registration, context)
         result = await self._called(
-            registration, context, port, McpServers.OWN, params, "app", None, None, None
+            registration, port, McpServers.OWN, params, "app", None, None, None
         )
         if isinstance(result, mt.CallToolResult):
             return result
@@ -1436,7 +1292,6 @@ class McpRelay:
     async def _called(  # noqa: PLR0913 — вызов собирается регистрацией, портом и стороной
         self,
         registration: McpRegistration,
-        context: CallContext,
         port: McpToolPort,
         client: McpClientIdentity,
         params: mt.CallToolRequestParams,
@@ -1445,12 +1300,9 @@ class McpRelay:
         forwarded: ProgressHeard | None,
         questions: QuestionHeard | None,
     ) -> mt.CallToolResult | mt.InputRequiredResult:
-        """Вызов инструмента клиента client, видимого стороне audience, по
-        списку и описанию сервера из кэша порта: соединения запечатаны, у
-        вызова со вложенными вызовами — и в узлах, тред регистрации — в
-        параметрах с пометкой области, которую сервер объявил расширением
-        ScopeFeature, отказ запечатывания — isError с причиной; вопросы
-        сервера прежней редакции — questions.
+        """Вызов опубликованного инструмента: область треда добавляется по
+        ScopeFeature, остальные аргументы, включая имена connections и DAG,
+        передаются серверу без изменений.
 
         Ошибки:
         MCPError — инструмента у сервера нет либо он не для audience.
@@ -1476,23 +1328,7 @@ class McpRelay:
             for name in scoping.params(tool.input_schema):
                 asked[name] = registration.thread_id
 
-        full = self._names.full(registration.server, tool.name)
-        server = McpServerInfo(name=registration.server, features=described.features())
-        try:
-            with self._contexts.applied(context):
-                arguments = await self._sealed(described, tool, asked, offered, server)
-        except (RefusalError, ToolConfigError) as exc:
-            reason = f"{full}: {exc}"
-            logger.warning("mcp relay: sealing refused: %s", reason)
-
-            return self._refused(reason)
-        except (ConnectionStoreError, KerberosError) as exc:
-            reason = f"{full}: sealing the connections failed: {exc}"
-            logger.warning("mcp relay: %s", reason)
-
-            return self._refused(reason)
-
-        sent = params.model_copy(update={"arguments": arguments})
+        sent = params.model_copy(update={"arguments": asked})
 
         return await port.call(client, sent, tool, forwarded, journals, questions)
 
@@ -1560,100 +1396,6 @@ class McpRelay:
                 exc,
             )
 
-    async def _sealed(
-        self,
-        described: McpDescription,
-        tool: mt.Tool,
-        asked: Mapping[str, Any],
-        offered: Mapping[str, mt.Tool],
-        server: McpServerInfo,
-    ) -> dict[str, Any]:
-        """Аргументы вызова tool с запечатанными соединениями: по схеме
-        инструмента, а у инструмента, который сервер объявил несущим
-        вложенные вызовы, — и в каждом узле по схеме инструмента узла. Узлы
-        разбираются по форме, которую объявил сервер; вызов не по форме
-        уходит как есть, его отвергнет сервер.
-
-        Ошибки:
-        RefusalError — инструмент узла не предложен модели, соединение
-            неизвестно или не выдано пользователю.
-        ToolConfigError — соединение не годится инструменту.
-        ConnectionStoreError — таблица соединений недоступна.
-        KerberosError — билет к соединению не выпущен.
-        """
-        full = self._names.full(server.name, tool.name)
-        arguments = await self._sealing.seal(full, asked, tool.input_schema, server)
-
-        nested = described.nested_calls()
-        if nested is None:
-            return arguments
-
-        if nested.tool != tool.name:
-            return arguments
-
-        try:
-            calls = nested.calls(arguments)
-        except StreamPlanError as exc:
-            logger.info("mcp relay: nodes are sent unsealed: %s", exc)
-            return dict(arguments)
-
-        sealed: list[DagNode] = []
-        for call in calls:
-            node_tool = offered.get(call.tool)
-            if node_tool is None:
-                raise self._unknown_node(call, offered, server)
-
-            node_full = self._names.full(server.name, call.tool)
-            try:
-                args = await self._sealing.seal(
-                    node_full, call.args, node_tool.input_schema, server
-                )
-            except RefusalError as exc:
-                msg = f"node {call.key!r} ({node_full}): {exc}"
-                raise RefusalError(exc.kind, msg) from exc
-            except ToolConfigError as exc:
-                msg = f"node {call.key!r} ({node_full}): {exc}"
-                raise ToolConfigError(msg) from exc
-
-            sealed.append(call.model_copy(update={"args": args}))
-
-        return nested.replaced(arguments, sealed)
-
-    def _unknown_node(
-        self, call: DagNode, offered: Mapping[str, mt.Tool], server: McpServerInfo
-    ) -> RefusalError:
-        """Отказ узлу call, чей инструмент сервер не предлагает; полному
-        имени инструмента этого же сервера отказ называет его имя на сервере."""
-        parsed = self._names.parse(call.tool)
-        if parsed is None:
-            return self._unknown_tool(call, offered, server)
-
-        if parsed.server != server.name:
-            return self._unknown_tool(call, offered, server)
-
-        if parsed.tool not in offered:
-            return self._unknown_tool(call, offered, server)
-
-        msg = (
-            f"node {call.key!r}: {call.tool!r} is the name the agent gives the "
-            f"tool {parsed.tool!r} of mcp server {server.name!r}, while the "
-            f"nodes of a nested call name tools as the server lists them; "
-            f"name the tool of the node {parsed.tool!r}."
-        )
-
-        return RefusalError(InvokeErrorKind.UNKNOWN_TOOL, msg)
-
-    @staticmethod
-    def _unknown_tool(
-        call: DagNode, offered: Mapping[str, mt.Tool], server: McpServerInfo
-    ) -> RefusalError:
-        msg = (
-            f"node {call.key!r}: mcp server {server.name!r} offers the caller of "
-            f"the call no tool {call.tool!r}; expected one of {sorted(offered)}"
-        )
-
-        return RefusalError(InvokeErrorKind.UNKNOWN_TOOL, msg)
-
     async def _port_of(self, request: RelayedRequest) -> McpToolPort:
         """Порт сервера регистрации запроса request.
 
@@ -1677,9 +1419,6 @@ class McpRelay:
         Ошибки:
         McpClientError — сервер профиля недоступен.
         """
-        if registration.server == ChatTools.NAME:
-            return self._chat.port(context)
-
         subject = context.subject
         user = McpCaller(login=subject.login, roles=subject.roles)
 
@@ -1695,13 +1434,6 @@ class McpRelay:
         McpClientError — сервер профиля недоступен.
         """
         registration = self._registrations.of(request.server_id)
-        if registration.server == ChatTools.NAME:
-            msg = (
-                f"{method}: server {ChatTools.NAME!r} is the chat itself and serves "
-                "tools only; its server/discover declares no other capability"
-            )
-            raise MCPError(code=mt.METHOD_NOT_FOUND, message=msg)
-
         context = registration.context()
         subject = context.subject
         user = McpCaller(login=subject.login, roles=subject.roles)
@@ -1719,13 +1451,6 @@ class McpRelay:
         MCPError — сервер chat или сервер не объявил приложений.
         McpClientError — сервер недоступен или не выдан вызывающему.
         """
-        if registration.server == ChatTools.NAME:
-            msg = (
-                f"server {ChatTools.NAME!r} is the chat itself and has no apps; "
-                "an app may call only the server that gave it"
-            )
-            raise MCPError(code=mt.INVALID_PARAMS, message=msg)
-
         subject = context.subject
         user = McpCaller(login=subject.login, roles=subject.roles)
         port = await self._servers.port(registration.server, user)

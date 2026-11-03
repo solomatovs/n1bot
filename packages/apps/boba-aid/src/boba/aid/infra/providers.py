@@ -7,10 +7,7 @@
 
 import logging
 from collections.abc import AsyncIterator, Sequence
-from datetime import timedelta
-from enum import StrEnum
 from importlib.metadata import version
-from importlib.resources import files
 from pathlib import Path
 from typing import Annotated
 from uuid import UUID
@@ -27,7 +24,7 @@ from boba.aid.agent.chat import (
 from boba.aid.agent.commands import CommandMenus
 from boba.aid.agent.config import AgentConfig
 from boba.aid.agent.feed import AgentFeeds, BusParts
-from boba.aid.agent.relay import ChatTools, McpRegistrations, McpRelay
+from boba.aid.agent.relay import McpRegistrations, McpRelay
 from boba.aid.canvas.remote import RemoteJournals
 from boba.aid.canvas.tools import CanvasOpener
 from boba.aid.chat.ui_text import UiText
@@ -41,6 +38,7 @@ from boba.aid.infra.session import (
     session_source_ref,
 )
 from boba.aid.mcp_servers import McpAppError
+from boba.aid.mcp_servers.catalog import McpConnectionCatalogs
 from boba.aid.mcp_servers.directory import McpDirectory
 from boba.aid.mcp_servers.form import McpForms
 from boba.aid.mcp_servers.oauth import McpBrowserOAuth
@@ -51,13 +49,10 @@ from boba.aid.rendering.renderer import TabSurfaces
 from boba.auth import JwtTokens
 from boba.chat.profiles import ChatProfiles, SelectedProfile
 from boba.connection_broker.crypto import SecretCipher
-from boba.connection_broker.sealing import CallSealing
-from boba.connection_broker.user_connections import ArmedConnections
-from boba.db.postgres import AsyncPostgresPool, PostgresSchema
+from boba.db.postgres import AsyncPostgresPool
 from boba.identity.api import UserRows
-from boba.identity.context import CallContexts, Scope
+from boba.identity.context import Scope
 from boba.identity.locks import LiveLocks
-from boba.identity.run import Runs
 from boba.identity.session import SessionSource
 from boba.mcp_client.client import McpServers
 from boba.messaging import (
@@ -75,7 +70,6 @@ from boba.runtime.elements import FeedbacksTable
 from boba.runtime.storage import StorageClient
 from boba.runtime.threads import ThreadsTable
 from boba.runtime.users import UsersTable
-from boba.toolrun.registry import ToolRegistry
 
 
 def get_app_config() -> AppConfig:
@@ -187,29 +181,6 @@ def remote_journals() -> RemoteJournals:
     return RemoteJournals()
 
 
-class HarnessSchema(StrEnum):
-    """Пакеты, чьи файлы schema/*.sql чат применяет в схеме приложения на
-    старте: таблицы чата и шины, соединения и гранты, серверы MCP."""
-
-    RUNTIME = "boba.runtime"
-    CONNECTIONS = "boba.connection_broker"
-    MCP_SERVERS = "boba.aid.mcp_servers"
-
-
-async def harness_storage(
-    app_config: Annotated[AppConfig, Depends(get_app_config)],
-    pool: Annotated[AsyncPostgresPool, Depends(runtime.postgres_pool)],
-) -> None:
-    """Таблицы чата одним механизмом на старте процесса: файлы схемы каждого
-    пакета HarnessSchema в схеме [app].schema. Поднимается первым после
-    пула: таблицы процесса работают на готовой схеме."""
-    schema = PostgresSchema(app_config.db_schema)
-    async with pool.connection() as conn:
-        for member in HarnessSchema:
-            schema_dir = files(member.value) / "schema"
-            await schema.apply_files(conn, schema_dir, {})
-
-
 async def chainlit_data_layer(  # noqa: PLR0913 — слой данных собирается таблицами процесса
     app_config: Annotated[AppConfig, Depends(get_app_config)],
     storage: Annotated[StorageClient, Depends(storage_provider)],
@@ -217,7 +188,6 @@ async def chainlit_data_layer(  # noqa: PLR0913 — слой данных соб
     users: Annotated[UsersTable, Depends(runtime.users_table)],
     threads: Annotated[ThreadsTable, Depends(runtime.threads_table)],
     pool: Annotated[AsyncPostgresPool, Depends(runtime.postgres_pool)],
-    storage_ready: Annotated[None, Depends(harness_storage)],
 ) -> PostgresDataLayer:
     """Слой данных чата на пуле процесса: схему таблицы ставят в запрос."""
     feedbacks = FeedbacksTable(app_config.postgres, app_config.db_schema, pool)
@@ -267,7 +237,6 @@ def server_source(
 
 async def mcp_servers(
     source: Annotated[ServerSource, Depends(server_source)],
-    ready: Annotated[None, Depends(harness_storage)],
 ) -> AsyncIterator[McpServers]:
     """MCP-серверы процесса: подключаются при первом обращении, закрываются
     на остановке. Через них идут вызовы агента (ретранслятор), файлы
@@ -290,20 +259,6 @@ def mcp_registrations() -> McpRegistrations:
     return McpRegistrations()
 
 
-def call_sealing(
-    config: Annotated[AgentConfig, Depends(agent_config)],
-    contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
-) -> CallSealing:
-    """Запечатывание соединений пользователя ключом сервера MCP для
-    ретранслятора mcp/message."""
-    connections = ArmedConnections(
-        runtime.connection_store_ref, runtime.credential_source_ref, contexts
-    )
-    ttl = timedelta(seconds=config.seal_ttl_sec)
-
-    return CallSealing(connections, ttl)
-
-
 def canvas_opener(
     surfaces: Annotated[TabSurfaces, Depends(thread_surfaces)],
 ) -> CanvasOpener:
@@ -311,13 +266,9 @@ def canvas_opener(
     return CanvasOpener(surfaces)
 
 
-def mcp_relay(  # noqa: PLR0913 — ретранслятор собирается всеми входами процесса
+def mcp_relay(
     registrations: Annotated[McpRegistrations, Depends(mcp_registrations)],
     servers: Annotated[McpServers, Depends(mcp_servers)],
-    sealing: Annotated[CallSealing, Depends(call_sealing)],
-    contexts: Annotated[CallContexts, Depends(runtime.call_contexts)],
-    registry: Annotated[ToolRegistry, Depends(runtime.tool_registry)],
-    runs: Annotated[Runs, Depends(runtime.runs)],
     canvas: Annotated[CanvasOpener, Depends(canvas_opener)],
     bus: Annotated[MessageBus, Depends(runtime.message_bus)],
 ) -> McpRelay:
@@ -326,18 +277,19 @@ def mcp_relay(  # noqa: PLR0913 — ретранслятор собираетс�
     сервер просит показать, открывает панель канваса, журналы идущих вызовов
     называет ленте шина."""
     own = version("boba-aid")
-    chat = ChatTools(registry, runs, own)
 
-    return McpRelay(registrations, servers, sealing, contexts, chat, canvas, bus, own)
+    return McpRelay(registrations, servers, canvas, bus, own)
 
 
 def command_menus(
     relay: Annotated[McpRelay, Depends(mcp_relay)],
+    servers: Annotated[McpServers, Depends(mcp_servers)],
+    source: Annotated[ServerSource, Depends(server_source)],
 ) -> CommandMenus:
     """Реестры команд «/» вкладок: приложения серверов через ретранслятор и
-    соединения пользователя из хранилища чата; команды чата выводят в ленту
+    соединения пользователя из API MCP; команды чата выводят в ленту
     свои приложения."""
-    return CommandMenus(relay, runtime.connection_store_ref)
+    return CommandMenus(relay, McpConnectionCatalogs(servers, source))
 
 
 def thread_agents_index() -> ThreadAgentsIndex:

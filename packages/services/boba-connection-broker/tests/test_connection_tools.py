@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import secrets
 from collections.abc import Mapping, Sequence
-from importlib.resources import files
 from uuid import uuid4
 
 import pytest
@@ -46,9 +45,10 @@ async def store(pool: AsyncPostgresPool) -> ConnectionStore:
         )
 
     cipher = SecretCipher(secrets.token_bytes(32))
-    schema_dir = files("boba.connection_broker") / "schema"
     async with pool.connection() as conn:
-        await PostgresSchema(SCHEMA).apply_files(conn, schema_dir, {})
+        await PostgresSchema(SCHEMA).apply_packages(
+            conn, ("boba.identity_postgres", "boba.connection_broker")
+        )
 
     built = ConnectionStore(pool, SCHEMA, cipher, ConnectionTypes.discover())
     await built.sync_roles([ROLE])

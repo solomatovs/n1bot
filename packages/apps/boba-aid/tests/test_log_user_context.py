@@ -17,6 +17,7 @@ from boba.aid.infra.log_context import (
 )
 from boba.aid.infra.session import ChainlitSession
 from boba.auth import JwtTokens
+from boba.identity.principal import UserIdentity
 from boba.identity.session import Login
 from boba.identity.signin import SignedIn, SignInMetadata
 
@@ -47,8 +48,8 @@ class TestUserInEveryRecord:
         self,
         chat_session: ChatSessionStand,
     ) -> None:
-        chat_session.use(user_id=str(UUID(int=7)), identifier="ivanov")
-        if getattr(self._record(), UserLogContext.ATTRIBUTE) != "ivanov":
+        chat_session.use(user_id=str(UUID(int=7)), identifier="corporate:ivanov")
+        if getattr(self._record(), UserLogContext.ATTRIBUTE) != "corporate:ivanov":
             raise AssertionError("getattr(self._record(), UserLogContext.ATTRIBUTE) =…")
 
     def test_broken_session_does_not_break_logging(
@@ -74,9 +75,9 @@ class TestUserInEveryRecord:
         self,
         chat_session: ChatSessionStand,
     ) -> None:
-        chat_session.use(user_id=str(UUID(int=7)), identifier="petrov")
+        chat_session.use(user_id=str(UUID(int=7)), identifier="corporate:petrov")
         formatter = logging.Formatter("[%(user)s] %(message)s")
-        if formatter.format(self._record()) != "[petrov] сообщение":
+        if formatter.format(self._record()) != "[corporate:petrov] сообщение":
             raise AssertionError('formatter.format(self._record()) == "[petrov] сообщ…')
 
     def test_request_context_used_without_session(self) -> None:
@@ -91,10 +92,10 @@ class TestUserInEveryRecord:
         self,
         chat_session: ChatSessionStand,
     ) -> None:
-        chat_session.use(user_id=str(UUID(int=7)), identifier="ivanov")
+        chat_session.use(user_id=str(UUID(int=7)), identifier="corporate:ivanov")
         token = RequestUserContext.set("sidorov")
         try:
-            if getattr(self._record(), UserLogContext.ATTRIBUTE) != "ivanov":
+            if getattr(self._record(), UserLogContext.ATTRIBUTE) != "corporate:ivanov":
                 raise AssertionError("getattr(self._record(), UserLogContext.ATTRIBUT…")
         finally:
             RequestUserContext.reset(token)
@@ -131,12 +132,16 @@ class TestRequestUserMiddleware:
             seen.append(RequestUserContext.get())
 
         signed = SignedIn(
-            identifier=Login("sidorov"), display_name="", sign_in=SignInMetadata()
+            identifier=Login("corporate:sidorov"),
+            display_name="",
+            sign_in=SignInMetadata(
+                identity=UserIdentity(realm="corporate", login=Login("sidorov"))
+            ),
         )
         token = JwtTokens(self.SECRET, 60, "stand-generation").issue(signed)
         scope = self._scope([(b"authorization", f"Bearer {token}".encode())])
         self._run(self._middleware(app), scope)
-        if seen != ["sidorov"]:
+        if seen != ["corporate:sidorov"]:
             raise AssertionError('seen == ["sidorov"]')
         if RequestUserContext.get() != "":
             raise AssertionError('RequestUserContext.get() == ""')

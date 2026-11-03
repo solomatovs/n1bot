@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-from importlib.resources import files
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -74,9 +73,10 @@ async def _node(
     schema = app_config.db_schema
     bus = PgMessageBus(cfg, schema, name, AppName.AID, app_config.cluster)
     bus._pool_ref = pool
-    schema_dir = files("boba.runtime") / "schema"
     async with pool.connection() as conn:
-        await PostgresSchema(schema).apply_files(conn, schema_dir, {})
+        await PostgresSchema(schema).apply_packages(
+            conn, ("boba.identity_postgres", "boba.runtime")
+        )
 
     await bus.start()
     locks = PgLiveLocks(cfg, schema, name, AppName.AID, app_config.cluster)
@@ -123,9 +123,7 @@ def _renderer(
 ) -> tuple[ChatRenderer, RecordingSink]:
     sink = RecordingSink()
     view = ChatView(thread_id, sink, "u-1", storage, TEXTS, user_name="tester")
-    updates = UpdateView(
-        view, thread_id, RemoteJournals(), ToolMedia(SANDBOX_URL)
-    )
+    updates = UpdateView(view, thread_id, RemoteJournals(), ToolMedia(SANDBOX_URL))
     renderer = ChatRenderer(
         thread_id, updates, node.payloads, NoSurface(), RecordingRewinds()
     )
@@ -374,9 +372,7 @@ async def test_feedback_reaches_the_viewer_instance(
         TEXTS,
         user_name="tester",
     )
-    updates = UpdateView(
-        view, thread_id, RemoteJournals(), ToolMedia(SANDBOX_URL)
-    )
+    updates = UpdateView(view, thread_id, RemoteJournals(), ToolMedia(SANDBOX_URL))
     renderer = ChatRenderer(
         thread_id, updates, viewer.payloads, surface, RecordingRewinds()
     )
@@ -409,9 +405,7 @@ async def test_rewound_history_reaches_the_tabs_of_the_viewer_instance(
         TEXTS,
         user_name="tester",
     )
-    updates = UpdateView(
-        view, thread_id, RemoteJournals(), ToolMedia(SANDBOX_URL)
-    )
+    updates = UpdateView(view, thread_id, RemoteJournals(), ToolMedia(SANDBOX_URL))
     rewinds = RecordingRewinds()
     renderer = ChatRenderer(thread_id, updates, viewer.payloads, NoSurface(), rewinds)
     leave = viewer.bus.subscribe(scope, renderer.apply)

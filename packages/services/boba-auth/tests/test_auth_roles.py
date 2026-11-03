@@ -27,6 +27,7 @@ from boba.identity.admission import (
 )
 from boba.identity.directory import SimpleBind
 from boba.identity.errors import AuthorizationError
+from boba.identity.principal import IdentityRule
 from boba.identity.session import UserLogin
 from boba.identity.signin import PasswordSignIn
 from boba.stand.signin import SignInStand
@@ -88,20 +89,23 @@ def test_sid_exclusions_need_a_parsed_pac() -> None:
 
 async def test_local_auth_allows_user_with_roles() -> None:
     config = LocalAuthConfig(
+        identity=IdentityRule(realm="local-stand"),
         users={"alice": "pw"},
         roles=_local_roles(mapping={"alice": ["admin"]}),
     )
     user = await _local_sign_in(config).sign_in("alice", "pw")
     if user is None:
         raise AssertionError("user is not None")
-    if user.identifier != "alice":
-        raise AssertionError('user.identifier == "alice"')
+    if user.identifier != "local-stand:alice":
+        raise AssertionError('user.identifier == "local-stand:alice"')
     if user.sign_in.roles != frozenset({"admin"}):
         raise AssertionError('user.sign_in.roles == {"admin"}')
 
 
 async def test_local_auth_rejects_wrong_password() -> None:
-    config = LocalAuthConfig(users={"alice": "pw"})
+    config = LocalAuthConfig(
+        identity=IdentityRule(realm="local-stand"), users={"alice": "pw"}
+    )
     user = await _local_sign_in(config).sign_in("alice", "nope")
     if user is not None:
         raise AssertionError("user is None")
@@ -109,6 +113,7 @@ async def test_local_auth_rejects_wrong_password() -> None:
 
 async def test_local_auth_rejects_excluded_user() -> None:
     config = LocalAuthConfig(
+        identity=IdentityRule(realm="local-stand"),
         users={"alice": "pw"},
         roles=_local_roles(exclude=["alice"]),
     )
@@ -117,13 +122,19 @@ async def test_local_auth_rejects_excluded_user() -> None:
 
 
 async def test_local_auth_rejects_no_roles_when_required() -> None:
-    config = LocalAuthConfig(users={"alice": "pw"})
+    config = LocalAuthConfig(
+        identity=IdentityRule(realm="local-stand"), users={"alice": "pw"}
+    )
     with pytest.raises(AuthorizationError):
         await _local_sign_in(config).sign_in("alice", "pw")
 
 
 async def test_local_auth_allows_no_roles_when_not_required() -> None:
-    config = LocalAuthConfig(users={"alice": "pw"}, require_roles=False)
+    config = LocalAuthConfig(
+        identity=IdentityRule(realm="local-stand"),
+        users={"alice": "pw"},
+        require_roles=False,
+    )
     user = await _local_sign_in(config).sign_in("alice", "pw")
     if user is None:
         raise AssertionError("user is not None")
@@ -229,6 +240,7 @@ class TestLocalSignInIdentifier:
 
     async def test_identifier_is_the_canonical_login(self) -> None:
         config = LocalAuthConfig(
+            identity=IdentityRule(realm="local-stand"),
             users={"Maksimov.MA": "pw"},
             roles=_local_roles(mapping={"Maksimov.MA": ["admin"]}),
         )
@@ -238,7 +250,7 @@ class TestLocalSignInIdentifier:
         if user is None:
             raise AssertionError("user is not None")
 
-        if user.identifier != "maksimov.ma":
+        if user.identifier != "local-stand:maksimov.ma":
             raise AssertionError(f"identifier канонизирован, дано {user.identifier!r}")
 
         if user.display_name != "Maksimov.MA":

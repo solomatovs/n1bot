@@ -7,13 +7,15 @@ from __future__ import annotations
 
 import time
 from enum import StrEnum
+from uuid import UUID
 
 import pytest
 from mcp.server.auth.provider import TokenError
 from mcp.shared.auth import OAuthClientInformationFull
 from pydantic import AnyUrl
 
-from boba.identity.session import SignInProvider
+from boba.identity.principal import UserIdentity
+from boba.identity.session import Login, SignInProvider
 from boba.identity.signin import SignInMetadata
 from boba.oauth.server import (
     RegisteredClients,
@@ -51,6 +53,7 @@ class TestSessionGeneration:
     def _holder(self, started: int) -> TokenHolder:
         sign_in = SignInMetadata(
             provider=SignInProvider.KERBEROS.value,
+            identity=UserIdentity(realm="corporate", login=Login("ivanov")),
             roles=frozenset({"dev"}),
             profiles=frozenset({Salt.PROFILE}),
             principal="ivanov@LOSHARA.COM",
@@ -58,10 +61,11 @@ class TestSessionGeneration:
         )
 
         return TokenHolder(
-            login="ivanov",
+            login="corporate:ivanov",
             sign_in=sign_in,
             started=started,
             resource=f"{self.PUBLIC}/acp",
+            user_id=UUID("2bf9ba29-177a-4ddb-8912-e555dd90cf37"),
         )
 
     def test_token_carries_the_sign_in(self) -> None:

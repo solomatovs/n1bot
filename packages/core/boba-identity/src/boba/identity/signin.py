@@ -14,9 +14,10 @@ from abc import abstractmethod
 from collections.abc import Iterable, Mapping
 from typing import ClassVar, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from boba.identity.context import Credential, DelegatedTicket, NoUserCredential
+from boba.identity.principal import UserIdentity
 from boba.identity.session import Login, SignInProvider, UserMetadataField
 
 __all__ = [
@@ -45,6 +46,7 @@ class SignInMetadata(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     provider: str = ""
+    identity: UserIdentity | None = None
     roles: frozenset[str] = frozenset()
     profiles: frozenset[str] = frozenset()
     profile: str = ""
@@ -56,8 +58,14 @@ class SignInMetadata(BaseModel):
     @classmethod
     def parse(cls, raw: Mapping[str, object]) -> SignInMetadata:
         """Разбор словаря входа: чужие ключи не читает."""
+        identity = None
+        value = raw.get(UserMetadataField.IDENTITY)
+        if value is not None:
+            identity = UserIdentity.model_validate(value)
+
         return cls(
             provider=cls._text(raw.get(UserMetadataField.PROVIDER)),
+            identity=identity,
             roles=cls._names_in(raw.get(UserMetadataField.ROLES)),
             profiles=cls._names_in(raw.get(UserMetadataField.PROFILES)),
             profile=cls._text(raw.get(UserMetadataField.PROFILE)),
@@ -71,6 +79,9 @@ class SignInMetadata(BaseModel):
         rendered: dict[str, object] = {}
         if self.provider:
             rendered[UserMetadataField.PROVIDER] = self.provider
+
+        if self.identity is not None:
+            rendered[UserMetadataField.IDENTITY] = self.identity.model_dump(mode="json")
 
         if self.principal:
             rendered[UserMetadataField.PRINCIPAL] = self.principal
@@ -98,6 +109,32 @@ class SignInMetadata(BaseModel):
         return self.model_copy(
             update={"sealed_ticket": "", "generation": "", "profile": ""}
         )
+
+    def stored(self) -> dict[str, object]:
+        """Metadata строки users с явным снимком ролей и профилей, включая пустой."""
+        metadata = self.persistable().render()
+        metadata[UserMetadataField.ROLES] = sorted(self.roles)
+        metadata[UserMetadataField.PROFILES] = sorted(self.profiles)
+
+        return metadata
+
+    def identity_for(self, identifier: str) -> UserIdentity:
+        """Подтверждённая личность именно этого идентификатора входа."""
+        if self.identity is None:
+            msg = (
+                f"sign-in of {identifier!r}: identity origin is missing; "
+                "sign out and sign in again"
+            )
+            raise ValueError(msg)
+
+        if not self.identity.matches(identifier):
+            msg = (
+                f"sign-in of {identifier!r}: identity names "
+                f"{self.identity.identifier!r}; expected the same user"
+            )
+            raise ValueError(msg)
+
+        return self.identity
 
     def issued_at(self, generation: str) -> SignInMetadata:
         """Тот же вход, помеченный текущим поколением сессий."""
@@ -204,6 +241,13 @@ class SignedIn(BaseModel):
     display_name: str
     sign_in: SignInMetadata
 
+    @model_validator(mode="after")
+    def _identity_matches_identifier(self) -> SignedIn:
+        if self.sign_in.identity is not None:
+            self.sign_in.identity_for(self.identifier)
+
+        return self
+
 
 class ProxyHeaderNames(BaseModel):
     """Какие заголовки транспорт читает в ProxyRequest: логин, метка времени,
@@ -241,6 +285,7 @@ class ProxyRequest(BaseModel):
     profiles: str = ""
     profile: str = ""
     client: str = UNKNOWN_CLIENT
+    identity: UserIdentity | None = None
 
     def payload(self) -> str:
         """Что подписывает бэкенд: login:timestamp:roles:profiles:profile."""
@@ -252,8 +297,15 @@ class ProxyRequest(BaseModel):
 class PasswordSignIn(Protocol):
     """Провайдер входа по логину и паролю; None — логин провайдеру неизвестен."""
 
+    @property
     @abstractmethod
-    async def sign_in(self, username: str, password: str) -> SignedIn | None: ...
+    def realms(self) -> frozenset[str]:
+        """Пространства пользователей, которые обслуживает этот вход."""
+
+    @abstractmethod
+    async def sign_in(
+        self, username: str, password: str, realm: str = ""
+    ) -> SignedIn | None: ...
 
 
 class ProxySignIn(Protocol):

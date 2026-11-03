@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import secrets as std_secrets
-from importlib.resources import files
 from uuid import UUID
 
 import pytest
@@ -86,9 +85,10 @@ async def store(pool: AsyncPostgresPool) -> ConnectionStore:
             sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
         )
 
-    schema_dir = files("boba.connection_broker") / "schema"
     async with pool.connection() as conn:
-        await PostgresSchema(SCHEMA).apply_files(conn, schema_dir, {})
+        await PostgresSchema(SCHEMA).apply_packages(
+            conn, ("boba.identity_postgres", "boba.connection_broker")
+        )
 
     return ConnectionStore(pool, SCHEMA, _cipher(), ConnectionTypes.discover())
 

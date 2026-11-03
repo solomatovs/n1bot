@@ -31,6 +31,7 @@ class ThreadPanel:
     """Боковая панель тредов вкладки глазами теста."""
 
     LOGIN: ClassVar[str] = "guest"
+    IDENTIFIER: ClassVar[str] = "aid-local:guest"
     THREADS: ClassVar[str] = '#thread-history [data-sidebar="menu-item"][id^="thread-"]'
     """Пункты тредов: у кнопки меню пункта тоже id thread-options."""
     CONTENT: ClassVar[str] = '[data-sidebar="content"]'
@@ -70,7 +71,7 @@ class ThreadPanel:
 def test_a_turn_moves_its_thread_up_in_every_tab(
     module_chats: ChatOpener, stand: StandProcess, stand_db: StandDatabase
 ) -> None:
-    stand_db.drop_threads_of(ThreadPanel.LOGIN)
+    stand_db.drop_threads_of(ThreadPanel.IDENTIFIER)
     marker = uuid4().hex[:8]
     older = f"{ScenarioName.ANSWER.value} older probe {marker}"
     newer = f"{ScenarioName.ANSWER.value} newer probe {marker}"
@@ -106,13 +107,15 @@ def test_scrolling_the_panel_loads_every_thread_once(
     module_chats: ChatOpener, stand: StandProcess, stand_db: StandDatabase
 ) -> None:
     chat = module_chats.open(stand, ThreadPanel.LOGIN)
-    stand_db.drop_threads_of(ThreadPanel.LOGIN)
+    stand_db.drop_threads_of(ThreadPanel.IDENTIFIER)
     marker = uuid4().hex[:8]
     now = datetime.now(UTC)
     names: list[str] = []
     for index in range(ThreadPanel.PAGE + 5):
         name = f"page probe {marker} {index:02d}"
-        stand_db.seed_thread(ThreadPanel.LOGIN, name, now - timedelta(minutes=index))
+        stand_db.seed_thread(
+            ThreadPanel.IDENTIFIER, name, now - timedelta(minutes=index)
+        )
         names.append(name)
 
     chat.open()
@@ -122,7 +125,7 @@ def test_scrolling_the_panel_loads_every_thread_once(
 
     panel.scroll_down()
     panel.shows(names)
-    stand_db.drop_threads_of(ThreadPanel.LOGIN)
+    stand_db.drop_threads_of(ThreadPanel.IDENTIFIER)
 
 
 def test_search_groups_threads_by_the_month_of_activity(
@@ -130,10 +133,12 @@ def test_search_groups_threads_by_the_month_of_activity(
 ) -> None:
     """Тред, начатый давно, после хода стоит в поиске под текущим месяцем."""
     chat = module_chats.open(stand, ThreadPanel.LOGIN)
-    stand_db.drop_threads_of(ThreadPanel.LOGIN)
+    stand_db.drop_threads_of(ThreadPanel.IDENTIFIER)
     marker = uuid4().hex[:8]
     name = f"search probe {marker}"
-    stand_db.seed_thread(ThreadPanel.LOGIN, name, datetime(2025, 3, 15, 12, tzinfo=UTC))
+    stand_db.seed_thread(
+        ThreadPanel.IDENTIFIER, name, datetime(2025, 3, 15, 12, tzinfo=UTC)
+    )
 
     chat.open()
     panel = ThreadPanel(chat)
@@ -153,4 +158,4 @@ def test_search_groups_threads_by_the_month_of_activity(
     now = datetime.now()
     month = f"{now:%B} {now.year}"
     expect(group.locator(ThreadPanel.SEARCH_HEADING)).to_have_text(month)
-    stand_db.drop_threads_of(ThreadPanel.LOGIN)
+    stand_db.drop_threads_of(ThreadPanel.IDENTIFIER)

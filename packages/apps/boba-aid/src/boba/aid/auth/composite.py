@@ -13,18 +13,23 @@ from __future__ import annotations
 
 import logging
 from enum import StrEnum
+from typing import Annotated
 
 import chainlit as cl
 from chainlit.config import config as chainlit_config
-from fastapi import HTTPException, status
+from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
+from fastapi.responses import JSONResponse
+from fastapi.security import OAuth2PasswordRequestForm
 
-from boba.auth import AuthService
+from boba.aid.auth.refresh import SessionRefresh
+from boba.auth import AuthService, IssuedSession
 from boba.identity.errors import (
     AuthenticationError,
     AuthorizationError,
     ExternalServiceError,
     InternalServiceError,
 )
+from boba.runtime.http import SessionCookie
 
 __all__ = ["PasswordCallback", "SignInCode"]
 
@@ -57,19 +62,39 @@ class PasswordCallback:
     def __init__(self, auth: AuthService) -> None:
         self._auth = auth
 
-    def install(self) -> None:
+    def install(self, app: FastAPI) -> None:
         # не cl.password_auth_callback — иначе chainlit глотает исключения
         chainlit_config.code.password_auth_callback = self.password_auth
+        SessionRefresh.prepend_route(app, "/login", self.submit, methods=["POST"])
+
+    async def submit(
+        self,
+        request: Request,
+        form: Annotated[OAuth2PasswordRequestForm, Depends()],
+        realm: Annotated[str, Form()] = "",
+    ) -> JSONResponse:
+        session = await self._session(form.username, form.password, realm)
+        response = JSONResponse({"success": True})
+        SessionCookie(self._auth.cookie()).put(response, request.cookies, session.token)
+
+        return response
 
     async def password_auth(self, username: str, password: str) -> cl.User:
-        """Пользователь входа; отказ — HTTPException с кодом отказа.
+        session = await self._session(username, password)
+        signed = session.signed
 
-        Строку users и JWT chainlit заводит сам после колбэка, поэтому сервис
-        входа зовётся без выпуска сессии. В лог идут логин и причина отказа,
-        пароля здесь нет.
-        """
+        return cl.User(
+            identifier=signed.identifier,
+            display_name=signed.display_name,
+            metadata=signed.sign_in.render(),
+        )
+
+    async def _session(
+        self, username: str, password: str, realm: str = ""
+    ) -> IssuedSession:
+        """Сессия общего сервиса входа; отказ — HTTPException с кодом отказа."""
         try:
-            signed = await self._auth.sign_in(username, password)
+            return await self._auth.by_password(username, password, realm)
         except AuthenticationError as exc:
             # nosemgrep: python-logger-credential-disclosure
             logger.info("password sign-in refused [user=%s]: %s", username, exc)
@@ -86,9 +111,3 @@ class PasswordCallback:
             # nosemgrep: python-logger-credential-disclosure
             logger.error("password sign-in failed [user=%s]: %s", username, exc)
             raise SignInCode.INTERNAL.refusal() from exc
-
-        return cl.User(
-            identifier=signed.identifier,
-            display_name=signed.display_name,
-            metadata=signed.sign_in.render(),
-        )

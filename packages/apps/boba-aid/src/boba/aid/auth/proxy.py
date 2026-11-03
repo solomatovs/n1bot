@@ -45,7 +45,7 @@ class ProxyAuth:
 
     async def auth_proxy(self, request: Request) -> Response:
         proxy_request = self._requests.of(request, self._config.header_names())
-        session = await self._auth.by_proxy(proxy_request)
+        session = await self._auth.by_proxy(proxy_request, self._config.identity.realm)
 
         self._logger.info(
             "proxy sign-in [user=%s] [client=%s] [roles=%s]",

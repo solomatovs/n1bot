@@ -8,7 +8,9 @@ import pytest
 from boba.aid.data.data_layer import ThreadDicts
 from boba.chat.threads import StoredThread
 from boba.identity.api import StoredUser
+from boba.identity.principal import UserIdentity
 from boba.identity.session import Login
+from boba.identity.signin import SignInMetadata
 
 
 @pytest.fixture(autouse=True)
@@ -20,15 +22,17 @@ class TestUserDict:
     def test_persisted_id_is_the_uuid(self) -> None:
         stored = StoredUser(
             id=UUID(int=7),
-            identifier=Login("boba"),
+            identifier=Login("corporate:boba"),
             created_at=datetime.now(UTC),
-            meta={},
+            meta=SignInMetadata(
+                identity=UserIdentity(realm="corporate", login=Login("boba"))
+            ).render(),
         )
 
         persisted = ThreadDicts.user(stored)
 
         assert persisted.id == str(UUID(int=7))
-        assert persisted.identifier == "boba"
+        assert persisted.identifier == "corporate:boba"
 
 
 class TestThreadDict:

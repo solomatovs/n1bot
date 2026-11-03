@@ -15,10 +15,12 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Mapping
 from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict
 
+from boba.auth.realms import RealmSelection
 from boba.auth.tokens import JwtTokens
 from boba.identity.api import (
     AuthenticatedUser,
@@ -62,6 +64,8 @@ class SignInProviders(BaseModel):
     password: bool
     sso: bool
     proxy: bool
+    password_realms: tuple[str, ...] = ()
+    sso_realms: tuple[str, ...] = ()
 
 
 class IssuedSession(BaseModel):
@@ -87,24 +91,33 @@ class SignIns:
     def __init__(
         self,
         password: PasswordSignIn | None,
-        sso: SpnegoExchange | None,
-        proxy: ProxySignIn | None,
+        sso: Mapping[str, SpnegoExchange],
+        proxy: Mapping[str, ProxySignIn],
     ) -> None:
         self._password = password
-        self._sso = sso
-        self._proxy = proxy
+        self._sso = dict(sso)
+        self._proxy = dict(proxy)
+        self._selection = RealmSelection()
 
     def providers(self) -> SignInProviders:
+        realms: tuple[str, ...] = ()
+        if self._password is not None:
+            realms = tuple(sorted(self._password.realms))
+
         return SignInProviders(
             password=self._password is not None,
-            sso=self._sso is not None,
-            proxy=self._proxy is not None,
+            sso=bool(self._sso),
+            proxy=bool(self._proxy),
+            password_realms=realms,
+            sso_realms=tuple(sorted(self._sso)),
         )
 
     def has_sso(self) -> bool:
-        return self._sso is not None
+        return bool(self._sso)
 
-    async def by_password(self, username: str, password: str) -> SignedIn:
+    async def by_password(
+        self, username: str, password: str, realm: str = ""
+    ) -> SignedIn:
         if self._password is None:
             message = (
                 f"password sign-in of {username!r}: [auth] has no local or ldap "
@@ -112,7 +125,7 @@ class SignIns:
             )
             raise ExternalServiceError("auth", message)
 
-        signed = await self._password.sign_in(username, password)
+        signed = await self._password.sign_in(username, password, realm)
         if signed is None:
             message = (
                 f"Invalid username or password: no [auth] provider accepted "
@@ -122,39 +135,45 @@ class SignIns:
 
         return signed
 
-    async def by_proxy(self, request: ProxyRequest) -> SignedIn:
+    async def by_proxy(self, request: ProxyRequest, realm: str = "") -> SignedIn:
         """Вход по подписанному заголовку доверенного бэкенда."""
-        if self._proxy is None:
+        if not self._proxy:
             message = (
                 f"proxy sign-in of {request.login!r} from {request.client}: "
                 "[auth] has no proxy provider configured"
             )
             raise ExternalServiceError("auth", message)
 
-        return await self._proxy.sign_in(request)
+        selected = self._selection.selected(realm, self._proxy, "proxy sign-in")
 
-    async def admit_proxy(self, request: ProxyRequest) -> SignedIn:
+        return await self._proxy[selected].sign_in(request)
+
+    async def admit_proxy(self, request: ProxyRequest, realm: str = "") -> SignedIn:
         """Допуск по утверждению доверенного бэкенда, которое вызывающий уже
         проверил (обмен утверждения на токен у сервиса boba-mcp)."""
-        if self._proxy is None:
+        if not self._proxy:
             message = (
                 f"proxy admission of {request.login!r} from {request.client}: "
                 "[auth] has no proxy provider configured"
             )
             raise ExternalServiceError("auth", message)
 
-        return await self._proxy.admit(request)
+        selected = self._selection.selected(realm, self._proxy, "proxy admission")
 
-    def exchange(self) -> SpnegoExchange:
+        return await self._proxy[selected].admit(request)
+
+    def exchange(self, realm: str = "") -> SpnegoExchange:
         """SPNEGO-обмен процесса; без kerberos в [auth] — ExternalServiceError."""
-        if self._sso is None:
+        if not self._sso:
             message = (
                 "SPNEGO exchange requested but [auth] has no kerberos provider "
                 "configured"
             )
             raise ExternalServiceError("auth", message)
 
-        return self._sso
+        selected = self._selection.selected(realm, self._sso, "SPNEGO exchange")
+
+        return self._sso[selected]
 
 
 class AuthService(Authenticator):
@@ -196,28 +215,32 @@ class AuthService(Authenticator):
     def jar(self) -> CookieJar:
         return CookieJar(self._cookie.name)
 
-    async def by_password(self, username: str, password: str) -> IssuedSession:
-        signed = await self.sign_in(username, password)
+    async def by_password(
+        self, username: str, password: str, realm: str = ""
+    ) -> IssuedSession:
+        signed = await self.sign_in(username, password, realm)
 
         return await self.issue(signed)
 
-    async def sign_in(self, username: str, password: str) -> SignedIn:
+    async def sign_in(self, username: str, password: str, realm: str = "") -> SignedIn:
         """Итог входа по паролю без строки users и токена: для хоста, который
         заводит пользователя и выпускает сессию сам (чат aid). Вход уже помечен
         поколением сессий, чтобы токен хоста прошёл проверку.
         """
-        signed = await self._sign_ins.by_password(username, password)
+        signed = await self._sign_ins.by_password(username, password, realm)
 
         return self._tokens.stamp(signed)
 
-    async def by_proxy(self, request: ProxyRequest) -> IssuedSession:
+    async def by_proxy(self, request: ProxyRequest, realm: str = "") -> IssuedSession:
         """Вход по подписанному заголовку доверенного бэкенда."""
-        signed = await self._sign_ins.by_proxy(request)
+        signed = await self._sign_ins.by_proxy(request, realm)
 
         return await self.issue(signed)
 
-    async def by_spnego(self, request: SsoRequest) -> SsoChallenge | IssuedSession:
-        outcome = await self._exchange().handshake(request)
+    async def by_spnego(
+        self, request: SsoRequest, realm: str = ""
+    ) -> SsoChallenge | IssuedSession:
+        outcome = await self._exchange(realm).handshake(request)
         if isinstance(outcome, SsoChallenge):
             return outcome
 
@@ -227,14 +250,32 @@ class AuthService(Authenticator):
         self, request: SsoRequest, token: str | None
     ) -> SsoChallenge | SsoRefused | IssuedSession:
         session = None
+        realm = ""
+        identifier = ""
         if token is not None:
-            session = self.ticket_of_token(token)
+            try:
+                claims = self.stale_claims(token)
+            except AuthenticationError as exc:
+                return SsoRefused(reason=str(exc))
 
-        outcome = await self._exchange().refresh(request, session)
-        if isinstance(outcome, SsoSigned):
-            return await self.issue(outcome.signed)
+            session = claims.ticket()
+            identifier = claims.identifier
+            identity = claims.sign_in().identity
+            if identity is not None:
+                realm = identity.realm
 
-        return outcome
+        outcome = await self._exchange(realm).refresh(request, session)
+        if not isinstance(outcome, SsoSigned):
+            return outcome
+
+        if outcome.signed.identifier != identifier:
+            reason = (
+                "SPNEGO refresh resolved to another user identifier; "
+                "sign out and sign in again"
+            )
+            return SsoRefused(reason=reason)
+
+        return await self.issue(outcome.signed)
 
     async def refresh_session(
         self, request: SsoRequest, token: str | None
@@ -381,5 +422,5 @@ class AuthService(Authenticator):
 
         return IssuedSession(signed=signed, user=user, token=self._tokens.renew(claims))
 
-    def _exchange(self) -> SpnegoExchange:
-        return self._sign_ins.exchange()
+    def _exchange(self, realm: str = "") -> SpnegoExchange:
+        return self._sign_ins.exchange(realm)

@@ -39,7 +39,7 @@ async def test_oauth_credentials_are_encrypted_and_private(
     schema = PostgresSchema(test_database)
     schema_dir = files("boba.aid.mcp_servers") / "schema"
     async with pool.connection() as conn:
-        await schema.apply_files(conn, files("boba.runtime") / "schema", {})
+        await schema.apply_packages(conn, ("boba.identity_postgres", "boba.runtime"))
         await schema.apply_files(conn, schema_dir, {})
         row = await conn.execute(
             sql.SQL(
@@ -111,7 +111,9 @@ async def test_browser_authorization_round_trips_to_mcp(
     try:
         schema = PostgresSchema(test_database)
         async with pool.connection() as conn:
-            await schema.apply_files(conn, files("boba.runtime") / "schema", {})
+            await schema.apply_packages(
+                conn, ("boba.identity_postgres", "boba.runtime")
+            )
             await schema.apply_files(conn, files("boba.aid.mcp_servers") / "schema", {})
             row = await conn.execute(
                 sql.SQL(

@@ -11,12 +11,14 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from mcp_import_probe import PluginImports
 
 from boba.db.postgres.connection import PostgresConfig
 from boba.stand.database import TestDatabase
+from boba.stand.migrate import StandSchema
 from boba.stand.ui.database import run_blocking
 from boba.stand.ui.stand import REPO_ROOT, ServiceStand, StandPorts
 
@@ -35,10 +37,21 @@ class ProbedService:
     def __init__(self, config: ServiceStand, log_path: Path) -> None:
         self._config = config
         self._log_path = log_path
+        self._storage = StandSchema(
+            config.files.paths(config.app),
+            ("boba.identity_postgres", "boba.connection_broker"),
+        )
 
     def run(self) -> str:
         """Поднять сервис, дождаться готовности, остановить; отдать лог."""
         self._config.write()
+        run_blocking(self._storage.create())
+        try:
+            return self._run()
+        finally:
+            run_blocking(self._storage.drop())
+
+    def _run(self) -> str:
         command = [
             sys.executable,
             str(PROBE),
@@ -92,6 +105,7 @@ def test_service_never_imports_plugin_code(
         app_port=StandPorts().free(),
         db_name=run_blocking(TestDatabase.ensure(stand_postgres)),
         sandbox=sandbox,
+        db_schema=f"mcp_probe_{uuid4().hex[:12]}",
         plugins=PLUGINS,
     )
 

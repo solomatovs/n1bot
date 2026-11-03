@@ -55,7 +55,6 @@ from boba.cfl_indexer.store import (
 from boba.confluence.models import AttachmentVerdict
 from boba.confluence.rest import ConfluenceConnection, ContentType
 from boba.db.postgres import AsyncPostgresPool, PostgresError
-from boba.db.postgres.schema import PostgresSchema
 from boba.doc.config import DocSection
 from boba.doc.document import DocumentError
 from boba.doc.ocr import OcrEngines
@@ -592,18 +591,6 @@ class Indexer:
         self._krb = krb
         self._sources = Sources(cfg)
 
-    async def check_fts(self) -> None:
-        """ix_fts накатывает пакет ix-fts; без него текст класть некуда."""
-        async with await AsyncPostgresPool.dedicated(self._cfg.postgres) as conn:
-            schema = PostgresSchema(self._cfg.db_schema)
-            if await schema.has_table(conn, self.FTS_TABLE):
-                return
-
-        raise IndexerWorkerError(
-            f"table {self._cfg.db_schema}.{self.FTS_TABLE} is missing: apply the "
-            "full-text index first: boba-ix-fts upgrade --config <config>"
-        )
-
     async def targets(
         self, selection: SpaceSelection
     ) -> list[tuple[ConfluenceSource, str]]:
@@ -630,7 +617,6 @@ class Indexer:
         try:
             OcrEngines(providers).check(self._cfg.doc.ocr)
             await providers.aclose()
-            await self.check_fts()
             targets = await self.targets(selection)
         except DocumentError as exc:
             raise IndexerWorkerError(str(exc)) from exc

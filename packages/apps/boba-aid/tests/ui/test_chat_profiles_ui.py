@@ -47,19 +47,17 @@ SERVICE_TOOLS = frozenset(
 
 STAND_TOOLS = SERVICE_TOOLS | {
     AGENT_TOOL,
-    "mcp__chat__connection_list",
-    "mcp__chat__connection_search",
+    "mcp__aid_all__connection_list",
+    "mcp__aid_all__connection_search",
 }
 """Инструменты профиля general стенда под полными именами, как их видит
-модель: каталог соединений исполняет сам чат (сервер chat), вопрос
-пользователю — агент, остальные отдают выданные серверы boba-mcp
+модель: вопрос пользователю исполняет агент, остальные инструменты,
+включая каталог connections, отдают выданные серверы boba-mcp
 (песочные секции выключены)."""
 
-DEV_OWN_TOOLS = frozenset({"mcp__chat__connection_list"})
-"""Собственные инструменты чата, выданные роли DEV: без connection_search."""
 
-SEARCH_PROFILE_TOOLS = SERVICE_TOOLS | {AGENT_TOOL}
-"""Профиль search скрывает собственные инструменты чата; выдачи серверов остаются."""
+SEARCH_PROFILE_TOOLS = STAND_TOOLS
+"""Профиль меняет модель и инструкции; доступные tools определяет MCP."""
 
 
 @dataclass(frozen=True)
@@ -297,7 +295,7 @@ class TestRoleIntersection:
         if tools != expected:
             raise AssertionError(f"tools {sorted(tools)} != {sorted(expected)}")
 
-    def test_dev_general_loses_only_own_chat_tools(
+    def test_dev_general_uses_mcp_role_policy(
         self, open_chat: OpenChat, stand: StandProcess, llm_port: int
     ) -> None:
         page = open_chat(stand, self._dev_login(stand))
@@ -305,7 +303,7 @@ class TestRoleIntersection:
         _ask_and_wait(page)
 
         tools = _tool_names(_last_request(llm_port))
-        expected = (STAND_TOOLS - {"mcp__chat__connection_search"}) | DEV_OWN_TOOLS
+        expected = STAND_TOOLS
         if tools != expected:
             raise AssertionError(f"tools {sorted(tools)} != {sorted(expected)}")
 

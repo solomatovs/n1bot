@@ -14,12 +14,11 @@ from omegaconf import DictConfig
 
 from boba.access import GrantCheck, ProfileGrant, ToolGrant, ToolGrants
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
-from boba.connection_broker.crypto import SealKeys
-from boba.connection_broker.sealed import SealedConnectionParams
+from boba.connection_broker.params import ConnectionParams
 from boba.connection_broker.store import ConnectionStore
-from boba.connection_broker.tickets import SectionTickets, ServiceTickets
+from boba.connection_broker.tickets import ServiceTickets
 from boba.connection_broker.tools import ConnectionTools
-from boba.connection_broker.user_connections import StoreRef
+from boba.connection_broker.user_connections import ArmedConnections, StoreRef
 from boba.connections.manifest import ConnectionTypes
 from boba.identity.context import CallContexts
 from boba.identity.errors import ServiceDisabledError
@@ -87,8 +86,7 @@ class StandRefs:
         (сервис boba-mcp); права тест называет сам: у сервиса их задают
         endpoint'ы, у чата — роли и профили."""
         launchers = self.launchers(raw)
-        arming = SectionTickets(ServiceTickets(refs.credentials), refs.connection_types)
-        kits = await PluginKits(raw, launchers, arming).load()
+        kits = await PluginKits(raw, launchers).load()
         loader = ToolLoader(
             raw,
             kits,
@@ -130,12 +128,12 @@ class StandRefs:
         def credentials() -> KerberosCredentialSource:
             return KerberosCredentialSource(tickets(), NoRefresh())
 
-        params = SealedConnectionParams(
-            SealKeys(),
+        params = ConnectionParams(
             ConnectionTypes.discover,
             self.contexts,
             {},
             ServiceTickets(credentials),
+            ArmedConnections(store, credentials, self.contexts),
         )
 
         return RuntimeRefs(

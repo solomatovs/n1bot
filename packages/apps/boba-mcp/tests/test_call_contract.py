@@ -18,10 +18,8 @@ import mcp_types as mt
 import pytest
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
-from mcp.client.extension import advertise
 from service_stand import PROFILE, ServiceStand
 
-from boba.connections.sealed import SealFeature
 from boba.mcp_adapter import JournalUris
 from boba.mcp_server.files import JournalRoutes
 from boba.mcp_server.server import OwnProgress, RunLimits
@@ -164,48 +162,23 @@ class TestToolSchema:
         if "contentMediaType" in properties["limit"]:
             raise AssertionError(f"a number has no content type: {properties}")
 
-    async def test_connection_parameter_declares_a_sealed_profile(
+    async def test_connection_parameter_declares_a_catalog_name(
         self, stand: ServiceStand
     ) -> None:
-        """Параметр-соединение — строка с пометкой вида x-boba-connection, чьё
-        содержимое объявлено стандартными ключами JSON Schema: JWE
-        (contentMediaType) с содержимым вида postgres внутри (contentSchema,
-        константа kind). Endpoint предлагает соединения пользователя клиенту,
-        который их запечатывает."""
         async with stand.serving():
             token = await stand.dev_token(PROFILE)
             transport = StreamableHttpTransport(stand.url(PROFILE), auth=token)
-            sealing = [advertise(SealFeature.ID)]
-            async with Client(transport, extensions=sealing) as opened:
+            async with Client(transport) as opened:
                 listed = await opened.list_tools()
 
         tool = next(tool for tool in listed if tool.name == "fake_connection_host")
         declared = tool.input_schema["properties"]["connection"]
-        if declared["type"] != "string" or declared["minLength"] != 1:
-            raise AssertionError(f"the connection is sent as a string: {declared}")
-
-        if declared["contentMediaType"] != "application/jose":
-            raise AssertionError(f"the content is a compact JWE: {declared}")
-
-        content = declared["contentSchema"]
-        if content["properties"]["kind"]["const"] != "postgres":
-            raise AssertionError(f"the content schema names the kind: {content}")
-        if content["required"] != ["kind"]:
-            raise AssertionError(f"the kind is required: {content}")
-
-        expected = [
-            "contentMediaType",
-            "contentSchema",
-            "description",
-            "minLength",
-            "title",
-            "type",
-            SchemaMark.CONNECTION.value,
-        ]
-        if sorted(declared) != expected:
-            raise AssertionError(f"standard keys and the mark: {sorted(declared)}")
-        if declared[SchemaMark.CONNECTION.value] != "postgres":
-            raise AssertionError(f"the mark names the kind: {declared}")
+        assert declared["type"] == "string"
+        assert declared["minLength"] == 1
+        assert declared[SchemaMark.CONNECTION.value] == "postgres"
+        assert "connection_list" in declared["description"]
+        assert "contentMediaType" not in declared
+        assert "contentSchema" not in declared
 
 
 class TestArguments:

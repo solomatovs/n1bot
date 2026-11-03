@@ -8,16 +8,14 @@
 from __future__ import annotations
 
 import secrets as std_secrets
-from importlib.resources import files
 from pathlib import Path
 from typing import Annotated, Any
 from uuid import UUID
 
 import krb5
 import pytest
-from aid_stand import ChatSessionStand, SsoStand
+from aid_stand import ChatSessionStand, SsoStand, StandTokens
 from chainlit.user import PersistedUser
-from chainlit.user import User as ChainlitUser
 from psycopg import sql
 from psycopg.types.json import Jsonb
 from pydantic import SecretStr, create_model
@@ -88,9 +86,10 @@ async def store(pool: AsyncPostgresPool, cipher: SecretCipher) -> ConnectionStor
             sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
         )
 
-    schema_dir = files("boba.connection_broker") / "schema"
     async with pool.connection() as conn:
-        await PostgresSchema(SCHEMA).apply_files(conn, schema_dir, {})
+        await PostgresSchema(SCHEMA).apply_packages(
+            conn, ("boba.identity_postgres", "boba.connection_broker")
+        )
 
     built = ConnectionStore(pool, SCHEMA, cipher, ConnectionTypes.discover())
     await built.sync_roles([ROLE])
@@ -244,7 +243,7 @@ class Session:
         layer: PostgresDataLayer, identifier: str, metadata: dict[str, object]
     ) -> PersistedUser:
         persisted = await layer.create_user(
-            ChainlitUser(identifier=identifier, metadata=metadata)
+            StandTokens.user(identifier=identifier, metadata=metadata)
         )
         if persisted is None:
             raise AssertionError("user was not created")

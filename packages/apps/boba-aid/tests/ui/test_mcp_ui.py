@@ -453,7 +453,7 @@ class TestOwnServerInTheFeed:
         step = FeedCalls(chat).ask("mcp__boba__fake_whoami", {})
 
         output = str(step.get(StepField.OUTPUT.value))
-        if not output.startswith(f"{CHAT_LOGIN}|{CHAT_ROLE}|"):
+        if not output.startswith(f"aid-local:{CHAT_LOGIN}|{CHAT_ROLE}|"):
             raise AssertionError(
                 f"the body runs as the user of the chat with his roles: {step}"
             )

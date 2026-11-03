@@ -1,268 +1,185 @@
-"""Путь соединения от имени в вызове модели до тела инструмента.
-
-Клиент и исполнитель стоят в одном процессе (SealedStand): модель называет
-соединение именем, клиент (SealingStand — то, что в бою делает
-ретранслятор чата) по схеме инструмента узнаёт параметр и вид, запечатывает профиль
-ключом исполнителя, исполнитель открывает его и отдаёт телу. Таблица
-соединений подменена хранилищем в памяти.
-"""
+"""Сервер подставляет профили из PostgreSQL по имени и текущим grants."""
 
 from __future__ import annotations
 
-import asyncio
-from collections.abc import Mapping, Sequence
-from datetime import timedelta
-from typing import Annotated
+import secrets
+from collections.abc import AsyncIterator, Mapping
+from uuid import uuid4
 
 import pytest
-from probe_stand import (
-    LOGIN,
-    SECRET,
-    TYPES,
-    OtherConnection,
-    ProbeConnection,
-    ProbeTools,
-    SealedStand,
-)
+from psycopg import sql
+from pydantic import SecretStr, create_model
 
-from boba.connection_broker.crypto import SealKeys
-from boba.connection_broker.sealed import SealedConnectionParams
-from boba.connections.marks import ConnectionRefusal
-from boba.connections.sealed import ConnectionOffer, SealedParamSchema, SealFeature
-from boba.stand.sealing import SealingStand
+from boba.auth.credentials import KerberosCredentialSource, NoRefresh
+from boba.connection_broker.crypto import SecretCipher
+from boba.connection_broker.params import ConnectionParams
+from boba.connection_broker.store import ConnectionStore
+from boba.connection_broker.user_connections import ArmedConnections
+from boba.connections.manifest import ConnectionTypes
+from boba.connections.stored import GrantTarget
+from boba.db.postgres import AsyncPostgresPool, PostgresSchema
+from boba.db.postgres.connection import (
+    PasswordAuth,
+    PostgresConfig,
+    PostgresOptionsConfig,
+    PostgresPoolConfig,
+)
+from boba.identity.context import CallContext
+from boba.identity.errors import RefusalError
+from boba.stand.toolstand import ProbeTools
 from boba.stand_core.context import CallStand
-from boba.toolkit.dag import DagNode, NodeOutcome, ToolCard, ToolServer
-from boba.toolkit.facade import UserConnection
-from boba.toolkit.result import ErrorResult, TableResult
+from boba.toolkit.calls import ToolCallBase
+from boba.toolrun.hosted import ToolInputs
 from boba.toolrun.injected import StaticConfig, ToolConfigError
 
 pytestmark = pytest.mark.anyio
 
-MAIN = "main"
 
+@pytest.fixture
+async def store(pool: AsyncPostgresPool) -> AsyncIterator[ConnectionStore]:
+    schema = f"binding_{uuid4().hex[:12]}"
+    async with pool.connection() as conn:
+        await PostgresSchema(schema).apply_packages(
+            conn, ("boba.identity_postgres", "boba.connection_broker")
+        )
 
-class _DeclaringAnotherKey(ToolServer):
-    """Порт, который объявляет не те возможности, что исполнитель за ним:
-    клиент подключался до перезапуска сервера и держит прежний ключ, либо
-    сервер возможности не объявил вовсе."""
-
-    def __init__(
-        self, inner: ToolServer, features: Mapping[str, Mapping[str, object]]
-    ) -> None:
-        self._inner = inner
-        self._features = features
-
-    def tools(self) -> Sequence[ToolCard]:
-        return self._inner.tools()
-
-    def features(self) -> Mapping[str, Mapping[str, object]]:
-        return self._features
-
-    async def submit(
-        self, calls: Sequence[DagNode]
-    ) -> Sequence[asyncio.Future[NodeOutcome]]:
-        return await self._inner.submit(calls)
-
-
-def _stand() -> SealedStand:
-    return SealedStand([SealedStand.probe_row("main", "db.local")])
-
-
-def _row(message: NodeOutcome) -> dict[str, object]:
-    result = message.artifact
-    if not isinstance(result, TableResult):
-        raise AssertionError(f"ожидалась таблица, пришло: {message.content}")
-
-    return dict(result.rows[0])
-
-
-def _refusal(message: NodeOutcome) -> ErrorResult:
-    result = message.artifact
-    if not isinstance(result, ErrorResult):
-        raise AssertionError(f"ожидался отказ, пришло: {message.content}")
-    if not message.errored:
-        raise AssertionError(f"отказ помечен ошибкой: {message}")
-
-    return result
-
-
-class TestSchemaShownToTheModel:
-    def test_server_declares_a_sealed_profile(self) -> None:
-        stand = _stand()
-
-        served = {card.name: card for card in stand.executor.tools()}
-        declared = served["probe_query"].parameters["properties"]["connection"]
-
-        if declared["type"] != "string":
-            raise AssertionError(f"сервер ждёт строку: {declared}")
-        if declared["contentMediaType"] != "application/jose":
-            raise AssertionError(f"содержимое строки — JWE: {declared}")
-        offers = SealedParamSchema().offers(served["probe_query"].parameters)
-        if offers["connection"] != ConnectionOffer(kind="probe", sealed=True, names={}):
-            raise AssertionError(
-                f"схема предлагает запечатанный профиль вида: {offers}"
+    try:
+        cipher = SecretCipher(secrets.token_bytes(32))
+        yield ConnectionStore(pool, schema, cipher, ConnectionTypes.discover())
+    finally:
+        async with pool.connection() as conn:
+            await conn.execute(
+                sql.SQL("drop schema {} cascade").format(sql.Identifier(schema))
             )
-        if "probe" not in declared["description"]:
-            raise AssertionError(f"описание называет вид: {declared}")
 
 
-class TestReferenceReachesTheBody:
-    async def test_body_gets_the_profile_with_its_secret(self) -> None:
-        stand = _stand()
+class BindingStand:
+    """Настоящий resolver и тело-регистратор: тест видит подставленные объекты."""
 
-        message = await stand.call("probe_query", {"connection": MAIN, "sql": "x"})
+    SECRET = "binding-private-password"
 
-        row = _row(message)
-        if row["host"] != "db.local":
-            raise AssertionError(f"тело получило профиль строки main: {row}")
-        if row["password"] != SECRET:
-            raise AssertionError(f"секрет доехал до тела: {row}")
+    def __init__(self, store: ConnectionStore, calls: CallStand) -> None:
+        self.store = store
+        self.calls = calls
+        self.context = calls.context("binding", login="alice", roles=("reader",))
+        self.credentials = KerberosCredentialSource(None, NoRefresh())
+        self.probes = ProbeTools()
+        self.params = ConnectionParams(
+            ConnectionTypes.discover,
+            calls.contexts,
+            {},
+            StaticConfig(),
+            ArmedConnections(lambda: store, lambda: self.credentials, calls.contexts),
+        )
+        schema = create_model(
+            "CopyArgs", __base__=ToolCallBase, source=(str, ...), target=(str, ...)
+        )
+        self.tool = self.probes.recorder("copy", schema)
+        self.tool.inputs = ToolInputs(
+            connections={"source": "postgres", "target": "postgres"}
+        )
+        self.params.bind_all((self.tool,))
 
-    async def test_profile_is_signed_by_the_caller(self) -> None:
-        stand = _stand()
-
-        message = await stand.call("probe_query", {"connection": MAIN, "sql": "x"})
-
-        if _row(message)["client"] != LOGIN:
-            raise AssertionError(f"профиль подписан вызывающим: {message.content}")
-
-    async def test_two_parameters_resolve_independently(self) -> None:
-        rows = [
-            SealedStand.probe_row("left", "a.local"),
-            SealedStand.probe_row("right", "b.local"),
-        ]
-        stand = SealedStand(rows)
-        args = {"source": "left", "target": "right"}
-
-        row = _row(await stand.call("probe_copy", args))
-
-        if row != {"source": "a.local", "target": "b.local"}:
-            raise AssertionError(f"каждый параметр получил своё соединение: {row}")
-
-    async def test_call_of_the_model_keeps_the_reference(self) -> None:
-        stand = _stand()
-        args = {"connection": MAIN, "sql": "x"}
-
-        await stand.call("probe_query", args)
-
-        if args["connection"] != MAIN:
-            raise AssertionError(f"аргументы модели не тронуты: {args}")
-
-
-class TestKeyComesFromTheServerFeature:
-    def test_client_passes_the_declared_feature_through(self) -> None:
-        stand = _stand()
-
-        declared = SealFeature.model_validate(stand.client.features()[SealFeature.ID])
-
-        if declared.key != stand.keys.public():
-            raise AssertionError("клиент видит ключ, объявленный исполнителем")
-
-    async def test_server_without_the_feature_gets_no_connections(self) -> None:
-        stand = _stand()
-        silent = SealingStand(
-            _DeclaringAnotherKey(stand.executor, {}),
-            stand.connections,
-            timedelta(minutes=10),
+    async def grant(self, name: str, host: str) -> None:
+        profile = PostgresConfig(
+            host=host,
+            dbname="warehouse",
+            options=PostgresOptionsConfig(),
+            pool=PostgresPoolConfig(),
+            auth=PasswordAuth(
+                method="password", user="reader", password=SecretStr(self.SECRET)
+            ),
+        )
+        connection = await self.store.add(name, profile)
+        await self.store.grant(
+            connection, GrantTarget.user(self.context.subject.user_id)
         )
 
-        refusal = _refusal(
-            await stand.call_through(
-                silent, "probe_query", {"connection": MAIN, "sql": "x"}
+    async def call(
+        self, source: str, target: str, context: CallContext | None = None
+    ) -> Mapping[str, object]:
+        if context is None:
+            context = self.context
+
+        with self.calls.applied(context):
+            result = await self.probes.call(
+                self.tool, "copy-1", {"source": source, "target": target}
             )
-        )
 
-        if refusal.error_kind != ConnectionRefusal.SEAL_KEY_UNKNOWN:
-            raise AssertionError(f"соединение не отправлено: {refusal.message}")
-        if SealFeature.ID not in refusal.message:
-            raise AssertionError(f"отказ называет возможность: {refusal.message}")
-
-    async def test_value_sealed_for_a_restarted_server_is_refused(self) -> None:
-        stand = _stand()
-        restarted = SealedStand([])
-        stale = SealingStand(
-            _DeclaringAnotherKey(stand.executor, restarted.params.features()),
-            stand.connections,
-            timedelta(minutes=10),
-        )
-
-        message = await stand.call_through(
-            stale, "probe_query", {"connection": MAIN, "sql": "x"}
-        )
-
-        refusal = _refusal(message)
-        if refusal.error_kind != ConnectionRefusal.SEAL_KEY_UNKNOWN:
-            raise AssertionError(f"чужой ключ отвергнут сервером: {refusal}")
+        assert result.ok, result
+        return self.probes.last(self.tool.name)
 
 
-class TestRefusals:
-    """Отказ запечатывания — отказ клиента до отправки серверу: в бою его
-    возвращает хук, порт стенда отдаёт его итогом-отказом вызова."""
-
-    async def test_unknown_name_is_refused_with_the_available_ones(self) -> None:
-        stand = _stand()
-        args = {"connection": "нет-такого", "sql": "x"}
-
-        refusal = _refusal(await stand.call("probe_query", args))
-
-        if refusal.error_kind != ConnectionRefusal.NOT_VISIBLE:
-            raise AssertionError(f"чужое имя отвергнуто: {refusal.message}")
-        if "main" not in refusal.message:
-            raise AssertionError(f"отказ называет доступные: {refusal.message}")
-
-    async def test_duplicate_name_is_refused(self) -> None:
-        rows = [
-            SealedStand.probe_row("dup", "a.local"),
-            SealedStand.probe_row("dup", "b.local"),
-        ]
-        stand = SealedStand(rows)
-        args = {"connection": "dup", "sql": "x"}
-
-        refusal = _refusal(await stand.call("probe_query", args))
-
-        if refusal.error_kind != ConnectionRefusal.AMBIGUOUS:
-            raise AssertionError(f"дубль имени отвергнут: {refusal.message}")
-
-    async def test_name_of_another_kind_is_not_visible(self) -> None:
-        """Вид параметра берётся из схемы инструмента: строка другого вида с
-        таким именем параметру не видна."""
-        stand = SealedStand([SealedStand.row("web", OtherConnection(host="h"))])
-        args = {"connection": "web", "sql": "x"}
-
-        refusal = _refusal(await stand.call("probe_query", args))
-
-        if refusal.error_kind != ConnectionRefusal.NOT_VISIBLE:
-            raise AssertionError(f"строка другого вида не видна: {refusal.message}")
-
-    async def test_plain_value_is_refused_by_the_client_without_echo(self) -> None:
-        """Вместо имени модель написала строку подключения с паролем: клиент
-        отвергает её как неизвестное имя, не цитируя, и серверу не шлёт."""
-        stand = _stand()
-        dsn = f"postgres://user:{SECRET}@db.local/x"
-
-        refusal = _refusal(
-            await stand.call("probe_query", {"connection": dsn, "sql": "x"})
-        )
-
-        if refusal.error_kind != ConnectionRefusal.NOT_VISIBLE:
-            raise AssertionError(f"неизвестное имя отвергнуто: {refusal.message}")
-        if SECRET in refusal.message:
-            raise AssertionError(f"значение не цитируется: {refusal.message}")
-        if "main" not in refusal.message:
-            raise AssertionError(f"отказ называет доступные: {refusal.message}")
+async def test_named_profiles_reach_two_parameters_with_secrets_and_caller(
+    store: ConnectionStore, call_stand: CallStand
+) -> None:
+    stand = BindingStand(store, call_stand)
+    await stand.grant("source", "source.internal")
+    await stand.grant("target", "target.internal")
+    taken = await stand.call("source", "target")
+    source = taken["source"]
+    target = taken["target"]
+    assert isinstance(source, PostgresConfig)
+    assert isinstance(target, PostgresConfig)
+    assert source.host == "source.internal"
+    assert target.host == "target.internal"
+    assert isinstance(source.auth, PasswordAuth)
+    assert source.auth.password.get_secret_value() == stand.SECRET
+    assert source.application_name is not None
+    assert "alice" in source.application_name
 
 
-class TestDeclarationIsChecked:
-    def test_kind_must_be_known_to_the_server(self, call_stand: CallStand) -> None:
-        """Вид соединения — код сервера: вид из манифеста, которого сервер не
-        знает, отвергается при сборке инструментов."""
-        tool = ProbeTools().tool(
-            "broken",
-            {"connection": (Annotated[ProbeConnection, UserConnection], ...)},
-            {"connection": "unregistered"},
-        )
+async def test_names_with_dots_and_wildcards_are_exact_sql_parameters(
+    store: ConnectionStore, call_stand: CallStand
+) -> None:
+    stand = BindingStand(store, call_stand)
+    name = "a.b.c.d.e%_'"
+    await stand.grant(name, "exact.internal")
+    await stand.grant("a.b.c.d.eXX_'", "different.internal")
+    rows = await store.for_subject(stand.context.subject, "postgres", name=name)
+    assert len(rows) == 1
+    assert rows[0].row.name == name
+    taken = await stand.call(name, name)
+    connection = taken["source"]
+    assert isinstance(connection, PostgresConfig)
+    assert connection.host == "exact.internal"
 
-        with pytest.raises(ToolConfigError, match="does not know"):
-            SealedConnectionParams(
-                SealKeys(), lambda: TYPES, call_stand.contexts, {}, StaticConfig()
-            ).bind_all([tool])
+
+async def test_schema_declares_names_and_never_client_profiles(
+    store: ConnectionStore, call_stand: CallStand
+) -> None:
+    stand = BindingStand(store, call_stand)
+    schema = stand.tool.args_schema.model_json_schema()
+    for name in ("source", "target"):
+        field = schema["properties"][name]
+        assert field["type"] == "string"
+        assert field["x-boba-connection"] == "postgres"
+        assert "contentMediaType" not in field
+        assert "contentSchema" not in field
+
+
+async def test_dag_preflight_uses_current_grants_without_calling_body(
+    store: ConnectionStore, call_stand: CallStand
+) -> None:
+    stand = BindingStand(store, call_stand)
+    await stand.grant("main", "db.internal")
+    args = {"source": "main", "target": "main"}
+    with call_stand.applied(stand.context):
+        await stand.params.check(stand.tool.name, args)
+
+    assert not stand.probes.received(stand.tool.name)
+    stranger = call_stand.context("other", user_id=uuid4(), login="stranger", roles=())
+    with (
+        call_stand.applied(stranger),
+        pytest.raises(RefusalError, match="available to you"),
+    ):
+        await stand.params.check(stand.tool.name, args)
+
+
+async def test_unknown_kind_fails_during_tool_binding(
+    store: ConnectionStore, call_stand: CallStand
+) -> None:
+    stand = BindingStand(store, call_stand)
+    stand.tool.inputs = ToolInputs(connections={"source": "unregistered"})
+    with pytest.raises(ToolConfigError, match="does not know"):
+        stand.params.bind_all((stand.tool,))

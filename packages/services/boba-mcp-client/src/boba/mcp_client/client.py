@@ -146,8 +146,8 @@ from boba.canvas.storage import (
     StorageFullError,
     StorageNotFoundError,
 )
-from boba.connections.sealed import SealFeature
 from boba.core.mcp_names import McpToolNames
+from boba.identity.principal import UserIdentity
 from boba.toolkit.dag import NestedCallsFeature, ServerFeature
 from boba.toolkit.wire import (
     CommandsFeature,
@@ -511,10 +511,13 @@ class UnattendedLogin:
     BODY_SHOWN: ClassVar[int] = 600
     """Сколько знаков ответа сервера входит в текст ошибки."""
 
-    def __init__(self, login: str, password: SecretStr, resource: str) -> None:
+    def __init__(
+        self, login: str, password: SecretStr, resource: str, realm: str = ""
+    ) -> None:
         self._login = login
         self._password = password
         self._resource = resource
+        self._realm = realm
         self._granted: AuthorizationCodeResult | None = None
 
     def client(self) -> OAuthClientMetadata:
@@ -594,6 +597,7 @@ class UnattendedLogin:
             LoginField.PROOF.value: proof,
             LoginField.LOGIN.value: self._login,
             LoginField.PASSWORD.value: self._password.get_secret_value(),
+            LoginField.REALM.value: self._realm,
         }
         returned = self._next(
             await http.post(login_url, data=form),
@@ -652,9 +656,10 @@ class LocalAuth(McpAuthEntry):
     auth: Literal["local"] = "local"
     login: str = Field(min_length=1)
     password: SecretStr
+    realm: str = ""
 
     def httpx_auth(self, resource: str) -> httpx2.Auth | None:
-        login = UnattendedLogin(self.login, self.password, resource)
+        login = UnattendedLogin(self.login, self.password, resource, self.realm)
 
         provider = RefreshingProvider(
             server_url=resource,
@@ -702,6 +707,15 @@ class ProxyAuth(McpAuthEntry):
                 "expected the login and roles the server is told about"
             )
             raise McpClientError(msg)
+
+        try:
+            UserIdentity.model_validate(self.login)
+        except ValidationError as exc:
+            msg = (
+                f"mcp auth proxy for {resource}: login must be the verified "
+                "realm:login identifier issued by the authentication backend"
+            )
+            raise McpClientError(msg) from exc
 
         assertions = StatedAssertions(
             ProxyAssertions(self.secret.get_secret_value(), 0),
@@ -1295,8 +1309,8 @@ class McpClientIdentity:
     ретранслирует за агента, идут с личностью агента из его запроса: сервер
     видит настоящего клиента и его возможности. Личность — свойство
     запроса, а не подключения: порт McpToolServer принимает её каждым
-    запросом. Расширения, которые исполняет сам чат (журнал, запечатывание
-    соединений, MCP Apps), порт добавляет к любой личности.
+    запросом. Расширения, которые исполняет сам чат (журнал, MCP Apps),
+    порт добавляет к любой личности.
     """
 
     info: mt.Implementation
@@ -2286,7 +2300,6 @@ class McpToolServer(McpToolPort):
 
     OWN_EXTENSIONS: ClassVar[Mapping[str, Mapping[str, Any]]] = {
         JournalFeature.ID: {},
-        SealFeature.ID: {},
         ScopeFeature.ID: {},
         CommandsFeature.ID: CommandsFeature(
             version=CommandsVersion.V2026_10_24
@@ -2294,8 +2307,7 @@ class McpToolServer(McpToolPort):
         EXTENSION_ID: {"mimeTypes": [APP_MIME_TYPE]},
     }
     """Расширения, которые чат объявляет любому серверу: журнал вызовов он
-    читает и слушает сам, соединения пользователя запечатывает ключом
-    сервера, и сервер по этому предлагает их, область вызова ставит в
+    читает и слушает сам, область вызова ставит в
     помеченный сервером параметр сам, команды, открывающие приложение
     сервера, исполняет сам, а приложения MCP Apps рисует в песочнице чата,
     если сервер объявил их в ответе."""

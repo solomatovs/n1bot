@@ -26,6 +26,7 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -39,6 +40,7 @@ from playwright.sync_api import Browser, Page, expect
 from boba.auth.service import SignInProviders
 from boba.db.postgres.connection import PostgresConfig
 from boba.stand.database import TestDatabase
+from boba.stand.migrate import StandSchema
 from boba.stand.service_signin import ServiceSignIn
 from boba.stand.ui.database import run_blocking
 from boba.stand.ui.stand import (
@@ -283,13 +285,22 @@ def _service(
         generation=generation,
         session_ttl_sec=ttl_sec,
         local_sign_in=local_sign_in,
+        db_schema=f"mcp_login_{uuid4().hex[:12]}",
+        plugins=("canvas",),
     )
+    config.write()
+    schema = StandSchema(
+        config.files.paths(config.app),
+        ("boba.identity_postgres", "boba.connection_broker"),
+    )
+    run_blocking(schema.create())
     process = StandProcess[ServiceStand](config=config, log_path=workdir / "mcp.log")
-    process.start(BOOT_SEC)
     try:
+        process.start(BOOT_SEC)
         yield process
     finally:
         process.stop()
+        run_blocking(schema.drop())
 
 
 @pytest.fixture(scope="module")

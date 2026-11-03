@@ -13,6 +13,7 @@ from boba.auth.config import LocalAuthConfig, LocalRoleProviders, LocalRolesConf
 from boba.identity.admission import RoleMappingConfig
 from boba.identity.api import AuthenticatedUser, PersistedUsers, UsersUpsert
 from boba.identity.errors import AuthenticationError, ExternalServiceError
+from boba.identity.principal import IdentityRule, UserIdentity
 from boba.identity.session import Login
 from boba.identity.signin import SignedIn, SignInMetadata
 from boba.identity.token import CookieSpec, SessionRenewal
@@ -30,8 +31,10 @@ class Users(PersistedUsers, UsersUpsert):
     def __init__(self) -> None:
         self.asked: list[str] = []
         self.rows = {
-            "reader": AuthenticatedUser(
-                id=UUID(int=7), identifier=Login("reader"), sign_in=SignInMetadata()
+            "corporate:reader": AuthenticatedUser(
+                id=UUID(int=7),
+                identifier=Login("corporate:reader"),
+                sign_in=SignInMetadata(),
             )
         }
 
@@ -53,6 +56,7 @@ def _service(users: Users, password: bool = False) -> AuthService:
     provider = None
     if password:
         config = LocalAuthConfig(
+            identity=IdentityRule(realm="local-stand"),
             users={"alice": "pw"},
             roles=LocalRoleProviders(
                 local=LocalRolesConfig(
@@ -65,7 +69,7 @@ def _service(users: Users, password: bool = False) -> AuthService:
     return AuthService(
         tokens=JwtTokens(SECRET, 60, GENERATION),
         cookie=CookieSpec(name="access_token", samesite="lax", ttl_sec=60),
-        sign_ins=SignIns(provider, None, None),
+        sign_ins=SignIns(provider, {}, {}),
         users=users,
         renewal=SessionRenewal.of(60, 60 * 24),
     )
@@ -73,18 +77,27 @@ def _service(users: Users, password: bool = False) -> AuthService:
 
 def _token(secret: str, **claims: object) -> str:
     """Токен стенда: metadata из claims дополняет роли и поколение по умолчанию."""
-    metadata: dict[str, object] = {"roles": ["read"], "generation": GENERATION}
+    metadata: dict[str, object] = {
+        "roles": ["read"],
+        "generation": GENERATION,
+        "identity": {"realm": "corporate", "login": "reader"},
+    }
     given = claims.pop("metadata", None)
     if isinstance(given, dict):
         metadata.update(given)
 
     payload: dict[str, object] = {
-        "identifier": "reader",
+        "identifier": "corporate:reader",
         "metadata": metadata,
         "exp": int(time.time()) + 60,
         "iat": int(time.time()),
     }
     payload.update(claims)
+    identifier = payload["identifier"]
+    if isinstance(identifier, str) and identifier:
+        metadata["identity"] = UserIdentity.model_validate(identifier).model_dump(
+            mode="json"
+        )
     return jwt.encode(payload, secret, algorithm="HS256")
 
 
@@ -92,9 +105,9 @@ async def test_valid_token_yields_the_users_row_with_token_metadata() -> None:
     users = Users()
     user = await _service(users).user_of_token(_token(SECRET))
 
-    assert (user.id, user.identifier) == (UUID(int=7), "reader")
+    assert (user.id, user.identifier) == (UUID(int=7), "corporate:reader")
     assert user.roles == frozenset({"read"})
-    assert users.asked == ["reader"]
+    assert users.asked == ["corporate:reader"]
 
 
 @pytest.mark.parametrize(
@@ -119,20 +132,20 @@ async def test_bad_tokens_are_refused_before_users(token: str) -> None:
 async def test_unknown_identifier_is_refused_and_not_created() -> None:
     """Токен подтверждает роли, но личность не заводит: строки users нет — входа нет."""
     users = Users()
-    token = _token(SECRET, identifier="stranger", metadata={"roles": ["DEV"]})
+    token = _token(SECRET, identifier="corporate:stranger", metadata={"roles": ["DEV"]})
 
-    with pytest.raises(AuthenticationError, match="stranger"):
+    with pytest.raises(AuthenticationError, match="corporate:stranger"):
         await _service(users).user_of_token(token)
 
-    assert "stranger" not in users.rows
+    assert "corporate:stranger" not in users.rows
 
 
 async def test_password_sign_in_issues_session_and_users_row() -> None:
     users = Users()
     session = await _service(users, password=True).by_password("alice", "pw")
 
-    assert session.user.identifier == "alice"
-    assert "alice" in users.rows
+    assert session.user.identifier == "local-stand:alice"
+    assert "local-stand:alice" in users.rows
     assert (await _service(users).user_of_token(session.token)).roles == {"DEV"}
 
 
@@ -140,8 +153,8 @@ async def test_password_sign_in_alone_touches_no_users_row() -> None:
     users = Users()
     signed = await _service(users, password=True).sign_in("alice", "pw")
 
-    assert signed.identifier == "alice"
-    assert "alice" not in users.rows
+    assert signed.identifier == "local-stand:alice"
+    assert "local-stand:alice" not in users.rows
 
 
 async def test_wrong_password_is_authentication_error() -> None:
@@ -162,7 +175,7 @@ class TestRenew:
         return AuthService(
             tokens=JwtTokens(SECRET, ttl, GENERATION),
             cookie=CookieSpec(name="access_token", samesite="lax", ttl_sec=ttl),
-            sign_ins=SignIns(None, None, None),
+            sign_ins=SignIns(None, {}, {}),
             users=users,
             renewal=SessionRenewal.of(ttl, max_sec),
         )
@@ -170,7 +183,9 @@ class TestRenew:
     async def test_live_token_is_renewed_with_a_later_expiry(self) -> None:
         users = Users()
         service = self._service(users)
-        first = _token(SECRET, identifier="reader", metadata={"roles": ["read"]})
+        first = _token(
+            SECRET, identifier="corporate:reader", metadata={"roles": ["read"]}
+        )
 
         renewed = await service.renew(first)
 
@@ -178,22 +193,25 @@ class TestRenew:
         after = JwtTokens(SECRET, 60, GENERATION).read(renewed.token)
         assert after.exp >= before.exp
         assert after.started_at() == before.started_at()
-        assert renewed.user.identifier == "reader"
+        assert renewed.user.identifier == "corporate:reader"
         assert renewed.user.roles == frozenset({"read"})
 
     async def test_token_within_grace_is_still_renewed(self) -> None:
         service = self._service(Users())
-        stale = _token(SECRET, identifier="reader", exp=int(time.time()) - 30)
+        stale = _token(SECRET, identifier="corporate:reader", exp=int(time.time()) - 30)
 
         renewed = await service.renew(stale)
 
         assert (
-            JwtTokens(SECRET, 60, GENERATION).read(renewed.token).identifier == "reader"
+            JwtTokens(SECRET, 60, GENERATION).read(renewed.token).identifier
+            == "corporate:reader"
         )
 
     async def test_token_beyond_grace_is_refused(self) -> None:
         service = self._service(Users())
-        dead = _token(SECRET, identifier="reader", exp=int(time.time()) - 3600)
+        dead = _token(
+            SECRET, identifier="corporate:reader", exp=int(time.time()) - 3600
+        )
 
         with pytest.raises(AuthenticationError, match="expired"):
             await service.renew(dead)
@@ -203,8 +221,11 @@ class TestRenew:
         # nosemgrep: jwt-python-hardcoded-secret — секрет теста
         old = jwt.encode(
             {
-                "identifier": "reader",
-                "metadata": {"generation": GENERATION},
+                "identifier": "corporate:reader",
+                "metadata": {
+                    "generation": GENERATION,
+                    "identity": {"realm": "corporate", "login": "reader"},
+                },
                 "exp": int(time.time()) + 30,
                 "iat": int(time.time()) - 30,
                 "since": int(time.time()) - 600,
@@ -220,7 +241,7 @@ class TestRenew:
         service = self._service(Users())
         sso = _token(
             SECRET,
-            identifier="reader",
+            identifier="corporate:reader",
             metadata={"provider": "KerberosAuth", "principal": "reader@X"},
         )
 
@@ -229,7 +250,7 @@ class TestRenew:
 
     async def test_unknown_identifier_is_refused(self) -> None:
         service = self._service(Users())
-        stranger = _token(SECRET, identifier="stranger")
+        stranger = _token(SECRET, identifier="corporate:stranger")
 
         with pytest.raises(AuthenticationError, match="not persisted"):
             await service.renew(stranger)

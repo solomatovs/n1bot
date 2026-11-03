@@ -46,7 +46,6 @@ from boba.canvas.keys import WorkspaceKey
 from boba.runtime.storage import LocalStorageClient, LocalStorageConfig
 from boba.stand_core.context import CallStand
 from boba.toolkit.result import ContentMime, VisualResult
-from boba.workspace.launcher import MountingConfig
 
 THREAD = "11111111-1111-1111-1111-111111111111"
 MOUNT = "/workspace"
@@ -253,14 +252,6 @@ def storage(
 ) -> LocalStorageClient:
     config = LocalStorageConfig(
         files_dir=str(tmp_path),
-        mounting=MountingConfig(
-            mount_wait_sec=1.0,
-            mount_poll_sec=0.1,
-            shutdown_wait_sec=1.0,
-            lock_wait_sec=1.0,
-            copy_chunk_bytes=65536,
-        ),
-        mount_dir="/tmp",  # noqa: S108
     )
     client = LocalStorageClient(config)
     layer = _StorageOnlyLayer(client)

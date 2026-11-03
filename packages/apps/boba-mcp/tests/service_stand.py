@@ -15,6 +15,7 @@ import asyncio
 import sys
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import ClassVar
 
@@ -22,7 +23,6 @@ import uvicorn
 from pydantic import BaseModel, ConfigDict, SecretStr
 
 from boba.access import RoleConfig, ToolAccess
-from boba.auth import SignIns
 from boba.auth.config import (
     HeaderRolesConfig,
     LocalAuthConfig,
@@ -31,19 +31,21 @@ from boba.auth.config import (
     ProxyAuthConfig,
     ProxyRoleProviders,
 )
-from boba.auth.profiles import ProfileProviders, RoleProfiles
-from boba.auth.proxy import HmacProxySignIn, ProxyAssertions
-from boba.auth.roles import HeaderRoles, LocalRoles, RoleProviders
-from boba.auth.signin import CompositeSignIn, LocalSignIn
+from boba.auth.credentials import KerberosCredentialSource, NoRefresh
+from boba.auth.proxy import ProxyAssertionVerifier
 from boba.canvas.keys import WorkspaceMount
 from boba.config import ConfigLoader, bind
-from boba.connection_broker.crypto import SealKeys
-from boba.connection_broker.sealed import SealedConnectionParams, ServerConnection
+from boba.connection_broker.params import ConnectionParams, ServerConnection
+from boba.connection_broker.store import ConnectionStore
+from boba.connection_broker.tools import ConnectionTools
+from boba.connection_broker.user_connections import ArmedConnections
 from boba.connections.manifest import ConnectionTypes
-from boba.connections.sealed import OfferedSource
+from boba.connections.offers import OfferedSource
 from boba.identity.admission import RoleMappingConfig
 from boba.identity.context import CallContexts
+from boba.identity.principal import IdentityRule
 from boba.identity.run import Runs
+from boba.ldap import Ldap3Directory
 from boba.mcp_server.auth import ServiceMark
 from boba.mcp_server.prompts import PromptFile
 from boba.mcp_server.server import (
@@ -51,7 +53,6 @@ from boba.mcp_server.server import (
     EndpointCatalog,
     McpEndpoint,
     McpEndpoints,
-    OfferClient,
     RunLimits,
 )
 from boba.oauth.server import (
@@ -63,6 +64,7 @@ from boba.oauth.server import (
     TrustedClient,
 )
 from boba.runtime.journal import DirVault, StreamJournal
+from boba.runtime.signin import SignInAssembly
 from boba.runtime.storage import LocalStorageClient, LocalStorageConfig
 from boba.stand import fake_caller, fake_connection, fake_toolmod
 from boba.stand.service_signin import ServiceSignIn
@@ -73,7 +75,6 @@ from boba.toolrun.hosted import PluginSection
 from boba.toolrun.injected import InjectedConfig, StaticConfig, StaticSection
 from boba.toolrun.stream_calls import StreamGroupsConfig
 from boba.toolrun.streams import CallJournals
-from boba.workspace.launcher import MountingConfig
 
 PROFILE = "service"
 
@@ -142,9 +143,10 @@ class ServiceStand:
     скобка текстом и две роли."""
 
     OFFERS: ClassVar[str] = "offers"
+    STORED: ClassVar[str] = "stored"
     """Endpoint с правилами предложения соединений по таблице 6.8: аналитику с
-    запечатыванием — оба источника, остальным с запечатыванием — свои
-    соединения, клиенту без запечатывания — заданные соединения сервера."""
+    ролями analyst — каталог и заданные соединения, остальным — только
+    заданные соединения, видимые их ролям."""
 
     ANALYST: ClassVar[str] = "analyst"
 
@@ -170,10 +172,10 @@ class ServiceStand:
         )
     }
 
-    SEALING: ClassVar[ConnectionOfferRule] = ConnectionOfferRule(
-        roles=["*"], client=OfferClient.SEALING, offer=[OfferedSource.SEALED]
+    STORAGE: ClassVar[ConnectionOfferRule] = ConnectionOfferRule(
+        roles=["*"], offer=[OfferedSource.STORED]
     )
-    """Правило по умолчанию: клиенту, который запечатывает, — свои соединения."""
+    """Правило по умолчанию: имена соединений из каталога MCP."""
 
     STREAM: StreamGroupsConfig = StreamGroupsConfig(
         open_sec=20.0,
@@ -183,24 +185,30 @@ class ServiceStand:
         pipe_bytes_max=1 << 30,
     )
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — конфиг реального HTTP-стенда
         self,
         workdir: Path,
         limits: RunLimits,
         port: int,
         prefix: str,
         token_ttl_sec: int = TOKEN_TTL_SEC,
+        connections: ConnectionStore | None = None,
     ) -> None:
         self.port = port
         self.public_url = f"http://127.0.0.1:{port}{prefix}"
         contexts = CallContexts()
         runs = Runs(contexts)
-        params = SealedConnectionParams(
-            SealKeys(),
+        self._connections = connections
+        self._credentials = KerberosCredentialSource(None, NoRefresh())
+        resolver = None
+        if connections is not None:
+            resolver = ArmedConnections(self._store, self._credential_source, contexts)
+        params = ConnectionParams(
             ConnectionTypes.discover,
             contexts,
             self.SERVER_CONNECTIONS,
             StaticConfig(),
+            stored=resolver,
         )
         params.listed({"fake_connection_host": [self.DWH]})
         journals = CallJournals(
@@ -233,78 +241,88 @@ class ServiceStand:
             PluginSection(values={"token": "t0ken", "limit": 5}),
         )
 
+        own: set[str] = set()
+        if connections is not None:
+            catalog_tools = ConnectionTools(self._store, contexts).build()
+            stand.adopt(catalog_tools)
+            tools.extend(catalog_tools)
+            for entry in catalog_tools:
+                own.add(entry.name)
+
         names: list[str] = []
         for tool in tools:
             names.append(tool.name)
 
         both = ConnectionOfferRule(
             roles=[self.ANALYST],
-            client=OfferClient.SEALING,
-            offer=[OfferedSource.SEALED, OfferedSource.SERVER],
+            offer=[OfferedSource.STORED, OfferedSource.SERVER],
         )
-        plain = ConnectionOfferRule(
-            roles=["*"], client=OfferClient.PLAIN, offer=[OfferedSource.SERVER]
-        )
+        plain = ConnectionOfferRule(roles=["*"], offer=[OfferedSource.SERVER])
         granted = {
             PROFILE: McpEndpoint(
                 tools=["*"],
                 roles=["*"],
-                connections=[self.SEALING],
+                connections=[self.STORAGE],
                 prompts=self._prompts(workdir),
             ),
             NARROW: McpEndpoint(
                 tools=["fake_echo"],
                 roles=["dev"],
-                connections=[self.SEALING],
+                connections=[self.STORAGE],
                 prompts={},
             ),
             self.OFFERS: McpEndpoint(
                 tools=["*"],
                 roles=["*"],
-                connections=[both, self.SEALING, plain],
+                connections=[both, plain],
                 prompts={},
             ),
         }
-        access = ToolAccess(
-            tool_names=names,
-            roles={
+        if connections is not None:
+            stored_rule = ConnectionOfferRule(roles=["*"], offer=[OfferedSource.STORED])
+            granted[self.STORED] = McpEndpoint(
+                tools=["*"], roles=["*"], connections=[stored_rule], prompts={}
+            )
+        catalog = EndpointCatalog(granted)
+        grants = catalog.grants(
+            {
                 "dev": RoleConfig(tools=["*"]),
                 "ADM": RoleConfig(tools=["*"]),
                 self.ANALYST: RoleConfig(tools=["*"]),
                 "weak": RoleConfig(tools=["fake_echo"]),
-            },
-            profiles=granted,
+            }
         )
-        self.registry = stand.registry(access, (params,))
+        access = ToolAccess(names, grants.roles, grants.profiles, grants.check)
+        self.registry = replace(stand.registry(access, (params,)), own=frozenset(own))
         proxy = ProxyAuthConfig(
+            identity=IdentityRule(realm="corporate"),
             secret=SecretStr(PROXY_SECRET),
             roles=ProxyRoleProviders(header=HeaderRolesConfig()),
         )
-        catalog = EndpointCatalog(granted)
-        by_roles = ProfileProviders([RoleProfiles(catalog)])
         local_roles = LocalRolesConfig(
             mapping=RoleMappingConfig(root={LOCAL_LOGIN: ["dev"]})
         )
         local = LocalAuthConfig(
+            identity=IdentityRule(realm="local-stand"),
             users={
                 LOCAL_LOGIN: LOCAL_PASSWORD,
                 ROLELESS_LOGIN: ROLELESS_PASSWORD,
             },
             roles=LocalRoleProviders(local=local_roles),
         )
-        password = CompositeSignIn(
-            [
-                LocalSignIn(
-                    local, RoleProviders([LocalRoles(local_roles)], True), by_roles
+        proxies = [proxy]
+        for realm in ("local-stand", "aid-local", "restricted"):
+            proxies.append(
+                ProxyAuthConfig(
+                    identity=IdentityRule(realm=realm),
+                    path=f"/auth/proxy/{realm}",
+                    secret=proxy.secret,
+                    roles=proxy.roles,
                 )
-            ]
-        )
-        sign_ins = SignIns(
-            password,
-            None,
-            HmacProxySignIn(
-                proxy, RoleProviders([HeaderRoles(HeaderRolesConfig())], True), by_roles
-            ),
+            )
+
+        sign_ins = SignInAssembly(Ldap3Directory(), catalog).build(
+            [local, *proxies], "stand-session-secret"
         )
         # в сервисе точку workspace ставит загрузчик плагинов из профиля песочницы
         WorkspaceMount.configure("/workspace")
@@ -318,44 +336,34 @@ class ServiceStand:
             ServiceMark.TOKEN_SALT,
         )
         sealed = SealedValues("stand-session-secret", ServiceMark.SEALED_SALT)
-        declared = TrustedClient(secret=SecretStr(CLIENT_SECRET)).registered(CLIENT_ID)
+        declared = TrustedClient(
+            secret=SecretStr(CLIENT_SECRET),
+            realms=frozenset({"corporate", "local-stand", "aid-local"}),
+        )
+        resources: dict[str, str] = {}
+        for name in granted:
+            resources[name] = f"{public_url}/{name}"
         server = AuthServer(
             public_url,
             sign_ins,
             tokens,
-            ProxyAssertions(PROXY_SECRET, 60),
+            ProxyAssertionVerifier(proxies),
             RegisteredClients(sealed, {CLIENT_ID: declared}),
             sealed,
-            [
-                f"{public_url}/{PROFILE}",
-                f"{public_url}/{NARROW}",
-                f"{public_url}/{self.OFFERS}",
-            ],
+            list(resources.values()),
         )
         auth = ServiceAuth(
             public_url,
             server,
             tokens,
             ServiceMark.NAME,
-            {
-                PROFILE: f"{public_url}/{PROFILE}",
-                NARROW: f"{public_url}/{NARROW}",
-                self.OFFERS: f"{public_url}/{self.OFFERS}",
-            },
+            resources,
         )
         self._sign_in = ServiceSignIn(
             public_url, CLIENT_ID, CLIENT_SECRET, PROXY_SECRET
         )
         storage = LocalStorageConfig(
             files_dir=str(workdir / "files"),
-            mounting=MountingConfig(
-                mount_wait_sec=1.0,
-                mount_poll_sec=0.1,
-                shutdown_wait_sec=1.0,
-                lock_wait_sec=1.0,
-                copy_chunk_bytes=65536,
-            ),
-            mount_dir=str(workdir),
         )
         self.endpoints = McpEndpoints(
             self.registry,
@@ -368,6 +376,14 @@ class ServiceStand:
             storage,
             LocalStorageClient(storage),
         )
+
+    def _store(self) -> ConnectionStore:
+        if self._connections is None:
+            raise RuntimeError("the HTTP stand has no connection store")
+        return self._connections
+
+    def _credential_source(self) -> KerberosCredentialSource:
+        return self._credentials
 
     def _prompts(self, workdir: Path) -> dict[str, PromptFile]:
         """Промпты endpoint'а PROFILE тем же путём, что у сервиса: файл PROMPT

@@ -13,11 +13,14 @@ from typing import Any
 
 import pytest
 from omegaconf import DictConfig, OmegaConf
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
+from boba.aid.agent.config import AgentCommandConfig, AgentConfig
 from boba.aid.infra.bootstrap import SandboxCors
 from boba.aid.infra.config import AppConfig
+from boba.auth.config import ProxyAuthConfig
 from boba.config import ConfigError, bind
+from boba.identity.principal import IdentityRule
 
 
 @pytest.fixture(autouse=True)
@@ -30,6 +33,30 @@ class TestConfigStaysValid:
 
     def test_app_section_binds(self, raw_config: DictConfig) -> None:
         bind(raw_config, path="app", model=AppConfig)
+
+    def test_process_agent_needs_no_technical_sections(self) -> None:
+        config = AgentConfig.model_validate(
+            {
+                "process": {"command": "boba"},
+                "history": {"kind": "memory"},
+                "public_url": "https://chat.invalid",
+                "question_timeout_sec": 3600,
+            }
+        )
+
+        process = config.process
+        assert isinstance(process, AgentCommandConfig)
+        assert process.program() == ("boba",)
+        assert tuple(process.args) == ("--stdio",)
+        assert process.start_timeout_sec == 30
+        assert process.request_timeout_sec == 120
+        assert process.stop_timeout_sec == 10
+        assert tuple(config.tools.always_load) == ()
+        assert config.limits.tool_result_window_share == 0.25
+
+    def test_default_timeouts_do_not_mask_an_invalid_override(self) -> None:
+        with pytest.raises(ValidationError, match="start_timeout_sec"):
+            AgentCommandConfig(command="boba", start_timeout_sec=0)
 
 
 class TestAppsSandbox:
@@ -108,3 +135,47 @@ class TestSandboxCors:
         )
 
         SandboxCors(["https://chat.invalid"]).check(config)
+
+
+class TestProxyRealms:
+    """Конфигурация AID исключает перенос HTTP-подписи в чужое пространство."""
+
+    @staticmethod
+    def _raw(raw_config: DictConfig) -> dict[str, Any]:
+        raw = OmegaConf.to_container(OmegaConf.select(raw_config, "app"), resolve=True)
+        assert isinstance(raw, dict)
+        office = ProxyAuthConfig(
+            identity=IdentityRule(realm="office"),
+            path="/auth/office",
+            secret=SecretStr("office-signing-key"),
+            require_roles=False,
+        )
+        partner = office.model_copy(
+            update={
+                "identity": IdentityRule(realm="partner"),
+                "path": "/auth/partner",
+                "secret": SecretStr("partner-signing-key"),
+            }
+        )
+        app = {str(key): value for key, value in raw.items()}
+        app["auth"] = [office, partner]
+
+        return app
+
+    def test_distinct_http_proxy_routes_and_keys_bind(
+        self, raw_config: DictConfig
+    ) -> None:
+        configured = AppConfig.model_validate(self._raw(raw_config))
+        assert len(configured.proxy_entries()) == 2
+
+    @pytest.mark.parametrize("field", ["path", "secret"])
+    def test_shared_http_proxy_route_or_key_is_refused(
+        self,
+        raw_config: DictConfig,
+        field: str,
+    ) -> None:
+        raw = self._raw(raw_config)
+        first, second = raw["auth"]
+        raw["auth"] = [first, second.model_copy(update={field: getattr(first, field)})]
+        with pytest.raises(ValidationError, match=r"\[auth\]"):
+            AppConfig.model_validate(raw)

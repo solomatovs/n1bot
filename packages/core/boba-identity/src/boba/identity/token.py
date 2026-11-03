@@ -61,6 +61,7 @@ class TokenRejection(StrEnum):
     SIGNATURE = "signature"
     MALFORMED = "malformed"
     GENERATION = "generation"
+    IDENTITY = "identity"
 
 
 class TokenRejectedError(Exception):

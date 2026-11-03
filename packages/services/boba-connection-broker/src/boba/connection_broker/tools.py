@@ -20,12 +20,13 @@ from pydantic import Field
 
 from boba.access.grants import ConnectionFilter
 from boba.connection_broker.user_connections import StoreRef
+from boba.connections.catalog import ConnectionTool
 from boba.identity.context import CallContexts, Subject
 from boba.toolkit.facade import PayloadTool, tool
 from boba.toolkit.result import TableResult
 from boba.toolrun.hosted import HostedTool, ToolHosting
 
-__all__ = ["ConnectionTools", "GrantedConnections"]
+__all__ = ["ConnectionTool", "ConnectionTools", "GrantedConnections"]
 
 
 class GrantedConnections:
@@ -65,10 +66,8 @@ class GrantedConnections:
 class ConnectionTools:
     """Инструменты каталога соединений для модели.
 
-    Соединения и гранты на них хранит чат, поэтому эти инструменты — его
-    собственные: чат собирает их здесь и отдаёт загрузчику инструментов
-    рядом с плагинами (ChatPlugins) как свой сервер инструментов. Субъект
-    вызова берётся из контекста вызова.
+    Собираются владельцем хранилища, AID либо MCP, без зависимости от его
+    HTTP-адаптера. Субъект вызова берётся из проверенного контекста.
     """
 
     def __init__(self, store_ref: StoreRef, contexts: CallContexts) -> None:

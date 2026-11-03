@@ -551,7 +551,7 @@ class NodeOutcomes:
 
     Создаётся каждым, кто отвечает на вызов узла: исполнителем узлов
     (DagRunner), портами ToolServer (свой исполнитель, маршрут по серверам,
-    запечатывание, клиент MCP) и стыком приложения с графом. Текст для модели
+    клиент MCP) и стыком приложения с графом. Текст для модели
     берётся у самого результата.
     """
 
@@ -739,8 +739,7 @@ class NestedCallsFeature(ServerFeature):
     инструментов сервера; у каждого элемента списка поля node_key, node_tool
     и node_args — ключ узла, имя инструмента и его аргументы. Сервер
     объявляет форму своего инструмента-связки (CallDag.feature), клиент по
-    ней разбирает узлы вызова (calls) и собирает вызов обратно с другими
-    аргументами узлов (replaced) — например, с запечатанными соединениями.
+    ней разбирает узлы вызова (calls) для отображения отдельных шагов.
     progress_key — ключ _meta уведомления notifications/progress, под
     которым сервер называет ключ узла, чей это отчёт о ходе работы.
     """
@@ -804,26 +803,6 @@ class NestedCallsFeature(ServerFeature):
                 raise StreamPlanError(msg) from exc
 
         return calls
-
-    def replaced(
-        self, arguments: Mapping[str, JsonValue], calls: Sequence[DagNode]
-    ) -> dict[str, JsonValue]:
-        """Те же аргументы вызова tool, узлы которого пересобраны из calls
-        по объявленной форме; прочие аргументы вызова как есть."""
-        nodes: list[JsonValue] = []
-        for call in calls:
-            nodes.append(
-                {
-                    self.node_key: call.key,
-                    self.node_tool: call.tool,
-                    self.node_args: dict(call.args),
-                }
-            )
-
-        replaced = dict(arguments)
-        replaced[self.nodes] = nodes
-
-        return replaced
 
     def keyed(self, call_id: str, calls: Sequence[DagNode]) -> Sequence[DagNode]:
         """Узлы calls вызова call_id под идентификаторами их вызовов: заданный

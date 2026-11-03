@@ -14,7 +14,8 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 
-from boba.access import ProfileGrant, RoleConfig
+from boba.access import RoleVisibility
+from boba.core.types import StringList
 from boba.identity.errors import RefusalError
 from boba.identity.signin import ProfileCatalog, SignInMetadata
 from boba.llm.providers import ChatModelConfig
@@ -22,12 +23,12 @@ from boba.llm.providers import ChatModelConfig
 __all__ = [
     "ChatProfileConfig",
     "ChatProfiles",
+    "ChatRoleConfig",
     "ChatSettings",
     "ModelLimits",
     "ProfileRefusal",
     "ProfilesSection",
     "ReasoningReturn",
-    "RolesSection",
     "SelectedProfile",
 ]
 
@@ -72,8 +73,10 @@ class ModelLimits(BaseModel):
     )
 
 
-class ChatProfileConfig(ChatSettings, ProfileGrant):
+class ChatProfileConfig(ChatSettings, RoleVisibility):
     """Секция [profiles.<name>]: режим работы бота, выбираемый пользователем."""
+
+    roles: StringList = Field(default=[])
 
     limits: ModelLimits = Field(
         description="Пределы модели профиля ссылкой `${model_limits.<имя>}`."
@@ -104,8 +107,10 @@ class ProfilesSection(RootModel[dict[str, ChatProfileConfig]]):
     """Секция [profiles] верхнего уровня: профили чата по имени."""
 
 
-class RolesSection(RootModel[dict[str, RoleConfig]]):
-    """Секция [roles] верхнего уровня: права ролей по имени."""
+class ChatRoleConfig(BaseModel):
+    """Объявление роли чата; права на tools принадлежат MCP."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
 class ProfileRefusal(StrEnum):

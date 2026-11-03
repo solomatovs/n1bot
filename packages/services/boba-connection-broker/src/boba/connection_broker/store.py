@@ -21,15 +21,12 @@ from typing import Any, ClassVar
 from uuid import UUID
 
 from psycopg.types.json import Jsonb
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-)
 
 from boba.access.grants import ConnectionFilter
 from boba.connection_broker.crypto import SecretCipher
 from boba.connection_broker.grants import SubjectGrantsQuery, SubjectRowColumn
 from boba.connections.address import AddressError
+from boba.connections.catalog import CatalogEntry
 from boba.connections.manifest import (
     ConnectionTypes,
     ConnectionTypesError,
@@ -51,6 +48,8 @@ from boba.connections.stored import (
 )
 from boba.db.postgres import PgQuery, PostgresPool, PostgresTable
 from boba.identity.context import Subject
+from boba.identity.errors import ExternalServiceError
+from boba.identity_postgres import UsersTable
 
 logger = logging.getLogger(__name__)
 
@@ -58,26 +57,6 @@ __all__ = [
     "CatalogEntry",
     "ConnectionStore",
 ]
-
-
-class CatalogEntry(BaseModel):
-    """Соединение субъекта для показа модели: имя, вид, адрес и открытые поля.
-
-    Поля — колонки выдачи connection_list и connection_search. name — имя
-    строки: его модель передаёт инструменту в параметр-соединение как есть.
-    url — адрес соединения без учётных данных, его строит пакет типа
-    (AddressHook манифеста); профиль, у которого адреса не собрать, несёт
-    здесь текст причины. host и description берутся из jsonb профиля, а
-    секреты не расшифровываются: профиль разбирается как лежит.
-    """
-
-    model_config = ConfigDict(frozen=True, extra="ignore")
-
-    name: str
-    kind: str
-    url: str
-    host: str = ""
-    description: str = ""
 
 
 class ConnectionStore(PostgresTable, ConnectionRepository):
@@ -100,37 +79,17 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
         self._types = types
         self._cipher = cipher
         self._grants = SubjectGrantsQuery()
+        self._users = UsersTable(None, db_schema, pool)
 
     def _failure(self, action: str, exc: Exception) -> Exception:
         return ConnectionStoreError(self._detail(action, exc))
 
     async def sync_roles(self, names: Iterable[str]) -> None:
         """Добавляет в roles имена, которых там ещё нет; ничего не удаляет."""
-        rows: list[dict[str, str]] = []
-        for name in names:
-            rows.append({"role": name})
-
-        if not rows:
-            return
-
-        query = (
-            self._query()
-            .add(
-                """
-                insert into {schema}.roles (
-                    role
-                )
-                values (
-                    %(role)s
-                )
-                on conflict (role) do nothing
-                """
-            )
-            .build()
-        )
-
-        async with self._transaction("sync roles") as cur:
-            await cur.executemany(query.text, rows)
+        try:
+            await self._users.sync_roles(names)
+        except ExternalServiceError as exc:
+            raise ConnectionStoreError(str(exc)) from exc
 
     async def add(self, name: str, connection: ConnectionBase) -> UUID:
         """Новая строка connections; уникальность имени — забота вызывающего."""
@@ -398,11 +357,11 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
         return targets
 
     async def for_subject(
-        self, subject: Subject, kind: str
+        self, subject: Subject, kind: str, *, name: str | None = None
     ) -> Sequence[GrantedConnection]:
         """Соединения вида kind, выданные пользователю лично или любой его роли,
         с признаком дубля имени."""
-        rows = await self._subject_rows(subject, ConnectionFilter(kind=kind))
+        rows = await self._subject_rows(subject, ConnectionFilter(kind=kind), name=name)
 
         return list(self._granted_rows(rows))
 
@@ -469,11 +428,11 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
             return f"no url: {exc}"
 
     async def _subject_rows(
-        self, subject: Subject, flt: ConnectionFilter
+        self, subject: Subject, flt: ConnectionFilter, *, name: str | None = None
     ) -> list[dict[str, Any]]:
         """Строки SubjectGrantsQuery, прошедшие фильтр."""
-        text = self._grants.text(flt)
-        params = self._grants.params(subject, flt)
+        text = self._grants.text(flt, name=name)
+        params = self._grants.params(subject, flt, name=name)
         query = self._query().add(text, **params).build()
 
         return await self._rows(query, "for subject")

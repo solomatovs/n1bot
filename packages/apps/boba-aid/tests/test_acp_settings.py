@@ -16,7 +16,6 @@ import sys
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from importlib.resources import files
 from ipaddress import ip_address
 from pathlib import Path
 from typing import Any, ClassVar
@@ -35,7 +34,7 @@ from acp_stand import (
     RecordingUpdates,
     TlsFiles,
 )
-from aid_stand import FixedServers, NoConnectionStore, RelayStand, TabSession
+from aid_stand import FixedServers, RelayStand, TabSession
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -69,7 +68,6 @@ from boba.aid.agent.settings import (
     ProfileModelSpecs,
     SettingsFileBuilder,
 )
-from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.chat.profiles import (
     ChatProfileConfig,
     ChatProfiles,
@@ -84,7 +82,6 @@ from boba.db.postgres.connection import (
     PostgresConfig,
 )
 from boba.db.postgres.connection.auth import CertificateAuth
-from boba.identity.context import CallContexts
 from boba.kerberos import KeytabAuth
 from boba.krb.credentials import KerberosEnv
 from boba.llm.onnx import OnnxProvider
@@ -261,8 +258,7 @@ class TestAgentHandshake:
         workdir.write(document, launch.system_prompt)
 
         client = AgentClient(RecordingUpdates())
-        credentials = KerberosCredentialSource(None, NoRefresh())
-        relays = RelayStand(NoConnectionStore(), lambda: credentials, CallContexts())
+        relays = RelayStand()
         servers = McpServers(FixedServerConfigs(servers={}))
         relay = relays.relay(servers)
         process = AgentProcess(agent_stand.command(), workdir, client, relay, (), "0.0")
@@ -318,8 +314,7 @@ class TestRetiredServers:
         auth_token: str,
         standard: McpServerConfig,
     ) -> None:
-        credentials = KerberosCredentialSource(None, NoRefresh())
-        relays = RelayStand(NoConnectionStore(), lambda: credentials, CallContexts())
+        relays = RelayStand()
         servers_config = FixedServerConfigs(servers={"standard": standard})
         servers = McpServers(servers_config)
         relay = relays.relay(servers)
@@ -432,8 +427,7 @@ class TestForkCut:
         pool: AsyncPostgresPool,
         auth_token: str,
     ) -> None:
-        credentials = KerberosCredentialSource(None, NoRefresh())
-        relays = RelayStand(NoConnectionStore(), lambda: credentials, CallContexts())
+        relays = RelayStand()
         servers = McpServers(FixedServerConfigs(servers={}))
         relay = relays.relay(servers)
         history = AgentHistoryStand(stand)
@@ -464,9 +458,10 @@ class TestForkCut:
                 name=SignInStand.PROFILE, config=SignInStand.profile()
             ),
         )
-        runtime_schema = files("boba.runtime") / "schema"
         async with pool.connection() as conn:
-            await PostgresSchema(SCHEMA).apply_files(conn, runtime_schema, {})
+            await PostgresSchema(SCHEMA).apply_packages(
+                conn, ("boba.identity_postgres", "boba.runtime")
+            )
 
         threads = ThreadsTable(test_postgres, SCHEMA)
         updates = RecordingUpdates()
@@ -513,10 +508,7 @@ class ChatLaunch:
         self._history = AgentHistoryStand(stand)
         self._users = users
         self._threads = threads
-        credentials = KerberosCredentialSource(None, NoRefresh())
-        self._relays = RelayStand(
-            NoConnectionStore(), lambda: credentials, CallContexts()
-        )
+        self._relays = RelayStand()
         self._servers: list[McpServers] = []
         self._agents: list[ThreadAgent] = []
 
@@ -574,9 +566,10 @@ async def threads(
     pool: AsyncPostgresPool, test_postgres: PostgresConfig
 ) -> ThreadsTable:
     """Таблица тредов в схеме теста: в threads.meta агент вкладки помнит сессию."""
-    runtime_schema = files("boba.runtime") / "schema"
     async with pool.connection() as conn:
-        await PostgresSchema(SCHEMA).apply_files(conn, runtime_schema, {})
+        await PostgresSchema(SCHEMA).apply_packages(
+            conn, ("boba.identity_postgres", "boba.runtime")
+        )
 
     return ThreadsTable(test_postgres, SCHEMA)
 
@@ -857,8 +850,7 @@ class TestFailedLaunch:
         missing = config.process.model_copy(
             update={"command": str(tmp_path / "no-such-agent")}
         )
-        credentials = KerberosCredentialSource(None, NoRefresh())
-        relays = RelayStand(NoConnectionStore(), lambda: credentials, CallContexts())
+        relays = RelayStand()
         servers = McpServers(NO_SERVERS)
         launcher = AgentLauncher(
             config.model_copy(update={"process": missing}),
@@ -985,8 +977,7 @@ class ForeignProcessStand:
         document = builder.build(launch.profile, launch.model, None, {})
         workdir = AgentWorkdirs(tmp_path / "agents").create("thread-foreign")
         workdir.write(document, launch.system_prompt)
-        credentials = KerberosCredentialSource(None, NoRefresh())
-        relays = RelayStand(NoConnectionStore(), lambda: credentials, CallContexts())
+        relays = RelayStand()
         self._servers = McpServers(NO_SERVERS)
         self._process = AgentProcess(
             command,
@@ -1020,10 +1011,7 @@ class DeletionStand:
         self._config = self._agent.config()
         self._users = users
         self._threads = threads
-        credentials = KerberosCredentialSource(None, NoRefresh())
-        self._relays = RelayStand(
-            NoConnectionStore(), lambda: credentials, CallContexts()
-        )
+        self._relays = RelayStand()
         self._servers = McpServers(NO_SERVERS)
 
     def profile(self, model: FakeModel) -> ChatProfileConfig:

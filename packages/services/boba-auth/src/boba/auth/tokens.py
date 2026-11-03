@@ -116,16 +116,26 @@ class JwtTokens(TokenIssuer, TokenReader):
 
     def _current(self, claims: SessionClaims) -> SessionClaims:
         """Claims только текущего поколения; чужое или пустое — отказ."""
-        issued = claims.sign_in().generation
-        if issued == self._generation:
-            return claims
+        try:
+            sign_in = claims.sign_in()
+            issued = sign_in.generation
+            if issued != self._generation:
+                msg = (
+                    f"sign-in token of {claims.identifier!r} belongs to session "
+                    f"generation {issued or 'none'!r}, this process accepts "
+                    f"{self._generation!r}: sign in again"
+                )
+                raise TokenRejectedError(TokenRejection.GENERATION, msg)
 
-        msg = (
-            f"sign-in token of {claims.identifier!r} belongs to session "
-            f"generation {issued or 'none'!r}, this process accepts "
-            f"{self._generation!r}: sign in again"
-        )
-        raise TokenRejectedError(TokenRejection.GENERATION, msg)
+            sign_in.identity_for(claims.identifier)
+        except ValueError as exc:
+            msg = (
+                f"sign-in token of {claims.identifier!r} has no matching "
+                "verified identity; sign out and sign in again"
+            )
+            raise TokenRejectedError(TokenRejection.IDENTITY, msg) from exc
+
+        return claims
 
     def _encode(self, claims: SessionClaims) -> str:
         return jwt.encode(claims.render(), self._secret, algorithm=TokenAlgorithm.HS256)

@@ -19,6 +19,7 @@ from starlette.responses import RedirectResponse, Response
 from boba.aid.auth.refresh import PageUrls, SessionRefresh
 from boba.auth import AuthService
 from boba.auth.http import SsoRequests, SsoResponses
+from boba.auth.realms import RealmSelection
 from boba.identity.errors import (
     AuthorizationError,
     BaseError,
@@ -42,9 +43,20 @@ class KerberosAuth:
     CUSTOM_AUTH_ENV: ClassVar[str] = "CHAINLIT_CUSTOM_AUTH"
     """Флаг chainlit: вход обязателен, хотя свой колбэк авторизации не задан."""
 
-    def __init__(self, sso_path: str, urls: PageUrls, auth: AuthService) -> None:
+    def __init__(
+        self,
+        sso_path: str,
+        urls: PageUrls,
+        auth: AuthService,
+        realms: frozenset[str] = frozenset(),
+    ) -> None:
         # роут без префикса (root_path учтёт роутер), адреса страницы — с полным
         self._sso_path = sso_path
+        self._realms = realms
+        if not realms:
+            self._realms = frozenset(auth.providers().sso_realms)
+
+        self._selection = RealmSelection()
         self._urls = urls
         self.auth = auth
         self._requests = SsoRequests()
@@ -79,7 +91,10 @@ class KerberosAuth:
     async def auth_sso(self, request: Request) -> Response:
         """Вход: SPNEGO → строка users и токен сервисом входа → cookie → в чат."""
         try:
-            outcome = await self.auth.by_spnego(self._requests.of(request))
+            selected = self._selection.selected(
+                request.query_params.get("realm", ""), self._realms, "SPNEGO route"
+            )
+            outcome = await self.auth.by_spnego(self._requests.of(request), selected)
         except BaseError as exc:
             return self._login_redirect(exc)
 

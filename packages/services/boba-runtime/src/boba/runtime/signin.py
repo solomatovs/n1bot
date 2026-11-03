@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
 
+from boba.auth import SignIns
 from boba.auth.config import (
     AuthConfig,
     KerberosAuthConfig,
@@ -40,9 +41,10 @@ from boba.auth.roles import (
     RoleProviders,
 )
 from boba.auth.signin import CompositeSignIn, LdapSignIn, LocalSignIn
-from boba.auth.sso import SsoSignIn
+from boba.auth.sso import SpnegoGate, SsoSignIn
 from boba.identity.directory import UserDirectory
-from boba.identity.signin import PasswordSignIn, ProfileCatalog
+from boba.identity.signin import PasswordSignIn, ProfileCatalog, ProxySignIn
+from boba.identity.sso import SpnegoExchange
 
 __all__ = ["SignInAssembly"]
 
@@ -53,6 +55,20 @@ class SignInAssembly:
     def __init__(self, directory: UserDirectory, profiles: ProfileCatalog) -> None:
         self._directory = directory
         self._profiles = profiles
+
+    def build(self, configs: Sequence[AuthConfig], secret: str) -> SignIns:
+        """Одна сборка способов входа для AID, MCP и службы агента."""
+        sso: dict[str, SpnegoExchange] = {}
+        proxy: dict[str, ProxySignIn] = {}
+        for config in configs:
+            realm = config.identity.realm
+            if isinstance(config, KerberosAuthConfig):
+                sso[realm] = SpnegoGate(self.sso(config, secret))
+
+            if isinstance(config, ProxyAuthConfig):
+                proxy[realm] = self.proxy(config)
+
+        return SignIns(self.password(configs), sso, proxy)
 
     def password(self, configs: Sequence[AuthConfig]) -> CompositeSignIn | None:
         """Провайдеры паролей из [auth]: local и ldap по порядку конфига."""

@@ -74,6 +74,12 @@ class McpProgram:
 
 def cli() -> None:
     argv = sys.argv[1:]
+    if argv[:1] == [ProgramTool.IDENTITIES]:
+        from boba.runtime.identities import main as identity_main  # noqa: PLC0415
+
+        asyncio.run(identity_main(argv[1:]))
+        return
+
     program = McpProgram()
     if not program.serves(argv):
         sys.exit(program.run(argv))

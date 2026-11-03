@@ -5,15 +5,20 @@
 from __future__ import annotations
 
 import asyncio
+import secrets
 from typing import Any
 
+import jwt
+import pytest
+
 from boba.auth import JwtTokens
+from boba.identity.principal import UserIdentity
 from boba.identity.session import Login
 from boba.identity.signin import SignedIn, SignInMetadata
 from boba.identity.token import CookieSpec
 from boba.runtime.http import StaleSessionMiddleware
 
-SECRET = "stale-session-secret"
+SECRET = secrets.token_urlsafe(32)
 COOKIE = "access_token"
 
 
@@ -27,11 +32,17 @@ class Outcome:
     def __init__(self) -> None:
         self.reached_app = False
         self.app_cookie = b""
+        self.app_authorization = b""
         self.status = 0
         self.headers: list[tuple[bytes, bytes]] = []
 
 
-def _run(generation: str, cookie_value: str | None) -> Outcome:
+def _run(
+    generation: str,
+    cookie_value: str | None,
+    authorization: str = "",
+    connection: str = "http",
+) -> Outcome:
     outcome = Outcome()
 
     async def app(scope: Any, receive: Any, send: Any) -> None:
@@ -39,6 +50,11 @@ def _run(generation: str, cookie_value: str | None) -> Outcome:
         for name, value in scope["headers"]:
             if name == b"cookie":
                 outcome.app_cookie = value
+            if name == b"authorization":
+                outcome.app_authorization = value
+
+        if scope["type"] == "websocket":
+            return
 
         await send({"type": "http.response.start", "status": 200, "headers": []})
         await send({"type": "http.response.body", "body": b""})
@@ -51,8 +67,11 @@ def _run(generation: str, cookie_value: str | None) -> Outcome:
     if cookie_value is not None:
         headers.append((b"cookie", f"{OTHER}; {COOKIE}={cookie_value}".encode()))
 
+    if authorization:
+        headers.append((b"authorization", authorization.encode()))
+
     scope: dict[str, Any] = {
-        "type": "http",
+        "type": connection,
         "method": "GET",
         "path": "/user",
         "headers": headers,
@@ -74,7 +93,11 @@ def _run(generation: str, cookie_value: str | None) -> Outcome:
 
 def _token(generation: str) -> str:
     signed = SignedIn(
-        identifier=Login("alice"), display_name="Alice", sign_in=SignInMetadata()
+        identifier=Login("corporate:alice"),
+        display_name="Alice",
+        sign_in=SignInMetadata(
+            identity=UserIdentity(realm="corporate", login=Login("alice"))
+        ),
     )
 
     return JwtTokens(SECRET, 60, generation).issue(signed)
@@ -104,13 +127,68 @@ def test_previous_generation_cookie_is_cleared_by_the_response() -> None:
     assert any(v.startswith(f"{COOKIE}=".encode()) for v in cleared), cleared
 
 
-def test_garbage_cookie_is_left_to_the_routes() -> None:
+def test_garbage_cookie_reaches_the_app_as_a_guest() -> None:
     outcome = _run("gen-a", "not-a-jwt")
 
     assert outcome.reached_app
+    assert outcome.app_cookie == OTHER.encode()
 
 
 def test_no_cookie_reaches_the_app() -> None:
     outcome = _run("gen-a", None)
 
     assert outcome.reached_app
+
+
+@pytest.mark.parametrize("identifier", ["alice", "corporate:alice"])
+@pytest.mark.parametrize("connection", ["http", "websocket"])
+def test_legacy_identity_is_dropped(identifier: str, connection: str) -> None:
+    token = jwt.encode(
+        {
+            "identifier": identifier,
+            "metadata": {"generation": "gen-a"},
+            "exp": 4102444800,
+        },
+        SECRET,
+        algorithm="HS256",
+    )
+    outcome = _run("gen-a", token, connection=connection)
+    assert outcome.reached_app
+    assert outcome.app_cookie == OTHER.encode()
+
+
+def test_lowercase_bearer_cannot_bypass_identity_check() -> None:
+    token = jwt.encode(
+        {
+            "identifier": "corporate:alice",
+            "metadata": {"generation": "gen-a"},
+            "exp": 4102444800,
+        },
+        SECRET,
+        algorithm="HS256",
+    )
+    outcome = _run("gen-a", None, authorization=f"bearer {token}")
+    assert outcome.reached_app
+    assert outcome.app_authorization == b""
+
+
+def test_websocket_keeps_current_identity() -> None:
+    outcome = _run("gen-a", _token("gen-a"), connection="websocket")
+    assert f"{COOKIE}=".encode() in outcome.app_cookie
+
+
+@pytest.mark.parametrize("connection", ["http", "websocket"])
+def test_invalid_claims_cannot_bypass_identity_validation(connection: str) -> None:
+    token = jwt.encode(
+        {
+            "identifier": "corporate:alice",
+            "metadata": {"generation": "gen-a"},
+            "exp": 4102444800,
+            "since": "invalid",
+        },
+        SECRET,
+        algorithm="HS256",
+    )
+    outcome = _run("gen-a", token, connection=connection)
+
+    assert outcome.app_cookie == OTHER.encode()

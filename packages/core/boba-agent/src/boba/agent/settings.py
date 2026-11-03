@@ -13,6 +13,7 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping, Sequence
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Literal
+from uuid import UUID
 
 from pydantic import (
     ConfigDict,
@@ -214,7 +215,7 @@ class PostgresHistorySettings(SettingsModel):
     """Журнал в Postgres: строка подключения libpq значением либо именем
     переменной окружения, таблица — в схеме из обязательного ключа `schema`,
     пул соединений — ключом `pool`.
-    `owner` — логин пользователя, от имени которого работает процесс: его
+    `userId` — UUID пользователя, от имени которого работает процесс: его
     ставит служба агента, и процесс видит только сессии этого пользователя;
     без ключа (запуск по stdio) процессу видны все сессии."""
 
@@ -223,7 +224,7 @@ class PostgresHistorySettings(SettingsModel):
     dsn_env: str | None = Field(default=None, min_length=1)
     db_schema: str = Field(min_length=1, alias="schema")
     pool: HistoryPoolSettings
-    owner: str | None = Field(default=None, min_length=1)
+    user_id: UUID | None = None
 
     @model_validator(mode="after")
     def _one_dsn_source(self) -> PostgresHistorySettings:

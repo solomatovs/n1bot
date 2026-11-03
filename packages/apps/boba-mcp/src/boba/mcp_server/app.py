@@ -12,29 +12,34 @@ SystemExit — конфиг не прочитан, сервис не подня�
     пробу готовности; текст называет причину.
 """
 
-from __future__ import annotations
-
 import argparse
 import logging
 import logging.config
 import signal
 import sys
-from collections.abc import Sequence
+from collections.abc import AsyncGenerator, Sequence
 from pathlib import Path
 from typing import Annotated, Self
 
 import uvicorn
-from mcp.shared.auth import OAuthClientInformationFull
 from pydantic import ConfigDict, Field, StringConstraints
 
+from boba.access import RoleConfig
 from boba.auth.credentials import NoRefresh
-from boba.auth.proxy import ProxyAssertions
+from boba.auth.proxy import ProxyAssertionVerifier
 from boba.cancellation import ProcessStop, StopReason
 from boba.config import ConfigLoader, bind
-from boba.connection_broker.crypto import SealKeys
-from boba.connection_broker.sealed import ServerConnection
+from boba.connection_broker.crypto import SecretCipher
+from boba.connection_broker.params import ServerConnection
+from boba.connection_broker.store import ConnectionStore
+from boba.connection_broker.tools import ConnectionTools
+from boba.connection_broker.user_connections import ArmedConnections
+from boba.connections.manifest import ConnectionTypes
+from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres.connection import PostgresConfig
 from boba.identity.context import CallContexts
 from boba.identity.run import Runs
+from boba.identity_postgres import UsersTable
 from boba.mcp_server.auth import ServiceMark
 from boba.mcp_server.server import (
     EndpointCatalog,
@@ -58,11 +63,12 @@ from boba.runtime.config import (
     ProgramCall,
     ProgramCommand,
     RawConfig,
+    ValueCipherConfig,
 )
-from boba.runtime.di import Container
+from boba.runtime.di import Container, Depends
 from boba.runtime.http import HealthProbe, SignalledServer
 from boba.runtime.launchers import ToolLaunchers
-from boba.runtime.storage import LocalStorageConfig, StorageFactory
+from boba.runtime.storage import StorageConfig, StorageFactory
 
 __all__ = ["McpAppConfig", "McpEntry", "McpHost", "McpSection"]
 
@@ -78,16 +84,16 @@ class McpSection(ServiceAddress):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    host: str = Field(min_length=1)
+    host: str = Field(default="127.0.0.1", min_length=1)
     port: int = Field(gt=0, lt=65536)
-    shutdown_timeout_sec: int = Field(gt=0)
+    shutdown_timeout_sec: int = Field(default=10, gt=0)
     """Сколько остановка ждёт, пока клиенты закроют соединения сами; дальше
     соединения рвутся, и сервис гасит запуски и зиготы. Без срока остановка
     ждала бы keep-alive соединений прокси бесконечно и не доходила до
     завершения запусков."""
     limits: RunLimits
     endpoints: dict[str, McpEndpoint] = Field(min_length=1)
-    clients: dict[str, TrustedClient]
+    clients: dict[str, TrustedClient] = Field(default_factory=dict)
     """Доверенные клиенты OAuth по client_id: им разрешён вход proxy."""
 
 
@@ -96,7 +102,12 @@ class McpAppConfig(ProcessConfig):
     заданные соединения сервера."""
 
     mcp: McpSection
-    storage: LocalStorageConfig
+    roles: dict[str, RoleConfig]
+    """Права инструментов по ролям; отсутствие гранта запрещает вызов."""
+    postgres: PostgresConfig
+    connection_store: ValueCipherConfig
+    """Ключ шифрования секретов каталога MCP, отдельный от подписи токенов."""
+    storage: StorageConfig
     """Хранилище workspace: туда пишут маршруты файлов и оттуда читают
     инструменты."""
     connections: dict[
@@ -104,7 +115,7 @@ class McpAppConfig(ProcessConfig):
         ServerConnection,
     ]
     """Заданные соединения сервера [connections.<имя>]: имя — идентификатор
-    без точек, поэтому его не спутать с запечатанным значением."""
+    с явной видимостью по ролям."""
 
     @classmethod
     def load(cls, paths: Sequence[Path]) -> Self:
@@ -114,6 +125,37 @@ class McpAppConfig(ProcessConfig):
         ToolLaunchers(RawConfig.get()).build().probe()
 
         return config
+
+
+async def mcp_pool(
+    config: Annotated[McpAppConfig, Depends(providers.get_process_config)],
+) -> AsyncGenerator[AsyncPostgresPool, None]:
+    """Один пул MCP для пользователей, ролей, соединений и грантов."""
+    pool = await AsyncPostgresPool.get(config.postgres)
+    try:
+        yield pool
+    finally:
+        await pool.close()
+
+
+def mcp_users(
+    config: Annotated[McpAppConfig, Depends(providers.get_process_config)],
+    pool: Annotated[AsyncPostgresPool, Depends(mcp_pool)],
+) -> UsersTable:
+    """Общая UsersTable в схеме MCP, без таблиц чата."""
+    return UsersTable(config.postgres, config.db_schema, pool)
+
+
+async def mcp_connections(
+    config: Annotated[McpAppConfig, Depends(providers.get_process_config)],
+    pool: Annotated[AsyncPostgresPool, Depends(mcp_pool)],
+    types: Annotated[ConnectionTypes, Depends(providers.connection_types)],
+) -> ConnectionStore:
+    """Тот же брокер, что у AID, но с данными и ключом экземпляра MCP."""
+    cipher = SecretCipher(config.connection_store.cipher.get_secret_value())
+    store = ConnectionStore(pool, config.db_schema, cipher, types)
+    await store.sync_roles(config.roles)
+    return store
 
 
 class StoppedRuns:
@@ -165,15 +207,22 @@ class McpHost:
         self._config = config
         self._container = Container(level="app")
         self._container.provide(providers.get_process_config, config)
-        self._container.provide(providers.seal_keys, SealKeys())
         self._container.provide(providers.server_connections, config.connections)
-        self._container.provide(providers.call_contexts, CallContexts())
+        contexts = CallContexts()
+        self._container.provide(providers.call_contexts, contexts)
+        resolver = ArmedConnections(
+            self._connection_store, providers.credential_source_ref, contexts
+        )
+        self._container.provide(providers.stored_connections, resolver)
+        catalog_tools = ConnectionTools(self._connection_store, contexts).build()
+        self._container.provide(providers.own_tools, catalog_tools)
         # сигнал «обнови билет входа» слушает страница чата: у сервиса её нет
         self._container.provide(providers.refresh_signal, NoRefresh())
-        # гранты и каталог профилей входа у сервиса — его endpoint'ы, а не
-        # профили чата; роль вошедшего решает только доступ к endpoint'у
+        # Endpoint ограничивает набор инструментов, роль — права внутри него.
         self._endpoints = EndpointCatalog(config.mcp.endpoints)
-        self._container.provide(providers.tool_grants, self._endpoints.grants())
+        self._container.provide(
+            providers.tool_grants, self._endpoints.grants(config.roles)
+        )
         self._container.provide(providers.profile_catalog, self._endpoints)
         self._container.eager(providers.connection_types)
         self._container.eager(providers.call_ambient)
@@ -182,9 +231,14 @@ class McpHost:
         self._container.eager(providers.credential_source)
         self._container.eager(providers.user_directory)
         self._container.eager(providers.sign_ins)
+        self._container.eager(mcp_users)
+        self._container.eager(mcp_connections)
         self._container.eager(providers.tool_launchers)
         self._container.eager(providers.plugin_kits)
         self._container.eager(providers.tool_registry)
+
+    def _connection_store(self) -> ConnectionStore:
+        return self._container.resolved(mcp_connections)
 
     async def serve(self) -> None:
         """Поднимает сервисы, слушает адрес секции [mcp] до остановки процесса
@@ -245,11 +299,7 @@ class McpHost:
             generation,
             ServiceMark.TOKEN_SALT,
         )
-        assertions = None
-        if proxy := self._config.proxy():
-            assertions = ProxyAssertions(
-                proxy.secret.get_secret_value(), proxy.max_skew_sec
-            )
+        assertions = ProxyAssertionVerifier(self._config.proxy_entries())
 
         sealed = SealedValues(session.auth_secret, ServiceMark.SEALED_SALT)
         resources: dict[str, str] = {}
@@ -264,17 +314,14 @@ class McpHost:
             self._clients(section, sealed),
             sealed,
             list(resources.values()),
+            users=self._container.resolved(mcp_users),
         )
 
         return ServiceAuth(public_url, server, tokens, ServiceMark.NAME, resources)
 
     def _clients(self, section: McpSection, sealed: SealedValues) -> RegisteredClients:
         """Клиенты OAuth: доверенные из [mcp.clients] и регистрирующиеся сами."""
-        declared: dict[str, OAuthClientInformationFull] = {}
-        for client_id, client in section.clients.items():
-            declared[client_id] = client.registered(client_id)
-
-        return RegisteredClients(sealed, declared)
+        return RegisteredClients(sealed, section.clients)
 
 
 class McpEntry:
@@ -295,6 +342,17 @@ class McpEntry:
                 await self.serve(call.paths)
             case ProgramCommand.HEALTH:
                 self.health(call.paths)
+            case ProgramCommand.MIGRATE:
+                from boba.runtime.migrate import (  # noqa: PLC0415 — служебный режим
+                    ApplicationMigrations,
+                )
+                from boba.runtime.plugins import PluginMigrations  # noqa: PLC0415
+
+                sources = PluginMigrations()
+                migration = ApplicationMigrations((sources,))
+                await migration.run(
+                    call.paths, ("boba.identity_postgres", "boba.connection_broker")
+                )
 
     async def serve(self, paths: Sequence[Path]) -> None:
         config = McpAppConfig.load(paths)

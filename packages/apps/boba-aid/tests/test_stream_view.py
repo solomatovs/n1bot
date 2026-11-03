@@ -1340,7 +1340,7 @@ class TestStreamDownload:
         app = FastAPI()
         app.add_api_route(StreamUrl.ROUTE, serving.serve, methods=["GET"])
         user = PersistedUser(
-            id=USER, identifier="tester", createdAt="2024-01-01T00:00:00Z"
+            id=USER, identifier="corporate:tester", createdAt="2024-01-01T00:00:00Z"
         )
         app.dependency_overrides[get_current_user] = lambda: user
         return app

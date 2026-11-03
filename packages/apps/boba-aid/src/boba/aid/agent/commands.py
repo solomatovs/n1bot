@@ -38,10 +38,9 @@ from acp.experimental.v2 import schema
 from mcp.shared.exceptions import MCPError
 
 from boba.aid.agent.relay import McpRegistration, McpRelay
+from boba.aid.mcp_servers import McpAppError
+from boba.aid.mcp_servers.catalog import McpConnectionCatalogs
 from boba.aid.rendering.tool import ElementName
-from boba.connection_broker.tools import GrantedConnections
-from boba.connection_broker.user_connections import StoreRef
-from boba.connections.stored import ConnectionStoreError
 from boba.core.commands import (
     CommandArgument,
     CommandArgumentsError,
@@ -50,7 +49,6 @@ from boba.core.commands import (
 )
 from boba.identity.errors import AuthenticationError
 from boba.mcp_client.client import McpClientError
-from boba.toolkit.result import MarkdownTable, NoteLine, TableResult
 from boba.transport.acp.protocol import (
     CommandApp,
     CommandElement,
@@ -183,9 +181,9 @@ class HarnessCommand(StrEnum):
 class HarnessCommands:
     """Команды самого чата: объявление агенту (CARDS) и обработчики; в меню
     они приходят из истории агента. connections — соединения, выданные
-    пользователю вкладки, таблицей во вкладке: тот же каталог хранилища
-    соединений чата (GrantedConnections), что модель читает инструментом
-    connection_list. Итог — markdown, каким его увидел пользователь. mcp —
+    пользователю вкладки, таблицей из API выданных MCP-серверов: тот же
+    connection_list, который вызывает модель. Итог — markdown, каким его
+    увидел пользователь. mcp —
     приложение MCP-серверов во вкладке: элемент McpServers, который сам
     спрашивает состояние серверов действиями чата, поэтому в истории лежит
     только его имя. Создаёт фабрика CommandMenus на реестр вкладки."""
@@ -202,9 +200,11 @@ class HarnessCommands:
     )
     TITLE: ClassVar[str] = "Your connections"
 
-    def __init__(self, registration: McpRegistration, store: StoreRef) -> None:
+    def __init__(
+        self, registration: McpRegistration, catalogs: McpConnectionCatalogs
+    ) -> None:
         self._registration = registration
-        self._connections = GrantedConnections(store)
+        self._catalogs = catalogs
 
     def declaration(self, session_id: str) -> SessionCommandsRequest:
         """Объявление команд чата агенту сессии session_id."""
@@ -239,46 +239,21 @@ class HarnessCommands:
             raise CommandError(msg) from exc
 
         try:
-            table = await self._connections.rows(subject)
-        except ConnectionStoreError as exc:
+            text = await self._catalogs.markdown(subject)
+        except McpAppError as exc:
             msg = (
                 f"The command /{call.name} did not run: your connections were "
                 f"not read: {exc}"
             )
             raise CommandError(msg) from exc
 
-        return CommandText(text=self._markdown(table))
+        return CommandText(text=f"**{self.TITLE}**\n\n{text}")
 
     async def _mcp_command(self, call: CommandCall) -> CommandElement:
         """Приложение MCP-серверов во вкладке: элемент McpServers, который
         сам спрашивает состояние серверов действиями чата."""
 
         return CommandElement(element=ElementName.MCP.value, props={})
-
-    def _markdown(self, table: TableResult) -> str:
-        rows: list[dict[str, str]] = []
-        for row in table.rows:
-            cells: dict[str, str] = {}
-            for key, value in row.items():
-                cells[key] = self._cell(value)
-
-            rows.append(cells)
-
-        parts = [f"**{self.TITLE}**"]
-        if rows:
-            parts.append(MarkdownTable.render(rows))
-
-        if table.note:
-            parts.append(NoteLine.render(table.note))
-
-        return "\n\n".join(parts)
-
-    @staticmethod
-    def _cell(value: object) -> str:
-        if value is None:
-            return ""
-
-        return str(value)
 
 
 class HarnessRoute(CommandRoute):
@@ -587,17 +562,17 @@ class CommandMenu:
 class CommandMenus:
     """Фабрика реестров команд вкладок: на вкладку — команды чата и маршруты
     от имени её пользователя. Создаётся провайдером процесса из серверов
-    MCP, ретранслятора и хранилища соединений чата; реестр создаёт агент
+    MCP, ретранслятора и каталогов MCP; реестр создаёт агент
     треда."""
 
-    def __init__(self, relay: McpRelay, store: StoreRef) -> None:
+    def __init__(self, relay: McpRelay, catalogs: McpConnectionCatalogs) -> None:
         self._relay = relay
-        self._store = store
+        self._catalogs = catalogs
 
     def menu(self, registration: McpRegistration, board: CommandBoard) -> CommandMenu:
         """Реестр вкладки регистрации registration (пользователь, тред,
         серверы профиля) над вкладкой board."""
-        harness = HarnessCommands(registration, self._store)
+        harness = HarnessCommands(registration, self._catalogs)
         routes = CommandRoutes(registration, self._relay, harness)
 
         return CommandMenu(board, routes, harness)

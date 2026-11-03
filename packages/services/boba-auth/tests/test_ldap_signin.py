@@ -14,7 +14,8 @@ from omegaconf import DictConfig
 
 from boba.auth.config import LdapAuthConfig
 from boba.config import bind
-from boba.identity.errors import AuthenticationError
+from boba.identity.errors import AuthenticationError, AuthorizationError
+from boba.identity.principal import IdentityRule
 from boba.identity.session import SignInProvider, UserLogin
 from boba.identity.signin import PasswordSignIn
 from boba.stand.signin import SignInStand
@@ -55,7 +56,10 @@ async def test_reader_signs_in_with_the_directory_password(raw_config: Any) -> N
     )
 
     assert signed is not None
-    assert signed.identifier == UserLogin.of(_reader_login()).key
+    expected = _ldap_config(raw_config).identity.identity(
+        UserLogin.of(_reader_login()).key
+    )
+    assert signed.identifier == expected.identifier
     assert signed.sign_in.provider == SignInProvider.LDAP.value
 
 
@@ -67,3 +71,21 @@ async def test_wrong_password_is_refused(raw_config: Any) -> None:
 async def test_unknown_login_is_refused(raw_config: Any) -> None:
     with pytest.raises(AuthenticationError):
         await _ldap_sign_in(raw_config).sign_in("nobody-here", "x")
+
+
+async def test_two_directories_are_separate_realms(raw_config: DictConfig) -> None:
+    office = _ldap_config(raw_config).model_copy(
+        update={"identity": IdentityRule(realm="office")}
+    )
+    partner = office.model_copy(update={"identity": IdentityRule(realm="partner")})
+    providers = SignInStand.assembly().password([office, partner])
+    assert providers is not None
+    password = STAND.reader_bind.password.get_secret_value()
+    with pytest.raises(AuthorizationError, match="select an identity realm"):
+        await providers.sign_in(_reader_login(), password)
+    first = await providers.sign_in(_reader_login(), password, "office")
+    second = await providers.sign_in(_reader_login(), password, "partner")
+    assert first is not None
+    assert second is not None
+    assert first.identifier == f"office:{_reader_login().lower()}"
+    assert second.identifier == f"partner:{_reader_login().lower()}"

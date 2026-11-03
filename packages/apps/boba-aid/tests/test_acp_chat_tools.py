@@ -1,19 +1,10 @@
-"""Чат исполняет инструменты своего агента: стенд aid, сервис boba-mcp
-стенда с плагином pg процессами хоста, настоящий `boba --stdio` v2 с фейковой
-моделью.
+"""AID, агент ACP и MCP отдельными процессами.
 
-Агент получает серверы профиля и сервер chat объявлениями type "acp" и зовёт
-их через mcp/message; ретранслятор чата запечатывает соединения и исполняет
-вызовы от имени пользователя вкладки, инструменты chat — в процессе чата.
-Проверяется ход «connection_list на сервере chat → pg_query на boba-mcp с
-именем соединения»: имя подменяется запечатанным профилем, сервис открывает
-его и исполняет запрос, в ленте остаётся имя; файл настроек агента не несёт
-ни серверов, ни хуков, ни токенов. auth_secret у чата и сервиса стенда
-разные: ход с запечатанным соединением и журнал вызова (resources/read,
-subscriptions/listen) от этого не зависят.
-Приёмка ретранслятора — настоящий агент и стенд boba-mcp со входом proxy:
-инструмента чужой роли нет у агента, остановка отменяет вызов на сервере,
-инструмент только для интерфейса агенту не виден и не вызывается."""
+Модель получает connection_list и pg_query от MCP; каталог, профиль и grants
+хранятся на сервере. AID передаёт имена без запечатывания, сохраняет шаги
+ленты, сообщения об ошибках и ход вложенных вызовов DAG. Отдельные сценарии
+проверяют OAuth, смену токенов и ограничения инструментов на MCP.
+"""
 
 from __future__ import annotations
 
@@ -273,18 +264,17 @@ class ToolSteps:
 
 
 class TestAgentTurn:
-    """Агент стенда зовёт connection_list на сервере chat и pg_query на boba-mcp."""
+    """Агент зовёт каталог и SQL на одном MCP, имена connections остаются строками."""
 
-    async def test_connection_list_then_sealed_pg_query(
+    async def test_connection_list_then_named_pg_query(
         self, app: StandProcess, tab: ChatSocket, probe: PostgresConfig
     ) -> None:
         companion = app.companion
         assert companion is not None
         since = app.log_lines()
-        service_since = companion.log_lines()
 
         calls = [
-            {"name": "mcp__chat__connection_list", "arguments": {}},
+            {"name": "mcp__aid_all__connection_list", "arguments": {}},
             {
                 "name": "mcp__aid_all__pg_query",
                 "arguments": {
@@ -313,18 +303,8 @@ class TestAgentTurn:
         assert not queried.get("isError"), (queried, companion.tail(80))
         assert "one" in str(queried.get("output")), queried
 
-        # запечатывает ретранслятор чата (CallSealing)
         app_log = _lines_since(app, since)
-        assert any(
-            f"sealing: connection {CONNECTION} of kind postgres sealed in connection "
-            "of mcp__aid_all__pg_query" in line
-            for line in app_log
-        ), "\n".join(app_log[-40:])
-
-        service_log = _lines_since(companion, service_since)
-        assert any(
-            "connection in connection (postgres)" in line for line in service_log
-        ), "\n".join(service_log[-40:])
+        assert not any("sealing: connection" in line for line in app_log)
 
         assert not app.complaints(since), app.complaints(since)
 
@@ -504,7 +484,7 @@ class SealedQueryTurn:
 
 class TestSeparateSessionSecrets:
     """auth_secret чата и сервиса на стенде разные: вход, вызов с
-    запечатанным соединением и журнал вызова (resources/read и
+    именем соединения и журнал вызова (resources/read и
     subscriptions/listen) работают — чат не предъявляет сервису ничего,
     подписанного своим auth_secret."""
 
@@ -659,7 +639,7 @@ class TestSignInOfTheAgent:
         assert not step.get("isError"), (step, companion.tail(60))
         assert "one" in str(step.get("output")), step
         log = companion.log_path.read_text(encoding="utf-8", errors="replace")
-        assert f"proxy sign-in [user={ADMIN}]" in log, log[-2000:]
+        assert f"proxy sign-in [user=aid-local:{ADMIN}]" in log, log[-2000:]
         assert f"[user={ServiceStand.AGENT_LOGIN}]" not in log
 
     async def test_local_signs_in_the_account_of_the_agent(
@@ -673,7 +653,7 @@ class TestSignInOfTheAgent:
         assert not step.get("isError"), (step, companion.tail(60))
         assert "one" in str(step.get("output")), step
         log = companion.log_path.read_text(encoding="utf-8", errors="replace")
-        assert f"sign-in [user={ServiceStand.AGENT_LOGIN}] [provider=" in log
+        assert f"sign-in [user=mcp-local:{ServiceStand.AGENT_LOGIN}] [provider=" in log
         assert "proxy sign-in" not in log, log[-2000:]
 
     async def test_chat_renews_the_expired_token_of_the_service(

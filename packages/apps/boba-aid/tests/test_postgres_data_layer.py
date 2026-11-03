@@ -5,12 +5,11 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
-from aid_stand import FixedServers, NoTabs, Seed
+from aid_stand import FixedServers, NoTabs, Seed, StandTokens
 from chainlit.step import StepDict
 from chainlit.types import Feedback as FeedbackPayload
 from chainlit.types import Pagination, ThreadFilter
 from chainlit.user import PersistedUser
-from chainlit.user import User as ChainlitUser
 
 from boba.aid.data.data_layer import PostgresDataLayer
 from boba.aid.data.remote_storage import FileOwners, RemoteStorageClient
@@ -38,21 +37,21 @@ pytestmark = pytest.mark.anyio
 
 async def test_create_and_get_user(layer: PostgresDataLayer):
     created = await layer.create_user(
-        ChainlitUser(identifier="alice", metadata={"k": "v"})
+        StandTokens.user(identifier="corporate:alice", metadata={"k": "v"})
     )
     if created is None:
         raise AssertionError("created is not None")
-    if created.identifier != "alice":
-        raise AssertionError('created.identifier == "alice"')
+    if created.identifier != "corporate:alice":
+        raise AssertionError('created.identifier == "corporate:alice"')
 
-    fetched = await layer.get_user("alice")
+    fetched = await layer.get_user("corporate:alice")
     if fetched is None:
         raise AssertionError("fetched is not None")
     if fetched.id != created.id:
         raise AssertionError("fetched.id == created.id")
 
-    if fetched.identifier != "alice":
-        raise AssertionError('fetched.identifier == "alice"')
+    if fetched.identifier != "corporate:alice":
+        raise AssertionError('fetched.identifier == "corporate:alice"')
 
     if await layer.get_user("does-not-exist") is not None:
         raise AssertionError('await layer.get_user("does-not-exist") is None')
@@ -66,22 +65,26 @@ async def test_identifier_case_cannot_split_a_user(layer: PostgresDataLayer):
     строку users, а не заводит двойника и не падает на индексе.
     """
     created = await layer.create_user(
-        ChainlitUser(identifier="maksimov.ma", metadata={"roles": ["DEV"]})
+        StandTokens.user(
+            identifier="corporate:maksimov.ma", metadata={"roles": ["DEV"]}
+        )
     )
     if created is None:
         raise AssertionError("created is not None")
 
-    again = await layer.create_user(ChainlitUser(identifier="Maksimov.MA"))
+    again = await layer.create_user(
+        StandTokens.user(identifier="corporate:Maksimov.MA")
+    )
     if again is None:
         raise AssertionError("second spelling is created")
 
     if again.id != created.id:
         raise AssertionError("second spelling merges into the same users row")
 
-    if again.identifier != "maksimov.ma":
+    if again.identifier != "corporate:maksimov.ma":
         raise AssertionError(f"persisted identifier is canonical: {again.identifier}")
 
-    fetched = await layer.get_user("MAKSIMOV.MA")
+    fetched = await layer.get_user("corporate:MAKSIMOV.MA")
     if fetched is None:
         raise AssertionError("lookup by another spelling finds the row")
 
@@ -101,11 +104,11 @@ async def test_partner_jwt_signs_in_as_the_canonical_user(
     monkeypatch.setattr(chainlit_data, "_data_layer", layer)
     monkeypatch.setattr(chainlit_data, "_data_layer_initialized", True)
 
-    first = await layer.create_user(ChainlitUser(identifier="ivanov.ii"))
+    first = await layer.create_user(StandTokens.user(identifier="corporate:ivanov.ii"))
     if first is None:
         raise AssertionError("first sign-in is created")
 
-    partner_token = create_jwt(ChainlitUser(identifier="Ivanov.II"))
+    partner_token = create_jwt(StandTokens.user(identifier="corporate:Ivanov.II"))
     user = await authenticate_user(partner_token)
 
     if not isinstance(user, PersistedUser):
@@ -114,7 +117,7 @@ async def test_partner_jwt_signs_in_as_the_canonical_user(
     if user.id != first.id:
         raise AssertionError("partner spelling signs in as the same users row")
 
-    if user.identifier != "ivanov.ii":
+    if user.identifier != "corporate:ivanov.ii":
         raise AssertionError(f"session identifier is canonical: {user.identifier}")
 
 
@@ -126,8 +129,8 @@ async def test_create_user_keeps_the_sign_in_label_on_the_caller(
     Из этого же объекта выпускается JWT сессии: стерев метку, вход остался бы
     без делегированных кредов, хотя тикет уже захвачен.
     """
-    user = ChainlitUser(
-        identifier="krb-label",
+    user = StandTokens.user(
+        identifier="corporate:krb-label",
         metadata={
             UserMetadataField.PROVIDER: "KerberosAuth",
             UserMetadataField.PRINCIPAL: "user@EXAMPLE.COM",
@@ -430,8 +433,8 @@ async def test_delete_thread_of_a_user_without_file_storage(
         bus=data_bus,
     )
     user = await bare.create_user(
-        ChainlitUser(
-            identifier="bare-user",
+        StandTokens.user(
+            identifier="corporate:bare-user",
             metadata={UserMetadataField.ROLES: ["dev"]},
         )
     )

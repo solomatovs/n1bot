@@ -5,7 +5,7 @@
 заголовком и каталогом; `session/delete` при занятом замке отвергается, без
 замка удаляет записи, повтор — успех; `session/fork` сессии, которую держит
 другой процесс, даёт наблюдателю свою сессию с той же беседой, и ход в ней
-идёт при занятом замке исходной. Процесс с владельцем (`history.owner`, его
+идёт при занятом замке исходной. Процесс с владельцем (`history.userId`, его
 пишет служба агента) не видит сессий другого владельца: список пуст,
 возобновление и ветка отвечают «нет такой сессии», удаление её не трогает.
 Процесс входит в Postgres билетом Kerberos из кэша тестового стенда: пути к
@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, ClassVar
+from uuid import UUID
 
 import pytest
 from acp.exceptions import RequestError
@@ -31,10 +32,14 @@ from test_cli_acp import (
 )
 
 from boba.agent.history import SessionId, StoredLine
-from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.db.postgres.connection import LibpqConnection, PostgresConfig
 from boba.db.postgres.connection.auth import KeytabAuth
 from boba.history.postgres import PostgresHistoryStore, SessionLocks
+from boba.identity.principal import UserIdentity
+from boba.identity.session import Login
+from boba.identity.signin import SignedIn, SignInMetadata
+from boba.identity_postgres import UsersTable
 from boba.krb import KerberosEnv, KerberosWorkspace
 from boba.stand.ui.fake_llm import ScenarioName
 from boba.transport.acp.protocol import (
@@ -55,6 +60,23 @@ class PostgresStand:
     def __init__(self, postgres: PostgresConfig, schema: str) -> None:
         self._postgres = postgres
         self._schema = schema
+        self._users: dict[str, UUID] = {}
+
+    async def prepare(self, pool: AsyncPostgresPool) -> None:
+        async with pool.connection() as conn:
+            await PostgresSchema(self._schema).apply_packages(
+                conn, ("boba.identity_postgres", "boba.history.postgres")
+            )
+        users = UsersTable(self._postgres, self._schema, pool)
+        for login in ("alice", "bob"):
+            identity = UserIdentity(realm="stand", login=Login(login))
+            signed = SignedIn(
+                identifier=identity.identifier,
+                display_name=login,
+                sign_in=SignInMetadata(identity=identity),
+            )
+            user = await users.ensure_user(signed)
+            self._users[login] = user.id
 
     def environment(self) -> dict[str, str]:
         auth = self._postgres.auth
@@ -86,7 +108,7 @@ class PostgresStand:
             "pool": {"minSize": 1, "maxSize": 4, "timeoutSec": 30},
         }
         if owner is not None:
-            history["owner"] = owner
+            history["userId"] = str(self._users[owner])
 
         document["history"] = history
 

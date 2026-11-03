@@ -18,11 +18,12 @@ ENV PROGRAM=/app/boba/${PROGRAM}
 
 COPY . /app/boba/
 
-RUN chmod -R go-w /app/boba && "$PROGRAM" ${CHECK} > /dev/null
+RUN chmod -R a+rX,go-w /app/boba
 
 WORKDIR /app
 EXPOSE ${PORT}
 USER ${BOBA_UID}:${BOBA_GID}
+RUN "$PROGRAM" ${CHECK} > /dev/null
 HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
     CMD "$PROGRAM" health --config /app/boba/conf/config.toml
 ENTRYPOINT ["/bin/sh", "-c", "exec \"$PROGRAM\" \"$@\"", "program"]

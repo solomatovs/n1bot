@@ -17,7 +17,7 @@ from test_cli_acp import AcpProcess, FakeModel, StandRegistration
 from test_cli_acp_postgres import PostgresStand
 
 from boba.config import bind
-from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.db.postgres.connection import PostgresConfig
 from boba.stand.database import TestDatabase
 from boba.stand.ui.fake_llm import ScenarioName
@@ -117,6 +117,10 @@ async def pool(postgres: PostgresConfig) -> AsyncIterator[AsyncPostgresPool]:
 async def schema(pool: AsyncPostgresPool) -> AsyncIterator[str]:
     """Своя схема истории на тест; после теста сносится."""
     name = f"acp_hist_{uuid.uuid4().hex[:12]}"
+    async with pool.connection() as conn:
+        await PostgresSchema(name).apply_packages(
+            conn, ("boba.identity_postgres", "boba.history.postgres")
+        )
     yield name
     async with pool.connection() as conn:
         await conn.execute(
@@ -125,5 +129,9 @@ async def schema(pool: AsyncPostgresPool) -> AsyncIterator[str]:
 
 
 @pytest.fixture
-def stand(postgres: PostgresConfig, schema: str) -> PostgresStand:
-    return PostgresStand(postgres, schema)
+async def stand(
+    postgres: PostgresConfig, schema: str, pool: AsyncPostgresPool
+) -> PostgresStand:
+    history = PostgresStand(postgres, schema)
+    await history.prepare(pool)
+    return history

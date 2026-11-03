@@ -8,7 +8,7 @@ from uuid import UUID
 
 import pytest
 from acp_stand import AppsHost
-from chainlit.user import User
+from aid_stand import StandTokens
 from psycopg import sql
 from pydantic import SecretStr
 
@@ -66,8 +66,8 @@ async def stored(
                 conn, files(package) / "schema", {}
             )
 
-    owner = await layer.create_user(User(identifier="mcp-owner"))
-    other = await layer.create_user(User(identifier="mcp-other"))
+    owner = await layer.create_user(StandTokens.user(identifier="corporate:mcp-owner"))
+    other = await layer.create_user(StandTokens.user(identifier="corporate:mcp-other"))
     assert owner is not None
     assert other is not None
     cipher = SecretCipher(app_config.connections.cipher.get_secret_value())

@@ -18,6 +18,7 @@ import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -27,6 +28,7 @@ from fastmcp.client.transports import StreamableHttpTransport
 from boba.auth.proxy import ProxyAssertions
 from boba.db.postgres.connection import PostgresConfig
 from boba.stand.database import TestDatabase
+from boba.stand.migrate import StandSchema
 from boba.stand.ui.database import run_blocking
 from boba.stand.ui.stand import ServiceStand, StandPlugins, StandPorts, StandProcess
 
@@ -99,20 +101,28 @@ def service(
         db_name=db_name,
         sandbox=True,
         plugins=StandPlugins.SANDBOXED,
+        db_schema=f"mcp_shutdown_{uuid4().hex[:12]}",
     )
+    config.write()
+    storage = StandSchema(
+        config.files.paths(config.app),
+        ("boba.identity_postgres", "boba.connection_broker"),
+    )
+    run_blocking(storage.create())
     process = StandProcess[ServiceStand](config=config, log_path=tmp_path / "mcp.log")
-    process.start(BOOT_SEC)
     try:
+        process.start(BOOT_SEC)
         yield process
     finally:
         process.stop()
+        run_blocking(storage.drop())
 
 
 def _token(public: str) -> str:
     """Токен пользователя стенда обменом утверждения доверенного клиента."""
     resource = f"{public}/{ENDPOINT}"
     assertion = ProxyAssertions(ServiceStand.PROXY_SECRET, 0).issue(
-        ServiceStand.CLIENT_ID, "ivanov", "ADM", public, resource
+        ServiceStand.CLIENT_ID, "corporate:ivanov", "ADM", public, resource
     )
     reply = httpx.post(
         f"{public}/token",

@@ -4,14 +4,14 @@
 конфиг экземпляра подключает ключом tool = ${toml_dir:…}, и программа
 плагина, которую исполняет способ запуска (boba.runtime.launchers). Сервер
 кода плагинов не импортирует: манифест он получает от программы данными,
-хранилище готовит её подкомандой setup, инструменты хоста собирает из
+план хранилища читает только команда migrate, инструменты хоста собирает из
 объявлений манифеста.
 
 Ошибки:
 RuntimeError — конфиг противоречит плагину: список инструментов секции
     называет то, чего плагин не объявил, способ запуска из [tool_launcher]
     не согласован с секциями (см. boba.runtime.launchers). Плагин, чья
-    программа не отдала манифест или не подготовила хранилище, на старте не
+    программа не отдала манифест, на старте не
     поднимается: остальные работают, причина — в журнале старта.
 ToolConfigError — служебному параметру инструмента нечего подставить либо
     вид соединения из манифеста серверу неизвестен.
@@ -28,21 +28,23 @@ from dataclasses import dataclass
 from typing import Any, ClassVar
 
 from omegaconf import DictConfig, OmegaConf
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 
-from boba.access import GrantCheck, ToolAccess, ToolGrants
-from boba.chat.profiles import ProfilesSection, RolesSection
+from boba.access import ToolAccess, ToolGrants
 from boba.config import ConfigError, bind
 from boba.connection_broker.tickets import SectionTickets, ServiceTickets
 from boba.core.types import StringList
-from boba.runtime.launchers import PluginLaunch, SectionLaunchers
+from boba.core.validation import ValidationText
+from boba.db.postgres.connection import PostgresConfig
+from boba.db.postgres.migrate import MigrationPlan, MigrationTarget
+from boba.runtime.launchers import PluginLaunch, SectionLaunchers, ToolLaunchers
 from boba.runtime.refs import ExecRefs
 from boba.toolkit.manifest import ToolDecl
 from boba.toolkit.ports import StreamSpecs
 from boba.toolrun.callvalues import CallContextValues
 from boba.toolrun.dev_null import DevNullTool
 from boba.toolrun.hosted import HostedTool, PluginSection, ToolHosting
-from boba.toolrun.injected import InjectedConfig, SectionArming
+from boba.toolrun.injected import InjectedConfig
 from boba.toolrun.registry import ToolChain, ToolRegistry
 from boba.toolrun.stream_calls import (
     StreamGroupsConfig,
@@ -50,7 +52,6 @@ from boba.toolrun.stream_calls import (
 )
 
 __all__ = [
-    "ConfigGrants",
     "PluginKit",
     "PluginKits",
     "PluginMeta",
@@ -138,21 +139,17 @@ class PluginKit:
 class PluginKits:
     """Комплекты плагинов процесса из его конфига.
 
-    Создаёт его провайдер процесса со способом запуска и довооружением
-    секций. load() получает манифесты включённых плагинов от их программ
-    одновременно и готовит хранилища тех, чей манифест объявил setup: секция
-    уезжает подкоманде с билетами вместо keytab-профилей. Плагин, которому
+    Создаёт его провайдер процесса со способом запуска. load() получает
+    манифесты включённых плагинов от их программ одновременно. Таблицы
+    подготавливает отдельная команда migrate. Плагин, которому
     не хватило файла его конфига (программы, корня, каталога данных) или
     чья подкоманда сорвалась, исключается с ошибкой в журнале — сервер
     стартует с остальными.
     """
 
-    def __init__(
-        self, raw: DictConfig, launchers: SectionLaunchers, arming: SectionArming
-    ) -> None:
+    def __init__(self, raw: DictConfig, launchers: SectionLaunchers) -> None:
         self._sections = PluginSections(raw)
         self._launchers = launchers
-        self._arming = arming
 
     async def load(self) -> dict[str, PluginKit]:
         ids = list(self._sections.ids())
@@ -195,20 +192,55 @@ class PluginKits:
             section = PluginSection(
                 values=values, connections=manifest.connections_in_config
             )
-            await self._set_up(launch, section)
         except (RuntimeError, ConfigError) as exc:
             logger.error("plugin %s is not started: %s", plugin_id, exc)
             return None
 
         return PluginKit(launch=launch, meta=meta, section=section)
 
-    async def _set_up(self, launch: PluginLaunch, section: PluginSection) -> None:
-        if not launch.manifest.setup:
-            return
 
-        armed = await self._arming.armed(launch.id, section)
-        await asyncio.to_thread(self._launchers.setup, launch, armed)
-        logger.info("plugin %s: storage is ready", launch.id)
+class PluginMigrations:
+    """Читает SQL-планы включённых плагинов для migrate MCP и тестовых баз.
+
+    Способы запуска исполняют только migration-plan; подключение к БД
+    остаётся у общего мигратора. Boba и AID этот компонент не подключают.
+    """
+
+    async def targets(self, raw: DictConfig) -> Sequence[MigrationTarget]:
+        targets: list[MigrationTarget] = []
+        sections = PluginSections(raw)
+        launchers = ToolLaunchers(raw).build()
+        try:
+            launchers.probe()
+            for plugin in sections.ids():
+                if not sections.meta(plugin).enable:
+                    continue
+
+                values = sections.values(plugin)
+                manifest = await asyncio.to_thread(
+                    launchers.manifest_of, plugin, values
+                )
+                if not manifest.setup:
+                    continue
+
+                launch = PluginLaunch(manifest, values)
+                document = await asyncio.to_thread(
+                    launchers.migration_of, launch, values
+                )
+                try:
+                    storage = MigrationPlan.model_validate_json(document)
+                except ValidationError as exc:
+                    reason = ValidationText.of(exc)
+                    msg = f"plugin {plugin}: invalid migration plan: {reason}"
+                    raise ConfigError(msg) from exc
+
+                connection = bind(
+                    OmegaConf.create(values), storage.connection, PostgresConfig
+                )
+                targets.append(MigrationTarget(connection, storage))
+        finally:
+            launchers.stop()
+        return targets
 
 
 class ToolLoader:
@@ -242,7 +274,7 @@ class ToolLoader:
         self._ambient = refs.ambient
         self._drain = DevNullTool(refs.ambient)
         self._hosting = ToolHosting()
-        self._sealed = refs.connection_params
+        self._connection_params = refs.connection_params
         """Соединения инструментов: обвязки параметров-соединений, правило
         аргументов узлов и возможность сервера с ключом."""
         tickets = SectionTickets(
@@ -253,7 +285,11 @@ class ToolLoader:
             refs.journals,
             refs.contexts,
             refs.ambient,
-            (CallContextValues(refs.contexts), self._sealed, InjectedConfig(tickets)),
+            (
+                CallContextValues(refs.contexts),
+                self._connection_params,
+                InjectedConfig(tickets),
+            ),
         )
         self._grants = grants
 
@@ -262,7 +298,7 @@ class ToolLoader:
         specs = StreamSpecs({})
         for plugin_id, kit in self._kits.items():
             meta = kit.meta
-            self._sealed.listed(meta.connections)
+            self._connection_params.listed(meta.connections)
 
             launcher = self._launchers.launcher_of(
                 kit.launch, self._contexts, self._ambient
@@ -298,7 +334,7 @@ class ToolLoader:
             access=access,
             stream_config=self._stream_cfg,
             own=frozenset(own),
-            node_args=(self._sealed,),
+            node_args=(self._connection_params,),
             specs=specs,
             ambient=self._ambient,
         )
@@ -394,21 +430,3 @@ class ToolLoader:
                 continue
 
             yield from meta.tools
-
-
-class ConfigGrants:
-    """Гранты приложения с профилями чата: секции [roles.*] и [profiles.*].
-
-    Создаётся сборкой приложения (провайдер tool_grants, загрузчик чата) из
-    сырого конфига; приложение с другим источником грантов собирает
-    ToolGrants само.
-    """
-
-    def __init__(self, raw_config: DictConfig) -> None:
-        self._raw = raw_config
-
-    def grants(self, check: GrantCheck) -> ToolGrants:
-        roles = bind(self._raw, "roles", RolesSection).root
-        profiles = bind(self._raw, "profiles", ProfilesSection).root
-
-        return ToolGrants(roles=roles, profiles=profiles, check=check)

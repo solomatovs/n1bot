@@ -1,10 +1,4 @@
-"""Старт плагинов с таблицами: хранилище готовит подкоманда setup программы
-плагина по секции, где keytab-профиль заменён билетом вызова.
-
-Таблицы kb создаёт setup в песочнице плагина; boba-mcp на базе без
-расширения vector выходит с ошибкой, которая называет плагин, базу и
-недостающие расширения, а не висит: база из template0 расширений не несёт, а
-создать их может только суперпользователь.
+"""MCP: явная миграция хранилища и планы плагинов без DDL при старте.
 
 pytest -m integration.
 """
@@ -12,7 +6,6 @@ pytest -m integration.
 from __future__ import annotations
 
 import asyncio
-import subprocess
 import sys
 from collections.abc import AsyncIterator, Iterable, Iterator, Sequence
 from pathlib import Path
@@ -23,12 +16,10 @@ import pytest
 from omegaconf import DictConfig
 from psycopg import sql
 
-from boba.auth.credentials import KerberosCredentialSource, NoRefresh
-from boba.connection_broker.tickets import SectionTickets, ServiceTickets
-from boba.connections.manifest import ConnectionTypes
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.runtime.plugins import PluginKits
+from boba.stand.migrate import StandMigrations
 from boba.stand.names import StandNames
 from boba.stand.overlay import ConfigOverlay
 from boba.stand.refs import StandRefs
@@ -39,8 +30,6 @@ pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 EXIT_SEC = 90.0
 """Срок ожидания: импорты сервиса и старт плагинов."""
-START_MARK = "plugin kb is not started"
-"""Строка журнала, по которой видно, что старт kb разобран."""
 
 
 class BareDatabase:
@@ -118,11 +107,9 @@ async def bare_database(stand_postgres: PostgresConfig) -> AsyncIterator[str]:
         await database.drop()
 
 
-async def test_service_without_vector_leaves_kb_out_naming_the_extensions(
+async def test_migrate_reports_missing_extension_permissions(
     tmp_path: Path, bare_database: str
 ) -> None:
-    """Хранилище kb не готовится в базе без расширений: kb не поднимается, а
-    журнал старта называет базу и расширения; сервис стартует без него."""
     config = ServiceStand(
         workdir=tmp_path,
         app_port=StandPorts().free(),
@@ -131,70 +118,35 @@ async def test_service_without_vector_leaves_kb_out_naming_the_extensions(
         plugins=("kb",),
     )
     config.write()
-    log_path = tmp_path / "mcp.log"
     command = [
         sys.executable,
         "-m",
         StandApp.MCP.module,
-        *config.files.arguments(StandApp.MCP),
+        "migrate",
+        *config.files.arguments(StandApp.MCP)[1:],
     ]
-
-    with log_path.open("wb") as log:
-        process = subprocess.Popen(
-            command,
-            env=config.env(),
-            cwd=str(REPO_ROOT),
-            stdout=log,
-            stderr=subprocess.STDOUT,
-        )
-        try:
-            output = await _logged(log_path, process, START_MARK)
-        finally:
-            process.kill()
-            process.wait()
-
-    tail = "\n".join(output.splitlines()[-40:])
-    assert "plugin kb is not started" in output, tail
-    assert "plugin kb: `setup`" in output, tail
-    assert "preparing its storage failed" in output, tail
-    assert f"/{bare_database}" in output, tail
-    assert "vector, pg_trgm, unaccent, btree_gin must exist" in output, tail
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        env=config.env(),
+        cwd=str(REPO_ROOT),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, error = await asyncio.wait_for(process.communicate(), EXIT_SEC)
+    text = error.decode()
+    assert process.returncode != 0
+    assert "vector" in text
+    assert "permission" in text
 
 
-async def _logged(path: Path, process: subprocess.Popen[bytes], mark: str) -> str:
-    """Журнал процесса, как только в нём появилась строка mark; процесс,
-    вышедший раньше, или срок EXIT_SEC — отказ с хвостом журнала."""
-    deadline = asyncio.get_running_loop().time() + EXIT_SEC
-    while asyncio.get_running_loop().time() < deadline:
-        output = path.read_text(encoding="utf-8", errors="replace")
-        if mark in output:
-            return output
-
-        if process.poll() is not None:
-            tail = "\n".join(output.splitlines()[-40:])
-            msg = f"boba-mcp exited with {process.returncode} before {mark!r}:\n{tail}"
-            raise AssertionError(msg)
-
-        await asyncio.sleep(0.5)
-
-    tail = "\n".join(path.read_text(errors="replace").splitlines()[-40:])
-    msg = f"boba-mcp did not log {mark!r} in {EXIT_SEC}s:\n{tail}"
-    raise AssertionError(msg)
-
-
-def _credentials() -> KerberosCredentialSource:
-    return KerberosCredentialSource(None, NoRefresh())
-
-
-async def test_setup_in_the_sandbox_creates_the_kb_tables(
+async def test_start_has_no_ddl_and_sandbox_returns_a_migration_plan(
     runtime_stand: StandRefs,
     raw_config: DictConfig,
     config_overlay: ConfigOverlay,
     test_database: str,
     test_postgres: PostgresConfig,
 ) -> None:
-    """kb объявил setup: на старте его программа в песочнице создаёт таблицы
-    в своей схеме, keytab-профиль уехал туда билетом вызова."""
+    """Загрузка плагина не создаёт таблицы; отдельный план исполняет мигратор."""
     schema = StandNames().of_tree("kb_setup")
     changes = ToolSetup.sandbox_changes()
     changes["tool.kb.connection.dbname"] = test_database
@@ -203,7 +155,6 @@ async def test_setup_in_the_sandbox_creates_the_kb_tables(
         changes[f"tool.{plugin_id}.enable"] = plugin_id == "kb"
 
     raw = config_overlay.tree(changes)
-    arming = SectionTickets(ServiceTickets(_credentials), ConnectionTypes.discover)
 
     async with await AsyncPostgresPool.dedicated(test_postgres) as conn:
         await conn.execute(
@@ -211,8 +162,21 @@ async def test_setup_in_the_sandbox_creates_the_kb_tables(
         )
 
     try:
-        kits = await PluginKits(raw, runtime_stand.launchers(raw), arming).load()
-        assert kits["kb"].launch.manifest.setup
+        kits = await PluginKits(raw, runtime_stand.launchers(raw)).load()
+        launch = kits["kb"].launch
+        assert launch.manifest.setup
+        async with await AsyncPostgresPool.dedicated(test_postgres) as conn:
+            cursor = await conn.execute(
+                "select table_name from information_schema.tables"
+                " where table_schema = %s",
+                (schema,),
+            )
+            assert await cursor.fetchall() == []
+        launchers = runtime_stand.launchers(raw)
+        document = await asyncio.to_thread(
+            launchers.migration_of, launch, launch.section
+        )
+        await StandMigrations().storage(test_postgres, document)
 
         async with await AsyncPostgresPool.dedicated(test_postgres) as conn:
             cursor = await conn.execute(

@@ -29,7 +29,6 @@ import sys
 import time
 from collections.abc import AsyncIterator, Iterator, Sequence
 from enum import StrEnum
-from importlib.resources import files
 from pathlib import Path
 from secrets import token_bytes
 from typing import Any, ClassVar
@@ -57,8 +56,6 @@ from boba.aid.agent.chat import (
     ThreadIdentity,
 )
 from boba.aid.agent.commands import CommandIcon, MenuCommand
-from boba.aid.agent.relay import ChatTools
-from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.chat.profiles import ChatProfileConfig, SelectedProfile
 from boba.connection_broker.crypto import SecretCipher
 from boba.connection_broker.store import ConnectionStore
@@ -66,7 +63,6 @@ from boba.connections.manifest import ConnectionTypes
 from boba.connections.stored import GrantTarget, StoredRole
 from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.db.postgres.connection import PostgresConfig
-from boba.identity.context import CallContexts
 from boba.mcp_client.client import (
     FixedServerConfigs,
     HttpEndpoint,
@@ -184,7 +180,7 @@ class HttpStandard:
 
 @pytest.fixture
 def extended() -> Iterator[HttpStandard]:
-    server = HttpStandard(["--commands"])
+    server = HttpStandard(["--commands", "--catalog"])
     server.start()
     try:
         yield server
@@ -202,9 +198,10 @@ async def threads(
     pool: AsyncPostgresPool, test_postgres: PostgresConfig
 ) -> ThreadsTable:
     """Таблица тредов в схеме теста: в threads.meta агент вкладки помнит сессию."""
-    runtime_schema = files("boba.runtime") / "schema"
     async with pool.connection() as conn:
-        await PostgresSchema(SCHEMA).apply_files(conn, runtime_schema, {})
+        await PostgresSchema(SCHEMA).apply_packages(
+            conn, ("boba.identity_postgres", "boba.runtime")
+        )
 
     return ThreadsTable(test_postgres, SCHEMA)
 
@@ -212,9 +209,10 @@ async def threads(
 @pytest.fixture
 async def store(pool: AsyncPostgresPool) -> ConnectionStore:
     """Соединения чата в схеме теста; роль dev вкладки известна хранилищу."""
-    schema_dir = files("boba.connection_broker") / "schema"
     async with pool.connection() as conn:
-        await PostgresSchema(CONNECTIONS_SCHEMA).apply_files(conn, schema_dir, {})
+        await PostgresSchema(CONNECTIONS_SCHEMA).apply_packages(
+            conn, ("boba.identity_postgres", "boba.connection_broker")
+        )
 
     cipher = SecretCipher(token_bytes(32))
     built = ConnectionStore(
@@ -242,8 +240,7 @@ class CommandsTab:
         store: ConnectionStore,
         thread_id: str,
     ) -> None:
-        credentials = KerberosCredentialSource(None, NoRefresh())
-        relays = RelayStand(lambda: store, lambda: credentials, CallContexts())
+        relays = RelayStand()
         self.servers = McpServers(servers)
         self.history = AgentHistoryStand(stand)
         agent_stand = AgentStand(root / "agents", self.history.history())
@@ -272,7 +269,7 @@ class CommandsTab:
         )
         self._launcher = launcher
         self.meta = AgentSessionMeta(threads)
-        self._menus = relays.menus(self.servers)
+        self._menus = relays.menus(self.servers, FixedServers(servers.servers))
         self.menus = self._menus
         self.updates = RecordingUpdates()
         self.agent = self.opened(self.updates)
@@ -553,7 +550,7 @@ class TestMenu:
         список, команд, которые исполняет вкладка, нет, и любой вызов уходит
         агенту вопросом; объявлять команды чата некуда."""
         updates = RecordingUpdates()
-        registration = tab.identity.registration(ChatTools.NAME)
+        registration = tab.identity.registration("")
         menu = tab.menus.menu(registration, updates)
         greet = f"mcp__{EXTENDED}__greet"
         listed = schema.AvailableCommandsUpdate(
@@ -684,7 +681,8 @@ class TestRoutes:
         shown = outcome_of(tab.updates, "connections")
         assert isinstance(shown, CommandText)
         assert shown.text.startswith("**Your connections**"), shown
-        assert name in shown.text, shown
+        assert "remote-orders" in shown.text, shown
+        assert name not in shown.text, shown
 
     async def test_mcp_opens_the_app_and_records_the_outcome(
         self, tab: CommandsTab

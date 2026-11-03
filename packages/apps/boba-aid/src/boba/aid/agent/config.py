@@ -54,7 +54,7 @@ class AgentCommandConfig(BaseModel):
     каталога данных экземпляра. Всё, что агент знает о работе, ему несёт файл
     настроек; окружение ребёнка — минимальный набор SDK."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, validate_default=True)
 
     command: str = Field(
         min_length=1,
@@ -64,12 +64,16 @@ class AgentCommandConfig(BaseModel):
         ),
     )
     args: Sequence[str] = Field(
-        description="Аргументы до `--settings <файл>`: подкомандa acp и её ключи."
+        default=("--stdio",),
+        description="Аргументы запуска ACP до `--settings <файл>`.",
     )
     start_timeout_sec: float = Field(
-        gt=0, description="Сколько ждать рукопожатия initialize после запуска."
+        default=30,
+        gt=0,
+        description="Сколько ждать рукопожатия initialize после запуска.",
     )
     request_timeout_sec: float = Field(
+        default=120,
         gt=0,
         description=(
             "Сколько ждать ответа агента на метод сессии (new, resume, fork, "
@@ -79,7 +83,9 @@ class AgentCommandConfig(BaseModel):
         ),
     )
     stop_timeout_sec: float = Field(
-        gt=0, description="Сколько ждать выхода процесса после конца ввода."
+        default=10,
+        gt=0,
+        description="Сколько ждать выхода процесса после конца ввода.",
     )
 
     @field_validator("command")
@@ -110,7 +116,7 @@ class AgentServiceConfig(BaseModel):
     неё proxy от имени пользователя вкладки и выбирает профиль агента
     настройкой сессии `model` по имени профиля чата."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, validate_default=True)
 
     endpoint: HttpRoute = Field(
         description=(
@@ -126,9 +132,12 @@ class AgentServiceConfig(BaseModel):
         )
     )
     start_timeout_sec: float = Field(
-        gt=0, description="Сколько ждать входа и рукопожатия initialize."
+        default=60,
+        gt=0,
+        description="Сколько ждать входа и рукопожатия initialize.",
     )
     request_timeout_sec: float = Field(
+        default=120,
         gt=0,
         description=(
             "Сколько ждать ответа службы на метод сессии. Вопрос (prompt) ждёт "
@@ -138,6 +147,7 @@ class AgentServiceConfig(BaseModel):
         ),
     )
     silence_timeout_sec: float = Field(
+        default=60,
         gt=SSE_KEEPALIVE_INTERVAL_SECONDS,
         description=(
             "Сколько может молчать поток событий службы, прежде чем чат сочтёт "
@@ -187,7 +197,7 @@ class MemoryAgentHistory(BaseModel):
     """История только в памяти процесса агента: без хранилища `session/resume`
     отдаёт пустую беседу."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, validate_default=True)
 
     kind: Literal[AgentHistoryKind.MEMORY]
 
@@ -200,9 +210,10 @@ AgentHistoryConfig = Annotated[
 class AgentLimitsConfig(BaseModel):
     """Секция [agent.limits]: пределы хода агента, которые задаёт чат."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, validate_default=True)
 
     tool_result_window_share: float = Field(
+        default=0.25,
         gt=0,
         le=1,
         description=(
@@ -216,22 +227,23 @@ class AgentToolsConfig(BaseModel):
     """Секция [agent.tools]: какие инструменты модель агента получает полным
     определением с первого запроса."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, validate_default=True)
 
     always_load: Sequence[str] = Field(
+        default=(),
         description=(
             "Полные имена инструментов, как их видит модель "
             "(mcp__<сервер>__<инструмент>), которые уходят модели сразу; "
             "остальные отложены — модель видит их имена и загружает "
             "инструментом ToolSearch. Пустой список — всё через ToolSearch."
-        )
+        ),
     )
 
 
 class AgentConfig(BaseModel):
     """Секция [agent]: всё, что чат aid знает об агенте и о себе для него."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, validate_default=True)
 
     process: AgentCommandConfig | AgentServiceConfig = Field(
         description=(
@@ -240,20 +252,13 @@ class AgentConfig(BaseModel):
         )
     )
     history: AgentHistoryConfig
-    tools: AgentToolsConfig
-    limits: AgentLimitsConfig
+    tools: AgentToolsConfig = Field(default_factory=AgentToolsConfig)
+    limits: AgentLimitsConfig = Field(default_factory=AgentLimitsConfig)
     public_url: str = Field(
         min_length=1,
         description=(
             "Адрес чата aid: схема, хост, порт и префикс приложения. По нему "
             "агент берёт вложения сообщений пользователя."
-        ),
-    )
-    seal_ttl_sec: int = Field(
-        gt=0,
-        description=(
-            "Срок годности соединения, запечатанного ретранслятором для сервера "
-            "инструментов, в секундах: сервер отвергает значение старше срока."
         ),
     )
     question_timeout_sec: int = Field(

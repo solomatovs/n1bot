@@ -211,19 +211,7 @@
        "connection": {
         "type": "string",
         "x-boba-connection": "postgres",
-        "description": "Name of the postgres connection to use. Pass the name of one of your own connections, the client seals it.",
-        "contentMediaType": "application/jose",
-        "contentSchema": {
-         "type": "object",
-         "properties": {
-          "kind": {
-           "const": "postgres"
-          }
-         },
-         "required": [
-          "kind"
-         ]
-        }
+        "description": "Name of the postgres connection to use. Find available connections with connection_list or connection_search. The server checks your grants on every call."
        },
        "statement": {
         "type": "string"
@@ -480,19 +468,7 @@
        "connection": {
         "type": "string",
         "x-boba-connection": "postgres",
-        "description": "Name of the postgres connection to use. Pass the name of one of your own connections, the client seals it.",
-        "contentMediaType": "application/jose",
-        "contentSchema": {
-         "type": "object",
-         "properties": {
-          "kind": {
-           "const": "postgres"
-          }
-         },
-         "required": [
-          "kind"
-         ]
-        }
+        "description": "Name of the postgres connection to use. Find available connections with connection_list or connection_search. The server checks your grants on every call."
        },
        "statement": {
         "type": "string"
@@ -757,19 +733,7 @@
        "connection": {
         "type": "string",
         "x-boba-connection": "postgres",
-        "description": "Name of the postgres connection to use. Pass the name of one of your own connections, the client seals it.",
-        "contentMediaType": "application/jose",
-        "contentSchema": {
-         "type": "object",
-         "properties": {
-          "kind": {
-           "const": "postgres"
-          }
-         },
-         "required": [
-          "kind"
-         ]
-        }
+        "description": "Name of the postgres connection to use. Find available connections with connection_list or connection_search. The server checks your grants on every call."
        },
        "statement": {
         "type": "string"
@@ -1043,19 +1007,7 @@
        "connection": {
         "type": "string",
         "x-boba-connection": "postgres",
-        "description": "Name of the postgres connection to use. Pass the name of one of your own connections, the client seals it.",
-        "contentMediaType": "application/jose",
-        "contentSchema": {
-         "type": "object",
-         "properties": {
-          "kind": {
-           "const": "postgres"
-          }
-         },
-         "required": [
-          "kind"
-         ]
-        }
+        "description": "Name of the postgres connection to use. Find available connections with connection_list or connection_search. The server checks your grants on every call."
        },
        "statement": {
         "type": "string"
@@ -1308,19 +1260,7 @@
        "connection": {
         "type": "string",
         "x-boba-connection": "postgres",
-        "description": "Name of the postgres connection to use. Pass the name of one of your own connections, the client seals it.",
-        "contentMediaType": "application/jose",
-        "contentSchema": {
-         "type": "object",
-         "properties": {
-          "kind": {
-           "const": "postgres"
-          }
-         },
-         "required": [
-          "kind"
-         ]
-        }
+        "description": "Name of the postgres connection to use. Find available connections with connection_list or connection_search. The server checks your grants on every call."
        },
        "statement": {
         "type": "string"
@@ -1586,19 +1526,7 @@
        "connection": {
         "type": "string",
         "x-boba-connection": "postgres",
-        "description": "Name of the postgres connection to use. Pass the name of one of your own connections, the client seals it.",
-        "contentMediaType": "application/jose",
-        "contentSchema": {
-         "type": "object",
-         "properties": {
-          "kind": {
-           "const": "postgres"
-          }
-         },
-         "required": [
-          "kind"
-         ]
-        }
+        "description": "Name of the postgres connection to use. Find available connections with connection_list or connection_search. The server checks your grants on every call."
        },
        "statement": {
         "type": "string"
@@ -1849,19 +1777,7 @@
        "connection": {
         "type": "string",
         "x-boba-connection": "postgres",
-        "description": "Name of the postgres connection to use. Pass the name of one of your own connections, the client seals it.",
-        "contentMediaType": "application/jose",
-        "contentSchema": {
-         "type": "object",
-         "properties": {
-          "kind": {
-           "const": "postgres"
-          }
-         },
-         "required": [
-          "kind"
-         ]
-        }
+        "description": "Name of the postgres connection to use. Find available connections with connection_list or connection_search. The server checks your grants on every call."
        },
        "statement": {
         "type": "string"
@@ -2116,19 +2032,7 @@
        "connection": {
         "type": "string",
         "x-boba-connection": "postgres",
-        "description": "Name of the postgres connection to use. Pass the name of one of your own connections, the client seals it.",
-        "contentMediaType": "application/jose",
-        "contentSchema": {
-         "type": "object",
-         "properties": {
-          "kind": {
-           "const": "postgres"
-          }
-         },
-         "required": [
-          "kind"
-         ]
-        }
+        "description": "Name of the postgres connection to use. Find available connections with connection_list or connection_search. The server checks your grants on every call."
        },
        "statement": {
         "type": "string"
@@ -2381,19 +2285,7 @@
        "connection": {
         "type": "string",
         "x-boba-connection": "postgres",
-        "description": "Name of the postgres connection to use. Pass the name of one of your own connections, the client seals it.",
-        "contentMediaType": "application/jose",
-        "contentSchema": {
-         "type": "object",
-         "properties": {
-          "kind": {
-           "const": "postgres"
-          }
-         },
-         "required": [
-          "kind"
-         ]
-        }
+        "description": "Name of the postgres connection to use. Find available connections with connection_list or connection_search. The server checks your grants on every call."
        },
        "statement": {
         "type": "string"
@@ -2659,19 +2551,7 @@
        "connection": {
         "type": "string",
         "x-boba-connection": "postgres",
-        "description": "Name of the postgres connection to use. Pass the name of one of your own connections, the client seals it.",
-        "contentMediaType": "application/jose",
-        "contentSchema": {
-         "type": "object",
-         "properties": {
-          "kind": {
-           "const": "postgres"
-          }
-         },
-         "required": [
-          "kind"
-         ]
-        }
+        "description": "Name of the postgres connection to use. Find available connections with connection_list or connection_search. The server checks your grants on every call."
        },
        "statement": {
         "type": "string"
@@ -2922,19 +2802,7 @@
        "connection": {
         "type": "string",
         "x-boba-connection": "postgres",
-        "description": "Name of the postgres connection to use. Pass the name of one of your own connections, the client seals it.",
-        "contentMediaType": "application/jose",
-        "contentSchema": {
-         "type": "object",
-         "properties": {
-          "kind": {
-           "const": "postgres"
-          }
-         },
-         "required": [
-          "kind"
-         ]
-        }
+        "description": "Name of the postgres connection to use. Find available connections with connection_list or connection_search. The server checks your grants on every call."
        },
        "statement": {
         "type": "string"
@@ -3217,19 +3085,7 @@
        "connection": {
         "type": "string",
         "x-boba-connection": "postgres",
-        "description": "Name of the postgres connection to use. Pass the name of one of your own connections, the client seals it.",
-        "contentMediaType": "application/jose",
-        "contentSchema": {
-         "type": "object",
-         "properties": {
-          "kind": {
-           "const": "postgres"
-          }
-         },
-         "required": [
-          "kind"
-         ]
-        }
+        "description": "Name of the postgres connection to use. Find available connections with connection_list or connection_search. The server checks your grants on every call."
        },
        "statement": {
         "type": "string"
@@ -3520,19 +3376,7 @@
        "connection": {
         "type": "string",
         "x-boba-connection": "postgres",
-        "description": "Name of the postgres connection to use. Pass the name of one of your own connections, the client seals it.",
-        "contentMediaType": "application/jose",
-        "contentSchema": {
-         "type": "object",
-         "properties": {
-          "kind": {
-           "const": "postgres"
-          }
-         },
-         "required": [
-          "kind"
-         ]
-        }
+        "description": "Name of the postgres connection to use. Find available connections with connection_list or connection_search. The server checks your grants on every call."
        },
        "statement": {
         "type": "string"
@@ -3855,19 +3699,7 @@
        "connection": {
         "type": "string",
         "x-boba-connection": "postgres",
-        "description": "Name of the postgres connection to use. Pass the name of one of your own connections, the client seals it.",
-        "contentMediaType": "application/jose",
-        "contentSchema": {
-         "type": "object",
-         "properties": {
-          "kind": {
-           "const": "postgres"
-          }
-         },
-         "required": [
-          "kind"
-         ]
-        }
+        "description": "Name of the postgres connection to use. Find available connections with connection_list or connection_search. The server checks your grants on every call."
        },
        "statement": {
         "type": "string"

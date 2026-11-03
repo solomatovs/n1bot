@@ -6,12 +6,17 @@ from pathlib import Path
 from typing import ClassVar
 
 import pytest
+from acp_stand import AgentHistoryStand
 from acp_stand import model as model
 from acp_stand import standard as standard
 from aid_stand import *  # noqa: F403 — модуль стенда и есть набор фикстур
+from psycopg import sql
 
+from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.stand.collection import SuiteItems
 from boba.stand.names import StandSuite
+from boba.stand.site import Stand
+from boba.stand.ui.database import run_blocking
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -47,3 +52,33 @@ class AidGroups:
             return AidGroup.E2E.value
 
         return item.nodeid.split(self.SEPARATOR, 1)[0]
+
+
+@pytest.fixture(scope="session")
+def agent_history_storage(stand: Stand) -> None:
+    run_blocking(_prepare_agent_history(stand))
+
+
+async def _prepare_agent_history(stand: Stand) -> None:
+    history = AgentHistoryStand(stand)
+    async with await AsyncPostgresPool.dedicated(history.postgres()) as conn:
+        await conn.execute(
+            sql.SQL("drop schema if exists {} cascade").format(
+                sql.Identifier(history.schema())
+            )
+        )
+        await PostgresSchema(history.schema()).apply_packages(
+            conn, ("boba.identity_postgres", "boba.history.postgres")
+        )
+
+
+@pytest.fixture(autouse=True)
+def prepare_agent_history(request: pytest.FixtureRequest) -> None:
+    if "stand" not in request.fixturenames:
+        return
+
+    stand = request.getfixturevalue("stand")
+    if not isinstance(stand, Stand):
+        return
+
+    request.getfixturevalue("agent_history_storage")

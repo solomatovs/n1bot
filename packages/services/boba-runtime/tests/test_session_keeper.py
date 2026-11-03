@@ -11,6 +11,8 @@ import pytest
 
 from boba.auth import JwtTokens
 from boba.identity.context import Scope
+from boba.identity.principal import UserIdentity
+from boba.identity.session import Login
 from boba.identity.token import SessionRenewal
 from boba.messaging import Envelope, MemoryMessageBus, SignInRefreshRequested
 from boba.runtime.refresh import LiveSessions, LiveToken, SessionKeeper
@@ -32,9 +34,13 @@ class StandSessions(LiveSessions):
 
 def _token(identifier: str, expires_in: int) -> str:
     now = int(time.time())
+    identity = UserIdentity(realm="corporate", login=Login(identifier))
     claims = {
-        "identifier": identifier,
-        "metadata": {"generation": "stand-generation"},
+        "identifier": identity.identifier,
+        "metadata": {
+            "generation": "stand-generation",
+            "identity": identity.model_dump(mode="json"),
+        },
         "exp": now + expires_in,
         "iat": now,
         "since": now,
@@ -50,10 +56,12 @@ async def test_sweep_signals_each_expiring_user_once() -> None:
     dead = UUID(int=3)
     sessions = StandSessions(
         [
-            LiveToken(user_id=soon, login="soon", token=_token("soon", 100)),
-            LiveToken(user_id=soon, login="soon", token=_token("soon", 120)),
-            LiveToken(user_id=fresh, login="fresh", token=_token("fresh", 3000)),
-            LiveToken(user_id=dead, login="dead", token=_token("dead", -100)),
+            LiveToken(user_id=soon, login="corporate:soon", token=_token("soon", 100)),
+            LiveToken(user_id=soon, login="corporate:soon", token=_token("soon", 120)),
+            LiveToken(
+                user_id=fresh, login="corporate:fresh", token=_token("fresh", 3000)
+            ),
+            LiveToken(user_id=dead, login="corporate:dead", token=_token("dead", -100)),
         ]
     )
     seen: list[Envelope] = []
@@ -79,4 +87,4 @@ async def test_sweep_signals_each_expiring_user_once() -> None:
     assert seen[0].scope == Scope.user(soon)
     message = seen[0].message
     assert isinstance(message, SignInRefreshRequested)
-    assert message.principal == "soon"
+    assert message.principal == "corporate:soon"

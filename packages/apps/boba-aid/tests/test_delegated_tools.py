@@ -2,8 +2,8 @@
 
 Полный боевой путь: SPNEGO-accept собирает evidence-креды входа (режим
 constrained, как в конфиге), обвязка соединений выпускает по ним билет к SPN
-строки и запечатывает его в соединении, сервис boba-mcp открывает соединение,
-и тело инструмента работает этим билетом внутри песочницы. Каждый тест
+строки на MCP по SSO-билету его JWT. Тело инструмента работает
+сервисным билетом внутри песочницы. Каждый тест
 спрашивает у самого сервиса, кем он видит клиента.
 
 Стенд: живой KDC, postgres и clickhouse домена; web-инструмент ходит в
@@ -13,31 +13,24 @@ HTTP-интерфейс того же clickhouse по Negotiate. Учётка п
 
 from __future__ import annotations
 
-import secrets as std_secrets
 from collections.abc import AsyncIterator
-from importlib.resources import files
 from pathlib import Path
 from typing import Any
 from uuid import UUID
 
 import krb5
 import pytest
-from aid_stand import ChatSessionStand, ServiceTools, SsoStand, ToolService
+from aid_stand import ChatSessionStand, ServiceTools, StandTokens, ToolService
 from chainlit.user import PersistedUser
-from chainlit.user import User as ChainlitUser
 from gssapi import Credentials, Name, NameType, SecurityContext
-from psycopg import sql
 
 from boba.aid.auth.kerberos import KerberosAuth
 from boba.aid.data.data_layer import PostgresDataLayer
-from boba.auth.credentials import KerberosCredentialSource
 from boba.config import bind
-from boba.connection_broker.crypto import SecretCipher
 from boba.connection_broker.store import ConnectionStore
-from boba.connections.manifest import ConnectionTypes
 from boba.connections.stored import ConnectionBase, GrantTarget
 from boba.db.clickhouse.connection import ClickHouseConfig
-from boba.db.postgres import AsyncPostgresPool, PostgresSchema
+from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.session import UserMetadataField
 from boba.kerberos import (
@@ -47,11 +40,8 @@ from boba.kerberos import (
 )
 from boba.krb import SpnegoAcceptor, TicketCapture
 from boba.krb.seal import SsoTickets
-from boba.messaging import MemoryMessageBus
-from boba.runtime.refresh import BusRefreshSignal
 from boba.stand.site import Stand
 from boba.stand.toolsetup import Call
-from boba.stand_core.context import CallStand
 from boba.transport.http.connection import HttpConnection, NegotiateAuth, UrlScheme
 
 STAND = Stand.required()
@@ -66,7 +56,6 @@ ROLE_NAME = PRINCIPAL.split("@")[0]
 accept и initiate совпадают, и evidence-креды KDC для неё не выдаёт.
 """
 
-SCHEMA = "delegated_tools"
 ROLE = "analyst"
 THREAD = "44444444-4444-4444-4444-444444444444"
 PROFILE = "test"
@@ -79,22 +68,9 @@ pytestmark = [
 ]
 
 
-def _cipher() -> SecretCipher:
-    return SecretCipher(std_secrets.token_bytes(32))
-
-
 @pytest.fixture
-async def store(pool: AsyncPostgresPool) -> ConnectionStore:
-    async with pool.connection() as conn:
-        await conn.execute(
-            sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
-        )
-
-    schema_dir = files("boba.connection_broker") / "schema"
-    async with pool.connection() as conn:
-        await PostgresSchema(SCHEMA).apply_files(conn, schema_dir, {})
-
-    built = ConnectionStore(pool, SCHEMA, _cipher(), ConnectionTypes.discover())
+async def store(pool: AsyncPostgresPool, tool_service: ToolService) -> ConnectionStore:
+    built = await tool_service.catalog(pool)
     await built.sync_roles([ROLE])
     return built
 
@@ -129,7 +105,9 @@ def user_password() -> str:
 
 
 @pytest.fixture
-async def sso_login(tmp_path: Path, user_password: str) -> tuple[SsoTickets, str]:
+async def sso_login(
+    tmp_path: Path, user_password: str, tool_service: ToolService
+) -> tuple[SsoTickets, str]:
     """Вход по SPNEGO: открыватель билетов и запечатанный билет этого входа.
 
     accept идёт асинхронно, как в приложении: синхронный захват лока
@@ -143,13 +121,8 @@ async def sso_login(tmp_path: Path, user_password: str) -> tuple[SsoTickets, str
     if ticket is None:
         raise AssertionError("constrained sign-in captured no evidence credentials")
 
-    tickets = SsoStand.tickets(str(KRB5_CONF))
+    tickets = tool_service.tickets()
     return tickets, tickets.sealer.seal(ticket)
-
-
-@pytest.fixture
-def tickets(sso_login: tuple[SsoTickets, str]) -> SsoTickets:
-    return sso_login[0]
 
 
 @pytest.fixture
@@ -166,7 +139,7 @@ async def session(
         UserMetadataField.TICKET: sso_login[1],
     }
     user = await layer.create_user(
-        ChainlitUser(identifier="delegated-tools", metadata=metadata)
+        StandTokens.user(identifier="corporate:delegated-tools", metadata=metadata)
     )
     if user is None:
         raise AssertionError("user was not created")
@@ -176,21 +149,8 @@ async def session(
 
 
 @pytest.fixture
-async def tools(
-    tool_service: ToolService,
-    call_stand: CallStand,
-    store: ConnectionStore,
-    tickets: SsoTickets,
-) -> AsyncIterator[ServiceTools]:
-    """Инструменты сервиса портом чата: соединения пользователя берутся из
-    таблицы теста, креды — из evidence-билета его входа."""
-    credentials = KerberosCredentialSource(
-        tickets,
-        BusRefreshSignal(lambda: MemoryMessageBus("test"), call_stand.contexts),
-    )
-    opened = ServiceTools(
-        tool_service, lambda: store, lambda: credentials, call_stand.contexts
-    )
+async def tools(tool_service: ToolService) -> AsyncIterator[ServiceTools]:
+    opened = ServiceTools(tool_service)
     try:
         yield opened
     finally:

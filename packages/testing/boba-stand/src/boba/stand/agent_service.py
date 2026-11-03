@@ -150,6 +150,7 @@ class ServeStandConfig:
             "auth": [
                 {
                     "type": "proxy",
+                    "identity": {"realm": "corporate"},
                     "secret": self.PROXY_SECRET,
                     "roles": {"header": {}},
                 }
@@ -171,7 +172,12 @@ class ServeStandConfig:
                 "history": history,
                 "settings": self._settings,
                 "profiles": self._profiles.section(),
-                "clients": {self.CLIENT_ID: {"secret": self.CLIENT_SECRET}},
+                "clients": {
+                    self.CLIENT_ID: {
+                        "secret": self.CLIENT_SECRET,
+                        "realms": ["corporate"],
+                    }
+                },
             },
         }
 

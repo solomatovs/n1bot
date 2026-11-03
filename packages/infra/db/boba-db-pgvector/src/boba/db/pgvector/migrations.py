@@ -25,8 +25,8 @@ class KbMigrationError(Exception):
 class Migrations:
     """Имена KB-схемы для файлов schema/*.sql пакета: таблицы и индексы
     конфига подставляются стоящими именами сборщика, схему {schema} ставит
-    PostgresSchema.apply_files. KbSchema применяет файлы и векторный индекс
-    при старте плагина."""
+    MigrationScripts. KbSchema включает файлы и векторный индекс
+    в план отдельной команды migrate."""
 
     def __init__(self, tables: PostgresStoreSchema) -> None:
         self._tables = tables

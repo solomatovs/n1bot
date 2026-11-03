@@ -21,19 +21,21 @@ import hashlib
 import hmac
 import logging
 import time
+from collections.abc import Sequence
 from enum import StrEnum
 from ipaddress import ip_address
 from typing import ClassVar
 from uuid import uuid4
 
 import jwt
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from boba.auth.config import ProxyAuthConfig
 from boba.auth.profiles import ProfileProviders
 from boba.auth.roles import HeaderAttribute, RoleProviders
 from boba.identity.admission import PrincipalFacts
 from boba.identity.errors import AuthenticationError, AuthorizationError
+from boba.identity.principal import UserIdentity
 from boba.identity.session import SignInProvider, UserLogin
 from boba.identity.signin import ProxyRequest, ProxySignIn, SignedIn, SignInMetadata
 
@@ -42,6 +44,7 @@ __all__ = [
     "AssertionRejectedError",
     "HmacProxySignIn",
     "ProxyAssertion",
+    "ProxyAssertionVerifier",
     "ProxyAssertions",
     "ProxySignature",
 ]
@@ -75,6 +78,8 @@ class AssertionClaim(StrEnum):
     TYPE = "oauth-id-jag+jwt"
     ALGORITHM = "HS256"
     ROLES = "roles"
+    IDENTITY = "identity"
+    KEY_ID = "kid"
 
 
 class ProxyAssertion(BaseModel):
@@ -91,9 +96,21 @@ class ProxyAssertion(BaseModel):
     client_id: str = Field(min_length=1)
     resource: str = Field(min_length=1)
     roles: str = ""
+    identity: UserIdentity
     jti: str = Field(min_length=1)
     iat: int
     exp: int
+
+    @model_validator(mode="after")
+    def _same_subject(self) -> ProxyAssertion:
+        if not self.identity.matches(self.sub):
+            msg = (
+                f"identity assertion subject {self.sub!r}: expected "
+                f"{self.identity.identifier!r} from identity"
+            )
+            raise ValueError(msg)
+
+        return self
 
 
 class ProxyAssertions:
@@ -114,6 +131,7 @@ class ProxyAssertions:
         self, client_id: str, login: str, roles: str, audience: str, resource: str
     ) -> str:
         now = int(time.time())
+        identity = UserIdentity.model_validate(login)
         claims = ProxyAssertion(
             iss=client_id,
             sub=login,
@@ -121,6 +139,7 @@ class ProxyAssertions:
             client_id=client_id,
             resource=resource,
             roles=roles,
+            identity=identity,
             jti=uuid4().hex,
             iat=now,
             exp=now + self.TTL_SEC,
@@ -130,7 +149,10 @@ class ProxyAssertions:
             claims.model_dump(mode="json"),
             self._secret,
             algorithm=AssertionClaim.ALGORITHM.value,
-            headers={"typ": AssertionClaim.TYPE.value},
+            headers={
+                "typ": AssertionClaim.TYPE.value,
+                AssertionClaim.KEY_ID.value: identity.realm,
+            },
         )
 
     def read(self, assertion: str, client_id: str, audience: str) -> ProxyAssertion:
@@ -145,6 +167,7 @@ class ProxyAssertions:
                 self._secret,
                 algorithms=[AssertionClaim.ALGORITHM.value],
                 audience=[issuer, f"{issuer}/"],
+                issuer=client_id,
                 leeway=self._max_skew_sec,
             )
             claims = ProxyAssertion.model_validate(raw)
@@ -159,6 +182,13 @@ class ProxyAssertions:
             msg = (
                 f"identity assertion of client {client_id!r}: header typ expects "
                 f"{AssertionClaim.TYPE.value!r}, got {header.get('typ')!r}"
+            )
+            raise AssertionRejectedError(msg)
+
+        if header.get(AssertionClaim.KEY_ID.value) != claims.identity.realm:
+            msg = (
+                f"identity assertion of {claims.sub!r}: key id does not "
+                "match the verified identity realm"
             )
             raise AssertionRejectedError(msg)
 
@@ -177,6 +207,52 @@ class ProxyAssertions:
             raise AssertionRejectedError(msg)
 
         return claims
+
+
+class ProxyAssertionVerifier:
+    """Проверка утверждений нескольких пространств по настроенным proxy-бэкендам.
+
+    AuthServer выбирает ключ по публичному kid; личность и её пространство
+    принимаются только после проверки подписи и соответствия kid телу JWT.
+    """
+
+    def __init__(self, configs: Sequence[ProxyAuthConfig]) -> None:
+        self._assertions: dict[str, ProxyAssertions] = {}
+        for config in configs:
+            realm = config.identity.realm
+            if realm in self._assertions:
+                msg = f"proxy assertions: multiple backends for realm {realm!r}"
+                raise ValueError(msg)
+
+            self._assertions[realm] = ProxyAssertions(
+                config.secret.get_secret_value(), config.max_skew_sec
+            )
+
+    @property
+    def configured(self) -> bool:
+        return bool(self._assertions)
+
+    def read(self, assertion: str, client_id: str, audience: str) -> ProxyAssertion:
+        try:
+            header = jwt.get_unverified_header(assertion)
+        except jwt.PyJWTError as exc:
+            msg = f"identity assertion of client {client_id!r}: invalid JWT header"
+            raise AssertionRejectedError(msg) from exc
+
+        realm = header.get(AssertionClaim.KEY_ID.value)
+        if not isinstance(realm, str):
+            msg = f"identity assertion of client {client_id!r}: expected a realm in kid"
+            raise AssertionRejectedError(msg)
+
+        verifier = self._assertions.get(realm)
+        if verifier is None:
+            msg = (
+                f"identity assertion of client {client_id!r}: "
+                f"no proxy backend is configured for realm {realm!r}"
+            )
+            raise AssertionRejectedError(msg)
+
+        return verifier.read(assertion, client_id, audience)
 
 
 class HmacProxySignIn(ProxySignIn):
@@ -198,6 +274,13 @@ class HmacProxySignIn(ProxySignIn):
         self._profiles = profiles
 
     async def sign_in(self, request: ProxyRequest) -> SignedIn:
+        if request.identity is not None:
+            msg = (
+                f"proxy header sign-in of {request.login!r}: identity is selected "
+                "by server configuration, not by unsigned request fields"
+            )
+            raise AuthenticationError(msg)
+
         self._check_client(request)
         self._check_present(request)
         self._check_timestamp(request)
@@ -211,20 +294,43 @@ class HmacProxySignIn(ProxySignIn):
         утверждение JWT у сервера авторизации, где клиента подтверждает его
         секрет."""
         login = UserLogin.of(request.login)
+        identity = self._identity_of(request, login)
         facts = self._facts_of(request, login)
         roles = frozenset(await self._roles.admit(facts))
         grant = await self._profiles.granted(facts, roles)
 
         sign_in = SignInMetadata(
             provider=SignInProvider.PROXY.value,
+            identity=identity,
             roles=roles,
             profiles=grant.granted,
             profile=grant.selected,
         )
 
         return SignedIn(
-            identifier=login.key, display_name=login.display, sign_in=sign_in
+            identifier=identity.identifier, display_name=login.display, sign_in=sign_in
         )
+
+    def _identity_of(self, request: ProxyRequest, login: UserLogin) -> UserIdentity:
+        identity = request.identity
+        if identity is None:
+            return self._config.identity.identity(login.key)
+
+        if identity.login != login.key:
+            msg = (
+                f"proxy admission of {login.key!r}: verified identity names "
+                f"login {identity.login!r}, expected the same user"
+            )
+            raise AuthenticationError(msg)
+
+        if identity.realm != self._config.identity.realm:
+            msg = (
+                f"proxy admission of {identity.identifier!r}: backend belongs "
+                f"to realm {self._config.identity.realm!r}"
+            )
+            raise AuthenticationError(msg)
+
+        return identity
 
     def _check_client(self, request: ProxyRequest) -> None:
         if not self._networks:

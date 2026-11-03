@@ -1,11 +1,12 @@
 create table if not exists {schema}.session (
     id         text        primary key,
-    created_at timestamptz not null
+    created_at timestamptz not null,
+    user_id    uuid references {schema}.users(id)
 );
 
-alter table {schema}.session add column if not exists owner text;
 
-create index if not exists session_owner_id_idx on {schema}.session (owner, id);
+create index if not exists session_user_id_id_idx
+    on {schema}.session (user_id, id);
 
 create table if not exists {schema}.session_records (
     session_id  text        not null references {schema}.session on delete cascade,
@@ -17,28 +18,10 @@ create table if not exists {schema}.session_records (
 );
 
 comment on table {schema}.session is
-'Сессии агента. Строку заводит первая дозапись сессии, а удаление строки уносит все записи её истории.';
+'Сессии агента. user_id ссылается на users; NULL означает историю локального stdio без пользователя службы.';
 
-comment on column {schema}.session.id is
-'Идентификатор сессии, который агент получает от клиента; у сессии треда чата он совпадает с id треда.';
-
-comment on column {schema}.session.created_at is
-'Время первой записи сессии.';
-
-comment on column {schema}.session.owner is
-'Логин пользователя, которому принадлежит сессия. Процесс агента, запущенный службой от имени пользователя, заводит сессии на него и видит, открывает, ветвит и удаляет только их. Пустое значение означает, что владелец неизвестен: сессию завёл процесс, запущенный по stdio без владельца, или она появилась раньше этой колонки. Такие сессии не видны ни одному пользователю службы, их видят только процессы без владельца; передать сессию пользователю можно, записав его логин в эту колонку.';
+comment on column {schema}.session.user_id is
+'UUID пользователя службы. Удаление пользователя с историей запрещает внешний ключ.';
 
 comment on table {schema}.session_records is
-'История сессий агента: по строке на запись журнала в порядке seq внутри сессии. Общие для всех записей поля лежат колонками, всё остальное содержимое записи лежит в record.';
-
-comment on column {schema}.session_records.seq is
-'Порядковый номер записи в сессии, начиная с 1; его выдаёт сессия агента.';
-
-comment on column {schema}.session_records.type is
-'Вид записи: user, assistant, attachment, system, queue-operation, permission-mode, permission-rule или api-request.';
-
-comment on column {schema}.session_records.recorded_at is
-'Время, когда агент сделал запись.';
-
-comment on column {schema}.session_records.record is
-'Остальные поля записи в том виде, в каком агент пишет их в журнал JSONL, но без идентификатора сессии, seq, вида и времени: они лежат в колонках этой строки.';
+'Записи истории сессии. Пользователь определяется через session_id, удаление сессии удаляет её записи.';

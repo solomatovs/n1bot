@@ -18,6 +18,7 @@ from boba.auth import AuthService, JwtTokens, SignIns
 from boba.auth.config import LocalAuthConfig, LocalRoleProviders, LocalRolesConfig
 from boba.identity.admission import RoleMappingConfig
 from boba.identity.api import AuthenticatedUser, PersistedUsers, UsersUpsert
+from boba.identity.principal import IdentityRule
 from boba.identity.session import Login
 from boba.identity.signin import SignedIn, SignInMetadata
 from boba.identity.sso import OwnRequest
@@ -36,7 +37,7 @@ class Users(PersistedUsers, UsersUpsert):
     def __init__(self) -> None:
         self.row = AuthenticatedUser(
             id=UUID(int=7),
-            identifier=Login("alice"),
+            identifier=Login("local-stand:alice"),
             sign_in=SignInMetadata(roles=frozenset({"DEV"})),
         )
 
@@ -58,6 +59,7 @@ def chainlit_context() -> None:
 def _refresh() -> SessionRefresh:
     secret = StandTokens.secret()
     config = LocalAuthConfig(
+        identity=IdentityRule(realm="local-stand"),
         users={"alice": "pw"},
         roles=LocalRoleProviders(
             local=LocalRolesConfig(mapping=RoleMappingConfig(root={"alice": ["DEV"]}))
@@ -66,7 +68,7 @@ def _refresh() -> SessionRefresh:
     auth = AuthService(
         tokens=JwtTokens(secret, 60, StandTokens.GENERATION),
         cookie=CookieSpec(name=COOKIE, samesite="lax", ttl_sec=60),
-        sign_ins=SignIns(SignInStand.assembly().password([config]), None, None),
+        sign_ins=SignIns(SignInStand.assembly().password([config]), {}, {}),
         users=Users(),
         renewal=SessionRenewal.of(60, 3600),
     )
@@ -104,7 +106,7 @@ async def test_password_session_is_renewed_with_a_new_cookie() -> None:
     assert COOKIE in set_cookie
     renewed = set_cookie.split(f"{COOKIE}=", 1)[1].split(";", 1)[0]
     claims = jwt.decode(renewed, StandTokens.secret(), algorithms=["HS256"])
-    assert claims["identifier"] == "alice"
+    assert claims["identifier"] == "local-stand:alice"
 
 
 async def test_refresh_without_its_own_mark_is_refused() -> None:

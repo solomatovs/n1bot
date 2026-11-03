@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from boba.connection_broker.sealed import SealedConnectionParams
+from boba.connection_broker.params import ConnectionParams
 from boba.connection_broker.user_connections import CredentialsRef, StoreRef
 from boba.connections.manifest import ConnectionTypes
 from boba.identity.context import CallContexts
@@ -26,7 +26,7 @@ class ExecRefs:
     contexts: CallContexts
     journals: CallJournals
     ambient: CallAmbient
-    connection_params: SealedConnectionParams
+    connection_params: ConnectionParams
 
 
 @dataclass(frozen=True)
@@ -47,9 +47,9 @@ class RuntimeRefs:
     ambient: CallAmbient
     """Обстановка вызова инструмента процесса: приёмники журнала и ручка
     группы для исполнителей."""
-    connection_params: SealedConnectionParams
+    connection_params: ConnectionParams
     """Соединения инструментов исполнителя: ключевая пара, которой
-    открываются соединения, запечатанные клиентом, и заданные соединения
+    разрешаются имена соединений каталога и заданные соединения
     сервера; одни на процесс."""
 
     def execution(self) -> ExecRefs:

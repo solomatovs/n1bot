@@ -27,7 +27,7 @@ class StandIdentity(StrEnum):
 
     TURN = "test-turn"
     PROFILE = "test"
-    LOGIN = "tester"
+    LOGIN = "corporate:tester"
 
 
 class StandContexts(CallContexts):

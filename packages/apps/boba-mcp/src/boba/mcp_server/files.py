@@ -70,6 +70,7 @@ from boba.runtime.storage import (
     LocalStorageClient,
     LocalStorageConfig,
     StorageClient,
+    StorageConfig,
 )
 from boba.toolkit.channels import JournalChannels
 from boba.toolkit.result import ContentMime
@@ -339,7 +340,7 @@ class JournalRoutes:
         journals: CallJournals,
         callers: RouteCallers,
         subjects: TokenSubjects,
-        config: LocalStorageConfig,
+        config: StorageConfig,
         base: str,
         published: str,
         bus: SubscriptionBus,
@@ -556,7 +557,11 @@ class JournalRoutes:
         if files is not None:
             return files
 
-        config = self._config.model_copy(update={"kind": "local", "files_dir": root})
+        config = LocalStorageConfig(
+            files_dir=root,
+            public_prefix=self._config.public_prefix,
+            chunk_bytes=self._config.chunk_bytes,
+        )
         files = StreamedFile(LocalStorageClient(config), self._policy)
         self._files[root] = files
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from importlib.resources import files
 from uuid import uuid4
 
 import pytest
@@ -28,9 +27,10 @@ async def tables(
         )
     postgres = runtime_config.postgres
     cfg = postgres.model_copy(update={"dbname": test_database})
-    schema_dir = files("boba.runtime") / "schema"
     async with pool.connection() as conn:
-        await PostgresSchema(SCHEMA).apply_files(conn, schema_dir, {})
+        await PostgresSchema(SCHEMA).apply_packages(
+            conn, ("boba.identity_postgres", "boba.runtime")
+        )
 
     return FeedbacksTable(cfg, SCHEMA, pool)
 

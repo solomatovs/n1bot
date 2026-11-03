@@ -31,6 +31,7 @@ from boba.aid.mcp_servers.store import (
     StoredServer,
 )
 from boba.identity.api import UserRows
+from boba.identity.errors import AuthenticationError
 from boba.identity.session import Login
 from boba.mcp_client.client import (
     BrowserOAuthAuth,
@@ -359,7 +360,13 @@ class StoredServers(ServerSource):
             )
             raise McpClientError(msg)
 
-        return stored.id
+        try:
+            user = stored.authenticated()
+        except AuthenticationError as exc:
+            msg = f"mcp servers of {caller.login!r}: the user is not identified: {exc}"
+            raise McpClientError(msg) from exc
+
+        return user.id
 
     def _record(self, stored: StoredMcpServer) -> ServerRecord:
         origin = McpOrigin.ROLE

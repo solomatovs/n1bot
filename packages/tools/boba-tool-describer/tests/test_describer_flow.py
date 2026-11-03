@@ -16,7 +16,6 @@ from __future__ import annotations
 import secrets as std_secrets
 import shutil
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
-from importlib.resources import files
 from typing import Any, ClassVar
 from uuid import UUID
 
@@ -27,7 +26,6 @@ from psycopg import sql
 from boba.config import bind
 from boba.connection_broker.crypto import SecretCipher
 from boba.connection_broker.store import ConnectionStore
-from boba.connection_broker.user_connections import ArmedConnections
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.stored import GrantTarget
 from boba.db.clickhouse.address import ChAddresses, ChTableColumnAddress
@@ -41,10 +39,9 @@ from boba.db.postgres.address import (
     PgTableColumnAddress,
 )
 from boba.db.postgres.connection import PostgresConfig
-from boba.stand.connections import StandUserConnections
+from boba.stand.migrate import StandMigrations
 from boba.stand.overlay import ConfigOverlay
 from boba.stand.refs import StandRefs
-from boba.stand.sealing import SealingStand
 from boba.stand.site import Stand
 from boba.stand.zygote import ROOTFS_IMAGE, SandboxCgroup
 from boba.stand_core.context import CallStand
@@ -237,16 +234,12 @@ async def session_service(
     flow_raw: DictConfig,
 ) -> ToolServer:
     """Порт инструментов профиля: боевой загрузчик над хранилищем стенда,
-    исполнитель и порт стенда, запечатывающий имена соединений."""
+    исполнитель и серверное разрешение имён соединений."""
     refs = runtime_stand.of(StoreHolder.current, lambda: None)
     grants = StandRefs.granted(PROFILE, ["*"])
     registry = await runtime_stand.registry(flow_raw, refs, grants)
     tools = registry.for_session(frozenset(ROLES), PROFILE)
-    return SealingStand(
-        registry.server(tools, DirectCalls()),
-        ArmedConnections(refs.connection_store, refs.credentials, refs.contexts),
-        StandUserConnections.TTL,
-    )
+    return registry.server(tools, DirectCalls())
 
 
 @pytest.fixture
@@ -286,9 +279,10 @@ async def store(pool: AsyncPostgresPool) -> AsyncIterator[ConnectionStore]:
             )
         )
 
-    schema_dir = files("boba.connection_broker") / "schema"
     async with pool.connection() as conn:
-        await PostgresSchema(CONNECTIONS_SCHEMA).apply_files(conn, schema_dir, {})
+        await PostgresSchema(CONNECTIONS_SCHEMA).apply_packages(
+            conn, ("boba.identity_postgres", "boba.connection_broker")
+        )
 
     built = ConnectionStore(
         pool, CONNECTIONS_SCHEMA, _cipher(), ConnectionTypes.discover()
@@ -343,7 +337,9 @@ async def seeded_pg(pool: AsyncPostgresPool, flow_raw: DictConfig) -> None:
         )
 
     describer = bind(flow_raw, path="tool.describer", model=DescriberToolConfig)
-    await DescriberStore(describer).setup()
+    await StandMigrations().storage(
+        describer.connection, DescriberStore(describer).migration()
+    )
 
 
 @pytest.fixture

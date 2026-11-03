@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar
+from uuid import UUID
 
 import uvicorn
 from acp.connection import Connection
@@ -48,7 +49,6 @@ from fastmcp.server.auth import AccessToken
 from fastmcp.server.auth.middleware import RequireAuthMiddleware
 from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
 from mcp.server.auth.routes import build_resource_metadata_url
-from mcp.shared.auth import OAuthClientInformationFull
 from pydantic import (
     AnyHttpUrl,
     BaseModel,
@@ -73,8 +73,7 @@ from boba.agent.settings import (
     SettingsLayer,
 )
 from boba.auth import SignIns
-from boba.auth.proxy import ProxyAssertions
-from boba.auth.sso import SpnegoGate
+from boba.auth.proxy import ProxyAssertionVerifier
 from boba.cancellation import ProcessStop
 from boba.cli.acp_server import AcpAgent
 from boba.cli.app import (
@@ -90,7 +89,10 @@ from boba.config import ConfigError, ConfigLoader, bind
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import LibpqConnection, PostgresConfig
 from boba.history.postgres import PostgresHistoryStore, SessionLocks
-from boba.identity.signin import ProfileCatalog
+from boba.identity.api import AuthenticatedUser as DomainUser
+from boba.identity.api import UsersUpsert
+from boba.identity.signin import ProfileCatalog, SignedIn
+from boba.identity_postgres import UsersTable
 from boba.ldap import Ldap3Directory
 from boba.llm.http.ollama import MANIFEST as OLLAMA
 from boba.llm.http.openai import MANIFEST as OPENAI
@@ -147,6 +149,7 @@ class Caller:
     """Вошедший пользователь подключения: логин из токена и профили агента,
     выданные его ролям (области токена)."""
 
+    user_id: UUID
     login: str
     profiles: frozenset[str]
 
@@ -178,19 +181,19 @@ class ServeSection(ServiceAddress):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    host: str = Field(min_length=1)
+    host: str = Field(default="127.0.0.1", min_length=1)
     port: int = Field(gt=0, lt=65536)
-    path: str = Field(min_length=1, pattern=r"^/")
-    shutdown_timeout_sec: int = Field(gt=0)
-    idle_sec: float = Field(gt=0)
+    path: str = Field(default="/acp", min_length=1, pattern=r"^/")
+    shutdown_timeout_sec: int = Field(default=10, gt=0)
+    idle_sec: float = Field(default=1800, gt=0)
     """Подключение HTTP без запросов и ходов дольше idle_sec закрывается
     вместе с сессиями: клиент ушёл, не закрыв его."""
     history: ServeHistory
-    settings: SettingsLayer
+    settings: SettingsLayer = Field(default_factory=SettingsLayer)
     """Слой настроек агента: права, лимиты, сессии, серверы MCP, промпт.
     Историю, профили моделей и профиль по умолчанию задаёт служба."""
     profiles: dict[str, AgentProfile] = Field(min_length=1)
-    clients: dict[str, TrustedClient]
+    clients: dict[str, TrustedClient] = Field(default_factory=dict)
     """Доверенные клиенты OAuth по client_id: им разрешён вход proxy."""
 
     @field_validator("settings")
@@ -246,7 +249,7 @@ class AgentProfiles(ProfileCatalog):
         return name in self._profiles
 
 
-class ServeAgents:
+class ServeAgents(UsersUpsert):
     """Общая сборка процесса службы и вход ACP на подключение.
 
     Создаёт ServeHost: настройки агента из [agent] (все профили, история
@@ -279,13 +282,22 @@ class ServeAgents:
         self._cwd = cwd
         self._locks = SessionLocks(section.history.postgres)
         self._pool = AsyncPostgresPool(section.history.postgres)
+        self._users = UsersTable(
+            section.history.postgres, section.history.db_schema, self._pool
+        )
         self._store_thread = LoopThread(ServeMark.STORE_THREAD.value)
         self._threads = SessionThreads(self._settings.sessions.max_open)
 
     async def start(self) -> None:
         """Поток хранилища запущен, пул истории открыт в его цикле."""
         self._store_thread.start()
-        await self._store_thread.run(self._pool.open())
+        await self._store_thread.run(self._open_storage())
+
+    async def _open_storage(self) -> None:
+        await self._pool.open()
+
+    async def ensure_user(self, signed: SignedIn) -> DomainUser:
+        return await self._store_thread.run(self._users.ensure_user(signed))
 
     async def stop(self) -> None:
         await self._store_thread.run(self._locks.close())
@@ -306,7 +318,7 @@ class ServeAgents:
         settings = self._granted(caller)
         history = self._section.history
         store = PostgresHistoryStore(
-            history.postgres, history.db_schema, caller.login, self._locks, self._pool
+            history.postgres, history.db_schema, caller.user_id, self._locks, self._pool
         )
         threaded = ThreadedHistoryStore(store, self._store_thread)
         assembly = AgentAssembly(
@@ -510,7 +522,9 @@ class CallerTokens:
             )
             return None
 
-        return Caller(login=claims.login, profiles=frozenset(token.scopes))
+        return Caller(
+            user_id=claims.user_id, login=claims.login, profiles=frozenset(token.scopes)
+        )
 
 
 class AcpEndpoint:
@@ -532,7 +546,7 @@ class AcpEndpoint:
         self._server = AcpServer(router)
         self._callers = callers
         self._idle_sec = idle_sec
-        self._owners: dict[str, str] = {}
+        self._owners: dict[str, UUID] = {}
         """Кто открыл каждое подключение HTTP: запросы чужого подключения
         отвергаются как неизвестные."""
         self._opened: dict[str, HttpActivity] = {}
@@ -561,7 +575,7 @@ class AcpEndpoint:
         if connection_id is None:
             return JSONResponse({"error": "missing connection id"}, 400)
 
-        if self._owners.get(connection_id) != caller.login:
+        if self._owners.get(connection_id) != caller.user_id:
             return JSONResponse({"error": "unknown connection id"}, 404)
 
         return await self._connected(request, connection_id)
@@ -601,7 +615,7 @@ class AcpEndpoint:
         if connection is None:
             return response
 
-        self._owners[opened] = caller.login
+        self._owners[opened] = caller.user_id
         self._opened[opened] = HttpActivity(
             connection=connection, last=time.monotonic(), running=0
         )
@@ -826,15 +840,7 @@ class ServeHost:
         """Способы входа процесса из [auth]: пароли, SPNEGO и proxy с их
         провайдерами ролей и профилей."""
         assembly = SignInAssembly(Ldap3Directory(), profiles)
-        sso = None
-        if kerberos := config.kerberos():
-            sso = SpnegoGate(assembly.sso(kerberos, config.session.auth_secret))
-
-        proxy = None
-        if proxy_config := config.proxy():
-            proxy = assembly.proxy(proxy_config)
-
-        return SignIns(assembly.password(config.auth), sso, proxy)
+        return assembly.build(config.auth, config.session.auth_secret)
 
     def _auth(self) -> ServiceAuth:
         """Вход службы: сервер авторизации над способами входа [auth] и
@@ -850,25 +856,18 @@ class ServeHost:
             session.session_generation(),
             ServeMark.TOKEN_SALT,
         )
-        assertions = None
-        if proxy := self._config.proxy():
-            assertions = ProxyAssertions(
-                proxy.secret.get_secret_value(), proxy.max_skew_sec
-            )
+        assertions = ProxyAssertionVerifier(self._config.proxy_entries())
 
         sealed = SealedValues(session.auth_secret, ServeMark.SEALED_SALT)
-        declared: dict[str, OAuthClientInformationFull] = {}
-        for client_id, client in section.clients.items():
-            declared[client_id] = client.registered(client_id)
-
         server = AuthServer(
             public_url,
             self._sign_ins,
             tokens,
             assertions,
-            RegisteredClients(sealed, declared),
+            RegisteredClients(sealed, section.clients),
             sealed,
             [self.resource()],
+            users=self._agents,
         )
 
         return ServiceAuth(

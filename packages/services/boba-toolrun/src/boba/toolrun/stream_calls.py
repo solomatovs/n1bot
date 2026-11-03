@@ -315,23 +315,14 @@ class WorkflowTool:
 
 
 class NodeArgs(Protocol):
-    """Правило аргументов узла, которое исполнитель применяет вне тела.
+    """Правило аргументов, проверяемое перед запуском узлов DAG.
 
-    Обвязки тела узнают о негодном аргументе, когда узел уже запущен, а
-    соседние группы вызова идут. Правило проверяет аргументы каждого узла до
-    старта DAG и объявляет клиенту возможность сервера, без которой такой
-    аргумент не собрать. Реализует его владелец вида аргумента (запечатанные
-    соединения — SealedConnectionParams); исполнитель про вид не знает.
-    """
+    Реализация ConnectionParams проверяет доступ к профилям. Исполнитель
+    не знает ни виды connections, ни способ хранения профиля."""
 
     @abstractmethod
     async def check(self, tool: str, args: Mapping[str, object]) -> None:
         """Отказ ToolRefusalError, если аргументы узла инструмента tool негодны."""
-        ...
-
-    @abstractmethod
-    def features(self) -> Mapping[str, Mapping[str, object]]:
-        """Возможности сервера, которые правило объявляет клиенту."""
         ...
 
 
@@ -395,12 +386,8 @@ class LocalDagService(ToolServer):
         return self._offered
 
     def features(self) -> Mapping[str, Mapping[str, object]]:
-        """Возможности правил аргументов и, если модели предложен workflow,
-        расширение вложенных вызовов с формой его узлов."""
+        """Расширение вложенных вызовов, если доступен workflow."""
         declared: dict[str, Mapping[str, object]] = {}
-        for rule in self._rules:
-            declared.update(rule.features())
-
         if self._workflow is None:
             return declared
 

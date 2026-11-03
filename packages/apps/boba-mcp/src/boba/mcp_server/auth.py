@@ -18,7 +18,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from enum import StrEnum
-from uuid import NAMESPACE_URL, uuid5
 
 from fastmcp.server.auth import AccessToken
 from fastmcp.server.dependencies import get_access_token
@@ -88,7 +87,7 @@ class TokenSubjects:
         claims = self._claims(token)
 
         return Subject(
-            user_id=uuid5(NAMESPACE_URL, f"boba-mcp:{claims.login}"),
+            user_id=claims.user_id,
             login=claims.login,
             roles=claims.roles,
             profile=self._profile,

@@ -196,21 +196,18 @@ class RequestTokens:
         if not header:
             return None
 
-        if not header.startswith(self.BEARER):
+        if not header.casefold().startswith(self.BEARER.casefold()):
             return None
 
-        return header[len(self.BEARER) :]
+        return header[len(self.BEARER) :].strip()
 
 
 class StaleSessionMiddleware:
-    """Отсекает cookie входа чужого поколения сессий до маршрутов приложения.
+    """Проверяет поколение и идентификатор сессии перед декодером Chainlit.
 
-    Chainlit проверяет cookie своим декодером и поколения не знает, поэтому
-    после рестарта процесса его маршруты приняли бы старую сессию. Здесь
-    токен читается нашим читателем: при чужом поколении запрос идёт дальше
-    без cookie входа, а ответ приложения снимает её в браузере. Приложение
-    видит обычного гостя: страница входа рисуется, api отвечает своим 401.
-    Прочие отказы (срок, подпись) оставляются маршрутам, они умеют их сами.
+    HTTP и WebSocket с устаревшим токеном идут к приложению как гости.
+    HTTP-ответ также снимает cookie входа в браузере. Срок и подпись
+    проверяют штатные маршруты Chainlit.
     """
 
     STALE_GRACE_SEC: ClassVar[int] = 10 * 365 * 24 * 3600
@@ -226,32 +223,41 @@ class StaleSessionMiddleware:
         self._tokens = tokens
         self._cookie = SessionCookie(cookie)
         self._request_tokens = RequestTokens(cookie.name)
+        self._authorization = RequestTokens.AUTHORIZATION.lower().encode("ascii")
+        self._bearer = RequestTokens.BEARER.lower().encode("ascii")
         self._logger = logging.getLogger(__name__)
         self._failures = FailureReports()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http":
+        if scope["type"] not in {"http", "websocket"}:
             return await self.app(scope, receive, send)
 
-        request = Request(scope)
-        token = self._request_tokens.of_cookies(request.cookies)
+        request = HTTPConnection(scope)
+        token = self._request_tokens.of_request(request)
         if token is None:
             return await self.app(scope, receive, send)
 
         try:
             self._tokens.read_stale(token, self.STALE_GRACE_SEC)
         except TokenRejectedError as exc:
-            if exc.reason is not TokenRejection.GENERATION:
+            if exc.reason not in {
+                TokenRejection.GENERATION,
+                TokenRejection.IDENTITY,
+                TokenRejection.MALFORMED,
+            }:
                 return await self.app(scope, receive, send)
 
             self._logger.info(
-                "%s %s: stale session cookie dropped, the request goes on as a "
+                "%s %s: stale session token dropped, the request goes on as a "
                 "guest: %s",
                 scope.get("method", "?"),
                 scope.get("path", "?"),
                 exc,
             )
             guest = self._without_ours(scope, request.cookies)
+            if scope["type"] == "websocket":
+                return await self.app(guest, receive, send)
+
             clearing = self._clearing(request.cookies)
 
             async def send_clearing(message: Message) -> None:
@@ -267,11 +273,15 @@ class StaleSessionMiddleware:
         return await self.app(scope, receive, send)
 
     def _without_ours(self, scope: Scope, present: Mapping[str, str]) -> Scope:
-        """Scope запроса без cookie входа; прочие cookie остаются как пришли."""
+        """Scope без токенов входа; прочие cookie и заголовки сохраняются."""
         ours = self._cookie.jar.ours(present)
 
         headers: list[tuple[bytes, bytes]] = []
         for name, value in scope["headers"]:
+            if name.lower() == self._authorization:
+                if value.lower().startswith(self._bearer):
+                    continue
+
             if name != self.COOKIE_HEADER:
                 headers.append((name, value))
                 continue

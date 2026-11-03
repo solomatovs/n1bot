@@ -225,9 +225,10 @@ class ThreadDicts:
 
     @staticmethod
     def user(stored: StoredUser) -> PersistedUser:
+        identified = stored.authenticated()
         return PersistedUser(
-            id=str(stored.id),
-            identifier=stored.identifier,
+            id=str(identified.id),
+            identifier=identified.identifier,
             createdAt=Codec.iso(stored.created_at),
             metadata=dict(stored.meta),
         )
@@ -315,9 +316,9 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership, FeedRows):
     async def create_user(self, user: ChainlitUser) -> PersistedUser | None:
         # в строку users уходит только вход без билета; настройки строки не трогаются
         sign_in = SignInMetadata.parse(dict(user.metadata))
-        stored = await self._users.upsert(
-            Login(user.identifier), sign_in.persistable().render()
-        )
+        identifier = Login(user.identifier)
+        sign_in.identity_for(identifier)
+        stored = await self._users.upsert(identifier, sign_in.stored())
 
         return ThreadDicts.user(stored)
 

@@ -2,34 +2,27 @@
 
 Стенд: пользователь в users, его соединение в connections, грант в grants;
 вызов идёт портом чата от имени этого пользователя на настоящий сервис
-boba-mcp: чат запечатывает соединение, сервис открывает его и исполняет тело.
+boba-mcp: чат передаёт имя, сервис выбирает профиль по grants и исполняет тело.
 """
 
 from __future__ import annotations
 
-import secrets as std_secrets
 from collections.abc import AsyncIterator
-from importlib.resources import files
 from pathlib import Path
 from typing import Any
 from uuid import UUID
 
 import pytest
-from aid_stand import ChatSessionStand, ServiceTools, SsoStand, ToolService
+from aid_stand import ChatSessionStand, ServiceTools, SsoStand, StandTokens, ToolService
 from chainlit.user import PersistedUser
-from chainlit.user import User as ChainlitUser
-from psycopg import sql
 from pydantic import SecretStr
 
 from boba.aid.auth.kerberos import KerberosAuth
 from boba.aid.data.data_layer import PostgresDataLayer
-from boba.auth.credentials import KerberosCredentialSource
 from boba.config import bind
-from boba.connection_broker.crypto import SecretCipher
 from boba.connection_broker.store import ConnectionStore
-from boba.connections.manifest import ConnectionTypes
 from boba.connections.stored import GrantTarget, StoredRole
-from boba.db.postgres import AsyncPostgresPool, PostgresSchema
+from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PasswordAuth, PostgresConfig
 from boba.identity.context import ContextKind
 from boba.identity.errors import RefusalError
@@ -37,14 +30,11 @@ from boba.identity.session import UserMetadataField
 from boba.kerberos import DelegatedAuth, DelegationMode, KeytabAuth
 from boba.krb import KeytabCredentials
 from boba.krb.seal import SsoTickets
-from boba.messaging import MemoryMessageBus
-from boba.runtime.refresh import BusRefreshSignal
 from boba.stand.site import Stand
 from boba.stand.toolsetup import Call
 from boba.stand_core.context import CallStand
 from boba.transport.http.connection import HttpConnection, NegotiateAuth, UrlScheme
 
-SCHEMA = "connections_e2e"
 ROLE = "analyst"
 THREAD = "44444444-4444-4444-4444-444444444444"
 PROFILE = "test"
@@ -56,22 +46,9 @@ pytestmark = [
 ]
 
 
-def _cipher() -> SecretCipher:
-    return SecretCipher(std_secrets.token_bytes(32))
-
-
 @pytest.fixture
-async def store(pool: AsyncPostgresPool) -> ConnectionStore:
-    async with pool.connection() as conn:
-        await conn.execute(
-            sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
-        )
-
-    schema_dir = files("boba.connection_broker") / "schema"
-    async with pool.connection() as conn:
-        await PostgresSchema(SCHEMA).apply_files(conn, schema_dir, {})
-
-    built = ConnectionStore(pool, SCHEMA, _cipher(), ConnectionTypes.discover())
+async def store(pool: AsyncPostgresPool, tool_service: ToolService) -> ConnectionStore:
+    built = await tool_service.catalog(pool)
     await built.sync_roles([ROLE])
     return built
 
@@ -88,7 +65,7 @@ CH_URL = f"http://{STAND.ch_addr}:{STAND.ch_port}"
 
 
 @pytest.fixture
-def sso(tmp_path: Path) -> tuple[SsoTickets, str]:
+def sso(tmp_path: Path, tool_service: ToolService) -> tuple[SsoTickets, str]:
     """Билет входа стенда: TGT сервисной учётки из keytab, запечатанный для JWT."""
     credentials = KeytabCredentials.of(
         KeytabAuth(
@@ -98,7 +75,7 @@ def sso(tmp_path: Path) -> tuple[SsoTickets, str]:
         )
     )
     credentials.ensure()
-    tickets = SsoStand.tickets(STAND.krb_config)
+    tickets = tool_service.tickets()
     sealed = SsoStand.sealed(
         tickets, SERVICE_PRINCIPAL, credentials.ccache, DelegationMode.FORWARDED, 3600
     )
@@ -106,21 +83,8 @@ def sso(tmp_path: Path) -> tuple[SsoTickets, str]:
 
 
 @pytest.fixture
-async def tools(
-    tool_service: ToolService,
-    call_stand: CallStand,
-    store: ConnectionStore,
-    sso: tuple[SsoTickets, str],
-) -> AsyncIterator[ServiceTools]:
-    """Инструменты сервиса портом чата: соединения пользователя берутся из
-    таблицы теста, креды — из билета входа."""
-    credentials = KerberosCredentialSource(
-        sso[0],
-        BusRefreshSignal(lambda: MemoryMessageBus("test"), call_stand.contexts),
-    )
-    opened = ServiceTools(
-        tool_service, lambda: store, lambda: credentials, call_stand.contexts
-    )
+async def tools(tool_service: ToolService) -> AsyncIterator[ServiceTools]:
+    opened = ServiceTools(tool_service)
     try:
         yield opened
     finally:
@@ -134,7 +98,7 @@ class Session:
     async def user(layer: PostgresDataLayer, identifier: str) -> PersistedUser:
         roles = [ROLE]
         persisted = await layer.create_user(
-            ChainlitUser(
+            StandTokens.user(
                 identifier=identifier,
                 metadata={UserMetadataField.ROLES: roles},
             )

@@ -16,8 +16,7 @@ import pytest
 from omegaconf import DictConfig, OmegaConf
 
 from boba.config import ConfigError, bind
-from boba.connection_broker.crypto import SealKeys
-from boba.connection_broker.sealed import SealedConnectionParams, ServerConnection
+from boba.connection_broker.params import ConnectionParams, ServerConnection
 from boba.connections.manifest import ConnectionTypes
 from boba.mcp_server.app import McpAppConfig
 from boba.runtime.plugins import PluginKit, PluginMeta, ToolLoader
@@ -94,8 +93,12 @@ class TestConnectionConfigRefusesStart:
 
     @pytest.mark.parametrize(
         ("key", "value"),
-        [("offer", ["shared"]), ("client", "nobody")],
-        ids=["source", "client"],
+        [
+            ("offer", ["shared"]),
+            ("client", "any"),
+            ("offer", ["stored", "sealed"]),
+        ],
+        ids=["unknown-source", "removed-client-selector", "removed-profile-source"],
     )
     def test_unknown_source_or_client_of_a_rule_is_refused(
         self,
@@ -133,8 +136,7 @@ class TestConnectionConfigRefusesStart:
         call_stand: CallStand,
     ) -> None:
         raw = config_overlay.tree({"tool.pg.connections": {"pg_query": ["site"]}})
-        params = SealedConnectionParams(
-            SealKeys(),
+        params = ConnectionParams(
             ConnectionTypes.discover,
             call_stand.contexts,
             {"site": ServerConnection.model_validate(self.WEB)},

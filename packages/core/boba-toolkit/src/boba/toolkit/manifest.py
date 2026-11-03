@@ -122,20 +122,19 @@ class ConnectionProfile(BaseModel):
 
 
 class PluginStorage(Protocol):
-    """Хранилище плагина: setup создаёт его таблицы; повтор безвреден.
+    """План хранилища плагина для явной команды migrate.
     Реализуют KbSchema и DescriberStore."""
 
     @abstractmethod
-    async def setup(self) -> None: ...
+    def migration(self) -> str: ...
 
 
 @dataclass(frozen=True)
 class PluginSetup(Generic[CfgT]):
     """Подготовка хранилища плагина: модель его секции и хранилище по ней.
 
-    Программа плагина в подкоманде setup разбирает секцию моделью config и
-    зовёт storage(cfg).setup(); сервер зовёт подкоманду на старте, когда
-    манифест объявил setup.
+    Программа плагина разбирает секцию моделью config и отдаёт план DDL
+    команде migrate. Обычный запуск сервера хранилище не подготавливает.
     """
 
     config: type[CfgT]

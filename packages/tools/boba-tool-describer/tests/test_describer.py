@@ -20,6 +20,7 @@ from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.address import PgNodeKind
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.context import Scope, ScopeKind
+from boba.stand.migrate import StandMigrations
 from boba.tool.describer.address import Addresses, EntityKind
 from boba.tool.describer.edges import (
     EdgeDeleteColumn,
@@ -76,7 +77,7 @@ async def cfg(
         )
 
     built = DescriberToolConfig(connection=test_postgres, db_schema=SCHEMA)
-    await DescriberStore(built).setup()
+    await StandMigrations().storage(built.connection, DescriberStore(built).migration())
 
     return built
 
@@ -296,22 +297,16 @@ async def test_tables_survive_truncate_by_the_consumer(
     assert await _count(pool, "node") == 1
 
 
-async def test_parallel_starts_and_calls_on_a_fresh_schema(
+async def test_parallel_calls_after_explicit_migration(
     cfg: DescriberToolConfig, scope: Scope, pool: AsyncPostgresPool
 ) -> None:
-    """Инстансы сервиса стартуют разом и готовят таблицы под общим замком без
-    гонки; модель зовёт несколько describe_node одним ответом, и хост
-    исполняет их параллельно."""
+    """После миграции describe_node параллельно пишет независимые узлы."""
     async with pool.connection() as conn:
         await conn.execute(
             sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
         )
 
-    starts: list[Awaitable[None]] = []
-    for _ in range(4):
-        starts.append(DescriberStore(cfg).setup())
-
-    await asyncio.gather(*starts)
+    await StandMigrations().storage(cfg.connection, DescriberStore(cfg).migration())
 
     calls: list[Awaitable[dict[str, Any]]] = []
     for index in range(8):

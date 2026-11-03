@@ -109,9 +109,6 @@ class NotesTable(PostgresTable):
         query = self._query().add("select 1 from {schema}.no_such_table").build()
         await self._row(query, "reading a missing table")
 
-    async def check(self, columns: list[str]) -> None:
-        await self._check_layouts({"notes": columns})
-
 
 async def _drop(pool: AsyncPostgresPool, *schemas: str) -> None:
     async with pool.connection() as conn:
@@ -200,19 +197,6 @@ async def test_database_failure_becomes_the_layer_error(notes: NotesTable) -> No
     text = str(refused.value)
     assert text.startswith("notes: reading a missing table in schema table_test")
     assert "no_such_table" in text
-
-
-async def test_layout_check_names_the_drift(notes: NotesTable) -> None:
-    await notes.check(["id", "text"])
-
-    with pytest.raises(NotesError) as refused:
-        await notes.check(["id", "body"])
-
-    text = str(refused.value)
-    assert f"{SCHEMA}.notes" in text
-    assert "missing columns ['body']" in text
-    assert "unexpected columns ['text']" in text
-    assert "drop the schema" in text
 
 
 async def test_advisory_lock_serialises_transactions(pool: AsyncPostgresPool) -> None:

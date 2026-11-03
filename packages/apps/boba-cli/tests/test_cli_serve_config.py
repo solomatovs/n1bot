@@ -140,6 +140,7 @@ INSTANCE = """
 [auth]
     [auth.ldap]
         type             = "ldap"
+        identity = { realm = "corporate" }
         server           = "${ldap.server}"
         base_dn          = "${ldap.base_dn}"
         user_filter      = "(sAMAccountName={username})"
@@ -148,6 +149,7 @@ INSTANCE = """
             directory = "${ldap.mapping}"
     [auth.local]
         type          = "local"
+        identity = { realm = "boba-local" }
         require_roles = true
         [auth.local.users]
             admin = "admin-password"
@@ -157,6 +159,7 @@ INSTANCE = """
                     admin = ["read"]
     [auth.proxy]
         type          = "proxy"
+        identity = { realm = "corporate" }
         secret        = "${keys.agent_proxy}"
         max_skew_sec  = 60
         require_roles = true
@@ -182,6 +185,30 @@ def raw(tmp_path: Path) -> DictConfig:
 
 class TestConfig:
     PROFILES: ClassVar[list[str]] = ["general", "search"]
+
+    def test_service_needs_no_technical_overrides(self, raw: DictConfig) -> None:
+        section = OmegaConf.to_container(raw.agent, resolve=True)
+        assert isinstance(section, dict)
+        for key in (
+            "host",
+            "path",
+            "shutdown_timeout_sec",
+            "idle_sec",
+            "settings",
+            "clients",
+        ):
+            del section[key]
+
+        config = ServeSection.model_validate(section)
+
+        assert config.host == "127.0.0.1"
+        assert config.path == "/acp"
+        assert config.shutdown_timeout_sec == 10
+        assert config.idle_sec == 1800
+        assert config.clients == {}
+        assert config.settings.model is None
+        assert list(config.profiles) == self.PROFILES
+        assert config.history.db_schema == "boba"
 
     def test_the_instance_config_binds(self, raw: DictConfig) -> None:
         config = bind(raw, path=ServeConfig.SECTION, model=ServeConfig)

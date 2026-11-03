@@ -25,7 +25,6 @@ from fastapi.responses import JSONResponse
 from omegaconf import DictConfig
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from boba.access import GrantCheck
 from boba.aid.auth.installer import ChainlitAuthInstaller
 from boba.aid.domain.keys import AppPrefix
 from boba.aid.infra import providers
@@ -45,9 +44,7 @@ from boba.aid.infra.stale_action import StaleActionMiddleware
 from boba.auth import AuthService
 from boba.cancellation import ProcessStop, StopReason
 from boba.config import ConfigError
-from boba.connection_broker.crypto import SealKeys
 from boba.identity.context import CallContexts
-from boba.identity.run import Runs
 from boba.runtime import providers as runtime
 from boba.runtime.config import AppName
 from boba.runtime.di import Container
@@ -57,7 +54,6 @@ from boba.runtime.http import (
     StaleSessionMiddleware,
 )
 from boba.runtime.storage import StorageClient
-from boba.toolrun.streams import CallJournals
 
 
 def run_app(raw: DictConfig, conf_dir: Path):
@@ -370,14 +366,10 @@ def _use_auth(container: Container) -> None:
         )
         raise RuntimeError(msg)
 
-    sso_path = ""
-    if auth.providers().sso:
-        sso_path = config.sso_path()
-
     installer = ChainlitAuthInstaller(
         config.aid.url_prefix,
-        sso_path,
-        config.proxy(),
+        config.kerberos_entries(),
+        config.proxy_entries(),
         auth,
         config.session.session_ttl_sec,
         sessions,
@@ -393,7 +385,6 @@ def _use_auth(container: Container) -> None:
 
 
 def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
-    from boba.aid.infra.plugins import ChatPlugins  # noqa: PLC0415
     from boba.aid.infra.thread_room import ThreadSurfaces  # noqa: PLC0415
 
     container = Container(level="app")
@@ -401,16 +392,7 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container.provide(providers.thread_surfaces, ThreadSurfaces())
     container.provide(runtime.get_runtime_config, c)
     contexts = CallContexts()
-    runs = Runs(contexts)
-    plugins = ChatPlugins(contexts)
     container.provide(runtime.call_contexts, contexts)
-    container.provide(runtime.runs, runs)
-    # журналов у чата нет, но реестр собственных инструментов читает их держатель
-    container.provide(runtime.call_journals, CallJournals(None, runs))
-    container.provide(
-        runtime.own_tools, plugins.own_tools(runtime.connection_store_ref)
-    )
-    container.provide(runtime.grant_check, GrantCheck.STRICT)
     container.provide(runtime.app_name, AppName.AID)
     tokens = runtime.session_tokens(c)
     container.provide(runtime.session_tokens, tokens)
@@ -418,29 +400,16 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     ChainlitSessions.install(sessions)
     container.provide(providers.session_source, sessions)
     container.provide(runtime.live_sessions, sessions)
-    # реестр типов нужен загрузчику плагинов ещё до старта контейнера:
-    # по нему параметры-соединения получают вид; сам реестр — чистый discover
-    container.provide(runtime.connection_types, runtime.connection_types())
-    container.provide(runtime.seal_keys, SealKeys())
     container.eager(providers.get_app_config)
     container.eager(runtime.postgres_pool)
-    container.eager(providers.harness_storage)
     container.eager(runtime.users_table)
     container.eager(runtime.auth_service)
-    container.eager(runtime.credential_source)
     container.eager(runtime.session_keeper)
     container.eager(providers.chat_profiles_registry)
     container.eager(providers.chainlit_data_layer)
     container.eager(runtime.message_bus)
     container.eager(runtime.payload_store)
     container.eager(runtime.call_ambient)
-    container.eager(runtime.connection_store)
-    # инструменты собираются на старте: конфиг плагинов проверяется до сессий
-    container.eager(runtime.tool_launchers)
-    container.eager(runtime.tool_registry)
-    # запуск агента — после реестра: ретранслятор отдаёт его инструменты сервером
-    # chat; запуск процессов поднимается на старте; индекс агентов рендереры
-    # тредов читают синхронно
     container.eager(
         providers.agent_launcher,
         providers.thread_deleter,

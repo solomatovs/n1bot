@@ -17,6 +17,7 @@ from boba.canvas.storage import StorageError, StorageNotFoundError
 from boba.runtime.config import InstanceConfig, ProgramRoots
 from boba.runtime.storage import (
     ImageStorageClient,
+    ImageStorageConfig,
     LocalStorageClient,
     LocalStorageConfig,
     StorageClient,
@@ -81,8 +82,8 @@ async def read_all(storage: StorageClient, object_key: str) -> bytes:
     return bytes(collected)
 
 
-def _storage_cfg(**kw: Any) -> LocalStorageConfig:
-    """Тайминги лаунчера обязательны: дефолтов у конфига нет."""
+def _image_cfg(**kw: Any) -> ImageStorageConfig:
+    """Хранилище образов с таймингами монтирования стенда."""
     fields: dict[str, Any] = {
         "mounting": {
             "mount_wait_sec": 10.0,
@@ -94,7 +95,7 @@ def _storage_cfg(**kw: Any) -> LocalStorageConfig:
         "mount_dir": "/tmp",  # noqa: S108
     }
     fields.update(kw)
-    return LocalStorageConfig.model_validate(fields)
+    return ImageStorageConfig.model_validate(fields)
 
 
 def _workspace(template: str, images: str) -> WorkspaceSpec:
@@ -108,7 +109,7 @@ def _image_client(
 ) -> ImageStorageClient:
     """Хранилище образов: шаблон и каталог образов теста, bwrap и fuse2fs —
     из каталога программы прогона (BOBA_RUNTIME)."""
-    cfg = _storage_cfg(kind="image", op_timeout_sec=op_timeout_sec)
+    cfg = _image_cfg(op_timeout_sec=op_timeout_sec)
 
     return ImageStorageClient(
         cfg, _workspace(template, images), ProgramRoots().locate()
@@ -257,19 +258,46 @@ def _launcher_options() -> LauncherOptions:
 
 
 class TestConfig:
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("legacy", [False, True], ids=["stream", "mounting"])
+    async def test_local_files_keep_the_configured_chunk_size(
+        self, tmp_path: Path, legacy: bool
+    ) -> None:
+        fields: dict[str, Any] = {"files_dir": str(tmp_path)}
+        if legacy:
+            fields["mounting"] = {"copy_chunk_bytes": 3}
+        else:
+            fields["chunk_bytes"] = 3
+
+        config = LocalStorageConfig.model_validate(fields)
+        client = LocalStorageClient(config)
+        key = "7/t1/upload/chunks.txt"
+        await StorageSeed().put(client, key, b"abcdefgh")
+
+        chunks: list[bytes] = []
+        async with await client.open_stream(key, ReadWindow.entire()) as opened:
+            async for chunk in opened.chunks:
+                chunks.append(chunk)
+
+        assert chunks == [b"abc", b"def", b"gh"]
+
     def test_local_kind_requires_files_dir(self) -> None:
-        with pytest.raises(ValueError, match="expects files_dir"):
-            _storage_cfg(kind="local")
+        with pytest.raises(ValueError, match="files_dir"):
+            LocalStorageConfig.model_validate({})
+
+    def test_image_storage_requires_mounting(self) -> None:
+        with pytest.raises(ValueError, match="mounting"):
+            ImageStorageConfig.model_validate({"mount_dir": "/srv/mount"})
 
     def test_unknown_kind_rejected(self) -> None:
-        with pytest.raises(ValueError, match="'local' or 'image'"):
-            _storage_cfg(kind="s3", files_dir="/srv")
+        with pytest.raises(ValueError, match="'image'"):
+            _image_cfg(kind="s3")
 
     def test_factory_picks_image_client(self, tmp_path: Path) -> None:
         """Образы пользователей — workspace/ каталога данных экземпляра,
         шаблон — каталога программы."""
         factory = StorageFactory(_instance(tmp_path))
-        client = factory.create(_storage_cfg(kind="image"))
+        client = factory.create(_image_cfg())
         if not (isinstance(client, ImageStorageClient)):
             raise AssertionError(f"image storage expected, got {type(client)}")
 
@@ -278,7 +306,7 @@ class TestConfig:
             raise AssertionError(f"image of user 7: {image}")
 
     def test_factory_picks_local_client(self, tmp_path: Path) -> None:
-        cfg = _storage_cfg(files_dir="/srv/files")
+        cfg = LocalStorageConfig(files_dir="/srv/files")
         client = StorageFactory(_instance(tmp_path)).create(cfg)
         if type(client) is not LocalStorageClient:
             raise AssertionError(f"local storage expected, got {type(client)}")
@@ -490,7 +518,7 @@ class TestErrorBoundary:
 
     @staticmethod
     def _local(tmp_path: Path) -> LocalStorageClient:
-        cfg = _storage_cfg(files_dir=str(tmp_path / "files"))
+        cfg = LocalStorageConfig(files_dir=str(tmp_path / "files"))
 
         return LocalStorageClient(cfg)
 

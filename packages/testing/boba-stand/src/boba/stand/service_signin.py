@@ -18,6 +18,8 @@ from typing import ClassVar
 import httpx
 
 from boba.auth.proxy import ProxyAssertions
+from boba.identity.principal import UserIdentity
+from boba.identity.session import Login
 
 __all__ = ["FakeServiceProcess", "ServiceSignIn", "ServiceSignInError"]
 
@@ -49,12 +51,15 @@ class ServiceSignIn:
         self._client_secret = client_secret
         self._assertions = ProxyAssertions(proxy_secret, 0)
 
-    def token(self, login: str, roles: str, resource: str) -> str:
+    def token(
+        self, login: str, roles: str, resource: str, realm: str = "corporate"
+    ) -> str:
         """Токен пользователя login с ролями roles для endpoint'а resource."""
+        identity = UserIdentity(realm=realm, login=Login(login))
         form = {
             "grant_type": self.GRANT,
             "assertion": self._assertions.issue(
-                self._client_id, login, roles, self._public_url, resource
+                self._client_id, identity.identifier, roles, self._public_url, resource
             ),
             "client_id": self._client_id,
             "client_secret": self._client_secret,

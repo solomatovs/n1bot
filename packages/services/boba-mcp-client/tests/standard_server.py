@@ -280,6 +280,7 @@ class StandardServer:
         retired: str,
         workspace: str,
         commands: bool,
+        catalog: bool = False,
     ) -> None:
         extensions = self._extensions(apps, extended, workspace, commands)
 
@@ -303,6 +304,8 @@ class StandardServer:
         self._extra_prompt_on = False
         self._grown = 0
         self._count = 0
+        if catalog:
+            self._mcp.tool()(self.connection_list)
         self._mcp.tool(annotations=ToolAnnotations(read_only_hint=True))(self.add)
         self._mcp.tool(
             annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False)
@@ -376,6 +379,19 @@ class StandardServer:
             extensions = (*extensions, declared)
 
         return extensions
+
+    def connection_list(self) -> str:
+        """Каталог стороннего MCP, доступный AID через tools/call."""
+        rows = [
+            {
+                "name": "remote-orders",
+                "kind": "postgres",
+                "url": "postgres://warehouse/orders",
+                "host": "warehouse",
+                "description": "Orders catalog",
+            }
+        ]
+        return json.dumps(rows)
 
     def add(self, a: int, b: int) -> int:
         """Adds two numbers."""
@@ -752,6 +768,7 @@ if __name__ == "__main__":
     parser.add_argument("--retired", default="")
     parser.add_argument("--workspace", default="")
     parser.add_argument("--commands", action="store_true")
+    parser.add_argument("--catalog", action="store_true")
     parser.add_argument("--no-apps", action="store_true")
     parser.add_argument("--denied", action="store_true")
     parser.add_argument("--require-header", action="store_true")
@@ -767,6 +784,7 @@ if __name__ == "__main__":
         args.retired,
         args.workspace,
         args.commands,
+        args.catalog,
     )
     if args.transport.startswith("stdio"):
         server.run(args.transport)

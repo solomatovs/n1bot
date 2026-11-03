@@ -1,15 +1,14 @@
-"""Схема postgres хранилища и транзакционный advisory-замок: то, что нужно
-каждому хранилищу до первого запроса, и применение файлов schema/*.sql пакета.
+"""Имена схем, advisory-замки и SQL-ресурсы явных миграций PostgreSQL.
 
 Ошибки:
-PostgresError — схему создать не удалось не по правам, каталога файлов схемы
-    нет, он пуст или сервер отклонил файл, соединение или пул отказали.
+PostgresError — схема не пуста, SQL-ресурс отсутствует либо БД отклонила DDL.
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
+from importlib.resources import files
 from importlib.resources.abc import Traversable
 from operator import attrgetter
 from typing import Any, ClassVar
@@ -31,7 +30,7 @@ class AdvisoryLock:
     """Транзакционный advisory-замок Postgres по текстовому ключу.
 
     Ключ хэшируется на сервере, замок снимается с концом транзакции. Им
-    сериализуют DDL при одновременном старте процессов кластера и запись по
+    сериализуют одновременные команды миграции и запись по
     области: держатель — тот, кто первым выполнил acquire в своей транзакции.
     """
 
@@ -55,14 +54,10 @@ class AdvisoryLock:
 
 
 class PostgresSchema:
-    """Схема postgres хранилища: идентификатор для запросов, создание с
-    терпимостью к отсутствию прав, замок DDL, применение файлов schema/*.sql
-    пакета и сведения о таблицах.
+    """Имя схемы для запросов и операции управления схемой для команд миграции.
 
-    Создаёт её PostgresTable по имени из конфига, а DDL на старте процесса
-    применяют корень приложения, хранилища плагинов, история агента и
-    накат ix; без права на create schema её заводит администратор, и отказ
-    по правам только пишется в лог.
+    Хранилища используют ident, а отдельные команды migrate/upgrade применяют
+    SQL-ресурсы и читают метаданные таблиц. Запуск приложения DDL не вызывает.
     """
 
     DDL_LOCK_PREFIX: ClassVar[str] = "boba.ddl."
@@ -106,6 +101,7 @@ class PostgresSchema:
         conn: psycopg.AsyncConnection[Any],
         schema_dir: Traversable,
         names: Mapping[str, sql.Composable],
+        only: frozenset[str] = frozenset(),
     ) -> Sequence[str]:
         """Файлы *.sql каталога schema_dir по порядку имён в этой схеме; итог —
         имена применённых файлов. Схема создаётся, каждый файл идёт своей
@@ -117,7 +113,7 @@ class PostgresSchema:
         Ошибки:
         PostgresError — каталога нет, он пуст или сервер отклонил файл.
         """
-        files = self._files(schema_dir)
+        files = self.files_in(schema_dir, only)
 
         async with conn.transaction():
             await self.ddl_lock().acquire(conn)
@@ -142,7 +138,9 @@ class PostgresSchema:
 
         return applied
 
-    def _files(self, schema_dir: Traversable) -> list[Traversable]:
+    def files_in(
+        self, schema_dir: Traversable, only: frozenset[str] = frozenset()
+    ) -> list[Traversable]:
         """Файлы *.sql каталога по порядку имён.
 
         Ошибки:
@@ -154,8 +152,21 @@ class PostgresSchema:
 
         files: list[Traversable] = []
         for path in schema_dir.iterdir():
+            if only:
+                if path.name not in only:
+                    continue
+
             if path.name.endswith(".sql"):
                 files.append(path)
+
+        found = frozenset(path.name for path in files)
+        missing = only - found
+        if missing:
+            msg = (
+                f"schema {self._name}: requested SQL files {sorted(missing)} "
+                f"do not exist under {schema_dir}"
+            )
+            raise PostgresError(msg)
 
         if not files:
             msg = f"schema {self._name}: no *.sql files under {schema_dir}"
@@ -164,6 +175,26 @@ class PostgresSchema:
         files.sort(key=attrgetter("name"))
 
         return files
+
+    async def require_empty(self, conn: psycopg.AsyncConnection[Any]) -> None:
+        """Проверяет все таблицы схемы до первого DDL команды migrate."""
+        cur = await conn.execute(
+            """select c.relname from pg_catalog.pg_class c
+                join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+                where n.nspname = %s and c.relkind in ('r', 'p', 'f')
+                order by c.relname""",
+            (self._name,),
+        )
+        tables = await cur.fetchall()
+        if not tables:
+            return
+
+        existing = ", ".join(str(row[0]) for row in tables)
+        msg = (
+            f"migrate schema {self._name}: expected an empty schema; "
+            f"existing tables: {existing}; no migration SQL was applied"
+        )
+        raise PostgresError(msg)
 
     async def ensure_with(self, pool: AsyncPostgresPool) -> None:
         """То же на соединении из пула; отказ пула — PostgresError."""
@@ -219,3 +250,14 @@ class PostgresSchema:
             names.add(str(row[0]))
 
         return names
+
+    async def apply_packages(
+        self, conn: psycopg.AsyncConnection[Any], packages: Sequence[str]
+    ) -> Sequence[str]:
+        """Применяет схемы указанных пакетов в порядке зависимостей вызывающего."""
+        applied: list[str] = []
+        for package in packages:
+            source = files(package) / "schema"
+            applied.extend(await self.apply_files(conn, source, {}))
+
+        return applied

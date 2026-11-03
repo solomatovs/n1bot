@@ -9,6 +9,7 @@ import gc
 import json
 import os
 import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -94,8 +95,17 @@ def _spec(tool_name: str) -> StreamSpec:
     raise AssertionError(f"no stand tool {tool_name!r}")
 
 
-def _open_fds() -> int:
-    return len(os.listdir("/proc/self/fd"))
+def _open_fds() -> set[tuple[str, str]]:
+    opened: set[tuple[str, str]] = set()
+    for entry in Path("/proc/self/fd").iterdir():
+        try:
+            target = os.readlink(entry)
+        except FileNotFoundError:
+            continue
+
+        opened.add((entry.name, target))
+
+    return opened
 
 
 class TestCancellation:
@@ -248,7 +258,18 @@ class TestSingleReader:
 
 class TestResources:
     def test_no_fd_leak_across_calls(self, tmp_path: Path) -> None:
-        """Дескрипторы после серии вызовов — как до неё: успех, отказ, отмена."""
+        """Проверка в своём процессе не считает сокеты соседних async-тестов."""
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).resolve()), str(tmp_path)],
+            capture_output=True,
+            text=True,
+            timeout=90,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+
+    def _assert_calls_release_descriptors(self, tmp_path: Path) -> None:
+        """Вызовы успеха, отказа и отмены не оставляют новых дескрипторов."""
         launcher = _launcher(tmp_path, timeout_sec=15.0)
 
         def one_ok() -> None:
@@ -285,4 +306,9 @@ class TestResources:
             one_broken()
 
         gc.collect()
-        assert _open_fds() == before
+        leaked = _open_fds() - before
+        assert not leaked, leaked
+
+
+if __name__ == "__main__":
+    TestResources()._assert_calls_release_descriptors(Path(sys.argv[1]))

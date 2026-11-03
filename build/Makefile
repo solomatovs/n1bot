@@ -421,6 +421,7 @@ prepare-os: | prepare-nuitka
 # share/ чата сразу в каталог программы aid
 prepare-share: $(CHAINLIT_TARBALL) $(WEBASSETS) | prepare-os
 	@$(DOCKER_BUILD) $(FRESH) -f $(BUILD)/ui.Dockerfile --build-arg NODE_IMAGE=$(NODE_IMAGE) \
+	    --build-arg BUILD_IMAGE=boba-build-base:$(TAG) \
 	    --build-arg OS_IMAGE=boba-build-os:$(TAG) --build-arg CHAINLIT_VERSION=$(CHAINLIT_VERSION) \
 	    --target share --tag boba-build-share:$(TAG) $(ROOT)
 	$(call image-copy,boba-build-share:$(TAG),/share,$(OUT_AID)/share)

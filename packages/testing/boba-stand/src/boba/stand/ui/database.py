@@ -36,10 +36,18 @@ from boba.db.clickhouse.connection import ClickHouseConfig
 from boba.db.oracle.connection import OracleConfig
 from boba.db.postgres import AsyncPostgresPool, PgQuery, PgQueryBuilder
 from boba.db.postgres.connection.config import PostgresConfig
+from boba.db.postgres.migrate import MigrationTarget, PostgresMigrations
 from boba.ix_core.database import IxDatabase
 from boba.krb import KerberosWorkspaceConfig
 from boba.mcp_client.client import McpServerConfig, StdioCommand
-from boba.runtime.config import InstanceConfig, RuntimeConfig
+from boba.runtime.config import (
+    InstanceConfig,
+    ProcessConfig,
+    RuntimeConfig,
+    ValueCipherConfig,
+)
+from boba.runtime.migrate import ApplicationMigrations
+from boba.runtime.plugins import PluginMigrations
 from boba.stand.database import TestDatabase
 from boba.stand.edm import EdmDataset, EdmSource, EdmSources
 from boba.stand.ix_index import IxPage, IxPages, SharedIndexers, StandIxStack
@@ -164,6 +172,10 @@ class StandDatabase:
         runtime = bind(self._built, path=RuntimeConfig.SECTION, model=RuntimeConfig)
         self._schema = runtime.db_schema
         self._cipher = SecretCipher(runtime.connections.cipher.get_secret_value())
+        tool_config = bind(self._tools, path="app", model=ProcessConfig)
+        cipher = bind(self._tools, path="app.connection_store", model=ValueCipherConfig)
+        self._connection_schema = tool_config.db_schema
+        self._connection_cipher = SecretCipher(cipher.cipher.get_secret_value())
         self._types = ConnectionTypes.discover()
         instance = bind(self._built, path=InstanceConfig.SECTION, model=InstanceConfig)
         layout = instance.layout(app.config_path().parent)
@@ -181,27 +193,64 @@ class StandDatabase:
     async def _prepare(self) -> None:
         await self._ensure_database()
         await self._ensure_extensions()
-        async with self._pool() as pool, pool.cursor() as cur:
-            for table in (ConnectionTable.GRANTS, ConnectionTable.CONNECTIONS):
-                query = (
-                    PgQueryBuilder()
-                    .add(
-                        "drop table if exists {table} cascade",
-                        table=sql.Identifier(self._schema, table.value),
-                    )
-                    .build()
-                )
-                await cur.execute(query.text, query.params)
-
-            query = (
-                PgQueryBuilder()
-                .add(
-                    "drop table if exists {table} cascade",
-                    table=sql.Identifier(self._schema, self.MCP_TABLE),
-                )
-                .build()
+        application = ApplicationMigrations()
+        raw = OmegaConf.create(self._built)
+        OmegaConf.set_readonly(raw, False)
+        OmegaConf.update(raw, "postgres.dbname", self._name)
+        OmegaConf.update(raw, "postgres_history.dbname", self._name)
+        targets = list(
+            await application.targets(
+                raw,
+                (
+                    "boba.identity_postgres",
+                    "boba.runtime",
+                    "boba.connection_broker",
+                    "boba.aid.mcp_servers",
+                ),
             )
-            await cur.execute(query.text, query.params)
+        )
+        if OmegaConf.select(raw, "app.agent.history.kind") == "postgres":
+            targets.extend(
+                await application.targets(
+                    raw,
+                    ("boba.identity_postgres", "boba.history.postgres"),
+                    section="app.agent.history",
+                )
+            )
+        tools = OmegaConf.create(self._tools)
+        OmegaConf.set_readonly(tools, False)
+        OmegaConf.update(tools, "postgres.dbname", self._name)
+        OmegaConf.update(tools, "env.tool_launcher", "process")
+        plugin_sources = PluginMigrations()
+        tool_migrations = ApplicationMigrations((plugin_sources,))
+        targets.extend(
+            await tool_migrations.targets(
+                tools, ("boba.identity_postgres", "boba.connection_broker")
+            )
+        )
+        isolated: list[MigrationTarget] = []
+        for target in targets:
+            connection = target.postgres.model_copy(update={"dbname": self._name})
+            if connection.where() != self._postgres.where():
+                msg = (
+                    f"test migration target {connection.where()} does not match "
+                    f"the stand database {self._postgres.where()}"
+                )
+                raise StandError(msg)
+
+            isolated.append(MigrationTarget(connection, target.plan))
+
+        schemas = sorted({target.plan.db_schema for target in isolated})
+
+        async with self._pool() as pool, pool.connection() as conn:
+            for schema in schemas:
+                await conn.execute(
+                    sql.SQL("drop schema if exists {} cascade").format(
+                        sql.Identifier(schema)
+                    )
+                )
+
+        await PostgresMigrations().apply(isolated)
 
     async def _ensure_database(self) -> None:
         maintenance = AsyncPostgresPool(self._maintenance)
@@ -374,7 +423,9 @@ class StandDatabase:
 
     async def _add_stored(self, name: str, connection: ConnectionBase) -> UUID:
         async with self._pool() as pool:
-            store = ConnectionStore(pool, self._schema, self._cipher, self._types)
+            store = ConnectionStore(
+                pool, self._connection_schema, self._connection_cipher, self._types
+            )
             connection_id = await store.add(name, connection)
             await self._grant_stand_roles(store, (connection_id,))
 
@@ -412,7 +463,9 @@ class StandDatabase:
             ssl_verify=False,
         )
         async with self._pool() as pool:
-            store = ConnectionStore(pool, self._schema, self._cipher, self._types)
+            store = ConnectionStore(
+                pool, self._connection_schema, self._connection_cipher, self._types
+            )
             # строки прошлых прогонов могут не проходить нынешний валидатор
             # профиля, поэтому чистятся мимо стора
             async with pool.cursor() as cur:
@@ -421,7 +474,7 @@ class StandDatabase:
                         PgQueryBuilder()
                         .add(
                             "delete from {table}",
-                            table=sql.Identifier(self._schema, table.value),
+                            table=sql.Identifier(self._connection_schema, table.value),
                         )
                         .when(
                             table is ConnectionTable.GRANTS,
@@ -449,7 +502,9 @@ class StandDatabase:
         oracle = StandOracle(self._built).connection()
 
         async with self._pool() as pool:
-            store = ConnectionStore(pool, self._schema, self._cipher, self._types)
+            store = ConnectionStore(
+                pool, self._connection_schema, self._connection_cipher, self._types
+            )
             row = await store.add("main", oracle)
             await self._grant_stand_roles(store, [row])
 
@@ -508,7 +563,9 @@ class StandDatabase:
         await EdmDataset(source, self.EDM_DATABASE).recreate()
 
         async with self._pool() as pool:
-            store = ConnectionStore(pool, self._schema, self._cipher, self._types)
+            store = ConnectionStore(
+                pool, self._connection_schema, self._connection_cipher, self._types
+            )
             row = await store.add("edm", source.clickhouse)
             await self._grant_stand_roles(store, [row])
 
@@ -529,7 +586,9 @@ class StandDatabase:
         await sinks.recreate()
 
         async with self._pool() as pool:
-            store = ConnectionStore(pool, self._schema, self._cipher, self._types)
+            store = ConnectionStore(
+                pool, self._connection_schema, self._connection_cipher, self._types
+            )
             rows = [
                 await store.add(self.SINK_CH, sinks.ch_connection),
                 await store.add(self.SINK_ORA, sinks.ora_connection),

@@ -29,6 +29,7 @@ from starlette.applications import Starlette
 from boba.access import ProfileGrant
 from boba.auth import SignIns
 from boba.auth.config import KerberosAuthConfig
+from boba.auth.proxy import ProxyAssertionVerifier
 from boba.auth.sso import SpnegoGate
 from boba.config import ConfigLoader, bind
 from boba.krb import KerberosEnv
@@ -85,13 +86,15 @@ def server(chat_config: DictConfig, krb5_env: None) -> AuthServer:
     config = bind(chat_config, path="auth.kerberos", model=KerberosAuthConfig)
     catalog = EndpointCatalog({ENDPOINT: ProfileGrant(tools=["*"], roles=["*"])})
     assembly = SignInAssembly(Ldap3Directory(), catalog)
-    sign_ins = SignIns(None, SpnegoGate(assembly.sso(config, SECRET)), None)
+    sign_ins = SignIns(
+        None, {"corporate": SpnegoGate(assembly.sso(config, SECRET))}, {}
+    )
 
     return AuthServer(
         PUBLIC,
         sign_ins,
         ServiceTokens(PUBLIC, SECRET, 300, 3600, "stand", ServiceMark.TOKEN_SALT),
-        None,
+        ProxyAssertionVerifier(()),
         RegisteredClients(SealedValues(SECRET, ServiceMark.SEALED_SALT), {}),
         SealedValues(SECRET, ServiceMark.SEALED_SALT),
         [f"{PUBLIC}/mcp/{ENDPOINT}"],
@@ -222,7 +225,10 @@ async def test_ticket_signs_in_and_issues_a_token(
 
     login, _, _ = STAND.reader_principal.partition("@")
     claims = access.claims
-    if claims is None or str(claims.get("login", "")).lower() != login.lower():
+    if (
+        claims is None
+        or str(claims.get("login", "")).lower() != f"corporate:{login.lower()}"
+    ):
         raise AssertionError(f"the token names the kerberos user {login}: {claims}")
 
     if access.scopes != [ENDPOINT]:

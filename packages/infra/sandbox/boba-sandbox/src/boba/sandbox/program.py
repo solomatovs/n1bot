@@ -25,7 +25,6 @@ ProgramExit и текстом в stderr.
 
 from __future__ import annotations
 
-import asyncio
 import importlib
 import json
 import logging
@@ -72,7 +71,7 @@ class PluginCommand(StrEnum):
     """Подкоманды программы плагина."""
 
     MANIFEST = "manifest"
-    SETUP = "setup"
+    MIGRATION_PLAN = "migration-plan"
     ZYGOTE = "zygote"
     CALL = "call"
     SELF_CHECK = "self-check"
@@ -120,8 +119,8 @@ class PluginProgram:
         if name == PluginCommand.MANIFEST:
             return self._manifest()
 
-        if name == PluginCommand.SETUP:
-            return self._setup()
+        if name == PluginCommand.MIGRATION_PLAN:
+            return self._migration()
 
         if name == PluginCommand.SELF_CHECK:
             return self._self_check()
@@ -161,13 +160,13 @@ class PluginProgram:
 
         return ProgramExit.OK
 
-    def _setup(self) -> int:
-        """Хранилище плагина по секции со stdin; повтор безвреден."""
+    def _migration(self) -> int:
+        """План создания хранилища по секции со stdin, без подключения к БД."""
         self._log_to_stderr()
 
         setup = self._plugin.setup
         if setup is None:
-            self._fail(f"plugin {self._plugin.id} declares no setup")
+            self._fail(f"plugin {self._plugin.id} declares no storage migration")
             return ProgramExit.USAGE
 
         section = self._section()
@@ -181,11 +180,15 @@ class PluginProgram:
             return ProgramExit.CONFIG
 
         try:
-            asyncio.run(storage.setup())
+            document = storage.migration()
         except Exception as exc:
-            self._fail(f"plugin {self._plugin.id}: preparing its storage failed: {exc}")
+            self._fail(
+                f"plugin {self._plugin.id}: preparing its migration plan failed: {exc}"
+            )
             return ProgramExit.FAILURE
 
+        sys.stdout.write(document)
+        sys.stdout.flush()
         return ProgramExit.OK
 
     def _self_check(self) -> int:

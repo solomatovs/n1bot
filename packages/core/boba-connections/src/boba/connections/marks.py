@@ -14,14 +14,8 @@ __all__ = ["ConnectionRefusal"]
 
 
 class ConnectionRefusal(StrEnum):
-    """Отказы работы с соединениями субъекта: whitelist на вызов и приём
-    запечатанного соединения исполнителем."""
+    """Причины отказа в доступе к профилю или credentials пользователя."""
 
     AMBIGUOUS = "ambiguous_connection"
     NO_DELEGATION = "no_delegated_credentials"
     NOT_VISIBLE = "connection_not_visible"
-    NOT_SEALED = "connection_not_sealed"
-    SEAL_KEY_UNKNOWN = "connection_seal_key_unknown"
-    SEAL_DAMAGED = "connection_seal_damaged"
-    SEAL_EXPIRED = "connection_seal_expired"
-    ANOTHER_KIND = "connection_of_another_kind"

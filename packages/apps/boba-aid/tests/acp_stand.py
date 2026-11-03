@@ -30,7 +30,7 @@ from uuid import uuid4
 import pytest
 import uvicorn
 from acp.experimental.v2 import schema
-from aid_stand import NoConnectionStore, RelayStand, TabSession
+from aid_stand import RelayStand, TabSession
 from chainlit.session import WebsocketSession
 from psycopg import sql
 from pydantic import JsonValue, SecretStr
@@ -52,8 +52,6 @@ from boba.aid.agent.commands import MenuCommand
 from boba.aid.agent.config import (
     AgentCommandConfig,
     AgentConfig,
-    AgentLimitsConfig,
-    AgentToolsConfig,
     PostgresAgentHistory,
 )
 from boba.aid.agent.settings import (
@@ -64,13 +62,11 @@ from boba.aid.agent.settings import (
     SettingsFileBuilder,
 )
 from boba.aid.rendering.acp_view import SessionUpdate
-from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.chat.profiles import ReasoningReturn
 from boba.core.mcp_names import McpToolNames
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.connection.auth import PasswordAuth
-from boba.identity.context import CallContexts
 from boba.mcp_client.client import (
     FixedServerConfigs,
     McpServerConfig,
@@ -283,13 +279,9 @@ class AgentStand:
                 args=["--stdio", "--setting-sources", ""],
                 start_timeout_sec=60.0,
                 request_timeout_sec=60.0,
-                stop_timeout_sec=10.0,
             ),
             history=self._history,
-            tools=AgentToolsConfig(always_load=()),
-            limits=AgentLimitsConfig(tool_result_window_share=0.25),
             public_url=public_url,
-            seal_ttl_sec=600,
             question_timeout_sec=600,
         )
 
@@ -513,8 +505,7 @@ class Agents:
         self._stand = AgentStand(root, history.history())
         self._builder = SettingsFileBuilder(self._stand.config())
         self._servers = McpServers(servers)
-        credentials = KerberosCredentialSource(None, NoRefresh())
-        relay = RelayStand(NoConnectionStore(), lambda: credentials, CallContexts())
+        relay = RelayStand()
         self.registrations = relay.registrations
         self.relay = relay.relay(self._servers)
         self.menus = relay.menus(self._servers)

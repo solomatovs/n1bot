@@ -31,7 +31,7 @@ from pydantic import BaseModel, ConfigDict
 
 from boba.cancellation import RunCancellation, ToolStopped, run_cancellation
 from boba.runtime.config import ProgramRoots
-from boba.runtime.storage import ImageStorageClient, LocalStorageConfig
+from boba.runtime.storage import ImageStorageClient, ImageStorageConfig
 from boba.sandbox import SandboxProfile, WorkspaceSpec
 from boba.sandbox.cgroup import CgroupManager
 from boba.sandbox.profile import SandboxMount
@@ -650,7 +650,7 @@ class LoadStand:
                 "mount": f"{self.images_dir}/{{user_id}}.ext4:{self.WORKSPACE}",
             }
         )
-        cfg = LocalStorageConfig.model_validate(
+        cfg = ImageStorageConfig.model_validate(
             {
                 "kind": "image",
                 "mount_dir": "/tmp",  # noqa: S108

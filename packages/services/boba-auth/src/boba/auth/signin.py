@@ -18,6 +18,7 @@ from pydantic import SecretStr
 
 from boba.auth.config import LdapAuthConfig, LocalAuthConfig
 from boba.auth.profiles import ProfileProviders
+from boba.auth.realms import RealmSelection
 from boba.auth.roles import RoleProviders
 from boba.identity.admission import PrincipalFacts
 from boba.identity.directory import (
@@ -59,6 +60,7 @@ class LoginField(StrEnum):
     LOGIN = "login"
     PASSWORD = "password"  # noqa: S105 — имя поля формы
     PROOF = "proof"
+    REALM = "realm"
     COOKIE = "boba_mcp_login"
     SSO = "/login/sso"
 
@@ -73,24 +75,34 @@ class LocalSignIn(PasswordSignIn):
         self._roles = roles
         self._profiles = profiles
 
-    async def sign_in(self, username: str, password: str) -> SignedIn | None:
+    @property
+    def realms(self) -> frozenset[str]:
+        return frozenset({self._config.identity.realm})
+
+    async def sign_in(
+        self, username: str, password: str, realm: str = ""
+    ) -> SignedIn | None:
+        if realm not in ("", self._config.identity.realm):
+            return None
+
         if self._config.users.get(username) != password:
             return None
 
         facts = PrincipalFacts(login=username)
         roles = frozenset(await self._roles.admit(facts))
         grant = await self._profiles.granted(facts, roles)
+        login = UserLogin.of(username)
+        identity = self._config.identity.identity(login.key)
         sign_in = SignInMetadata(
             provider=SignInProvider.LOCAL.value,
+            identity=identity,
             roles=roles,
             profiles=grant.granted,
             profile=grant.selected,
         )
 
-        login = UserLogin.of(username)
-
         return SignedIn(
-            identifier=login.key, display_name=login.display, sign_in=sign_in
+            identifier=identity.identifier, display_name=login.display, sign_in=sign_in
         )
 
 
@@ -110,7 +122,16 @@ class LdapSignIn(PasswordSignIn):
         self._profiles = profiles
         self._logger = logging.getLogger(__name__)
 
-    async def sign_in(self, username: str, password: str) -> SignedIn | None:
+    @property
+    def realms(self) -> frozenset[str]:
+        return frozenset({self._config.identity.realm})
+
+    async def sign_in(
+        self, username: str, password: str, realm: str = ""
+    ) -> SignedIn | None:
+        if realm not in ("", self._config.identity.realm):
+            return None
+
         # личность подтверждаем bind'ом под пользователем
         bind_user = LoginTemplate.render(self._config.bind_dn_template, username)
         auth = SimpleBind(method="simple", user=bind_user, password=SecretStr(password))
@@ -185,17 +206,18 @@ class LdapSignIn(PasswordSignIn):
         )
         roles = frozenset(await self._roles.admit(facts))
         grant = await self._profiles.granted(facts, roles)
+        login = UserLogin.of(entry.samaccountname)
+        identity = self._config.identity.identity(login.key)
         sign_in = SignInMetadata(
             provider=SignInProvider.LDAP.value,
+            identity=identity,
             roles=roles,
             profiles=grant.granted,
             profile=grant.selected,
         )
 
-        login = UserLogin.of(entry.samaccountname)
-
         return SignedIn(
-            identifier=login.key, display_name=login.display, sign_in=sign_in
+            identifier=identity.identifier, display_name=login.display, sign_in=sign_in
         )
 
 
@@ -204,13 +226,28 @@ class CompositeSignIn(PasswordSignIn):
 
     def __init__(self, providers: Sequence[PasswordSignIn]) -> None:
         self._providers = list(providers)
+        self._selection = RealmSelection()
 
-    async def sign_in(self, username: str, password: str) -> SignedIn | None:
+    @property
+    def realms(self) -> frozenset[str]:
+        realms: set[str] = set()
+        for provider in self._providers:
+            realms.update(provider.realms)
+
+        return frozenset(realms)
+
+    async def sign_in(
+        self, username: str, password: str, realm: str = ""
+    ) -> SignedIn | None:
+        selected = self._selection.selected(realm, self.realms, "password sign-in")
         last_error: AuthenticationError | None = None
 
         for provider in self._providers:
+            if selected not in provider.realms:
+                continue
+
             try:
-                signed = await provider.sign_in(username, password)
+                signed = await provider.sign_in(username, password, selected)
             except AuthenticationError as exc:
                 last_error = exc
                 continue

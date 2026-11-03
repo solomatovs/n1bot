@@ -1,87 +1,28 @@
-"""Параметры-соединения на стенде: клиент и исполнитель в одной обвязке.
-
-В приложении соединение проходит два процесса: клиент по имени из вызова
-модели берёт соединение пользователя и запечатывает его, исполнитель открывает и
-отдаёт телу. Тест инструмента зовёт тело напрямую, без порта клиента,
-поэтому здесь оба шага стоят одной обвязкой параметра: вызов с именем
-соединения проходит боевые ArmedConnections, ConnectionSeal и
-SealedConnectionParam.
+"""Параметры connections стенда используют серверный resolver каталога.
 
 Ошибки:
-RefusalError — соединение не выдано субъекту, выдано дважды, делегированных
-    кредов нет либо исполнитель отверг запечатанное значение; kind из
-    ConnectionRefusal.
-ToolConfigError — параметр объявлен непригодной моделью соединения.
+RefusalError — профиль не выдан субъекту, имя неоднозначно или нет credentials.
+ConnectionStoreError — хранилище соединений недоступно.
+ToolConfigError — некорректное объявление параметра или профиль в таблице.
+KerberosError — не удалось подготовить билет вызова.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import timedelta
-from typing import ClassVar
 
-from boba.connection_broker.crypto import ConnectionSeal, SealKeys
-from boba.connection_broker.sealed import SealedConnectionParam
+from boba.connection_broker.params import ConnectionParams
 from boba.connection_broker.tickets import CredentialsRef
-from boba.connection_broker.user_connections import (
-    ArmedConnections,
-    ConnectionParamHooks,
-    StoreRef,
-    TypesRef,
-)
-from boba.connections.whitelist import ConnectionWhitelist
+from boba.connection_broker.user_connections import ArmedConnections, StoreRef, TypesRef
 from boba.identity.context import CallContexts
 from boba.toolrun.hosted import HostedTool
-from boba.toolrun.injected import AsyncInjected, StaticConfig
+from boba.toolrun.injected import StaticConfig
 
 __all__ = ["StandUserConnections"]
 
 
-class StandConnectionParam(AsyncInjected):
-    """Обвязка параметра-соединения стенда: путь клиента и исполнителя подряд.
-
-    Значение параметра — имя соединения вида параметра. Обвязка берёт
-    соединение субъекта вызова (ArmedConnections),
-    запечатывает его ключом стенда и отдаёт боевой обвязке исполнителя.
-    Ставит её StandUserConnections.
-    """
-
-    def __init__(
-        self,
-        connections: ArmedConnections,
-        executor: SealedConnectionParam,
-        seal: ConnectionSeal,
-        kind: str,
-    ) -> None:
-        super().__init__(executor.param, None)
-        self._connections = connections
-        self._executor = executor
-        self._seal = seal
-        self._kind = kind
-
-    async def value(self, name: str, kwargs: dict[str, object]) -> object:
-        requested = kwargs.get(self._param)
-        if not isinstance(requested, str):
-            return await self._executor.value(name, kwargs)
-
-        sealed = await self._connections.sealed(
-            self._kind, requested, StandUserConnections.TTL
-        )
-
-        sent = dict(kwargs)
-        sent[self._param] = self._seal.seal(sealed)
-
-        return await self._executor.value(name, sent)
-
-
 class StandUserConnections:
-    """Постановка StandConnectionParam на параметры-соединения инструментов.
-
-    Создаётся тестом из хранилища соединений, источника кредов и реестра
-    типов; ключевая пара стенда — своя на объект.
-    """
-
-    TTL: ClassVar[timedelta] = timedelta(minutes=10)
+    """Собирает ConnectionParams из реального хранилища и credentials стенда."""
 
     def __init__(
         self,
@@ -90,26 +31,10 @@ class StandUserConnections:
         types_ref: TypesRef,
         contexts: CallContexts,
     ) -> None:
-        self._types_ref = types_ref
-        self._contexts = contexts
-        self._keys = SealKeys()
-        self._seal = ConnectionSeal(self._keys.public())
-        self._connections = ArmedConnections(store_ref, credentials_ref, contexts)
-        self._hooks = ConnectionParamHooks(types_ref)
-        self._unlisted = ConnectionWhitelist(connections={}, ambiguous=frozenset())
-
-    def bind_all(self, tools: Sequence[HostedTool]) -> None:
-        self._hooks.bind_all(tools, self._hook)
-
-    def _hook(self, tool: str, param: str, kind: str) -> AsyncInjected:
-        executor = SealedConnectionParam(
-            self._keys,
-            self._types_ref,
-            self._contexts,
-            StaticConfig(),
-            self._unlisted,
-            param,
-            kind,
+        resolver = ArmedConnections(store_ref, credentials_ref, contexts)
+        self._params = ConnectionParams(
+            types_ref, contexts, {}, StaticConfig(), resolver
         )
 
-        return StandConnectionParam(self._connections, executor, self._seal, kind)
+    def bind_all(self, tools: Sequence[HostedTool]) -> None:
+        self._params.bind_all(tools)

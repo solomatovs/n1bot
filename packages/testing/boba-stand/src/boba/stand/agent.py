@@ -35,7 +35,7 @@ from boba.agent.records import (
 from boba.agent.session import Session
 from boba.agent.skills import Skill
 from boba.agent.tools import McpServerSet, ServerNotice, ToolServer
-from boba.connections.sealed import ConnectionOffer, SealedParamSchema
+from boba.connections.offers import ConnectionOffer, ConnectionParamSchema
 from boba.core.mcp_names import McpToolNames
 from boba.history.jsonl import JsonlHistoryStore
 from boba.llm.chat import ChatModel
@@ -203,9 +203,9 @@ class StandTools(ToolServer):
         "properties": {
             StandArg.CONNECTION.value: {
                 "type": "string",
-                **SealedParamSchema().declared(
+                **ConnectionParamSchema().declared(
                     ConnectionOffer(
-                        kind=StandKind.POSTGRES.value, sealed=True, names={}
+                        kind=StandKind.POSTGRES.value, names={}, stored=True
                     )
                 ),
             },

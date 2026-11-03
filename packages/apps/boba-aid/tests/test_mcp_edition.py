@@ -18,13 +18,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
 from typing import Any, ClassVar
 from uuid import uuid4
 
 import mcp_types as mt
 import pytest
+from acp.exceptions import RequestError
 from acp.experimental.v2 import schema
 from acp_stand import Agents, FakeModel, ModelRequests, RecordingUpdates
 from aid_stand import TabSession
@@ -141,7 +142,7 @@ class TestAgentThroughRelay:
         assert seen["info"]["name"] == "boba", seen
         capabilities = seen["capabilities"]
         assert capabilities["elicitation"] == {"form": {}}, capabilities
-        assert "com.boba/connection-seal" in json.dumps(capabilities), capabilities
+        assert "com.boba/connection-seal" not in json.dumps(capabilities), capabilities
 
     async def test_new_tool_of_the_server_is_offered_after_the_list_changes(
         self, agents: Agents, model: FakeModel
@@ -482,45 +483,11 @@ class TestRelayedRequests:
         assert updated.params is not None
         assert updated.params["uri"] == "standard://counter"
 
-    async def test_chat_server_serves_tools_only(
+    async def test_chat_name_does_not_open_an_implicit_local_server(
         self, relay: McpRelay, agents: Agents
     ) -> None:
-        """Сервер chat объявляет одни инструменты без смены списка;
-        ресурсы, промпты, подсказки и потоки у него — -32601."""
+        """Имя chat больше не обходит обычную выдачу серверов пользователю."""
         server_id = self._server_id(agents, "chat")
 
-        discovered, _ = await self._answer(
-            relay, self._message(server_id, "server/discover", {})
-        )
-        refused: list[int] = []
-        for method, params in self.CHAT_REFUSED:
-            outcome, _ = await self._answer(
-                relay, self._message(server_id, method, dict(params))
-            )
-            assert isinstance(outcome, McpErrorOutcome), (method, outcome)
-            refused.append(outcome.error.code)
-
-        assert isinstance(discovered, McpResultOutcome), discovered
-        result = mt.DiscoverResult.model_validate(discovered.result)
-        assert result.capabilities == mt.ServerCapabilities(
-            tools=mt.ToolsCapability(list_changed=False)
-        )
-        assert result.meta is not None
-        assert result.meta[mt.SERVER_INFO_META_KEY]["name"] == "chat"
-        assert refused == [mt.METHOD_NOT_FOUND] * len(self.CHAT_REFUSED)
-
-    CHAT_REFUSED: ClassVar[Sequence[tuple[str, Mapping[str, Any]]]] = (
-        ("resources/list", {}),
-        ("resources/templates/list", {}),
-        ("resources/read", {"uri": "chat://x"}),
-        ("prompts/list", {}),
-        ("prompts/get", {"name": "x"}),
-        (
-            "completion/complete",
-            {
-                "ref": {"type": "ref/prompt", "name": "x"},
-                "argument": {"name": "a", "value": ""},
-            },
-        ),
-        ("subscriptions/listen", {"notifications": {"toolsListChanged": True}}),
-    )
+        with pytest.raises(RequestError, match="server 'chat' is not granted"):
+            await self._answer(relay, self._message(server_id, "server/discover", {}))

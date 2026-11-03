@@ -14,7 +14,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from datetime import datetime
-from importlib.resources import files
 from pathlib import Path
 from typing import Any, ClassVar
 from uuid import UUID, uuid4
@@ -22,7 +21,7 @@ from uuid import UUID, uuid4
 import pytest
 from acp.experimental.v2 import schema
 from acp_stand import AgentHistoryStand, AgentStand, FakeModel, RecordingUpdates
-from aid_stand import FixedServers, NoConnectionStore, RelayStand, TabSession
+from aid_stand import FixedServers, RelayStand, TabSession
 from pydantic import SecretStr
 
 from boba.aid.agent.chat import (
@@ -36,13 +35,12 @@ from boba.aid.agent.chat import (
 )
 from boba.aid.agent.client import AgentFailureKind, AgentProcessError
 from boba.aid.agent.config import AgentConfig, AgentServiceConfig
-from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles, SelectedProfile
 from boba.chat.threads import StoredThread, ThreadUpsert
 from boba.cli.serve import ServeHistory
 from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.db.postgres.connection import PostgresConfig
-from boba.identity.context import CallContexts
+from boba.identity.principal import UserIdentity
 from boba.identity.session import Login
 from boba.identity.signin import SignInMetadata
 from boba.mcp_client.client import (
@@ -87,8 +85,8 @@ def chainlit_context(auth_token: str) -> None:
 async def runtime_schema(pool: AsyncPostgresPool) -> None:
     """Таблицы чата в схеме набора: threads и users."""
     async with pool.connection() as conn:
-        await PostgresSchema(SCHEMA).apply_files(
-            conn, files("boba.runtime") / "schema", {}
+        await PostgresSchema(SCHEMA).apply_packages(
+            conn, ("boba.identity_postgres", "boba.runtime")
         )
 
 
@@ -141,7 +139,7 @@ class ServiceModeStand:
     """Запуск агента чата в режиме службы, вкладка пользователя alice с
     ролью dev и удаление её треда."""
 
-    LOGIN = "alice"
+    LOGIN = TabSession.LOGIN
 
     def __init__(  # noqa: PLR0913 — стенд собирается фикстурами набора
         self,
@@ -175,10 +173,7 @@ class ServiceModeStand:
         self._agents_dir = tmp_path / "agents"
         base = AgentStand(self._agents_dir, history.history()).config()
         self.config: AgentConfig = base.model_copy(update={"process": mode})
-        credentials = KerberosCredentialSource(None, NoRefresh())
-        self._relays = RelayStand(
-            NoConnectionStore(), lambda: credentials, CallContexts()
-        )
+        self._relays = RelayStand()
         self._servers = McpServers(NO_SERVERS)
         self._users = users
         self._threads = threads
@@ -204,7 +199,9 @@ class ServiceModeStand:
     async def identity(self, profile: str) -> ThreadIdentity:
         """Вкладка alice в новом треде: строка users с ролями входа и строка
         треда с владельцем, как их оставляет вход и слой данных."""
-        sign_in = SignInMetadata(roles=frozenset({"dev"}))
+        sign_in = SignInMetadata(
+            roles=frozenset({"dev"}), identity=UserIdentity.model_validate(self.LOGIN)
+        )
         owner = await self._users.upsert(Login(self.LOGIN), sign_in.render())
         thread_id = str(uuid4())
         await self._threads.upsert(ThreadUpsert(id=UUID(thread_id), user_id=owner.id))

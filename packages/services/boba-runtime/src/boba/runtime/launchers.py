@@ -2,8 +2,8 @@
 
 Проверки старта и сборка исполнителей упакованы в реализации SectionLaunchers:
 песочница проверяет cgroup-лимиты профилей и bwrap, процесс хоста — workdir.
-Обе реализации зовут подкоманды программы плагина: manifest и setup на старте,
-zygote или call на вызовах.
+Обе реализации зовут подкоманды программы плагина: manifest на старте,
+migration-plan по команде migrate, zygote или call на вызовах.
 
 Ошибки:
 RuntimeError — запуск не согласован с конфигом: нет [tool_launcher],
@@ -98,7 +98,7 @@ class PluginLaunch:
 
 
 class PluginOutput:
-    """Вывод подкоманд manifest и setup программы плагина: код возврата,
+    """Вывод подкоманд manifest и migration-plan программы плагина: код возврата,
     stdout и stderr становятся манифестом либо отказом старта с текстом
     программы. Общий у песочницы и процесса хоста."""
 
@@ -430,9 +430,8 @@ class SectionLaunchers(Protocol):
         section на stdin."""
 
     @abstractmethod
-    def setup(self, launch: PluginLaunch, section: Mapping[str, Any]) -> None:
-        """Хранилище плагина: подкоманда setup с секцией section, у которой
-        keytab-профили уже заменены билетами."""
+    def migration_of(self, launch: PluginLaunch, section: Mapping[str, Any]) -> str:
+        """План SQL без подключения к БД и без передачи учётных данных в ответе."""
 
     @abstractmethod
     def launcher_of(
@@ -465,7 +464,7 @@ class NoLaunchers(SectionLaunchers):
     def manifest_of(self, plugin_id: str, section: Mapping[str, Any]) -> PluginManifest:
         raise RuntimeError(self._refusal(plugin_id))
 
-    def setup(self, launch: PluginLaunch, section: Mapping[str, Any]) -> None:
+    def migration_of(self, launch: PluginLaunch, section: Mapping[str, Any]) -> str:
         raise RuntimeError(self._refusal(launch.id))
 
     def launcher_of(
@@ -496,7 +495,7 @@ class ZygoteLaunchers(SectionLaunchers):
     живут в его реестре (ZygoteRegistry) между сборками инструментов. Каталог
     программы (ProgramRoot) разрешает пути из конфига плагина и даёт bwrap и
     интерпретатор для цепочки лаунчера. Программа плагина — `/plugin/run <id>`
-    его каталога: manifest идёт в песочнице без сети и workspace, setup и
+    его каталога: manifest идёт в песочнице без сети и workspace, migration-plan и
     зигота — в профиле плагина. Зигота получает из секции только ключи
     прогревов манифеста (WarmupSection), тело вызова — секцию целиком."""
 
@@ -535,17 +534,21 @@ class ZygoteLaunchers(SectionLaunchers):
 
         return self._output.manifest(plugin_id, done, profile.rootfs)
 
-    def setup(self, launch: PluginLaunch, section: Mapping[str, Any]) -> None:
+    def migration_of(self, launch: PluginLaunch, section: Mapping[str, Any]) -> str:
         sandbox = self._plugin_sandbox(launch.id)
         profile = self.profile_of(launch)
         done = self._zygotes.run(
             profile,
             ZygotePolicy.model_validate(sandbox.zygote),
-            (PluginLayout.RUN, launch.id, PluginCommand.SETUP),
+            (PluginLayout.RUN, launch.id, PluginCommand.MIGRATION_PLAN),
             self._output.section_bytes(section),
         )
 
-        self._output.finished(launch.id, PluginCommand.SETUP, done, profile.rootfs)
+        self._output.finished(
+            launch.id, PluginCommand.MIGRATION_PLAN, done, profile.rootfs
+        )
+
+        return done.stdout.decode("utf-8")
 
     def launcher_of(
         self, launch: PluginLaunch, contexts: CallContexts, ambient: CallAmbient
@@ -673,10 +676,14 @@ class ProcessLaunchers(SectionLaunchers):
 
         return self._output.manifest(plugin_id, done, self._where())
 
-    def setup(self, launch: PluginLaunch, section: Mapping[str, Any]) -> None:
-        done = self._run(launch.id, PluginCommand.SETUP, section)
+    def migration_of(self, launch: PluginLaunch, section: Mapping[str, Any]) -> str:
+        done = self._run(launch.id, PluginCommand.MIGRATION_PLAN, section)
 
-        self._output.finished(launch.id, PluginCommand.SETUP, done, self._where())
+        self._output.finished(
+            launch.id, PluginCommand.MIGRATION_PLAN, done, self._where()
+        )
+
+        return done.stdout.decode("utf-8")
 
     def launcher_of(
         self, launch: PluginLaunch, contexts: CallContexts, ambient: CallAmbient

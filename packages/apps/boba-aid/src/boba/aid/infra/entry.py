@@ -8,6 +8,7 @@ SystemExit — проба готовности: конфиг не прочита
 """
 
 import argparse
+import asyncio
 import os
 import pathlib
 import sys
@@ -135,6 +136,26 @@ class AppEntry:
                 self.serve(call.paths)
             case ProgramCommand.HEALTH:
                 self.health(call.paths)
+            case ProgramCommand.MIGRATE:
+                import boba.identity_postgres as identity_schema  # noqa: PLC0415
+                from boba.runtime.migrate import (  # noqa: PLC0415 — служебный режим
+                    ApplicationMigrations,
+                )
+
+                try:
+                    asyncio.run(
+                        ApplicationMigrations().run(
+                            call.paths,
+                            (
+                                identity_schema.__name__,
+                                "boba.runtime",
+                                "boba.connection_broker",
+                                "boba.aid.mcp_servers",
+                            ),
+                        )
+                    )
+                except Exception as exc:
+                    raise SystemExit(f"boba-aid migrate failed: {exc}") from exc
 
     def call(self) -> ProgramCall:
         """Подкоманда и файлы конфига: конфиг экземпляра и наложения."""

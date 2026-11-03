@@ -28,6 +28,7 @@ from boba.db.pgvector.schema import KbSchema
 from boba.db.pgvector.store import KbPool
 from boba.db.postgres import AsyncPostgresPool
 from boba.stand.database import TestDatabase
+from boba.stand.migrate import StandMigrations
 from boba.tool.kb.kb import PostgresKnowledgeBaseConfig
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -67,7 +68,7 @@ async def store_cfg(
         async with pool.connection() as conn:
             await _execute(conn, _drop_schema())
 
-        await KbSchema(cfg).setup()
+        await StandMigrations().storage(cfg.connection, KbSchema(cfg).migration())
 
         yield cfg
     finally:
@@ -102,14 +103,14 @@ async def _roundtrip(pool: Any, value: Sequence[float]) -> Any:
     return row[0]
 
 
-async def test_kb_schema_setup_repeats_without_a_pool(
+async def test_kb_migration_plan_opens_no_pool(
     store_cfg: KnowledgeBaseSchemaConfig,
 ) -> None:
-    """Старт плагина повторяет DDL безвредно и пула не заводит: процесс
-    boba-mcp пулов не держит, DDL идёт выделенным соединением."""
+    """Получение плана не подключается к базе и не открывает пул."""
     before = len(AsyncPostgresPool.opened())
 
-    await KbSchema(store_cfg).setup()
+    plan = KbSchema(store_cfg).migration()
+    assert plan
 
     after = len(AsyncPostgresPool.opened())
     if after != before:

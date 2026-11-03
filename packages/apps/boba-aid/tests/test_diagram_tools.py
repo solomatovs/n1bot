@@ -23,7 +23,6 @@ from boba.canvas.diagram import DiagramEntry, DiagramSpecError, MermaidSpec
 from boba.canvas.keys import ScopeDir, WorkspaceKey
 from boba.runtime.storage import LocalStorageClient, LocalStorageConfig
 from boba.toolkit.result import ContentMime
-from boba.workspace.launcher import MountingConfig
 
 THREAD = "11111111-1111-1111-1111-111111111111"
 MOUNT = "/workspace"
@@ -119,14 +118,6 @@ def files(
 ) -> DiagramFiles:
     config = LocalStorageConfig(
         files_dir=str(tmp_path),
-        mounting=MountingConfig(
-            mount_wait_sec=1.0,
-            mount_poll_sec=0.1,
-            shutdown_wait_sec=1.0,
-            lock_wait_sec=1.0,
-            copy_chunk_bytes=65536,
-        ),
-        mount_dir="/tmp",  # noqa: S108
     )
     storage = LocalStorageClient(config)
     layer = _StorageOnlyLayer(storage)

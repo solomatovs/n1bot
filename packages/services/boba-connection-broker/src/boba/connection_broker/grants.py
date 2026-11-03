@@ -180,12 +180,16 @@ class SubjectGrantsQuery:
     def __init__(self) -> None:
         self._grants = GrantedIds()
 
-    def text(self, flt: ConnectionFilter) -> LiteralString:
+    def text(self, flt: ConnectionFilter, *, name: str | None = None) -> LiteralString:
         clauses = "\n".join(self._clauses(flt))
+        if name is not None:
+            clauses += "\nand c.name = %(connection_name)s"
 
         return self.TEXT.replace("{filters}", clauses)
 
-    def params(self, subject: Subject, flt: ConnectionFilter) -> dict[str, Any]:
+    def params(
+        self, subject: Subject, flt: ConnectionFilter, *, name: str | None = None
+    ) -> dict[str, Any]:
         params = self._grants.params(
             subject.user_id, subject.roles, GrantKind.CONNECTIONS
         )
@@ -197,6 +201,8 @@ class SubjectGrantsQuery:
             }
         )
         params.update(self._filter_params(flt))
+        if name is not None:
+            params["connection_name"] = name
 
         return params
 

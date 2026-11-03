@@ -20,7 +20,6 @@ import subprocess
 import sys
 from abc import abstractmethod
 from collections.abc import AsyncIterator, Iterator
-from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import ClassVar, Protocol
@@ -35,17 +34,13 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.server.apps import APP_MIME_TYPE
 from mcp.shared._httpx_utils import create_mcp_http_client
 from mcp.shared.exceptions import MCPError
-from pydantic import BaseModel, ConfigDict, SecretStr, ValidationError
+from pydantic import SecretStr, ValidationError
 from standard_server import StandardServer
 
 from boba.auth.config import ProxyAuthConfig
 from boba.canvas.keys import ObjectKey, ScopeDir, WorkspaceMount
 from boba.canvas.storage import StorageNotFoundError
 from boba.config import ConfigLoader, bind
-from boba.connection_broker.crypto import ConnectionSeal
-from boba.connections.sealed import SealedConnection, SealFeature
-from boba.core.secrets import SecretReveal
-from boba.db.postgres.connection import PostgresConfig
 from boba.mcp_client.client import (
     BearerAuth,
     FixedServerConfigs,
@@ -63,9 +58,12 @@ from boba.mcp_client.client import (
     ProxyAuth,
     StdioCommand,
 )
+from boba.oauth.server import TrustedClient
 from boba.runtime.config import ProgramRoots
 from boba.stand.apps_slot import AppServer, AppsSlot
+from boba.stand.migrate import StandSchema
 from boba.stand.service_signin import ServiceSignIn
+from boba.stand.ui.database import run_blocking
 from boba.stand.ui.stand import StandApp
 from boba.stand.ui.toml_text import TomlText
 from boba.stand.zygote import RUNTIME
@@ -128,7 +126,7 @@ def _legacy(slot: AppsSlot, server: AppServer) -> HttpEndpoint:
     )
 
 
-CALLER = McpCaller(login="alice", roles=frozenset({"dev"}))
+CALLER = McpCaller(login="corporate:alice", roles=frozenset({"dev"}))
 OWN = McpServers.OWN
 
 
@@ -642,11 +640,11 @@ class TestPublicServers:
         except httpx.HTTPError as exc:
             pytest.fail(f"{endpoint.url()} is unreachable: {exc}")
 
-    async def test_deepwiki_of_the_initialize_era_lists_tools_and_answers_a_call(
+    async def test_deepwiki_lists_tools_and_answers_a_call(
         self,
     ) -> None:
-        """deepwiki отвечает только на initialize: клиент согласует с ним
-        2025-11-25 и работает тем же портом."""
+        """Публичный сервер может обновляться: проверяем согласование версии
+        и настоящий вызов. Фиксированные редакции проверяет локальный стенд."""
         await self._reachable(self.DEEPWIKI)
         server = McpToolServer("deepwiki", _config(self.DEEPWIKI))
         await server.described(OWN)
@@ -660,8 +658,8 @@ class TestPublicServers:
         finally:
             await server.close()
 
-        if versions != [Edition.LEGACY.value]:
-            raise AssertionError(f"deepwiki speaks the handshake era: {versions}")
+        supported = {edition.value for edition in Edition}
+        assert supported.intersection(versions), versions
         if "read_wiki_structure" not in names:
             raise AssertionError(f"deepwiki offers its tools: {names}")
 
@@ -1328,8 +1326,8 @@ class TestSignInAsTheUser:
         вызывал. Чужому пользователю, подписке на канал без записи и на uri
         не журнала сервер отказывает до подтверждения."""
         servers = self._servers(boba_mcp_stand, self.SECRET, self.CLIENT_SECRET)
-        owner = McpCaller(login="ivanov", roles=frozenset({"dev"}))
-        stranger = McpCaller(login="petrov", roles=frozenset({"dev"}))
+        owner = McpCaller(login="corporate:ivanov", roles=frozenset({"dev"}))
+        stranger = McpCaller(login="corporate:petrov", roles=frozenset({"dev"}))
         heard = HeardCall()
         journals = HeardJournals(TcpPeers(boba_mcp_stand.port))
         events: list[str] = []
@@ -1405,7 +1403,7 @@ class TestSignInAsTheUser:
         self, boba_mcp_stand: BobaMcpStand
     ) -> None:
         servers = self._servers(boba_mcp_stand, self.SECRET, self.CLIENT_SECRET)
-        caller = McpCaller(login="ivanov", roles=frozenset({"dev"}))
+        caller = McpCaller(login="corporate:ivanov", roles=frozenset({"dev"}))
         try:
             port = await self._port(servers, caller, "boba")
             reply = await port.call(OWN, _call("fake_whoami"), None, None, None, None)
@@ -1413,7 +1411,7 @@ class TestSignInAsTheUser:
             await servers.stop()
 
         text = McpResults().result("fake_whoami", "c1", reply).llm_view()
-        if not text.startswith("ivanov|dev|"):
+        if not text.startswith("corporate:ivanov|dev|"):
             raise AssertionError(f"the body sees the user and the roles: {text}")
 
     async def test_evicted_port_lets_its_call_finish(
@@ -1428,8 +1426,8 @@ class TestSignInAsTheUser:
         auth = self._auth(boba_mcp_stand, self.SECRET, self.CLIENT_SECRET)
         endpoint = boba_mcp_stand.endpoint().model_copy(update={"auth": auth})
         servers = Few(FixedServerConfigs(servers={"boba": _config(endpoint)}))
-        owner = McpCaller(login="ivanov", roles=frozenset({"dev"}))
-        other = McpCaller(login="petrov", roles=frozenset({"dev"}))
+        owner = McpCaller(login="corporate:ivanov", roles=frozenset({"dev"}))
+        other = McpCaller(login="corporate:petrov", roles=frozenset({"dev"}))
         try:
             port = await self._port(servers, owner, "boba")
             slow = _call("fake_progress", steps=6, pause=0.5)
@@ -1450,7 +1448,7 @@ class TestSignInAsTheUser:
         запрос панели того же пользователя отвечает сразу, а не после
         вызова — токен входа выдаётся без замка провайдера OAuth."""
         servers = self._servers(boba_mcp_stand, self.SECRET, self.CLIENT_SECRET)
-        caller = McpCaller(login="ivanov", roles=frozenset({"dev"}))
+        caller = McpCaller(login="corporate:ivanov", roles=frozenset({"dev"}))
         marker = tmp_path / "sleep.pid"
         try:
             port = await self._port(servers, caller, "boba")
@@ -1478,7 +1476,7 @@ class TestSignInAsTheUser:
         освобождается в задаче вызова, и следующие запросы того же
         подключения идут как прежде."""
         servers = self._servers(boba_mcp_stand, self.SECRET, self.CLIENT_SECRET)
-        caller = McpCaller(login="ivanov", roles=frozenset({"dev"}))
+        caller = McpCaller(login="corporate:ivanov", roles=frozenset({"dev"}))
         marker = tmp_path / "sleep.pid"
         try:
             port = await self._port(servers, caller, "boba")
@@ -1507,8 +1505,8 @@ class TestSignInAsTheUser:
         """Список инструментов зависит от ролей токена и приходит private: у
         каждого пользователя свой порт и свой кэш, описание — public."""
         servers = self._servers(boba_mcp_stand, self.SECRET, self.CLIENT_SECRET)
-        wide = McpCaller(login="ivanov", roles=frozenset({"dev"}))
-        weak = McpCaller(login="petrov", roles=frozenset({"weak"}))
+        wide = McpCaller(login="corporate:ivanov", roles=frozenset({"dev"}))
+        weak = McpCaller(login="corporate:petrov", roles=frozenset({"weak"}))
         try:
             wide_port = await self._port(servers, wide, "boba")
             described = await wide_port.described(OWN)
@@ -1529,7 +1527,7 @@ class TestSignInAsTheUser:
         self, boba_mcp_stand: BobaMcpStand
     ) -> None:
         servers = self._servers(boba_mcp_stand, self.SECRET, self.CLIENT_SECRET)
-        caller = McpCaller(login="ivanov", roles=frozenset({"dev"}))
+        caller = McpCaller(login="corporate:ivanov", roles=frozenset({"dev"}))
         try:
             await self._port(servers, caller, "boba")
             port = await servers.port("narrow", caller)
@@ -1544,7 +1542,7 @@ class TestSignInAsTheUser:
         self, boba_mcp_stand: BobaMcpStand
     ) -> None:
         servers = self._servers(boba_mcp_stand, self.SECRET, self.CLIENT_SECRET)
-        weak = McpCaller(login="petrov", roles=frozenset({"weak"}))
+        weak = McpCaller(login="corporate:petrov", roles=frozenset({"weak"}))
         try:
             await self._port(servers, weak, "boba")
             narrow = await servers.port("narrow", weak)
@@ -1560,7 +1558,7 @@ class TestSignInAsTheUser:
         утверждения сервер отвергает и называет секрет, который не сошёлся."""
         honest = self._servers(boba_mcp_stand, self.SECRET, self.CLIENT_SECRET)
         forged = self._servers(boba_mcp_stand, SecretStr("forged"), self.CLIENT_SECRET)
-        caller = McpCaller(login="ivanov", roles=frozenset({"dev"}))
+        caller = McpCaller(login="corporate:ivanov", roles=frozenset({"dev"}))
         try:
             await self._port(honest, caller, "boba")
             port = await forged.port("boba", caller)
@@ -1586,7 +1584,7 @@ class TestSignInAsTheUser:
         foreign = self._servers(
             boba_mcp_stand, self.SECRET, SecretStr("not-the-client-secret")
         )
-        caller = McpCaller(login="ivanov", roles=frozenset({"dev"}))
+        caller = McpCaller(login="corporate:ivanov", roles=frozenset({"dev"}))
         try:
             await self._port(honest, caller, "boba")
             port = await foreign.port("boba", caller)
@@ -1718,37 +1716,6 @@ class TestBobaMcpServer:
         if "fake backend is down" not in failure.llm_view():
             raise AssertionError(f"the cause travels with the text: {failure}")
 
-    async def test_connection_sealed_with_the_declared_key_reaches_the_body(
-        self, dag: McpToolServer
-    ) -> None:
-        """Ключ запечатывания сервер объявляет при подключении; значение,
-        запечатанное им для вызывающего, тело получает профилем."""
-        declared = (await dag.described(OWN)).features().get(SealFeature.ID)
-        if declared is None:
-            raise AssertionError("the server declares the seal key")
-
-        profile = PostgresConfig.model_validate(
-            {
-                "host": "db.local",
-                "dbname": "orders",
-                "auth": {"method": "trust", "user": "u"},
-            }
-        )
-        sealed = SealedConnection(
-            name="orders",
-            expires_at=datetime.now(UTC) + timedelta(minutes=5),
-            profile=SecretReveal.dumped(profile),
-        )
-        value = ConnectionSeal(SealFeature.model_validate(declared).key).seal(sealed)
-
-        reply = await dag.call(
-            OWN, _call("fake_connection_host", connection=value), None, None, None, None
-        )
-        result = McpResults().result("fake_connection_host", "c1", reply)
-
-        if not result.ok or result.llm_view() != "db.local|orders":
-            raise AssertionError(f"the body got the sealed profile: {result}")
-
     async def test_plain_name_is_refused_by_the_server(
         self, dag: McpToolServer
     ) -> None:
@@ -1762,7 +1729,7 @@ class TestBobaMcpServer:
         )
 
         if not isinstance(reply, mt.CallToolResult) or not reply.is_error:
-            raise AssertionError(f"an unsealed name is refused: {reply}")
+            raise AssertionError(f"an unavailable connection name is refused: {reply}")
 
     async def test_wrong_token_is_a_client_error(
         self, boba_mcp_stand: BobaMcpStand
@@ -1785,14 +1752,6 @@ class TestBobaMcpServer:
             raise AssertionError("a token the server does not know must not open")
 
         raise AssertionError("the server never answered 401 to a stranger token")
-
-
-class DeclaredClient(BaseModel):
-    """Доверенный клиент из [mcp.clients.<client_id>] конфига сервиса."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    secret: SecretStr
 
 
 class BobaMcpService:
@@ -1821,7 +1780,7 @@ class BobaMcpService:
         self._files = StandApp.MCP.app_paths()
         raw = ConfigLoader(self._files).load()
         self._proxy = bind(raw, "auth.proxy", ProxyAuthConfig)
-        self._client = bind(raw, f"mcp.clients.{self.CLIENT}", DeclaredClient)
+        self._client = bind(raw, f"mcp.clients.{self.CLIENT}", TrustedClient)
 
         overlay = workdir / "overlay.toml"
         public_url = f"http://{self.HOST}:{self.port}{self.PREFIX}"
@@ -1833,9 +1792,20 @@ class BobaMcpService:
                 "tool_launcher": "process",
             },
             "postgres": {"dbname": database},
+            "app": {"schema": f"mcp_client_{uuid4().hex[:12]}"},
+            "mcp": {
+                "endpoints": {
+                    "all": {"connections": [{"roles": ["*"], "offer": ["stored"]}]}
+                }
+            },
         }
         overlay.write_text(TomlText.dumps(changed), encoding="utf-8")
 
+        self._storage = StandSchema(
+            (*self._files, overlay),
+            ("boba.identity_postgres", "boba.connection_broker"),
+        )
+        run_blocking(self._storage.create())
         self._log = (workdir / "mcp.log").open("wb")
         self._process = subprocess.Popen(
             [
@@ -1877,6 +1847,7 @@ class BobaMcpService:
         self._process.terminate()
         self._process.wait(timeout=30)
         self._log.close()
+        run_blocking(self._storage.drop())
 
 
 @pytest.mark.integration
@@ -1885,7 +1856,9 @@ class TestBobaMcpService:
     """Приёмка двумя процессами: сервис со всеми плагинами своего конфига,
     клиент чата входит через proxy и ходит к нему по сети."""
 
-    CALLER: ClassVar[McpCaller] = McpCaller(login="tester", roles=frozenset({"wrt"}))
+    CALLER: ClassVar[McpCaller] = McpCaller(
+        login="corporate:tester", roles=frozenset({"wrt"})
+    )
 
     @pytest.fixture
     def process(self, tmp_path: Path, test_database: str) -> Iterator[BobaMcpService]:
@@ -2347,7 +2320,6 @@ class TestStandardEdition:
         assert sorted(declared["capabilities"]["extensions"]) == sorted(
             [
                 JournalFeature.ID,
-                SealFeature.ID,
                 ScopeFeature.ID,
                 CommandsFeature.ID,
                 "io.modelcontextprotocol/ui",
@@ -2512,7 +2484,6 @@ class TestHandshakeEdition:
         assert sorted(declared["capabilities"]["extensions"]) == sorted(
             [
                 JournalFeature.ID,
-                SealFeature.ID,
                 ScopeFeature.ID,
                 CommandsFeature.ID,
                 "io.modelcontextprotocol/ui",

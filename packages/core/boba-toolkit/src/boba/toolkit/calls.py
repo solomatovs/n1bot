@@ -147,15 +147,15 @@ class SchemaMark(StrEnum):
     """Ключ JSON Schema параметра инструмента, по которому клиент решает,
     что делать с аргументом.
 
-    MEDIA — стандартный тип содержимого строки (показ кода, запечатанное
-    соединение). SCOPE, CONNECTION и NOT_LOGGED — свои пометки x-boba-…:
+    MEDIA — стандартный тип содержимого строки для показа кода.
+    SCOPE, CONNECTION и NOT_LOGGED — свои пометки x-boba-…:
     параметр области вызова, который клиент с расширением ScopeFeature
     прячет от модели и заполняет сам, параметр-соединение со значением вида
     соединения и аргумент, значение которого сервер не пишет в лог.
-    Клиент, который пометку не знает, её не замечает. CONTENT,
-    CONST, ENUM, ANY_OF и DESCRIPTION — стандартные ключи, которыми схема
+    Клиент, который пометку не знает, её не замечает.
+    ENUM, ANY_OF и DESCRIPTION — стандартные ключи, которыми схема
     параметра-соединения говорит, что предложено на его месте
-    (SealedParamSchema). Единственный читатель параметров с ключом и у
+    (ConnectionParamSchema). Единственный читатель параметров с ключом и у
     сервера, и у клиента — params(); по ключу, объявленному сервером, —
     marked().
     """
@@ -164,8 +164,6 @@ class SchemaMark(StrEnum):
     SCOPE = "x-boba-scope"
     CONNECTION = "x-boba-connection"
     NOT_LOGGED = "x-boba-not-logged"
-    CONTENT = "contentSchema"
-    CONST = "const"
     ENUM = "enum"
     ANY_OF = "anyOf"
     DESCRIPTION = "description"

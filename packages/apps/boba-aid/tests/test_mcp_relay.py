@@ -3,7 +3,7 @@
 редакции 2025-11-25 на TypeScript SDK 1.x в контейнере boba-testapps и стенд
 boba-mcp со входом proxy. Проверяются строки таблицы ошибок MCP-over-ACP,
 встроенные методы SDK, видимость инструментов для модели и приложения MCP
-Apps, ход вызова и запечатывание соединений пользователя."""
+Apps, ход вызова и серверный выбор соединений пользователя."""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ import json
 import secrets
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
-from importlib.resources import files
 from typing import Any, ClassVar
 from uuid import uuid4
 
@@ -21,7 +20,6 @@ import pytest
 from acp.exceptions import RequestError
 from aid_stand import (
     HolderSurface,
-    NoConnectionStore,
     RelayStand,
     ServiceProcess,
     TabSession,
@@ -30,20 +28,17 @@ from chainlit.context import context_var
 from mcp.server.apps import APP_MIME_TYPE
 from mcp.shared.exceptions import MCPError
 
-from boba.aid.agent.relay import ChatTools, McpRegistration, McpRegistrations, McpRelay
+from boba.aid.agent.relay import McpRegistration, McpRegistrations, McpRelay
 from boba.aid.canvas.tools import CanvasOpener
 from boba.aid.rendering.tool import AppResource, ToolSource
-from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.connection_broker.crypto import SecretCipher
-from boba.connection_broker.sealing import McpServerInfo
 from boba.connection_broker.store import ConnectionStore
 from boba.connections.manifest import ConnectionTypes
-from boba.connections.sealed import ConnectionOffer, SealedParamSchema, SealFeature
 from boba.connections.stored import GrantTarget
 from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.context import DelegatedTicket, NoUserCredential, Scope
-from boba.identity.errors import AuthenticationError, RefusalError
+from boba.identity.errors import AuthenticationError
 from boba.mcp_client.client import (
     FixedServerConfigs,
     HttpEndpoint,
@@ -56,16 +51,9 @@ from boba.mcp_client.client import (
 )
 from boba.messaging import Envelope, JournalOpened
 from boba.stand.apps_slot import AppServer, AppsSlot
-from boba.stand.refs import StandRefs
 from boba.stand.signin import SignInStand
-from boba.stand.toolstand import ProbeTools
 from boba.stand_core.context import CallStand
-from boba.toolkit.ports import StreamSpecs
-from boba.toolkit.wire import ResultWire
 from boba.toolrun.call_id import CallFields
-from boba.toolrun.dev_null import DevNullTool
-from boba.toolrun.hosted import ToolHosting
-from boba.toolrun.stream_calls import WorkflowCall, WorkflowTool
 from boba.transport.acp.protocol import (
     AcpErrorCode,
     McpErrorOutcome,
@@ -92,15 +80,13 @@ def tab(auth_token: str) -> TabSession:
 @pytest.fixture
 def relay_stand(call_stand: CallStand) -> RelayStand:
     """Ретранслятор стенда без соединений пользователя."""
-    credentials = KerberosCredentialSource(None, NoRefresh())
 
-    return RelayStand(NoConnectionStore(), lambda: credentials, call_stand.contexts)
+    return RelayStand()
 
 
 class TestMcpRelay:
     """Ретранслятор над обычным сервером: таблица ошибок, встроенные
-    методы SDK, видимость инструментов, ход вызова и отказ запечатывания
-    серверу, который не принимает соединений. Сервер редакции 2025-11-25
+    методы SDK, видимость инструментов и ход вызова. Сервер редакции 2025-11-25
     агент видит обычным сервером 2026-07-28."""
 
     ENVELOPE: ClassVar[dict[str, Any]] = {
@@ -675,7 +661,7 @@ class TestMcpRelay:
         shows = self._flagged(standard, "--workspace", "/workspace")
         servers = McpServers(FixedServerConfigs(servers={"standard": shows}))
         canvas = CanvasOpener(HolderSurface(context_var.get()))
-        relay = relay_stand.relay_with(servers, relay_stand.chat, canvas)
+        relay = relay_stand.relay_with(servers, canvas)
         registration = tab.registration(uuid4(), SignInStand.PROFILE)
         server_id = relay_stand.registrations.register(registration, ["standard"])[
             0
@@ -830,44 +816,6 @@ class TestMcpRelay:
             update={"endpoint": endpoint.model_copy(update={"args": args})}
         )
 
-    async def test_sealing_is_refused_to_a_server_without_the_seal_feature(
-        self, relay_stand: RelayStand
-    ) -> None:
-        offer = ConnectionOffer(kind="postgres", sealed=True, names={})
-        declared = SealedParamSchema().declared(offer)
-        schema = {
-            "type": "object",
-            "properties": {"connection": {"type": "string", **declared}},
-        }
-        server = McpServerInfo(name="standard", features={})
-
-        with pytest.raises(RefusalError) as refused:
-            await relay_stand.sealing.seal(
-                "mcp__standard__query", {"connection": "orders"}, schema, server
-            )
-
-        assert SealFeature.ID in str(refused.value)
-        assert "'standard'" in str(refused.value)
-
-    async def test_server_name_goes_as_is_when_only_the_server_is_offered(
-        self, relay_stand: RelayStand
-    ) -> None:
-        """Схема без ветки запечатанного значения: клиент не запечатывает и
-        ключа сервера не требует, имя соединения сервера уходит как есть."""
-        offer = ConnectionOffer(kind="postgres", sealed=False, names={"dwh": "dwh"})
-        declared = SealedParamSchema().declared(offer)
-        schema = {
-            "type": "object",
-            "properties": {"connection": {"type": "string", **declared}},
-        }
-        server = McpServerInfo(name="standard", features={})
-
-        sent = await relay_stand.sealing.seal(
-            "mcp__standard__query", {"connection": "dwh"}, schema, server
-        )
-
-        assert sent == {"connection": "dwh"}, sent
-
 
 class TestAppRequests:
     """Запросы приложения MCP Apps: инструменты только своего сервера с "app"
@@ -928,7 +876,7 @@ class TestAppRequests:
         assert answered["error"]["code"] == mt.INVALID_PARAMS
         assert "'archive_orders'" in answered["error"]["message"]
 
-    @pytest.mark.parametrize("server", ["standard", ChatTools.NAME])
+    @pytest.mark.parametrize("server", ["standard"])
     async def test_server_without_apps_refuses_the_app(
         self, relay: McpRelay, tab: TabSession, server: str
     ) -> None:
@@ -1149,9 +1097,10 @@ async def store(pool: AsyncPostgresPool) -> ConnectionStore:
     """Хранилище соединений пользователей стенда ретранслятора."""
     schema = "relay_connections"
     cipher = SecretCipher(secrets.token_bytes(32))
-    schema_dir = files("boba.connection_broker") / "schema"
     async with pool.connection() as conn:
-        await PostgresSchema(schema).apply_files(conn, schema_dir, {})
+        await PostgresSchema(schema).apply_packages(
+            conn, ("boba.identity_postgres", "boba.connection_broker")
+        )
 
     return ConnectionStore(pool, schema, cipher, ConnectionTypes.discover())
 
@@ -1168,125 +1117,14 @@ class RelayCall:
 
 
 @pytest.mark.integration
-class TestRelaySealing:
-    """Ретранслятор запечатывает соединения пользователя через CallSealing:
-    невыданное имя — отказ isError, выданное доходит до тела сервера. У
-    инструмента со вложенными вызовами, объявленного сервером, соединения
-    запечатываются в каждом узле; отказ узла — isError всего вызова с
-    ключом узла, вызов не по объявленной форме уходит серверу как есть.
-    Когда сервер предлагает и свои соединения (endpoint offers, роль
-    analyst), имя соединения сервера уходит как есть, а совпавшее с именем
-    соединения пользователя — запечатывается с предупреждением."""
+class TestRelayConnections:
+    """Имена connections проходят в MCP без чтения хранилища AID.
+
+    Источник инструментов, область треда и журнал по-прежнему идут через
+    ретранслятор. Разрешение имён и проверка grants принадлежат серверу.
+    """
 
     ENVELOPE: ClassVar[dict[str, Any]] = TestMcpRelay.ENVELOPE
-
-    @pytest.mark.parametrize(
-        "case",
-        [
-            RelayCall(
-                name="fake_connection_host",
-                arguments={"connection": "missing"},
-                errored=True,
-                expected=["is not among the connections"],
-            ),
-            RelayCall(
-                name="fake_connection_host",
-                arguments={"connection": "orders"},
-                errored=False,
-                expected=["db.local|orders"],
-            ),
-            RelayCall(
-                name="workflow",
-                arguments={
-                    "nodes": [
-                        {
-                            "key": "n0",
-                            "tool": "fake_connection_host",
-                            "args": {"connection": "orders"},
-                        }
-                    ]
-                },
-                errored=False,
-                expected=["db.local|orders"],
-            ),
-            RelayCall(
-                name="workflow",
-                arguments={
-                    "nodes": [
-                        {
-                            "key": "n0",
-                            "tool": "fake_connection_host",
-                            "args": {"connection": "missing"},
-                        }
-                    ]
-                },
-                errored=True,
-                expected=[
-                    "node 'n0'",
-                    "fake_connection_host",
-                    "is not among the connections",
-                ],
-            ),
-            RelayCall(
-                name="workflow",
-                arguments={
-                    "nodes": [{"key": "n0", "tool": "no_such_tool", "args": {}}]
-                },
-                errored=True,
-                expected=[
-                    "node 'n0'",
-                    "offers the caller of the call no tool 'no_such_tool'",
-                ],
-            ),
-            RelayCall(
-                name="workflow",
-                arguments={
-                    "nodes": [
-                        {
-                            "key": "n0",
-                            "tool": "mcp__boba__fake_connection_host",
-                            "args": {"connection": "orders"},
-                        }
-                    ]
-                },
-                errored=True,
-                expected=[
-                    "node 'n0': 'mcp__boba__fake_connection_host' is the name "
-                    "the agent gives the tool 'fake_connection_host'",
-                    "name the tool of the node 'fake_connection_host'",
-                ],
-            ),
-            RelayCall(
-                name="workflow",
-                arguments={"nodes": "n0"},
-                errored=True,
-                expected=["does not match its schema", "nodes"],
-            ),
-        ],
-        ids=[
-            "refused",
-            "sealed",
-            "node-sealed",
-            "node-refused",
-            "node-unknown-tool",
-            "node-agent-name",
-            "off-shape-as-is",
-        ],
-    )
-    async def test_sealing_is_applied_to_the_call(
-        self,
-        service_process: ServiceProcess,
-        store: ConnectionStore,
-        call_stand: CallStand,
-        tab: TabSession,
-        case: RelayCall,
-    ) -> None:
-        config = service_process.servers()
-        answer = await self._called(config, store, call_stand, tab, ["orders"], case)
-
-        assert answer.is_error is case.errored, answer
-        for part in case.expected:
-            assert part in str(answer.content), answer
 
     @pytest.mark.parametrize(
         ("owned", "logged", "case"),
@@ -1303,16 +1141,16 @@ class TestRelaySealing:
             ),
             (
                 ["dwh"],
-                ["connection dwh of kind postgres is both yours"],
+                [],
                 RelayCall(
                     name="fake_connection_host",
                     arguments={"connection": "dwh"},
                     errored=False,
-                    expected=["db.local|orders"],
+                    expected=["dwh.local|dwh"],
                 ),
             ),
         ],
-        ids=["server-name-as-is", "collision-user-wins"],
+        ids=["server-name-as-is", "local-catalog-is-not-consulted"],
     )
     async def test_server_connections_are_offered(  # noqa: PLR0913 — случай собирается фикстурами стендов
         self,
@@ -1325,14 +1163,8 @@ class TestRelaySealing:
         case: RelayCall,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """Endpoint offers предлагает роли analyst и соединение сервера dwh:
-        имя сервера уходит как есть, совпавшее с именем соединения
-        пользователя запечатывается с предупреждением."""
-        config = service_process.servers()
-        boba = config.servers["boba"]
-        endpoint = boba.endpoint.model_copy(update={"path": "/offers"})
-        served = boba.model_copy(update={"endpoint": endpoint})
-        offers = config.model_copy(update={"servers": {"boba": served}})
+        """Каталог AID не меняет смысл имени, принадлежащего серверу MCP."""
+        offers = service_process.servers("/offers")
         tab.password_sign_in(frozenset({"analyst"}))
         answer = await self._called(offers, store, call_stand, tab, owned, case)
 
@@ -1355,8 +1187,7 @@ class TestRelaySealing:
         """Итог вызова case через ретранслятор к серверам config, когда у
         пользователя вкладки есть соединения owned; ждёт, пока стенд сервиса
         начнёт отдавать список инструментов."""
-        credentials = KerberosCredentialSource(None, NoRefresh())
-        stand = RelayStand(lambda: store, lambda: credentials, call_stand.contexts)
+        stand = RelayStand()
         servers = McpServers(config)
         relay = stand.relay(servers)
         registration = tab.registration(uuid4(), SignInStand.PROFILE)
@@ -1423,9 +1254,9 @@ class TestRelaySealing:
     ) -> None:
         """Источник вызова инструмента со вложенными вызовами несёт карточки
         инструментов его узлов: по ним лента рисует вход каждого узла."""
-        credentials = KerberosCredentialSource(None, NoRefresh())
-        stand = RelayStand(lambda: store, lambda: credentials, call_stand.contexts)
-        servers = McpServers(service_process.servers())
+        stand = RelayStand()
+        servers = McpServers(service_process.servers("/offers"))
+        tab.password_sign_in(frozenset({"analyst"}))
         relay = stand.relay(servers)
         registration = tab.registration(uuid4(), SignInStand.PROFILE)
         server_id = stand.registrations.register(registration, ["boba"])[0].server_id
@@ -1465,10 +1296,7 @@ class TestRelaySealing:
         """Параметр области агент в списке не видит, а вызов идёт в треде
         вкладки: сервер объявил расширение области вызова, и ретранслятор
         ставит тред в параметр с объявленной пометкой x-boba-scope."""
-        credentials = KerberosCredentialSource(None, NoRefresh())
-        stand = RelayStand(
-            NoConnectionStore(), lambda: credentials, call_stand.contexts
-        )
+        stand = RelayStand()
         servers = McpServers(service_process.servers())
         relay = stand.relay(servers)
         registration = tab.registration(uuid4(), SignInStand.PROFILE)
@@ -1555,10 +1383,7 @@ class TestRelayJournals:
         arguments: dict[str, Any],
         node: str | None,
     ) -> None:
-        credentials = KerberosCredentialSource(None, NoRefresh())
-        stand = RelayStand(
-            NoConnectionStore(), lambda: credentials, call_stand.contexts
-        )
+        stand = RelayStand()
         servers = McpServers(service_process.servers())
         relay = stand.relay(servers)
         registration = tab.registration(uuid4(), SignInStand.PROFILE)
@@ -1620,119 +1445,6 @@ class TestRelayJournals:
                 linked.append(str(block.uri))
 
         assert linked, (answer.content, journal)
-
-
-@pytest.mark.integration
-class TestChatServer:
-    """Сервер chat в процессе чата через ретранслятор: собственные
-    инструменты чата по ролям вкладки, connection_list отдаёт соединения,
-    выданные пользователю регистрации; совпавшие имена инструментов —
-    ошибка доставки без исхода MCP."""
-
-    ENVELOPE: ClassVar[dict[str, Any]] = TestMcpRelay.ENVELOPE
-
-    async def test_own_tools_are_listed_and_called_in_process(
-        self, store: ConnectionStore, call_stand: CallStand, tab: TabSession
-    ) -> None:
-        credentials = KerberosCredentialSource(None, NoRefresh())
-        stand = RelayStand(lambda: store, lambda: credentials, call_stand.contexts)
-        relay = stand.relay(McpServers(FixedServerConfigs(servers={})))
-        registration = tab.registration(uuid4(), SignInStand.PROFILE)
-        server_id = stand.registrations.register(registration, [ChatTools.NAME])[
-            0
-        ].server_id
-        profile = PostgresConfig.model_validate(
-            {
-                "host": "db.local",
-                "dbname": "orders",
-                "auth": {"method": "trust", "user": "u"},
-            }
-        )
-        connection_id = await store.add("orders", profile)
-        await store.grant(connection_id, GrantTarget.user(registration.user_id))
-
-        heard: asyncio.Queue[McpMessage] = asyncio.Queue()
-
-        listed = await relay.answer(
-            McpMessage(
-                server_id=server_id,
-                request_id="mcp:listing",
-                method="tools/list",
-                params={"_meta": self.ENVELOPE},
-            ),
-            heard.put,
-        )
-        called = await relay.answer(
-            McpMessage(
-                server_id=server_id,
-                request_id="mcp:call",
-                method="tools/call",
-                params={
-                    "name": "connection_list",
-                    "arguments": {},
-                    "_meta": self.ENVELOPE,
-                },
-            ),
-            heard.put,
-        )
-
-        assert isinstance(listed, McpResultOutcome), listed
-        names: list[str] = []
-        for tool in mt.ListToolsResult.model_validate(listed.result).tools:
-            names.append(tool.name)
-
-        assert sorted(names) == ["connection_list", "connection_search"], names
-        assert isinstance(called, McpResultOutcome), called
-        answer = mt.CallToolResult.model_validate(called.result)
-        assert answer.is_error is False, answer
-        assert "orders" in str(answer.content), answer
-        assert answer.meta is not None, "the step name keeps the call duration"
-        assert isinstance(answer.meta.get(ResultWire.ELAPSED), int), answer.meta
-
-    async def test_colliding_tool_names_are_an_external_error(
-        self, call_stand: CallStand, tab: TabSession
-    ) -> None:
-        refs = StandRefs(call_stand.contexts)
-        drain = DevNullTool(refs.ambient)
-        tools = refs.tool_stand(())
-        tools.adopt(
-            [
-                ToolHosting().hosted(drain.build()),
-                ProbeTools().recorder(WorkflowTool.NAME, WorkflowCall),
-            ]
-        )
-        registry = tools.registry(
-            tools.access(RelayStand.ROLE, SignInStand.PROFILE), ()
-        )
-        streaming = StreamSpecs({DevNullTool.NAME: drain.spec()})
-        own = frozenset({WorkflowTool.NAME})
-        chat = ChatTools(
-            replace(registry, own=own, specs=streaming), refs.runs, RelayStand.VERSION
-        )
-        credentials = KerberosCredentialSource(None, NoRefresh())
-        stand = RelayStand(
-            NoConnectionStore(), lambda: credentials, call_stand.contexts
-        )
-        servers = McpServers(FixedServerConfigs(servers={}))
-        relay = stand.relay_with(servers, chat, stand.canvas)
-        registration = tab.registration(uuid4(), SignInStand.PROFILE)
-        server_id = stand.registrations.register(registration, [ChatTools.NAME])[
-            0
-        ].server_id
-        message = McpMessage(
-            server_id=server_id,
-            request_id="mcp:listing",
-            method="tools/list",
-            params={"_meta": self.ENVELOPE},
-        )
-
-        with pytest.raises(RequestError) as refused:
-            await relay.answer(message, asyncio.Queue[McpMessage]().put)
-
-        assert refused.value.code == AcpErrorCode.BACKEND_FAILED
-        assert f"tool {WorkflowTool.NAME!r} is offered by two servers" in str(
-            refused.value
-        )
 
 
 class TestRegistrations:

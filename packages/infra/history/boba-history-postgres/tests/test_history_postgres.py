@@ -57,10 +57,14 @@ from boba.agent.records import (
 from boba.agent.session import Session
 from boba.agent.template import AgentTemplate
 from boba.config import bind
-from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.db.postgres.connection import PostgresConfig
 from boba.history.jsonl import JsonlHistoryStore
 from boba.history.postgres import PostgresHistoryStore, SessionLocks
+from boba.identity.principal import UserIdentity
+from boba.identity.session import Login
+from boba.identity.signin import SignedIn, SignInMetadata
+from boba.identity_postgres import UsersTable
 from boba.stand.agent import (
     Collected,
     FakeServer,
@@ -204,6 +208,10 @@ async def pool(postgres: PostgresConfig) -> AsyncIterator[AsyncPostgresPool]:
 async def schema(pool: AsyncPostgresPool) -> AsyncIterator[str]:
     """Своя схема на тест; после теста сносится."""
     name = f"hist_{uuid.uuid4().hex[:12]}"
+    async with pool.connection() as conn:
+        await PostgresSchema(name).apply_packages(
+            conn, ("boba.identity_postgres", "boba.history.postgres")
+        )
     yield name
     async with pool.connection() as conn:
         await conn.execute(
@@ -215,11 +223,16 @@ class Stores:
     """Хранилища одной схемы на одном пуле: второй экземпляр — «другой процесс»."""
 
     def __init__(
-        self, postgres: PostgresConfig, schema: str, pool: AsyncPostgresPool
+        self,
+        postgres: PostgresConfig,
+        schema: str,
+        pool: AsyncPostgresPool,
+        owners: dict[str, uuid.UUID],
     ) -> None:
         self._postgres = postgres
         self._schema = schema
         self._pool = pool
+        self._owners = owners
 
     def new(self) -> PostgresHistoryStore:
         """Хранилище процесса без владельца: видит все сессии."""
@@ -233,15 +246,35 @@ class Stores:
         return PostgresHistoryStore(
             self._postgres,
             self._schema,
-            owner,
+            self.user_id(owner),
             SessionLocks(self._postgres),
             self._pool,
         )
 
+    def user_id(self, owner: str) -> uuid.UUID:
+        return self._owners[owner]
+
 
 @pytest.fixture
-def stores(postgres: PostgresConfig, schema: str, pool: AsyncPostgresPool) -> Stores:
-    return Stores(postgres, schema, pool)
+async def stores(
+    postgres: PostgresConfig, schema: str, pool: AsyncPostgresPool
+) -> Stores:
+    async with pool.connection() as conn:
+        await PostgresSchema(schema).apply_packages(
+            conn, ("boba.identity_postgres", "boba.history.postgres")
+        )
+    users = UsersTable(postgres, schema, pool)
+    owners: dict[str, uuid.UUID] = {}
+    for login in ("alice", "bob"):
+        identity = UserIdentity(realm="stand", login=Login(login))
+        signed = SignedIn(
+            identifier=identity.identifier,
+            display_name=login,
+            sign_in=SignInMetadata(identity=identity),
+        )
+        user = await users.ensure_user(signed)
+        owners[login] = user.id
+    return Stores(postgres, schema, pool, owners)
 
 
 @pytest.fixture
@@ -613,9 +646,7 @@ class TestConnectionLoss:
         signed = sessions.signed(name)
         pool = AsyncPostgresPool(signed)
         await pool.open()
-        store = PostgresHistoryStore(
-            signed, schema, "alice", SessionLocks(signed), pool
-        )
+        store = PostgresHistoryStore(signed, schema, None, SessionLocks(signed), pool)
         journal = Journal(SESSION)
         journal.user("one")
         journal.assistant("two")
@@ -906,9 +937,8 @@ class TestStagesOnPostgres:
 
 class TestCutoverTable:
     """Перенос чата на агента (docs/migrations/2026-10-16-chat-agent-cutover)
-    создаёт таблицы истории своим SQL до первого обращения агента: это
-    раскладка выпуска 2026-10-16, и хранилище обязано довести её на месте до
-    той, что создаёт само."""
+    создаёт таблицы прежнего выпуска. Хранилище не меняет их раскладку
+    и не выполняет DDL при чтении."""
 
     SCRIPT: ClassVar[Path] = (
         REPO_ROOT / "docs/migrations/2026-10-16-chat-agent-cutover/history_tables.sql"
@@ -942,18 +972,13 @@ class TestCutoverTable:
         "values ('legacy-1', 1, 'user', '2026-10-10T09:00:00Z', '{}')"
     )
 
-    async def test_script_tables_migrate_in_place_to_the_store(
+    async def test_store_does_not_upgrade_legacy_tables(
         self,
-        store: PostgresHistoryStore,
         schema: str,
         pool: AsyncPostgresPool,
         postgres: PostgresConfig,
     ) -> None:
-        """Таблицы скрипта переноса — раскладка прежнего выпуска без владельца:
-        хранилище доводит их на месте до своей, строки остаются, их владелец
-        неизвестен, и сессия видна только процессу без владельца."""
         cutover = f"{schema}_cutover"
-        await store.list(None, 1)
         async with pool.connection() as conn:
             await conn.execute(
                 sql.SQL("create schema {}").format(sql.Identifier(cutover))
@@ -968,39 +993,18 @@ class TestCutoverTable:
                     await conn.execute(self.SCRIPT.read_bytes())
                     await conn.execute(self.LEGACY_ROWS)
 
-                legacy = await self._layout(conn, cutover)
-                await self.prepared(postgres, cutover, pool)
-                expected = await self._layout(conn, schema)
-                built = await self._layout(conn, cutover)
-                unowned = await listed(
-                    PostgresHistoryStore(
-                        postgres, cutover, None, SessionLocks(postgres), pool
-                    )
+                previous = await self._layout(conn, cutover)
+                store = PostgresHistoryStore(
+                    postgres, cutover, uuid.UUID(int=777), SessionLocks(postgres), pool
                 )
-                owned = await listed(
-                    PostgresHistoryStore(
-                        postgres, cutover, "alice", SessionLocks(postgres), pool
-                    )
-                )
+                with pytest.raises(HistoryError):
+                    await store.list(None, 1)
+
+                assert await self._layout(conn, cutover) == previous
             finally:
                 await conn.execute(
                     sql.SQL("drop schema {} cascade").format(sql.Identifier(cutover))
                 )
-
-        assert built == expected
-        assert len(legacy[0]) == 7
-        assert len(expected[0]) == 8
-        assert len(expected[1]) >= 3
-        assert unowned == ["legacy-1"]
-        assert owned == []
-
-    async def prepared(
-        self, postgres: PostgresConfig, cutover: str, pool: AsyncPostgresPool
-    ) -> None:
-        """Первое обращение хранилища к схеме переноса применяет файлы схемы."""
-        await PostgresHistoryStore(
-            postgres, cutover, None, SessionLocks(postgres), pool
-        ).list(None, 1)
 
     async def _layout(
         self, conn: AsyncConnection[Any], schema: str
@@ -1012,3 +1016,69 @@ class TestCutoverTable:
             constraints = await cur.fetchall()
 
         return columns, constraints
+
+
+async def test_history_links_records_to_the_users_uuid(
+    stores: Stores,
+    pool: AsyncPostgresPool,
+    schema: str,
+) -> None:
+    await written(stores.owned("alice"), SESSION, "owned history")
+    query = sql.SQL("""
+        select s.user_id, u.identifier
+        from {}.session_records as r
+        join {}.session as s on s.id = r.session_id
+        join {}.users as u on u.id = s.user_id
+        where r.session_id = %s
+    """).format(sql.Identifier(schema), sql.Identifier(schema), sql.Identifier(schema))
+    async with pool.connection() as conn:
+        row = await (await conn.execute(query, (SESSION.value,))).fetchone()
+    assert row == (stores.user_id("alice"), "stand:alice")
+
+
+async def test_history_refuses_a_uuid_without_a_users_row(
+    stores: Stores,
+    postgres: PostgresConfig,
+    schema: str,
+    pool: AsyncPostgresPool,
+) -> None:
+    unknown = PostgresHistoryStore(
+        postgres, schema, uuid.uuid4(), SessionLocks(postgres), pool
+    )
+    with pytest.raises(HistoryError, match="foreign key"):
+        await written(unknown, SESSION, "orphan")
+    assert await read_all(stores.new(), SESSION) == []
+
+
+async def test_store_does_not_repair_the_owner_column(
+    stores: Stores,
+    pool: AsyncPostgresPool,
+    schema: str,
+) -> None:
+    legacy = SessionId(value="legacy-owned")
+    await written(stores.owned("alice"), legacy, "old service session")
+    table = sql.Identifier(schema, "session")
+    async with pool.connection() as conn, conn.transaction():
+        await conn.execute(sql.SQL("alter table {} drop column user_id").format(table))
+        await conn.execute(
+            sql.SQL("alter table {} add column owner text").format(table)
+        )
+        await conn.execute(
+            sql.SQL("update {} set owner = %s where id = %s").format(table),
+            ("alice", legacy.value),
+        )
+
+    with pytest.raises(HistoryError):
+        await stores.owned("alice").list(None, 1)
+
+    async with pool.connection() as conn:
+        fields = await PostgresSchema(schema).columns_of(conn, "session")
+        row = await (
+            await conn.execute(
+                sql.SQL("select owner from {} where id = %s").format(table),
+                (legacy.value,),
+            )
+        ).fetchone()
+    assert "owner" in fields
+    assert "user_id" not in fields
+    assert row == ("alice",)

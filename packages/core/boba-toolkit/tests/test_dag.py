@@ -415,28 +415,6 @@ class TestNestedCalls:
                 f"клиент видит узлы связки так же, как сервер: {parsed} != {described}"
             )
 
-    def test_replaced_changes_only_the_node_arguments(self) -> None:
-        nested = CallDag().feature()
-        arguments = self._arguments()
-        sealed: list[DagNode] = []
-        for node in nested.calls(arguments):
-            sealed.append(node.model_copy(update={"args": {"sealed": node.key}}))
-
-        replaced = nested.replaced(arguments, sealed)
-
-        expected = {
-            "nodes": [
-                {"key": "src", "tool": "a", "args": {"sealed": "src"}},
-                {"key": "dst", "tool": "b", "args": {"sealed": "dst"}},
-            ],
-            "note": "kept",
-        }
-        if replaced != expected:
-            raise AssertionError(f"меняются только аргументы узлов: {replaced}")
-
-        if arguments != self._arguments():
-            raise AssertionError(f"исходные аргументы не тронуты: {arguments}")
-
     @pytest.mark.parametrize(
         ("arguments", "expected"),
         [

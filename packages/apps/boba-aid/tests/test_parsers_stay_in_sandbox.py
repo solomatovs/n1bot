@@ -20,7 +20,7 @@ class TestParsersStayInSandbox:
     def test_app_does_not_import(self, module: str) -> None:
         code = (
             "import sys\n"
-            "import boba.aid.infra.plugins\n"
+            "import boba.aid.infra.bootstrap\n"
             f"if {module!r} in sys.modules:\n"
             f"    raise SystemExit('the app pulls {module}')\n"
             "print('ok')\n"

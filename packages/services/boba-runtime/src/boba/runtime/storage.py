@@ -23,10 +23,10 @@ import stat as stat_module
 import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, AsyncIterator, Sequence
-from typing import Any, ClassVar, Literal, Self
+from typing import Annotated, Any, ClassVar, Literal
 
 from anyio import Path, open_file
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AliasChoices, AliasPath, BaseModel, ConfigDict, Field
 
 from boba.canvas.keys import DirKey, ObjectKey, ScopeDir, WorkspaceMount
 from boba.canvas.storage import (
@@ -64,9 +64,11 @@ from boba.workspace.launcher import (
 
 __all__ = [
     "ImageStorageClient",
+    "ImageStorageConfig",
     "LocalStorageClient",
     "LocalStorageConfig",
     "StorageClient",
+    "StorageConfig",
     "StorageFactory",
 ]
 
@@ -74,25 +76,32 @@ logger = logging.getLogger(__name__)
 
 
 class LocalStorageConfig(BaseModel):
-    """Секция [storage]: где и как хранятся файлы workspace."""
+    """Настройки файлового хранилища для LocalStorageClient: каталог и размер
+    блока чтения. StorageFactory выбирает его по kind=local."""
 
     model_config = ConfigDict(extra="ignore")
 
-    kind: Literal["local", "image"] = Field(
-        default="local",
-        description="local — файлы на диске; image — внутри ext4-образа пользователя.",
-    )
-    files_dir: str = Field(
-        default="",
-        description=(
-            "Корневая папка на диске для файлов вложений "
-            "(<files_dir>/<object_key>); обязательна при kind=local."
+    kind: Literal["local"] = "local"
+    files_dir: str = Field(min_length=1)
+    public_prefix: str = Field(default="/upload")
+    chunk_bytes: int = Field(
+        default=65536,
+        gt=0,
+        validation_alias=AliasChoices(
+            "chunk_bytes", AliasPath("mounting", "copy_chunk_bytes")
         ),
+        description="Размер блока потокового чтения файлов, байт.",
     )
-    public_prefix: str = Field(
-        default="/upload",
-        description="URL-префикс serve-роута; из него собирается url элемента.",
-    )
+
+
+class ImageStorageConfig(BaseModel):
+    """Настройки ext4-хранилища для ImageStorageClient: монтирование и сроки
+    операций. StorageFactory выбирает его по kind=image."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    kind: Literal["image"] = "image"
+    public_prefix: str = Field(default="/upload")
     op_timeout_sec: int = Field(
         default=60,
         ge=1,
@@ -113,16 +122,15 @@ class LocalStorageConfig(BaseModel):
         ),
     )
 
-    @model_validator(mode="after")
-    def _validate_kind(self) -> Self:
-        if self.kind == "local" and not self.files_dir:
-            msg = (
-                "section [storage] with kind=local expects files_dir as a "
-                f"non-empty path, got {self.files_dir!r}"
-            )
-            raise ValueError(msg)
+    @property
+    def chunk_bytes(self) -> int:
+        return self.mounting.copy_chunk_bytes
 
-        return self
+
+StorageConfig = Annotated[
+    LocalStorageConfig | ImageStorageConfig, Field(discriminator="kind")
+]
+"""Секция storage: параметры только выбранного способа хранения."""
 
 
 class StorageClient(ABC):
@@ -276,8 +284,8 @@ class StorageFactory:
     def __init__(self, instance: InstanceConfig) -> None:
         self._instance = instance
 
-    def create(self, config: LocalStorageConfig) -> StorageClient:
-        if config.kind == "image":
+    def create(self, config: StorageConfig) -> StorageClient:
+        if isinstance(config, ImageStorageConfig):
             program = ProgramRoots().locate()
             images = self._instance.data(InstanceData.WORKSPACE)
 
@@ -286,18 +294,12 @@ class StorageFactory:
         return LocalStorageClient(config)
 
 
-class ConfiguredStorageClient(StorageClient, ABC):
-    """База хранилищ процесса, собранных из секции [storage]: локального
-    диска и образа пользователя. Наследники читают свои настройки из
-    self._config."""
+class LocalStorageClient(StorageClient):
+    """Хранит файлы вложений на локальном диске под files_dir."""
 
     def __init__(self, config: LocalStorageConfig) -> None:
-        super().__init__(config.public_prefix, config.mounting.copy_chunk_bytes)
+        super().__init__(config.public_prefix, config.chunk_bytes)
         self._config = config
-
-
-class LocalStorageClient(ConfiguredStorageClient):
-    """Хранит файлы вложений на локальном диске под files_dir."""
 
     async def _resolve(self, object_key: str) -> Path:
         base_dir = await Path(self._config.files_dir).resolve()
@@ -353,7 +355,7 @@ class LocalStorageClient(ConfiguredStorageClient):
         self, path: Path, window: ReadWindow, size: int
     ) -> AsyncGenerator[bytes, None]:
         """Отдаёт окно файла чанками: в памяти живёт один чанк, а не файл."""
-        chunk_bytes = self._config.mounting.copy_chunk_bytes
+        chunk_bytes = self._config.chunk_bytes
         remaining = window.resolve_length(size)
 
         async with await path.open("rb") as f:
@@ -391,7 +393,7 @@ class LocalStorageClient(ConfiguredStorageClient):
         return tuple(sorted(names))
 
 
-class ImageStorageClient(ConfiguredStorageClient):
+class ImageStorageClient(StorageClient):
     """Хранит вложения внутри ext4-образа пользователя: fuse2fs на одну операцию.
 
     Каждая операция — цепочка лаунчера (LauncherChain) над образом
@@ -403,9 +405,10 @@ class ImageStorageClient(ConfiguredStorageClient):
     """Период проверки простоя идущей операции."""
 
     def __init__(
-        self, config: LocalStorageConfig, workspace: WorkspaceSpec, program: ProgramRoot
+        self, config: ImageStorageConfig, workspace: WorkspaceSpec, program: ProgramRoot
     ) -> None:
-        super().__init__(config)
+        super().__init__(config.public_prefix, config.chunk_bytes)
+        self._config = config
         self._workspace_spec = workspace
         self._chain = LauncherChain(
             program.interpreter,

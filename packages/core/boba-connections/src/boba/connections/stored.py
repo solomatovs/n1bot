@@ -194,5 +194,5 @@ class ConnectionRepository(Protocol):
 
     @abstractmethod
     async def for_subject(
-        self, subject: Subject, kind: str
+        self, subject: Subject, kind: str, *, name: str | None = None
     ) -> Sequence[GrantedConnection]: ...

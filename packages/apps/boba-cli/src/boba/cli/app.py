@@ -126,6 +126,7 @@ class Command(StrEnum):
     STDIO = "--stdio"
     SERVE = "serve"
     HEALTH = "health"
+    MIGRATE = "migrate"
     SELF_CHECK = "self-check"
     SETTINGS_SCHEMA = "settings-schema"
     INTERACTIVE = "interactive"
@@ -267,6 +268,17 @@ class ArgumentParser:
             type=Path,
             help="config.toml of this instance; repeat to lay an overlay file over it",
         )
+        migrate = commands.add_parser(
+            Command.MIGRATE.value,
+            help="create storage tables in an empty PostgreSQL schema",
+        )
+        migrate.add_argument(
+            ServeFlag.CONFIG,
+            required=True,
+            action="append",
+            type=Path,
+            help="config.toml of this instance; repeat for overlays",
+        )
         commands.add_parser(
             Command.SELF_CHECK.value,
             help="check that the package data of this build is inside, then exit",
@@ -293,6 +305,9 @@ class ArgumentParser:
             return ServeInvocation(command=command, config=tuple(space.config))
 
         if command is Command.HEALTH:
+            return ServeInvocation(command=command, config=tuple(space.config))
+
+        if command is Command.MIGRATE:
             return ServeInvocation(command=command, config=tuple(space.config))
 
         if not command.serves:
@@ -999,7 +1014,7 @@ class AgentProcess:
             postgres = PostgresBuilder(self._env).config(history)
             locks = SessionLocks(postgres)
             store = PostgresHistoryStore(
-                postgres, history.db_schema, history.owner, locks
+                postgres, history.db_schema, history.user_id, locks
             )
             return OpenedStore(store=store, locks=(locks,))
 
@@ -1028,6 +1043,25 @@ async def main(argv: Sequence[str] | None = None) -> None:
 
     invocation = ArgumentParser().parse(argv)
     if isinstance(invocation, ServeInvocation):
+        if invocation.command is Command.MIGRATE:
+            from boba.history.postgres.migrations import (  # noqa: PLC0415 — служебный режим
+                HistorySchema,
+            )
+            from boba.runtime.migrate import (  # noqa: PLC0415 — служебный режим
+                ApplicationMigrations,
+            )
+
+            try:
+                await ApplicationMigrations().run(
+                    invocation.config,
+                    tuple(HistorySchema),
+                    section="app.agent.history",
+                )
+            except Exception as exc:
+                raise SystemExit(f"boba migrate failed: {exc}") from exc
+
+            return
+
         # сеть и вход грузит только служба: `boba --stdio` стартует без них
         from boba.cli.serve import ServeEntry  # noqa: PLC0415
 

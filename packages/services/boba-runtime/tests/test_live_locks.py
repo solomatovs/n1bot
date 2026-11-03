@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Sequence
-from importlib.resources import files
 from uuid import UUID, uuid4
 
 import pytest
@@ -57,9 +56,10 @@ async def _stand(
     cluster = _cluster(bus_config)
     bus = PgMessageBus(cfg, bus_config.db_schema, name, AppName.AID, cluster)
     bus._pool_ref = pool
-    schema_dir = files("boba.runtime") / "schema"
     async with pool.connection() as conn:
-        await PostgresSchema(bus_config.db_schema).apply_files(conn, schema_dir, {})
+        await PostgresSchema(bus_config.db_schema).apply_packages(
+            conn, ("boba.identity_postgres", "boba.runtime")
+        )
 
     await bus.start()
     locks = PgLiveLocks(cfg, bus_config.db_schema, name, AppName.AID, cluster)

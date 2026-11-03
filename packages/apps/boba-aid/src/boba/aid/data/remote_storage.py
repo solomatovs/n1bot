@@ -35,7 +35,7 @@ from boba.canvas.storage import (
     StorageError,
 )
 from boba.identity.api import UserRows
-from boba.identity.signin import SignInMetadata
+from boba.identity.errors import AuthenticationError
 from boba.mcp_client.client import FilesHost, McpCaller, McpClientError, McpServers
 from boba.runtime.storage import StorageClient
 from boba.workspace.launcher import ReadWindow
@@ -101,11 +101,16 @@ class FileOwners:
             msg = f"files of thread {thread_id}: no users row with id {user_id!r}"
             raise StorageError(msg)
 
-        sign_in = SignInMetadata.parse(stored.meta)
+        try:
+            user = stored.authenticated()
+        except AuthenticationError as exc:
+            msg = f"files of thread {thread_id}: the owner is not identified: {exc}"
+            raise StorageError(msg) from exc
+
         viewer = McpViewer(
-            user_id=stored.id,
-            login=stored.identifier,
-            roles=sign_in.roles,
+            user_id=user.id,
+            login=user.identifier,
+            roles=user.sign_in.roles,
         )
         servers = await self._granted(viewer, thread_id)
 

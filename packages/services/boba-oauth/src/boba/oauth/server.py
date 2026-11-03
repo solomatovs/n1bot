@@ -43,7 +43,7 @@ from enum import StrEnum
 from importlib.resources import files
 from typing import Any, ClassVar, Self, TypeVar
 from urllib.parse import urlencode, urlsplit
-from uuid import uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from cryptography.fernet import Fernet, InvalidToken
 from fastmcp.server.auth import (
@@ -88,13 +88,15 @@ from starlette.routing import BaseRoute, Mount, Route
 
 from boba.auth import SignIns
 from boba.auth.http import SsoRequests, SsoResponses
-from boba.auth.proxy import AssertionRejectedError, ProxyAssertions
+from boba.auth.proxy import AssertionRejectedError, ProxyAssertionVerifier
 from boba.auth.signin import LoginField
+from boba.identity.api import UsersUpsert
 from boba.identity.errors import (
     AuthenticationError,
     AuthorizationError,
     ExternalServiceError,
 )
+from boba.identity.principal import IdentityRealm, UserIdentity
 from boba.identity.signin import ProxyRequest, SignedIn, SignInMetadata
 from boba.identity.sso import SsoChallenge
 
@@ -125,6 +127,7 @@ class TokenClaim(StrEnum):
     ROLES = "roles"
     RESOURCE = "resource"
     METADATA = "metadata"
+    USER_ID = "user_id"
 
 
 class TokenClaimsError(Exception):
@@ -144,6 +147,13 @@ class TokenClaims(BaseModel):
     login: str = Field(min_length=1)
     roles: frozenset[str]
     metadata: Mapping[str, object]
+    user_id: UUID
+
+    @model_validator(mode="after")
+    def _identity_matches_login(self) -> TokenClaims:
+        SignInMetadata.parse(self.metadata).identity_for(self.login)
+
+        return self
 
 
 class ServiceAddress(BaseModel):
@@ -184,6 +194,10 @@ class TrustedClient(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     secret: SecretStr
+    realms: frozenset[IdentityRealm] = frozenset()
+
+    def permits(self, identity: UserIdentity) -> bool:
+        return identity.realm in self.realms
 
     def registered(self, client_id: str) -> OAuthClientInformationFull:
         return OAuthClientInformationFull(
@@ -206,6 +220,7 @@ class TokenHolder:
     sign_in: SignInMetadata
     started: int
     resource: str
+    user_id: UUID
 
     def scopes(self) -> list[str]:
         """Области токена: профили службы, выданные ролям вошедшего
@@ -223,6 +238,7 @@ class RefreshClaims(BaseModel):
     metadata: Mapping[str, object]
     started: int
     resource: str = Field(min_length=1)
+    user_id: UUID
 
 
 class ServiceTokens:
@@ -264,13 +280,20 @@ class ServiceTokens:
         self._max_sec = max_sec
         self._generation = generation
 
-    def holder(self, signed: SignedIn, resource: str) -> TokenHolder:
+    def holder(
+        self, signed: SignedIn, resource: str, user_id: UUID | None = None
+    ) -> TokenHolder:
         """Держатель токена по итогу входа: сессия начинается сейчас."""
+        identity = signed.sign_in.identity_for(signed.identifier)
+        if user_id is None:
+            user_id = uuid5(NAMESPACE_URL, f"boba-user:{identity.identifier}")
+
         return TokenHolder(
             login=signed.identifier,
             sign_in=signed.sign_in,
             started=int(time.time()),
             resource=resource,
+            user_id=user_id,
         )
 
     def access(self, holder: TokenHolder, client_id: str) -> OAuthToken:
@@ -303,6 +326,7 @@ class ServiceTokens:
                 metadata=self._metadata(holder),
                 started=holder.started,
                 resource=holder.resource,
+                user_id=holder.user_id,
             ).model_dump(mode="json"),
         )
 
@@ -326,6 +350,7 @@ class ServiceTokens:
                 TokenClaim.ROLES.value: sorted(holder.sign_in.roles),
                 TokenClaim.RESOURCE.value: holder.resource,
                 TokenClaim.METADATA.value: self._metadata(holder),
+                TokenClaim.USER_ID.value: str(holder.user_id),
             },
         )
 
@@ -337,10 +362,11 @@ class ServiceTokens:
         """Вызывающий по токену доступа; None — токен не принят."""
         try:
             claims = self._issuer.verify_token(token)
-        except JoseError as exc:
+            TokenClaims.model_validate(claims)
+        except (JoseError, ValidationError) as exc:
             # в журнал идёт причина отказа, а не сам токен
             # nosemgrep: python-logger-credential-disclosure
-            logger.info("access token is rejected: %s", exc)
+            logger.info("access token is rejected: %s", type(exc).__name__)
             return None
 
         issued = self._sign_in(claims.get(TokenClaim.METADATA.value)).generation
@@ -403,6 +429,7 @@ class ServiceTokens:
             sign_in=SignInMetadata.parse(held.metadata),
             started=held.started,
             resource=held.resource,
+            user_id=held.user_id,
         )
 
         return self.session(holder, refresh.client_id)
@@ -411,10 +438,11 @@ class ServiceTokens:
         try:
             claims = self._issuer.verify_token(token, self.REFRESH)
             held = RefreshClaims.model_validate(claims.get("upstream_claims"))
-        except (JoseError, ValidationError) as exc:
+            SignInMetadata.parse(held.metadata).identity_for(held.login)
+        except (JoseError, ValueError) as exc:
             # в журнал идёт причина отказа, а не сам токен
             # nosemgrep: python-logger-credential-disclosure
-            logger.info("refresh token is rejected: %s", exc)
+            logger.info("refresh token is rejected: %s", type(exc).__name__)
             return None
 
         issued = SignInMetadata.parse(held.metadata).generation
@@ -531,10 +559,20 @@ class RegisteredClients:
     SEALED: ClassVar[str] = "sealed"
 
     def __init__(
-        self, sealed: SealedValues, declared: Mapping[str, OAuthClientInformationFull]
+        self, sealed: SealedValues, declared: Mapping[str, TrustedClient]
     ) -> None:
         self._sealed = sealed
-        self._declared = dict(declared)
+        self._trusted = dict(declared)
+        self._declared: dict[str, OAuthClientInformationFull] = {}
+        for client_id, config in declared.items():
+            self._declared[client_id] = config.registered(client_id)
+
+    def permits(self, client_id: str, identity: UserIdentity) -> bool:
+        trusted = self._trusted.get(client_id)
+        if trusted is None:
+            return False
+
+        return trusted.permits(identity)
 
     def register(self, client: OAuthClientInformationFull) -> None:
         """Выдаёт клиенту идентификатор, несущий его же запись регистрации."""
@@ -614,10 +652,11 @@ class AuthServer(OAuthProvider):
         public_url: str,
         sign_ins: SignIns,
         tokens: ServiceTokens,
-        assertions: ProxyAssertions | None,
+        assertions: ProxyAssertionVerifier,
         clients: RegisteredClients,
         sealed: SealedValues,
         resources: Sequence[str],
+        users: UsersUpsert | None = None,
     ) -> None:
         super().__init__(
             base_url=public_url,
@@ -631,6 +670,7 @@ class AuthServer(OAuthProvider):
         self._resources = frozenset(resources)
         self._clients = clients
         self._sealed = sealed
+        self._users = users
 
     def sign_ins(self) -> SignIns:
         return self._sign_ins
@@ -722,16 +762,24 @@ class AuthServer(OAuthProvider):
 
         resource = self._resource(granted.params.resource, TokenError)
 
-        return self._tokens.session(
-            self._tokens.holder(granted.signed, resource), granted.client_id
-        )
+        holder = await self._holder(granted.signed, resource)
+
+        return self._tokens.session(holder, granted.client_id)
+
+    async def _holder(self, signed: SignedIn, resource: str) -> TokenHolder:
+        if self._users is None:
+            return self._tokens.holder(signed, resource)
+
+        user = await self._users.ensure_user(signed)
+
+        return self._tokens.holder(signed, resource, user.id)
 
     async def exchange_identity_assertion(
         self, client: OAuthClientInformationFull, params: IdentityAssertionParams
     ) -> OAuthToken:
         """Вход proxy: утверждение доверенного клиента о пользователе меняется
         на токен сервиса; роли пользователя решают провайдеры [auth.proxy]."""
-        if self._assertions is None:
+        if not self._assertions.configured:
             raise TokenError(
                 "unsupported_grant_type",
                 "identity assertion: [auth] has no proxy provider configured",
@@ -747,9 +795,21 @@ class AuthServer(OAuthProvider):
             raise TokenError("invalid_grant", str(exc)) from exc
 
         resource = self._resource(claims.resource, TokenError)
-        request = ProxyRequest(login=claims.sub, roles=claims.roles, client=client_id)
+        if not self._clients.permits(client_id, claims.identity):
+            msg = (
+                f"identity assertion of {claims.sub!r}: client {client_id!r} "
+                f"is not trusted for realm {claims.identity.realm!r}"
+            )
+            raise TokenError("invalid_grant", msg)
+
+        request = ProxyRequest(
+            login=claims.identity.login,
+            roles=claims.roles,
+            client=client_id,
+            identity=claims.identity,
+        )
         try:
-            signed = await self._sign_ins.admit_proxy(request)
+            signed = await self._sign_ins.admit_proxy(request, claims.identity.realm)
         except (AuthenticationError, AuthorizationError) as exc:
             logger.warning("%s", exc)
             raise TokenError("invalid_grant", str(exc)) from exc
@@ -768,7 +828,9 @@ class AuthServer(OAuthProvider):
             ",".join(sorted(signed.sign_in.roles)),
         )
 
-        return self._tokens.access(self._tokens.holder(signed, resource), client_id)
+        holder = await self._holder(signed, resource)
+
+        return self._tokens.access(holder, client_id)
 
     def _resource(
         self, resource: str | None, refusal: type[AuthorizeError | TokenError]
@@ -978,8 +1040,9 @@ class LoginPages:
 
         login = str(fields.get(LoginField.LOGIN.value, ""))
         password = str(fields.get(LoginField.PASSWORD.value, ""))
+        realm = str(fields.get(LoginField.REALM.value, ""))
         try:
-            signed = await self._sign_ins.by_password(login, password)
+            signed = await self._sign_ins.by_password(login, password, realm)
         except AuthenticationError as exc:
             return await self._page(visit, str(exc), 401)
         except AuthorizationError as exc:
@@ -999,7 +1062,8 @@ class LoginPages:
             return await self._page(visit, self.UNCONFIRMED, 403)
 
         try:
-            outcome = await self._sign_ins.exchange().handshake(
+            realm = query.get(LoginField.REALM.value, "")
+            outcome = await self._sign_ins.exchange(realm).handshake(
                 self._requests.of(request)
             )
         except AuthorizationError as exc:
@@ -1051,15 +1115,32 @@ class LoginPages:
                 action=html.escape(f"{self._public_url}{AuthServer.LOGIN_PATH}"),
                 txn=html.escape(visit.txn),
                 proof=html.escape(proof),
+                realms=self._realm_options(providers.password_realms),
             )
 
         sso = ""
         if providers.sso:
-            query = urlencode(
-                {AuthServer.TXN: visit.txn, LoginField.PROOF.value: proof}
-            )
-            url = f"{self._public_url}{LoginField.SSO.value}?{query}"
-            sso = self._templates.sso.format(url=html.escape(url))
+            links: list[str] = []
+            for realm in providers.sso_realms:
+                query = urlencode(
+                    {
+                        AuthServer.TXN: visit.txn,
+                        LoginField.PROOF.value: proof,
+                        LoginField.REALM.value: realm,
+                    }
+                )
+                url = f"{self._public_url}{LoginField.SSO.value}?{query}"
+                label = "Sign in with Kerberos"
+                if len(providers.sso_realms) > 1:
+                    label = f"Sign in with {realm}"
+
+                links.append(
+                    self._templates.sso.format(
+                        url=html.escape(url), label=html.escape(label)
+                    )
+                )
+
+            sso = "".join(links)
 
         sent = dict(self.HEADERS)
         if headers is not None:
@@ -1088,6 +1169,22 @@ class LoginPages:
         )
 
         return response
+
+    @staticmethod
+    def _realm_options(realms: Sequence[str]) -> str:
+        if len(realms) <= 1:
+            return ""
+
+        options = ['<option value="">Select a realm</option>']
+        for realm in realms:
+            escaped = html.escape(realm, quote=True)
+            options.append(f'<option value="{escaped}">{escaped}</option>')
+
+        return (
+            '<p><label>Realm <select name="realm" required>'
+            + "".join(options)
+            + "</select></label></p>"
+        )
 
     async def _client(self, held: PendingLogin) -> str:
         """Кто просит вход и куда вернётся браузер: по этой строке человек

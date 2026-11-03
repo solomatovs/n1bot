@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 from boba.identity.admission import RoleExcludeConfig, RoleMappingConfig, RoleRules
 from boba.identity.directory import DirectoryAuth
+from boba.identity.principal import IdentityRule
 from boba.identity.session import LoginTemplate
 from boba.identity.signin import ProxyHeaderNames
 from boba.kerberos import AcceptConfig, Delegation
@@ -224,6 +225,7 @@ class LocalAuthConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     type: Literal["local"] = "local"
+    identity: IdentityRule
 
     users: dict[str, str] = Field(
         default_factory=dict,
@@ -245,6 +247,7 @@ class LdapAuthConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     type: Literal["ldap"] = "ldap"
+    identity: IdentityRule
     server: str = Field(
         description="URI контроллера домена, напр. ldaps://dc.corp.example.com:636.",
     )
@@ -281,6 +284,7 @@ class KerberosAuthConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     type: Literal["kerberos"] = "kerberos"
+    identity: IdentityRule
 
     accept: AcceptConfig = Field(
         description=(
@@ -329,6 +333,7 @@ class ProxyAuthConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     type: Literal["proxy"] = "proxy"
+    identity: IdentityRule
 
     path: str = Field(default="/auth/proxy")
     secret: SecretStr = Field(

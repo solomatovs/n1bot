@@ -38,7 +38,6 @@ import logging
 from abc import abstractmethod
 from collections.abc import AsyncGenerator, Iterator, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
-from enum import StrEnum
 from typing import Any, ClassVar, Protocol
 from uuid import uuid4
 
@@ -57,7 +56,13 @@ from mcp.server.caching import CacheHint
 from mcp.server.subscriptions import ResourceUpdated, SubscriptionBus
 from mcp.shared.jsonrpc_dispatcher import progress_token_from_params
 from mcp_types.version import MODERN_PROTOCOL_VERSIONS
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    ValidationError,
+)
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -74,8 +79,9 @@ from boba.access import (
 )
 from boba.cancellation import RunCancellation, StopReason, ToolStopped
 from boba.canvas.keys import ObjectKey
-from boba.connection_broker.sealed import SealedConnectionParams
-from boba.connections.sealed import OfferedSource, SealFeature
+from boba.connection_broker.params import ConnectionParams
+from boba.connection_broker.tools import ConnectionTool
+from boba.connections.offers import OfferedSource
 from boba.core.validation import ValidationText
 from boba.identity.context import (
     CallContext,
@@ -113,7 +119,7 @@ from boba.mcp_server.prompts import (
     PromptFile,
 )
 from boba.oauth.server import ServiceAuth
-from boba.runtime.storage import LocalStorageConfig, StorageClient
+from boba.runtime.storage import StorageClient, StorageConfig
 from boba.toolkit.channels import JournalChannels, ToolChannel
 from boba.toolkit.dag import CallDag, DagNode, ToolServer
 from boba.toolkit.ports import ProgressReport
@@ -148,7 +154,6 @@ __all__ = [
     "McpEndpoint",
     "McpEndpoints",
     "McpServer",
-    "OfferClient",
     "RoleToolServers",
     "RunLimitMiddleware",
     "RunLimits",
@@ -157,44 +162,12 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 
-class OfferClient(StrEnum):
-    """Признак клиента в правиле предложения соединений: SEALING — запрос
-    объявил расширение запечатывания соединений (SealFeature), PLAIN — не
-    объявил, ANY — неважно."""
-
-    SEALING = "sealing"
-    PLAIN = "plain"
-    ANY = "any"
-
-    def matches(self, sealing: bool) -> bool:
-        """Подходит ли правило клиенту, который запечатывает (sealing) или нет."""
-        if self is OfferClient.ANY:
-            return True
-
-        if sealing:
-            return self is OfferClient.SEALING
-
-        return self is OfferClient.PLAIN
-
-
 class ConnectionOfferRule(RoleVisibility):
-    """Правило предложения соединений [[mcp.endpoints.<имя>.connections]]:
-    кому (roles, '*' — всем), какому клиенту (client) и какие источники
-    соединений предложить (offer). Правила endpoint'а проверяет по порядку
-    McpEndpoint.offer."""
+    """Источники connections, доступные ролям endpoint'а MCP."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    client: OfferClient
     offer: list[OfferedSource] = Field(min_length=1)
-
-    def matches(self, roles: frozenset[str], sealing: bool) -> bool:
-        """Подходит ли правило вызывающему с ролями roles и признаком
-        клиента sealing."""
-        if not self.visible_for(roles):
-            return False
-
-        return self.client.matches(sealing)
 
 
 class McpEndpoint(ProfileGrant):
@@ -208,37 +181,29 @@ class McpEndpoint(ProfileGrant):
     connections: list[ConnectionOfferRule]
     prompts: dict[str, PromptFile]
 
-    def offer(self, roles: frozenset[str], sealing: bool) -> frozenset[OfferedSource]:
+    def offer(self, roles: frozenset[str]) -> frozenset[OfferedSource]:
         """Источники соединений по первому подходящему правилу; ни одно не
         подошло — соединений нет."""
         for rule in self.connections:
-            if rule.matches(roles, sealing):
+            if rule.visible_for(roles):
                 return frozenset(rule.offer)
 
         return frozenset()
 
 
 # RoleTools первым: иначе __init__ протокола CallerServers молча пропустит его __init__
-class RoleToolServers(RoleTools[tuple[frozenset[str], str, bool]], CallerServers):
-    """Реализация CallerServers сервиса на базе RoleTools: инструменты
-    вызывающего по его токену и признаку клиента из запроса.
+class RoleToolServers(RoleTools[tuple[frozenset[str], str]], CallerServers):
+    """Реализация CallerServers на основе ролей и профиля пользователя.
 
-    Создаётся сборкой сервера endpoint'а из реестра инструментов, субъектов
-    токена, секции endpoint'а и соединений инструментов. Ключ кэша —
-    «роли, профиль, клиент запечатывает»; порт (ToolServer) ключа содержит
-    только инструменты, доступные этим ролям вне чата, — с
-    параметрами-соединениями под предложение правил endpoint'а
-    (SealedConnectionParams.offered); по ним же собирается инструмент
-    workflow. Признак клиента — объявленное в запросе расширение
-    запечатывания соединений (SealFeature).
-    """
+    Сборка MCP передаёт реестр и ConnectionParams. Кэш хранит доступные
+    инструменты и схемы; grants на connections проверяются заново при вызове."""
 
     def __init__(
         self,
         registry: ToolRegistry,
         subjects: TokenSubjects,
         endpoint: McpEndpoint,
-        params: SealedConnectionParams,
+        params: ConnectionParams,
     ) -> None:
         super().__init__()
         self._registry = registry
@@ -251,15 +216,16 @@ class RoleToolServers(RoleTools[tuple[frozenset[str], str, bool]], CallerServers
         """Инструменты вызывающего текущего запроса; без токена —
         TokenClaimsError."""
         subject = self._subjects.current()
-        settings = get_context().client_extension_settings(SealFeature.ID)
-        sealing = settings is not None
 
-        return self.tools((subject.roles, subject.profile, sealing))
+        return self.tools((subject.roles, subject.profile))
 
-    def _server(self, key: tuple[frozenset[str], str, bool]) -> ToolServer:
-        roles, profile, sealing = key
+    def _server(self, key: tuple[frozenset[str], str]) -> ToolServer:
+        roles, profile = key
         tools = self._registry.for_headless(roles, profile)
-        sources = self._endpoint.offer(roles, sealing)
+        sources = self._endpoint.offer(roles)
+        if OfferedSource.STORED not in sources:
+            for name in ConnectionTool:
+                tools.pop(name, None)
         offered = self._params.offered(list(tools.values()), roles, sources)
 
         return self._registry.server(offered, self._calls)
@@ -899,9 +865,9 @@ class McpServer(Middleware):
         auth: AuthProvider,
         profile: str,
         endpoint: McpEndpoint,
-        params: SealedConnectionParams,
+        params: ConnectionParams,
         limits: RunLimitMiddleware,
-        storage: LocalStorageConfig,
+        storage: StorageConfig,
         files: StorageClient,
         path: str,
         published: str,
@@ -944,9 +910,8 @@ class McpServer(Middleware):
     @staticmethod
     def _features_of(registry: ToolRegistry) -> dict[str, dict[str, Any]]:
         """Возможности сервера для объявления при подключении клиента: те,
-        что объявляет порт над всеми инструментами реестра (инструмент-связка,
-        ключ запечатывания соединений); область вызова, файлы и журнал
-        endpoint добавляет сам."""
+        что объявляет порт над всеми инструментами реестра. Область вызова,
+        файлы и журнал endpoint добавляет сам."""
         declared: dict[str, dict[str, Any]] = {}
         port = registry.server(registry.tools, DirectCalls())
         for feature, settings in port.features().items():
@@ -1063,8 +1028,8 @@ class EndpointCatalog(ProfileCatalog):
     Создаётся сборкой процесса из секций [mcp.endpoints.<имя>]. Реализация
     ProfileCatalog: вход перечисляет в токене endpoint'ы, выданные ролям
     вошедшего. grants() отдаёт те же endpoint'ы грантами реестра
-    инструментов: набор инструментов — у endpoint'а, а любая роль вошедшего
-    разрешает любой инструмент — роли здесь решают только доступ к endpoint'у.
+    инструментов: доступ требует одновременно разрешения endpoint'а
+    и хотя бы одной роли из настроенной политики сервиса.
     """
 
     def __init__(self, endpoints: Mapping[str, ProfileGrant]) -> None:
@@ -1081,11 +1046,9 @@ class EndpointCatalog(ProfileCatalog):
     def known(self, name: str) -> bool:
         return name in self._endpoints
 
-    def grants(self) -> ToolGrants:
-        any_role = {ToolGrant.WILDCARD: ToolGrant(tools=[ToolGrant.WILDCARD])}
-
+    def grants(self, roles: Mapping[str, ToolGrant]) -> ToolGrants:
         return ToolGrants(
-            roles=any_role, profiles=self._endpoints, check=GrantCheck.STRICT
+            roles=roles, profiles=self._endpoints, check=GrantCheck.STRICT
         )
 
 
@@ -1121,9 +1084,9 @@ class McpEndpoints:
         journals: CallJournals,
         auth: ServiceAuth,
         endpoints: Mapping[str, McpEndpoint],
-        params: SealedConnectionParams,
+        params: ConnectionParams,
         limits: RunLimits,
-        storage: LocalStorageConfig,
+        storage: StorageConfig,
         files: StorageClient,
     ) -> None:
         self._auth = auth

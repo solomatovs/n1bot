@@ -1,10 +1,10 @@
 """Общая часть хранилища описаний: конфиг, сессия, ключ области и создание
-таблиц на старте плагина.
+плана создания таблиц.
 
 Сущности живут в своих модулях (nodes, edges) со своими SQL, моделями,
 ошибками и инструментами; отсюда они берут только сессию — соединение и
 сборщик запросов со схемой — и ключ области. Схему и обе таблицы создаёт
-setup один раз при старте плагина: внешний потребитель забирает строки и
+отдельная команда migrate; внешний потребитель забирает строки и
 делает truncate, схему и таблицы не трогает.
 
 Ошибки:
@@ -20,7 +20,6 @@ import logging
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
 from enum import StrEnum
-from importlib.resources import files
 from typing import Any, ClassVar
 from uuid import UUID
 
@@ -30,6 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from boba.core.secrets import SecretRevealing
 from boba.db.postgres import PayloadPostgres, PgQueryBuilder, PostgresSchema
 from boba.db.postgres.connection import PostgresConfig
+from boba.db.postgres.migrate import MigrationScripts
 from boba.identity.context import Scope, ScopeKind
 from boba.toolkit.manifest import PluginStorage
 
@@ -126,19 +126,17 @@ class DescriberSession:
 
 class DescriberStore(PluginStorage):
     """Сессии хранилища: одно соединение на вызов инструмента. Таблицы node и
-    edge создаёт setup файлами schema/*.sql пакета при старте плагина в
-    процессе boba-mcp; реализация PluginStorage."""
+    edge создаёт отдельная команда migrate по плану PluginStorage."""
 
     def __init__(self, cfg: DescriberToolConfig) -> None:
         self._connection = cfg.connection
         self._schema = PostgresSchema(cfg.db_schema)
 
-    async def setup(self) -> None:
-        """Схема и таблицы описаний на старте плагина; повтор безвреден."""
-        schema_dir = files("boba.tool.describer") / "schema"
-        conn = await PayloadPostgres.connect_config(self._connection)
-        async with conn:
-            await self._schema.apply_files(conn, schema_dir, {})
+    def migration(self) -> str:
+        """План таблиц описаний для команды migrate, без обращения к БД."""
+        plan = MigrationScripts(self._schema.name).packages(("boba.tool.describer",))
+
+        return plan.model_dump_json(by_alias=True)
 
     @asynccontextmanager
     async def session(self) -> AsyncGenerator[DescriberSession, None]:

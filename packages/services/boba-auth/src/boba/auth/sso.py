@@ -25,6 +25,7 @@ from boba.identity.errors import (
     ExternalServiceError,
     InternalServiceError,
 )
+from boba.identity.principal import UserIdentity
 from boba.identity.session import (
     LoginTemplate,
     SignInProvider,
@@ -143,13 +144,11 @@ class SsoSignIn(SsoAdmission):
         try:
             return LoginTemplate.username_of(principal_format, principal)
         except TemplateError as exc:
-            raise InternalServiceError(
-                internal_detail=(
-                    f"principal {principal!r} does not match "
-                    f"principal_format {principal_format!r}: {exc}"
-                ),
-                user_detail=None,
-            ) from exc
+            message = (
+                f"principal {principal!r} does not match the configured "
+                f"principal_format {principal_format!r}: {exc}"
+            )
+            raise AuthorizationError(message) from exc
 
     def sealed_of(self, identity: SpnegoIdentity) -> str:
         """Запечатанный билет входа; пустая строка — делегирования у входа нет."""
@@ -162,18 +161,18 @@ class SsoSignIn(SsoAdmission):
     async def signed_in(self, identity: SpnegoIdentity, sealed: str) -> SignedIn:
         """Итог входа: логин из принципала, роли и профили провайдерами, билет
         в metadata."""
-        facts = self.facts_of(identity)
-        roles = await self.roles_of(facts)
-        grant = await self._profiles.granted(facts, frozenset(roles))
-        sign_in = self._sign_in_of(identity.principal, sealed, roles, grant)
-
         username = self._username_from_principal(
             self._config.principal_format, identity.principal
         )
         login = UserLogin.of(username)
+        user = self._config.identity.identity(login.key)
+        facts = self.facts_of(identity)
+        roles = await self.roles_of(facts)
+        grant = await self._profiles.granted(facts, frozenset(roles))
+        sign_in = self._sign_in_of(identity.principal, sealed, roles, grant, user)
 
         return SignedIn(
-            identifier=login.key, display_name=login.display, sign_in=sign_in
+            identifier=user.identifier, display_name=login.display, sign_in=sign_in
         )
 
     async def roles_of(self, facts: PrincipalFacts) -> list[str]:
@@ -190,6 +189,7 @@ class SsoSignIn(SsoAdmission):
         sealed: str,
         roles: Sequence[str],
         grant: ProfileGrant,
+        user: UserIdentity,
     ) -> SignInMetadata:
         """Metadata входа: провайдер, принципал, роли, профили и билет."""
         if not sealed:
@@ -200,6 +200,7 @@ class SsoSignIn(SsoAdmission):
 
         return SignInMetadata(
             provider=SignInProvider.KERBEROS.value,
+            identity=user,
             principal=principal,
             sealed_ticket=sealed,
             roles=frozenset(roles),

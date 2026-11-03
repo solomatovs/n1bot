@@ -77,14 +77,12 @@ class StandServerName(StrEnum):
 class StandToolNames:
     """Полные имена инструментов стенда чата, какими их видит агент треда.
 
-    Инструменты чата (connection_list, connection_search) принадлежат
-    серверу чата, остальные — endpoint'у сервиса boba-mcp, который назван
-    профилем чата. Тест называет инструмент именем на сервере, а в сценарий
+    Все инструменты, включая каталог connections, принадлежат endpoint'у
+    сервиса boba-mcp. Тест называет инструмент именем на сервере, а в сценарий
     фейковой модели кладёт полное имя отсюда; форму имени держит
     McpToolNames.
     """
 
-    CHAT_TOOLS: ClassVar[tuple[str, ...]] = ("connection_list", "connection_search")
     ENDPOINT: ClassVar[str] = "all"
     """Endpoint профиля по умолчанию: отдаёт все инструменты сервиса."""
 
@@ -92,9 +90,6 @@ class StandToolNames:
         self._names = McpToolNames()
 
     def full(self, tool: str, endpoint: str = ENDPOINT) -> str:
-        if tool in self.CHAT_TOOLS:
-            return self._names.full(StandServerName.CHAT.value, tool)
-
         return self._names.full(StandServerName.SERVICE.of(endpoint), tool)
 
 
@@ -534,6 +529,14 @@ class ServiceStand(StandService):
     db_name: str
     """База стенда, в которую ходят плагины сервиса (kb, ingest, describer)."""
     sandbox: bool
+    db_schema: str = field(default="mcp", kw_only=True)
+    """Схема самого MCP: изолируется отдельно от схем хранилищ плагинов."""
+    """Совместимость прежнего MCP для тестов старого клиента брокера."""
+    role_tools: Mapping[str, Sequence[str]] = field(
+        default_factory=lambda: {"ADM": ("*",), "DEV": ("*",), "GST": ()},
+        kw_only=True,
+    )
+    """Явная политика tools стенда; тесты connections задают её отдельно."""
     app: StandApp = StandApp.MCP
     url_prefix: str = ""
     generation: str = ""
@@ -581,14 +584,6 @@ class ServiceStand(StandService):
         "search": "search",
     }
     """Endpoint сервиса у каждого профиля чата стенда."""
-
-    SEALING: ClassVar[Mapping[str, Any]] = {
-        "roles": ["*"],
-        "client": "sealing",
-        "offer": ["sealed"],
-    }
-    """Правило предложения соединений endpoint'ов стенда: клиенту, который
-    запечатывает, — соединения пользователя, как в рабочем конфиге."""
 
     HEADERS: ClassVar[Mapping[str, str]] = {
         "user": "X-Remote-User",
@@ -652,9 +647,14 @@ class ServiceStand(StandService):
 
     def write(self) -> None:
         overlay = StandOverlay()
+        overlay.set(("app", "schema"), self.db_schema)
         overlay.set(("postgres", "dbname"), self.db_name)
         overlay.set(("postgres", "pool", "min_size"), 1)
         overlay.set(("postgres", "pool", "max_size"), 6)
+        roles: dict[str, Any] = {}
+        for name, tools in self.role_tools.items():
+            roles[name] = {"tools": list(tools)}
+        overlay.replace(("roles",), roles)
 
         if not self.sandbox:
             files_dir = self.workdir / "files"
@@ -663,11 +663,12 @@ class ServiceStand(StandService):
             overlay.set(("storage", "files_dir"), str(files_dir))
 
         endpoints: dict[str, Any] = {}
+        connections = {"roles": ["*"], "offer": ["stored"]}
         for name, tools in self.ENDPOINTS.items():
             endpoints[name] = {
                 "roles": ["*"],
                 "tools": list(tools),
-                "connections": [dict(self.SEALING)],
+                "connections": [connections],
                 "prompts": {},
             }
 
@@ -675,12 +676,19 @@ class ServiceStand(StandService):
         overlay.set(("mcp", "public_url"), f"http://127.0.0.1:{self.app_port}")
         overlay.set(("mcp", "url_prefix"), "")
         overlay.replace(
-            ("mcp", "clients"), {self.CLIENT_ID: {"secret": self.CLIENT_SECRET}}
+            ("mcp", "clients"),
+            {
+                self.CLIENT_ID: {
+                    "secret": self.CLIENT_SECRET,
+                    "realms": ["corporate", "aid-local"],
+                }
+            },
         )
         overlay.replace(
             ("auth", "proxy"),
             {
                 "type": "proxy",
+                "identity": {"realm": "corporate"},
                 "path": "/auth/proxy",
                 "secret": self.PROXY_SECRET,
                 "max_skew_sec": 60,
@@ -694,6 +702,7 @@ class ServiceStand(StandService):
             ("auth", "local"),
             {
                 "type": "local",
+                "identity": {"realm": "mcp-local"},
                 "users": {
                     self.LOCAL_LOGIN: self.LOCAL_PASSWORD,
                     self.AGENT_LOGIN: self.AGENT_PASSWORD,
@@ -709,7 +718,17 @@ class ServiceStand(StandService):
                 },
             },
         )
-        providers = ["${auth.proxy}"]
+        overlay.replace(
+            ("auth", "proxy_aid_local"),
+            {
+                "type": "proxy",
+                "identity": {"realm": "aid-local"},
+                "path": "/auth/proxy/aid-local",
+                "secret": self.PROXY_SECRET,
+                "roles": {"header": {"name": self.ROLES_HEADER}},
+            },
+        )
+        providers = ["${auth.proxy}", "${auth.proxy_aid_local}"]
         if self.local_sign_in:
             providers.insert(0, "${auth.local}")
 
@@ -893,8 +912,6 @@ class StandConfig(StandService, ServerSeedSpec):
     прогона; runtime/ своего дерева исходников со своими ассетами чата даёт
     стенду другой конфиг chainlit (язык)."""
 
-    CHAT_TOOLS: ClassVar[tuple[str, ...]] = StandToolNames.CHAT_TOOLS
-    """Инструменты, которые чат исполняет сам; остальные — у сервиса boba-mcp."""
     AGENT_MODULE: ClassVar[str] = "boba.cli.app"
     """Модуль агента ACP: стенд запускает его интерпретатором прогона."""
 
@@ -1012,13 +1029,11 @@ class StandConfig(StandService, ServerSeedSpec):
         overlay.replace(
             ("agent",),
             {
+                **agent,
                 "public_url": self.base_url,
-                "seal_ttl_sec": 600,
                 "question_timeout_sec": 600,
                 "process": process,
                 "history": dict(self.agent_history),
-                "tools": agent["tools"],
-                "limits": agent["limits"],
             },
         )
 
@@ -1086,20 +1101,7 @@ class StandConfig(StandService, ServerSeedSpec):
         не все инструменты, чтобы было видно пересечение роли и профиля. Сценарий
         fake llm выбирается по тексту сообщения, поэтому имя модели свободно.
         """
-        # у чата роль режет только его собственные инструменты: DEV без поиска
-        # соединений; набор инструментов сервиса решает endpoint, не роль
-        own = ["connection_list"]
-        if self.app is not StandApp.AID:
-            own = ["diagram_save", "send_file", *self.CHAT_TOOLS]
-
-        overlay.replace(
-            ("roles",),
-            {
-                "ADM": {"tools": ["*"]},
-                "DEV": {"tools": own},
-                "GST": {"tools": []},
-            },
-        )
+        overlay.replace(("roles",), {"ADM": {}, "DEV": {}, "GST": {}})
 
         profiles: dict[str, Any] = {
             "general": {
@@ -1107,7 +1109,6 @@ class StandConfig(StandService, ServerSeedSpec):
                 "description": "Профиль стенда со всеми инструментами",
                 "default": True,
                 "roles": ["*"],
-                "tools": ["*"],
                 "provider": "${llm.fake}",
                 "model": "fake-model-general",
                 "limits": "${model_limits.fake}",
@@ -1123,7 +1124,6 @@ class StandConfig(StandService, ServerSeedSpec):
                 "description": "Профиль стенда с узким набором инструментов",
                 "default": False,
                 "roles": ["*"],
-                "tools": self._search_tools(),
                 "provider": "${llm.fake}",
                 "model": "fake-model-search",
                 "limits": "${model_limits.fake}",
@@ -1139,14 +1139,6 @@ class StandConfig(StandService, ServerSeedSpec):
             profiles = {"general": profiles["general"]}
 
         overlay.replace(("profiles",), profiles)
-
-    def _search_tools(self) -> list[str]:
-        """Свои инструменты профиля search: у чата узкий набор отдаёт endpoint
-        сервиса, у сервиса — его собственные инструменты."""
-        if self.app is StandApp.AID:
-            return []
-
-        return ["diagram_save", "canvas_open"]
 
     def _use_test_database(self, overlay: StandOverlay) -> None:
         """Сервер и учётка — из конфига приложения; стенду — отдельная база.
@@ -1207,6 +1199,7 @@ class StandConfig(StandService, ServerSeedSpec):
                 ("auth", "local"),
                 {
                     "type": "local",
+                    "identity": {"realm": f"{self.app.value}-local"},
                     "users": dict(self.STAND_USERS),
                     "roles": {"local": {"mapping": mapping}},
                     "require_roles": True,

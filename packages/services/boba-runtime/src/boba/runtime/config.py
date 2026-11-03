@@ -30,13 +30,12 @@ from pydantic import (
     model_validator,
 )
 
-from boba.access import RoleConfig
 from boba.auth.config import (
     AuthConfig,
     KerberosAuthConfig,
     ProxyAuthConfig,
 )
-from boba.chat.profiles import ChatProfileConfig
+from boba.chat.profiles import ChatProfileConfig, ChatRoleConfig
 from boba.config import ConfigError, ConfigLoader, bind
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.token import CookieSpec, SessionRenewal
@@ -83,6 +82,7 @@ class ProgramCommand(StrEnum):
 
     SERVE = "serve"
     HEALTH = "health"
+    MIGRATE = "migrate"
 
 
 @dataclass(frozen=True)
@@ -105,6 +105,7 @@ class ConfigArguments:
     HELP: ClassVar[dict[ProgramCommand, str]] = {
         ProgramCommand.SERVE: "run the service",
         ProgramCommand.HEALTH: "probe the running service on its configured port",
+        ProgramCommand.MIGRATE: "create storage tables in empty PostgreSQL schemas",
     }
 
     def __init__(self, parser: argparse.ArgumentParser) -> None:
@@ -556,21 +557,24 @@ class ClusterConfig(BaseModel):
     node_id: str = Field(min_length=1, pattern=r"^[A-Za-z0-9_.-]+$")
     host: str = Field(min_length=1, description="Узел, где лежат журналы инструментов.")
     lock_ttl_sec: int = Field(
-        gt=0, description="Срок блокировки без подтверждения жизни."
+        default=20, gt=0, description="Срок блокировки без подтверждения жизни."
     )
     heartbeat_sec: int = Field(
-        gt=0, description="Период подтверждения жизни держателем."
+        default=6, gt=0, description="Период подтверждения жизни держателем."
     )
     reaper_period_sec: int = Field(
-        gt=0, description="Период сторожа протухших блокировок."
+        default=10, gt=0, description="Период сторожа протухших блокировок."
     )
     queue_usage_limit: float = Field(
+        default=0.5,
         gt=0,
         le=1,
         description="Доля очереди NOTIFY, при которой слушатель переподключается.",
     )
     retention_sec: int = Field(
-        gt=0, description="Сколько хранить события и тела областей, в которых тихо."
+        default=3600,
+        gt=0,
+        description="Сколько хранить события и тела областей, в которых тихо.",
     )
 
     @model_validator(mode="after")
@@ -799,52 +803,43 @@ class ProcessConfig(BaseModel):
 
     @field_validator("auth")
     @classmethod
-    def _kerberos_at_most_once(cls, value: list[AuthConfig]) -> list[AuthConfig]:
-        found = 0
+    def _distinct_auth_backends(cls, value: list[AuthConfig]) -> list[AuthConfig]:
+        backends: set[tuple[str, str]] = set()
         for entry in value:
-            if isinstance(entry, KerberosAuthConfig):
-                found += 1
+            if not isinstance(entry, (KerberosAuthConfig, ProxyAuthConfig)):
+                continue
 
-        if found > 1:
-            # один SPNEGO-обмен на приложение: второй [auth.kerberos] — ошибка конфига
-            msg = (
-                "[auth]: expected at most one kerberos entry, "
-                f"got {found} entries with kind = kerberos"
-            )
-            raise ValueError(msg)
+            backend = (entry.type, entry.identity.realm)
+            if backend in backends:
+                msg = (
+                    f"[auth]: duplicate {entry.type} backend "
+                    f"for realm {entry.identity.realm!r}"
+                )
+                raise ValueError(msg)
+
+            backends.add(backend)
 
         return value
 
-    def kerberos(self) -> KerberosAuthConfig | None:
+    def kerberos_entries(self) -> tuple[KerberosAuthConfig, ...]:
+        entries: list[KerberosAuthConfig] = []
         for entry in self.auth:
             if isinstance(entry, KerberosAuthConfig):
-                return entry
+                entries.append(entry)
 
-        return None
+        return tuple(entries)
 
-    def proxy(self) -> ProxyAuthConfig | None:
+    def proxy_entries(self) -> tuple[ProxyAuthConfig, ...]:
+        entries: list[ProxyAuthConfig] = []
         for entry in self.auth:
             if isinstance(entry, ProxyAuthConfig):
-                return entry
+                entries.append(entry)
 
-        return None
-
-    def sso_path(self) -> str:
-        """Путь SPNEGO-обмена из [auth.kerberos]; без него — RuntimeError."""
-        kerberos = self.kerberos()
-        if kerberos is None:
-            msg = (
-                "sso path: [auth] has no entry with kind = kerberos, "
-                "so no SPNEGO exchange path exists"
-            )
-            raise RuntimeError(msg)
-
-        return kerberos.sso_path
+        return tuple(entries)
 
     def sso_tickets(self) -> SsoTickets | None:
         """Открыватель билетов SSO-входа; None — kerberos в [auth] не настроен."""
-        kerberos = self.kerberos()
-        if kerberos is None:
+        if not self.kerberos_entries():
             return None
 
         return SsoTickets(
@@ -868,7 +863,7 @@ class RuntimeConfig(ProcessConfig):
         description="Секция [connections]: шифрование соединений пользователей."
     )
     profiles: dict[str, ChatProfileConfig]
-    roles: dict[str, RoleConfig]
+    roles: dict[str, ChatRoleConfig]
     session: SessionConfig
     cluster: ClusterConfig
     messaging: MessagingConfig

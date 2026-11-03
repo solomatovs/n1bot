@@ -44,6 +44,7 @@ from boba.runtime.config import ProcessConfig
 from boba.stand.agent import FakeServer
 from boba.stand.agent_service import AgentServiceStand, ServeAddress, ServiceProfiles
 from boba.stand.database import TestDatabase
+from boba.stand.migrate import StandMigrations
 from boba.stand.ui.fake_llm import FailureName, ScenarioName
 from boba.stand.ui.stand import StandPorts
 from boba.transport.acp.protocol import (
@@ -296,6 +297,9 @@ async def history(raw_config: DictConfig) -> AsyncIterator[HistoryStand]:
     pool = AsyncPostgresPool(postgres)
     await pool.open()
     try:
+        await StandMigrations().packages(
+            postgres, name, ("boba.identity_postgres", "boba.history.postgres")
+        )
         yield HistoryStand(postgres, name)
         async with pool.connection() as conn:
             await conn.execute(
@@ -482,7 +486,11 @@ class TestTurns:
 
 class TestOwners:
     async def test_session_of_alice_is_invisible_to_bob(
-        self, stands: Stands, tmp_path: Path
+        self,
+        stands: Stands,
+        history: HistoryStand,
+        pool: AsyncPostgresPool,
+        tmp_path: Path,
     ) -> None:
         stand = await stands.start()
         alice = await websocket(stand, await stand.token("alice", "dev"))
@@ -522,6 +530,21 @@ class TestOwners:
             assert idle.stop_reason == StopReason.END_TURN
         finally:
             await again.close()
+
+        query = sql.SQL("""
+            select u.identifier, r.role, count(records.seq)
+            from {schema}.session as s
+            join {schema}.users as u on u.id = s.user_id
+            join {schema}.user_roles as m on m.user_id = u.id
+            join {schema}.roles as r on r.id = m.role_id
+            join {schema}.session_records as records on records.session_id = s.id
+            where s.id = %s group by u.identifier, r.role
+        """).format(schema=sql.Identifier(history.schema))
+        async with pool.connection() as conn:
+            rows = await (await conn.execute(query, (opened.session_id,))).fetchall()
+        assert len(rows) == 1
+        assert rows[0][0:2] == ("corporate:alice", "dev")
+        assert rows[0][2] > 0
 
 
 class TestSessions:

@@ -10,7 +10,6 @@ from __future__ import annotations
 import base64
 import os
 from collections.abc import Iterator
-from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
@@ -35,8 +34,10 @@ from boba.auth.sso import SpnegoGate
 from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.identity.admission import RoleExcludeConfig
+from boba.identity.errors import AuthorizationError
+from boba.identity.principal import IdentityRule
 from boba.identity.session import Login, SignInProvider, UserMetadataField
-from boba.identity.sso import OwnRequest, SsoChallenge
+from boba.identity.sso import OwnRequest, SsoChallenge, SsoRequest, SsoSigned
 from boba.identity.token import CookieSpec, SessionRenewal
 from boba.krb import KerberosEnv, ServiceTicketIssuer
 from boba.runtime.config import RuntimeConfig
@@ -78,9 +79,10 @@ def krb5_env() -> Iterator[None]:
 @pytest.fixture
 async def users(runtime_config: RuntimeConfig, pool: AsyncPostgresPool) -> UsersTable:
     """Таблица users в базе набора: тест создаёт её сам, не полагаясь на соседей."""
-    schema_dir = files("boba.runtime") / "schema"
     async with pool.connection() as conn:
-        await PostgresSchema(runtime_config.db_schema).apply_files(conn, schema_dir, {})
+        await PostgresSchema(runtime_config.db_schema).apply_packages(
+            conn, ("boba.identity_postgres", "boba.runtime")
+        )
 
     return UsersTable(runtime_config.postgres, runtime_config.db_schema, pool)
 
@@ -101,8 +103,12 @@ def _kerberos_auth(
         ),
         sign_ins=SignIns(
             None,
-            SpnegoGate(SignInStand.assembly().sso(config, session.auth_secret)),
-            None,
+            {
+                "corporate": SpnegoGate(
+                    SignInStand.assembly().sso(config, session.auth_secret)
+                )
+            },
+            {},
         ),
         users=users,
         renewal=SessionRenewal.of(
@@ -459,3 +465,30 @@ async def test_refresh_of_an_excluded_principal_is_refused(
     status = await Refresh.status(excluding_auth, Browser.token(tmp_path), token)
     if status != 403:
         raise AssertionError(f"an excluded principal must be refused: {status}")
+
+
+async def test_multiple_spnego_realms_use_the_selected_identity_rule(
+    raw_config: Any,
+    runtime_config: RuntimeConfig,
+    krb5_env: None,
+    tmp_path: Path,
+) -> None:
+    configured = bind(raw_config, path="auth.kerberos", model=KerberosAuthConfig)
+    office = configured.model_copy(update={"identity": IdentityRule(realm="office")})
+    partner = configured.model_copy(update={"identity": IdentityRule(realm="partner")})
+    providers = SignInStand.assembly().build(
+        [office, partner],
+        runtime_config.session.auth_secret,
+    )
+    with pytest.raises(AuthorizationError, match="select an identity realm"):
+        providers.exchange()
+
+    for realm in ("office", "partner"):
+        token = Browser.token(tmp_path)
+        request = SsoRequest(
+            authorization="Negotiate " + base64.b64encode(token).decode()
+        )
+        outcome = await providers.exchange(realm).handshake(request)
+        assert isinstance(outcome, SsoSigned)
+        login, _, _ = USER_PRINCIPAL.partition("@")
+        assert outcome.signed.identifier == f"{realm}:{login.lower()}"

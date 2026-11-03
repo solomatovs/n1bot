@@ -24,7 +24,7 @@ import pytest
 from launcher_layer import ResolvedLayout, ResolvedProbe
 
 from boba.runtime.config import ProgramRoots
-from boba.runtime.storage import ImageStorageClient, LocalStorageConfig
+from boba.runtime.storage import ImageStorageClient, ImageStorageConfig
 from boba.sandbox import WorkspaceSpec
 from boba.sandbox.argv import ZygoteArgv
 from boba.sandbox.profile import SandboxMount, SandboxProfile
@@ -400,8 +400,8 @@ class TestStorageLayer:
             {"template": template, "mount": f"{images}/{{user_id}}.ext4:/workspace"}
         )
 
-    def _config(self) -> LocalStorageConfig:
-        return LocalStorageConfig(
+    def _config(self) -> ImageStorageConfig:
+        return ImageStorageConfig(
             kind="image",
             mount_dir=self.MOUNT_DIR,
             op_timeout_sec=60,

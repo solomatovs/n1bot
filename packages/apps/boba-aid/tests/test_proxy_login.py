@@ -25,6 +25,7 @@ from boba.auth.proxy import ProxySignature
 from boba.identity.admission import RoleMappingConfig
 from boba.identity.api import AuthenticatedUser, PersistedUsers, UsersUpsert
 from boba.identity.errors import AuthenticationError, AuthorizationError
+from boba.identity.principal import IdentityRule
 from boba.identity.signin import ProxyRequest, SignedIn
 from boba.identity.token import CookieSpec, SessionRenewal
 from boba.stand.signin import SignInStand
@@ -62,6 +63,7 @@ def chainlit_context() -> None:
 
 def _config() -> ProxyAuthConfig:
     return ProxyAuthConfig(
+        identity=IdentityRule(realm="corporate"),
         secret=SecretStr(SECRET),
         allowed_clients=["172.18.0.0/24"],
         roles=ProxyRoleProviders(
@@ -77,7 +79,7 @@ def _route(config: ProxyAuthConfig) -> ProxyAuth:
     auth = AuthService(
         tokens=JwtTokens(StandTokens.secret(), 60, StandTokens.GENERATION),
         cookie=CookieSpec(name=COOKIE, samesite="lax", ttl_sec=60),
-        sign_ins=SignIns(None, None, SignInStand.assembly().proxy(config)),
+        sign_ins=SignIns(None, {}, {"corporate": SignInStand.assembly().proxy(config)}),
         users=Users(),
         renewal=SessionRenewal.of(60, 3600),
     )
@@ -119,10 +121,11 @@ async def test_signed_headers_yield_a_session_cookie() -> None:
     set_cookie = response.headers.get("set-cookie", "")
     token = set_cookie.split(f"{COOKIE}=", 1)[1].split(";", 1)[0]
     claims = jwt.decode(token, StandTokens.secret(), algorithms=["HS256"])
-    assert claims["identifier"] == "maksimov.ma"
+    assert claims["identifier"] == "corporate:maksimov.ma"
     assert claims["display_name"] == "Maksimov.MA"
     assert claims["metadata"] == {
         "provider": "ProxyAuth",
+        "identity": {"realm": "corporate", "login": "maksimov.ma"},
         "roles": ["read", "wrt"],
         "profiles": [SignInStand.PROFILE],
         "generation": StandTokens.GENERATION,

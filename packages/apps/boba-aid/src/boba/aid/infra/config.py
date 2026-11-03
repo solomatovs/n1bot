@@ -14,11 +14,10 @@ from pydantic import (
     model_validator,
 )
 
-from boba.access import RoleConfig
 from boba.aid.agent.config import AgentConfig
 from boba.aid.mcp_servers.config import McpUserConfig
 from boba.auth.config import AuthConfig
-from boba.chat.profiles import ChatProfileConfig
+from boba.chat.profiles import ChatProfileConfig, ChatRoleConfig
 from boba.runtime.config import RuntimeConfig
 
 LOGGING_CONFIG: dict[str, Any] = {
@@ -159,6 +158,7 @@ class AidSection(BaseModel):
     )
 
     shutdown_timeout_sec: int = Field(
+        default=10,
         gt=0,
         description=(
             "Сколько секунд uvicorn ждёт завершения соединений и задач после "
@@ -168,7 +168,6 @@ class AidSection(BaseModel):
             "приложением остаются жить и зиготы песочницы."
         ),
     )
-
 
     def sandbox_url(self) -> str:
         """Адрес страницы-прокси песочницы в браузере: схема и хост страницы
@@ -231,13 +230,38 @@ class AppConfig(RuntimeConfig):
     ]
 
     roles: Annotated[
-        dict[str, RoleConfig],
+        dict[str, ChatRoleConfig],
         Field(
             description=(
                 "Права ролей по имени; в конфиге подключается ссылкой ${roles}."
             ),
         ),
     ]
+
+    @model_validator(mode="after")
+    def _proxy_realms_are_isolated(self) -> Self:
+        routes: set[str] = set()
+        secrets: set[str] = set()
+        for proxy in self.proxy_entries():
+            if proxy.path in routes:
+                msg = (
+                    f"[auth]: proxy realm {proxy.identity.realm!r} repeats route "
+                    f"{proxy.path!r}; configure a separate route for each realm"
+                )
+                raise ValueError(msg)
+
+            secret = proxy.secret.get_secret_value()
+            if secret in secrets:
+                msg = (
+                    "[auth]: HTTP proxy realms require distinct signing secrets "
+                    "so a signed request cannot be replayed in another realm"
+                )
+                raise ValueError(msg)
+
+            routes.add(proxy.path)
+            secrets.add(secret)
+
+        return self
 
     @model_validator(mode="after")
     def _sandbox_off_the_chat(self) -> Self:

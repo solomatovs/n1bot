@@ -18,7 +18,6 @@ from boba.aid.infra import providers
 from boba.aid.infra.config import AppConfig
 from boba.aid.infra.session import ChainlitSessions
 from boba.config import bind
-from boba.connection_broker.crypto import SealKeys
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import CallContexts
 from boba.runtime import providers as runtime
@@ -49,12 +48,25 @@ def stand_config(stand_raw: DictConfig) -> AppConfig:
 
 
 @pytest.fixture
-def app_container(
+async def app_container(
     stand_raw: DictConfig,
     stand_config: AppConfig,
     storage: object,
 ) -> Container:
     """Провайдеры aid, которым нужен postgres; тяжёлое подставлено готовым."""
+    from boba.db.postgres import PostgresSchema
+
+    async with await AsyncPostgresPool.dedicated(stand_config.postgres) as conn:
+        await PostgresSchema(stand_config.db_schema).apply_packages(
+            conn,
+            (
+                "boba.identity_postgres",
+                "boba.runtime",
+                "boba.connection_broker",
+                "boba.aid.mcp_servers",
+            ),
+        )
+
     container = Container(level="app")
     container.provide(providers.get_app_config, stand_config)
     container.provide(runtime.get_runtime_config, stand_config)
@@ -63,9 +75,7 @@ def app_container(
     container.provide(providers.storage_provider, storage)
     container.provide(providers.session_source, ChainlitSessions(StandTokens()))
     container.provide(runtime.connection_types, runtime.connection_types())
-    container.provide(runtime.seal_keys, SealKeys())
     container.provide(runtime.call_contexts, CallContexts())
-    container.eager(providers.harness_storage)
     container.eager(runtime.users_table)
     container.eager(runtime.message_bus)
     container.eager(runtime.payload_store)
