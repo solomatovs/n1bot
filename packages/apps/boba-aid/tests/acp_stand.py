@@ -50,9 +50,8 @@ from boba.aid.agent.client import (
 )
 from boba.aid.agent.commands import MenuCommand
 from boba.aid.agent.config import (
-    AgentCommandConfig,
-    AgentConfig,
     PostgresAgentHistory,
+    ProcessAgentConfig,
 )
 from boba.aid.agent.settings import (
     AgentProviderKind,
@@ -272,14 +271,12 @@ class AgentStand:
         """Корень приватных каталогов процессов агента теста."""
         return self._private_dir
 
-    def config(self, public_url: str = "http://127.0.0.1:1/chat") -> AgentConfig:
-        return AgentConfig(
-            process=AgentCommandConfig(
-                command=shlex.join([sys.executable, "-m", AGENT_MODULE]),
-                args=["--stdio", "--setting-sources", ""],
-                start_timeout_sec=60.0,
-                request_timeout_sec=60.0,
-            ),
+    def config(self, public_url: str = "http://127.0.0.1:1/chat") -> ProcessAgentConfig:
+        return ProcessAgentConfig(
+            command=shlex.join([sys.executable, "-m", AGENT_MODULE]),
+            args=["--stdio", "--setting-sources", ""],
+            start_timeout_sec=60.0,
+            request_timeout_sec=60.0,
             history=self._history,
             public_url=public_url,
             question_timeout_sec=600,

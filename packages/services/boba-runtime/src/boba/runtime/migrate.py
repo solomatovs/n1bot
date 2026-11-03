@@ -23,7 +23,7 @@ from boba.db.postgres.migrate import (
     MigrationTarget,
     PostgresMigrations,
 )
-from boba.runtime.config import InstanceConfig, RawConfig
+from boba.runtime.config import PathsConfig, RawConfig, TlsConfig
 
 
 class MigrationLocation(BaseModel):
@@ -44,7 +44,8 @@ class MigrationSources(Protocol):
 class MigrationConfig(MigrationLocation):
     """Минимальные секции команды migrate, включая окружение Kerberos."""
 
-    instance: InstanceConfig
+    paths: PathsConfig
+    tls: TlsConfig = Field(default_factory=TlsConfig)
 
 
 class ApplicationMigrations:
@@ -72,8 +73,9 @@ class ApplicationMigrations:
         section: str = "app",
     ) -> None:
         raw = RawConfig.load(paths, schema=self._schema)
-        instance = bind(raw, "app.instance", InstanceConfig)
-        instance.layout(paths[0].resolve().parent).apply()
+        instance = bind(raw, "app.paths", PathsConfig)
+        tls = bind(raw, "app.tls", TlsConfig)
+        instance.layout(paths[0].resolve().parent, tls).apply()
         targets = await self.targets(raw, packages, section=section)
         applied = await self._migrations.apply(targets)
         for name in applied:

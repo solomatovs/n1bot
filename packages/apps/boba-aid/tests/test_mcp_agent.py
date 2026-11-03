@@ -19,7 +19,7 @@ from test_acp_chat import second as second
 from test_acp_chat import tab as tab
 
 from boba.agent.records import DeferredToolsDeltaAttachment
-from boba.aid.agent.config import PostgresAgentHistory
+from boba.aid.agent.config import PostgresAgentHistory, ProcessAgentConfig
 from boba.aid.domain.fields import ThreadMetaField
 from boba.aid.infra.config import AppConfig
 from boba.aid.mcp_servers.store import StoredServer
@@ -62,7 +62,9 @@ class ToolDeltas:
 
     def __init__(self, config: AppConfig) -> None:
         self._pool = AsyncPostgresPool(config.postgres)
-        history = config.agent.history
+        agent = config.agent
+        assert isinstance(agent, ProcessAgentConfig)
+        history = agent.history
         assert isinstance(history, PostgresAgentHistory)
         self._known_query = sql.SQL("""
             select exists(select 1 from {}.session_records
@@ -109,7 +111,7 @@ class AdminRoleServer:
 
     def __init__(self, config: AppConfig) -> None:
         self._pool = AsyncPostgresPool(config.postgres)
-        self._cipher = SecretCipher(config.connections.cipher.get_secret_value())
+        self._cipher = SecretCipher(config.mcp_servers.cipher.get_secret_value())
         schema = sql.Identifier(config.db_schema)
         self._insert = sql.SQL(
             "insert into {}.mcp_servers(name,data) values (%s,%s) returning id"

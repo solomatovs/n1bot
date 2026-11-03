@@ -899,7 +899,9 @@ def rows(
     stand_database: str,
     app: StandProcess[StandConfig],
 ) -> ChatRows:
-    history_schema = app.config.agent_history["schema"]
+    history_schema = (
+        app.config.agent_history or app.config.app.table("agent")["history"]
+    )["schema"]
 
     return ChatRows(
         stand_postgres, runtime_config.db_schema, stand_database, history_schema

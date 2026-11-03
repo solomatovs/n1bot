@@ -126,7 +126,7 @@ class E2eStand(ServerSeedSpec):
         return self._files(StandApp.AID)
 
     def server_records(self) -> Mapping[str, Mapping[str, Any]]:
-        raw = AppConfig.loader(self.paths(StandApp.AID)).load()
+        raw = StandApp.MCP.raw()
         keys = bind(raw, "keys", E2eKeys)
         location = HttpLocation(
             scheme=self.SERVICE_SCHEME,
@@ -180,26 +180,26 @@ class E2eStand(ServerSeedSpec):
         origin = f"{self.SERVICE_SCHEME}://{self.SERVICE_HOST}:{self.SERVICE_PORT}"
         overlay = StandOverlay()
         overlay.set(("postgres", "dbname"), database)
-        overlay.set(("env", "port"), self.SERVICE_PORT)
-        overlay.set(("env", "url_prefix"), self.SERVICE_PREFIX)
-        overlay.set(("env", "public_url"), f"{origin}{self.SERVICE_PREFIX}")
-        overlay.set(("instance", "data_dir"), str(self._service_data))
+        overlay.set(("server", "port"), self.SERVICE_PORT)
+        overlay.set(("server", "url_prefix"), self.SERVICE_PREFIX)
+        overlay.set(("server", "public_url"), f"{origin}{self.SERVICE_PREFIX}")
+        overlay.set(("paths", "data_dir"), str(self._service_data))
         # тесты называют файлы путями тела инструмента (/workspace/...):
         # так их видит только сервис с песочницей
-        overlay.set(("env", "tool_launcher"), self.SERVICE_LAUNCHER)
+        overlay.set(("tool_launcher", "provider"), self.SERVICE_LAUNCHER)
 
         return overlay
 
     def _app_overlay(self, database: str) -> StandOverlay:
         overlay = StandOverlay()
         overlay.set(("postgres", "dbname"), database)
-        overlay.set(("postgres_history", "dbname"), database)
-        overlay.set(("env", "port"), PORT)
-        overlay.set(("aid", "chat_url"), BASE)
-        overlay.set(("aid", "sandbox_port"), self._sandbox_port)
-        overlay.set(("env", "url_prefix"), self.APP_PREFIX)
-        overlay.set(("env", "instance_id"), self.INSTANCE)
-        overlay.set(("instance", "data_dir"), str(self._app_data))
+        overlay.set(("agent", "history", "postgres", "dbname"), database)
+        overlay.set(("server", "port"), PORT)
+        overlay.set(("server", "public_url"), BASE)
+        overlay.set(("server", "sandbox_port"), self._sandbox_port)
+        overlay.set(("server", "url_prefix"), self.APP_PREFIX)
+        overlay.set(("cluster", "node_id"), self.INSTANCE)
+        overlay.set(("paths", "data_dir"), str(self._app_data))
         overlay.set(("env", "mcp_scheme"), self.SERVICE_SCHEME)
         overlay.set(("env", "mcp_host"), self.SERVICE_HOST)
         overlay.set(("env", "mcp_port"), self.SERVICE_PORT)
@@ -592,7 +592,7 @@ async def _store(thread_id: str, files: Mapping[str, bytes], stand: E2eStand) ->
     caller = McpCaller(login=LOGIN[0], roles=SignInMetadata.parse(meta).roles)
     pool = AsyncPostgresPool(config.postgres)
     await pool.open()
-    cipher = SecretCipher(config.connections.cipher.get_secret_value())
+    cipher = SecretCipher(config.mcp_servers.cipher.get_secret_value())
     source = StoredServers(
         McpServerStore(pool, config.db_schema, cipher),
         UsersTable(config.postgres, config.db_schema, pool),

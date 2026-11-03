@@ -56,7 +56,7 @@ from boba.aid.agent.chat import (
     ThreadIdentity,
 )
 from boba.aid.agent.commands import CommandIcon, MenuCommand
-from boba.chat.profiles import ChatProfileConfig, SelectedProfile
+from boba.chat.profiles import LocalChatProfileConfig, SelectedProfile
 from boba.connection_broker.crypto import SecretCipher
 from boba.connection_broker.store import ConnectionStore
 from boba.connections.manifest import ConnectionTypes
@@ -300,7 +300,7 @@ class CommandsTab:
         await self.servers.stop()
 
     @staticmethod
-    def _profile(model: FakeModel, servers: Sequence[str]) -> ChatProfileConfig:
+    def _profile(model: FakeModel, servers: Sequence[str]) -> LocalChatProfileConfig:
         provider = {
             "kind": "openai",
             "connection": {
@@ -314,7 +314,7 @@ class CommandsTab:
         }
         base = SignInStand.profile().model_dump(mode="json")
 
-        return ChatProfileConfig.model_validate(
+        return LocalChatProfileConfig.model_validate(
             {
                 **base,
                 "provider": provider,

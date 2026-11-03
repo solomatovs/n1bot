@@ -325,14 +325,14 @@ runtime/
   conf/      config.toml — конфиг экземпляра (раздел 5)
              krb/        — krb5.conf и keytab'ы; в конфиге keytab называется только именем файла
              prompts/    — промпты endpoint'ов (только mcp)
-  data/      [instance].data_dir — единственное место, куда пишет программа:
+  data/      [paths].data_dir — единственное место, куда пишет программа:
              krb/cache/  — кэши билетов, в том числе krb5cc_http (TGT сервиса для S4U)
              dump/  workspace/  tool-logs/  files/  agents/
 ```
 
 `conf/` — каталог, где лежит `config.toml` (первый `--config`): `krb/` ищется
 рядом с ним. Раскладка `data/` фиксирована, в конфиге задаётся только сам
-каталог (`[instance] data_dir`).
+каталог (`[paths] data_dir`).
 
 Запуск любой программы — одна команда:
 
@@ -354,8 +354,8 @@ boba-mcp — бинарник Nuitka без python: кроме `serve` и `healt
 экземпляра переносится как есть — `conf/` целиком, `data/` по желанию (без
 него теряются только кэши билетов, образы workspace пользователей, журналы
 вызовов и вложения чата), модели — каталогом. В `config.toml` меняется то,
-что относится к машине: `[instance] data_dir`, `[instance] ca_file`, адреса и
-порты в `[env]`, `cgroup_base`.
+что относится к машине: `[paths] data_dir`, `[tls] ca_file`, адреса и
+порты в `[server]`, `cgroup_base`.
 
 Почему у отладки свой каталог данных. Контейнер пишет данные от
 пользователя 1000 внутри себя — на машине это номер из subuid: начало
@@ -547,7 +547,7 @@ boba.mcp_server serve --config ...` (раздел 8).
 (профили чата, способы входа, пулы соединений, MCP-серверы, лимиты) и
 специфику машины (порты, каталог данных, адреса серверов, имена моделей,
 логины, секреты). Путей к файлам программы в нём нет, путей экземпляра — два:
-`[instance] data_dir` и `[instance] ca_file` (раздел 3). Он свой у каждого случая запуска —
+`[paths] data_dir` и `[tls] ca_file` (раздел 3). Он свой у каждого случая запуска —
 `compose/<приложение>/conf/config.toml`,
 `<каталог установки>/conf/config.toml` — и в git не входит: в нём секреты.
 Отладка своего конфига не имеет: она берёт конфиг дерева compose и кладёт
@@ -573,25 +573,25 @@ realm, секреты, которые должны совпадать), повт
 
 | Файл | Откуда | Что в нём меняют |
 |---|---|---|
-| `config.toml` | копия конфига той же программы с другой машины | адреса и порты, `[env]`, имена баз, способы входа, секреты `[keys]` |
+| `config.toml` | копия конфига той же программы с другой машины | адреса и порты `[server]`, имена баз, способы входа, секреты `[keys]` |
 | `krb/krb5.conf`, `krb/<учётка>.keytab` | администратор домена | — (нужны, только если какой-то вход выбран kerberos) |
 | `prompts/<endpoint>/<имя>.toml` | копия с другой машины, только boba-mcp | тексты промптов |
 
 Ключи `config.toml`, которые почти всегда свои у машины:
 
-- `[instance]` — каталог данных и CA-файл контура (раздел «Секция `[instance]`»);
-- `[env]` — порт, префикс, публичный адрес (раздел «Секция `[env]`»);
-- `[postgres]` и `[postgres_history]` — сервер и база (`host`, `hostaddr`,
+- `[paths]` и `[tls]` — каталог данных и CA-файл контура (раздел «Секции `[server]`, `[paths]` и `[tls]`»);
+- `[server]` — порт, префикс и публичный адрес;
+- `[postgres]` (и `[agent.history.postgres]` у локального AID) — сервер и база (`host`, `hostaddr`,
   `port`, `dbname`);
 - `[keys]` — секреты; новые генерируют, общие для чата и сервиса копируют
   одинаковыми в оба файла (раздел 15);
 - таблицы `auth` подключений — способ входа (ниже);
-- у чата — `[ldap]`, пользователи `[auth.local.users]`, адреса серверов MCP
-  через ключи `[env] mcp_*`; у службы агента и чата — модель `[llm.main]`.
+- у чата — вход `[auth]` и адрес агента `[agent]`; серверы MCP находятся в
+  таблице `mcp_servers`; модель `[llm.main]` нужна Boba и локальному AID.
 
 Пример: машина без Kerberos. Сервис на старой машине входил в PostgreSQL по
 keytab, на новой — паролем. Меняется только таблица `[postgres.auth]` (у чата
-так же `[postgres_history.auth]`); `krb/` на новую машину можно не класть, если
+так же `[agent.history.postgres.auth]`); `krb/` на новую машину можно не класть, если
 kerberos больше нигде не выбран.
 
 Было:
@@ -637,7 +637,7 @@ kerberos больше нигде не выбран.
    значения конфига имеют приоритет.
 
 Ссылка `"${секция.ключ}"` берёт значение другого ключа того же дерева, целиком
-или частью строки: `url_prefix = "${env.url_prefix}"`, `postgres =
+или частью строки: `url_prefix = "${server.url_prefix}"`, `postgres =
 "${postgres}"`. Окружение конфиг читает только сам и только ссылкой
 `"${oc.env:ИМЯ}"`, без значения по умолчанию: переменной нет — старт
 останавливается с её именем. Других переменных окружения программа для
@@ -660,13 +660,14 @@ boba-aid failed: ConfigError: config /app/boba/conf/config.toml: resolving the c
 
 | Приложение и секция | Defaults |
 |---|---|
-| aid: `[aid]` | `shutdown_timeout_sec = 10` |
-| aid: локальный `[agent.process]` | `args = ["--stdio"]`, `start_timeout_sec = 30`, `request_timeout_sec = 120`, `stop_timeout_sec = 10` |
-| aid: удалённый `[agent.process]` | `start_timeout_sec = 60`, `request_timeout_sec = 120`, `silence_timeout_sec = 60` |
+| aid: `[server]` | `shutdown_timeout_sec = 10` |
+| aid: локальный `[agent]` | `args = ["--stdio"]`, `start_timeout_sec = 30`, `request_timeout_sec = 120`, `stop_timeout_sec = 10` |
+| aid: удалённый `[agent]` | `start_timeout_sec = 60`, `request_timeout_sec = 120`, `silence_timeout_sec = 60` |
 | aid: `[agent.tools]`, `[agent.limits]` | `always_load = []`, `tool_result_window_share = 0.25`; обе секции можно опустить |
 | aid: `[cluster]` | `lock_ttl_sec = 20`, `heartbeat_sec = 6`, `reaper_period_sec = 10`, `queue_usage_limit = 0.5`, `retention_sec = 3600` |
-| boba: `[agent]` | `host = "127.0.0.1"`, `path = "/acp"`, `shutdown_timeout_sec = 10`, `idle_sec = 1800`; `settings` и `clients` — пустые таблицы |
-| mcp: `[mcp]` | `host = "127.0.0.1"`, `shutdown_timeout_sec = 10`, `clients` — пустая таблица |
+| boba: `[agent]` | `path = "/acp"`, `idle_sec = 1800`; `settings` и `clients` — пустые таблицы |
+| все приложения: `[server]` | `host = "127.0.0.1"`, `shutdown_timeout_sec = 10` |
+| mcp: `[mcp]` | `clients` — пустая таблица |
 
 Команда локального агента, адрес и авторизация удалённого, публичные URL,
 порты служб, история, модели, выдачи и ключи остаются явными. Для прослушивания
@@ -674,7 +675,7 @@ boba-aid failed: ConfigError: config /app/boba/conf/config.toml: resolving the c
 Пустая таблица `clients` не выдаёт доверие ни одному proxy-клиенту.
 
 Defaults известных приложению секций доступны ссылкам OmegaConf. Например,
-`${agent.process.request_timeout_sec}` получает 120, если в `[agent.process]`
+`${agent.request_timeout_sec}` получает 120, если в `[agent]`
 задана команда и отсутствует явный таймаут. Это работает и для необязательной
 вложенной секции, целиком пропущенной в TOML. Варианты конфигурации выбираются
 явно: `kind = "local"` не добавляет настройки `kind = "image"`.
@@ -686,7 +687,7 @@ Defaults известных приложению секций доступны �
 schema = "mcp"
 ```
 
-`instance`, `session`, `postgres`, `mcp`, `storage` и другие известные этому
+`paths`, `tls`, `server`, `session`, `postgres`, `mcp`, `storage` и другие известные этому
 приложению поля подхватываются из одноимённых корневых секций. Таблицы
 `[auth.<имя>]` собираются в список способов входа. Существующие явные ссылки
 продолжают работать; явно заданное поле `[app]` имеет приоритет, включая
@@ -714,53 +715,51 @@ files_dir = "/srv/mcp/files"
 размером блока. `op_timeout_sec` по умолчанию равен 60. Переключение вида
 хранилища не переносит файлы между каталогом и образом.
 
-### Секция `[instance]`
+### Секции `[server]`, `[paths]` и `[tls]`
 
-Пути экземпляра в текущем формате конфига два, оба абсолютные:
+Все три приложения используют одинаковую группировку:
 
 ```toml
-[instance]
+[server]
+    host = "0.0.0.0"
+    port = 8650
+    url_prefix = "/mcp"
+    public_url = "https://boba.example.com/mcp"
+
+[paths]
     data_dir = "/app/boba/data"
-    ca_file  = "/etc/ssl/certs/ca-certificates.crt"
 ```
 
-- `data_dir` — каталог данных; раскладка внутри фиксирована (раздел 3):
-  кэши kerberos `krb/cache`, дампы `dump`, образы workspace `workspace`,
-  журналы вызовов `tool-logs`, вложения чата `files`, приватные каталоги
-  агента `agents`;
-- `ca_file` — CA-файл контура (PEM): им проверяют TLS httpx и библиотеки
-  процесса (вход пишет его в `SSL_CERT_FILE`), его же видят песочницы плагинов с
-  сетью (`/etc/ssl/certs/ca-certificates.crt` внутри). Файла нет — старт
-  останавливается с его путём. В образах корпоративный CA уже вшит в системный
-  набор, поэтому там это `/etc/ssl/certs/ca-certificates.crt`.
+`server` задаёт прослушивание и внешний адрес приложения. У AID здесь же
+находятся `sandbox_port` и, если TLS завершается в самом приложении,
+`ssl_cert`, `ssl_key`, `ssl_ca_certs`. Endpoint'ы и клиенты MCP остаются в
+`[mcp]`, профили и клиенты службы агента — в `[agent]`.
 
-`krb5.conf` — `conf/krb/krb5.conf` рядом с `config.toml`, кэши билетов —
-`data/krb/cache`; секции `[krb]` нет. Вход пишет `KRB5_CONFIG` процесса из этого
-пути сам, а песочницам с сетью кладёт файл в `/etc/krb5.conf`, если он есть.
-keytab в таблицах входа (`keytab = "boba-svc.keytab"`) — имя файла в
-`conf/krb`.
+`paths.data_dir` — абсолютный каталог данных. Его внутреннее устройство
+фиксировано: Kerberos-кэши `krb/cache`, дампы `dump`, workspace `workspace`,
+журналы `tool-logs`, вложения чата `files`, приватные каталоги агента `agents`.
 
-Следующее согласованное изменение формата разделит общие настройки:
-`[server]` — прослушивание и публичный адрес приложения, `[paths]` — каталог
-данных, `[tls]` — доверенные CA исходящих подключений. Endpoint и auth
-агента будут находиться вместе в `[agent]`. Пока используется описанный
-выше `[instance]`; этапы перехода записаны в §34.8 аудита.
-
-### Секция `[env]`
-
-`[env]` — обычная секция конфига, в которой собраны адреса и режимы этого
-экземпляра: `port`, `url_prefix`, `listen_host`, `public_url`, `cgroup_base`,
-режимы `tool_launcher`, `messaging_provider`, `agent_mode` и адрес агента
-(`agent_*`). Остальные секции берут их ссылками `${env.*}`; код
-секцию `[env]` не читает. `cgroup_base` сервис берёт из
-`[tool_launcher] cgroup_base = "${env.cgroup_base}"`.
-
-Имя узла чата в compose — имя контейнера:
+`tls.ca_file` — абсолютный путь к PEM с доверенными CA **исходящих**
+подключений. По умолчанию `/etc/ssl/certs/ca-certificates.crt`, поэтому
+`[tls]` можно целиком опустить. Для собственного trust store:
 
 ```toml
-[env]
-    host = "${oc.env:HOSTNAME}"
+[tls]
+    ca_file = "/etc/company/ca.pem"
 ```
+
+Вход приложения выставляет `SSL_CERT_FILE`; сетевые песочницы получают тот
+же файл по системному пути внутри песочницы. Отсутствующий файл останавливает
+запуск. Это отдельно от сертификатов входящего HTTP-сервера.
+
+`krb5.conf` берётся из `conf/krb/krb5.conf` рядом с первым `config.toml`,
+билеты — из `data/krb/cache`; keytab в настройках входа — имя в `conf/krb`.
+
+Промежуточный `[env]` больше не нужен. Переменные окружения можно использовать
+непосредственно в полях, например `cluster.host = "${oc.env:HOSTNAME}"`.
+Связанные значения ссылаются на фактического владельца: `${paths.data_dir}`,
+`${server.public_url}`. Старые `[instance]`, `[aid]`, `[service.boba]`,
+`[agent_auth.boba]`, `[agent_launch.*]` заменены новым форматом.
 
 ### Подключённые файлы
 
@@ -785,7 +784,7 @@ tool = "${toml_dir:plugins}"
 В образе каталог `plugins` лежит рядом с конфигом (`/app/boba/conf/plugins`), в
 отладке наложение называет каталог пакета абсолютным путём:
 `tool = "${toml_dir:<репозиторий>/packages/apps/boba-mcp/conf/plugins}"`. Файлы
-плагинов ссылаются на секции конфига экземпляра — `${postgres}`, `${http}`,
+плагинов ссылаются на секции конфига экземпляра — `${postgres}`,
 `${confluence}`, `${kb_tables}`, `${embedding.main}`, `${ocr}`, `${app.schema}`,
 `${mail}`; эти секции — договор между плагинами и конфигом, и в конфиге
 сервиса они обязаны быть, даже если плагин выключен.
@@ -796,17 +795,18 @@ tool = "${toml_dir:plugins}"
 ```toml
 tool = "${toml_dir:plugins}"
 
-[instance]
+[paths]
     data_dir = "/app/boba/data"
-    ca_file  = "/etc/ssl/certs/ca-certificates.crt"
 
-[env]
-    port          = 8650
-    url_prefix    = "/mcp"
-    public_url    = "https://boba.example.com/mcp"
-    listen_host   = "0.0.0.0"
-    cgroup_base   = "/cgroup/boba-sandbox-mcp"
-    tool_launcher = "sandbox"
+[server]
+    host = "0.0.0.0"
+    port = 8650
+    url_prefix = "/mcp"
+    public_url = "https://boba.example.com/mcp"
+
+[tool_launcher]
+    provider = "sandbox"
+    cgroup_base = "/cgroup/boba-sandbox-mcp"
 
 [app]
     schema      = "mcp"
@@ -815,12 +815,6 @@ tool = "${toml_dir:plugins}"
     session    = "..."
     mcp_proxy  = "..."
     mcp_client = "..."
-
-[mcp]
-    host       = "${env.listen_host}"
-    port       = "${env.port}"
-    public_url = "${env.public_url}"
-    url_prefix = "${env.url_prefix}"
 
     [mcp.endpoints.all]
         roles       = ["*"]
@@ -945,7 +939,7 @@ Dialect: {dialect}
 | Подключение | Таблица | Где |
 |---|---|---|
 | PostgreSQL, схемы `aid` и `mcp` | `[postgres.auth]` | чат, boba-mcp |
-| PostgreSQL, история агента (роль истории) | `[postgres_history.auth]` | чат (режим `process`), служба агента |
+| PostgreSQL, история агента (роль истории) | `[agent.history.postgres.auth]` | чат (режим `process`), служба агента |
 | языковая модель | `[llm.main.connection.auth]` у чата, `[llm.main.auth]` у службы агента | чат (режим `process`), служба агента |
 | Confluence | `auth` в web-профиле строки `connections` | boba-mcp |
 | каталог LDAP (служебный поиск ролей) | `[ldap.auth]` | чат, служба агента |
@@ -1149,12 +1143,12 @@ compose, поэтому keytab она читает из `compose/<приложе
 
 | Ключ | compose | отладка | установка без Docker |
 |---|---|---|---|
-| `[instance] data_dir` | `/app/boba/data` | `<репозиторий>/.dev/data/<приложение>` | `<каталог установки>/data` |
-| `[instance] ca_file` | `/etc/ssl/certs/ca-certificates.crt` | системный набор CA машины | системный набор CA машины |
-| `[env] port`, `url_prefix` | рабочие | свои, чтобы не мешать контейнерам | рабочие |
-| `[env] cgroup_base` | `/cgroup/boba-sandbox-<приложение>` | каталог `sandbox` юнита `boba-sandbox@debug` | каталог `sandbox` юнита `boba-sandbox@<экземпляр>` |
-| `[env] tool_launcher` | `sandbox` | выбор цели запуска: `process` или `sandbox` | `sandbox` |
-| `[env] messaging_provider` | `postgres` | `local` | `postgres` |
+| `[paths] data_dir` | `/app/boba/data` | `<репозиторий>/.dev/data/<приложение>` | `<каталог установки>/data` |
+| `[tls] ca_file` | `/etc/ssl/certs/ca-certificates.crt` | системный набор CA машины | системный набор CA машины |
+| `[server] port`, `url_prefix` | рабочие | свои, чтобы не мешать контейнерам | рабочие |
+| `[tool_launcher] cgroup_base` | `/cgroup/boba-sandbox-<приложение>` | каталог `sandbox` юнита `boba-sandbox@debug` | каталог `sandbox` юнита `boba-sandbox@<экземпляр>` |
+| `[tool_launcher] provider` | `sandbox` | выбор цели запуска: `process` или `sandbox` | `sandbox` |
+| `[messaging] provider` | `postgres` | `local` | `postgres` |
 
 Каталог программы у compose и установки — сам образ или дерево релиза, у
 отладки — `runtime/` репозитория (`BOBA_RUNTIME`). Колонка «отладка» — это
@@ -1171,16 +1165,16 @@ compose, поэтому keytab она читает из `compose/<приложе
 | Схема | Чья | Что в ней | Где задаётся |
 |---|---|---|---|
 | `aid` | чат | пользователи, треды, оценки ответов, роли и grants на MCP-серверы, шина `live_*` | `[app].schema` конфига чата |
-| `boba` | агент | `users`, `roles`, `user_roles`, история бесед (`session`, `session_records`) | `[agent.history].schema` конфига службы агента |
+| `boba` | агент | `users`, `roles`, `user_roles`, история бесед (`session`, `session_records`) | `[app].schema` конфига службы агента |
 | `mcp` | boba-mcp и его плагины | `users`, `roles`, `user_roles`, каталог `connections` и `grants`, база знаний `kb_*`, описания `node` и `edge` | `[app].schema` конфига сервиса; файлы плагинов берут его ссылкой `${app.schema}` |
 | `ix` | индексаторы | индексы базы знаний; плагин `kb` сервиса их читает | конфиги индексаторов |
 
 Чат держит один пул соединений по `[app].postgres` — ссылке на свою секцию
 `[postgres]`, и этим пулом пользуются все его таблицы. Агент ходит в базу сам
-и своей ролью: подключение истории — отдельная секция `[postgres_history]`
-конфига чата, и `[agent.history]` берёт её целиком ссылкой
-`postgres = "${postgres_history}"`. Сервер и база у неё те же, что у
-`[postgres]`, а вход — свой: таблица `[postgres_history.auth]` (роль истории с
+и своей ролью: подключение истории — отдельная секция `[agent.history.postgres]`
+конфига локального AID. В service эта секция не нужна: Boba использует
+собственный `[postgres]`. Сервер и база у неё те же, что у
+`[postgres]`, а вход — свой: таблица `[agent.history.postgres.auth]` (роль истории с
 паролем либо свой принципал и keytab, имя роли — короткое имя принципала). Чат передаёт агенту подключение истории строкой libpq в
 файле настроек, поэтому её вход должен выражаться строкой — паролем,
 доверием `pg_hba` либо kerberos по keytab или паролю; иначе чат не стартует:
@@ -1194,10 +1188,10 @@ handed to another process as a libpq connection string; expected method
 | Роль (если разведены) | Кто входит | Чем владеет | Ключи конфига |
 |---|---|---|---|
 | роль чата (`boba-svc`) | чат, boba-mcp | схемы `aid`, `mcp` | `[postgres.auth]` |
-| роль истории (`boba_history`) | агент | схема `boba` с `session` и `session_records` | `[postgres_history.auth]` |
+| роль истории (`boba_history`) | агент | схема `boba` с `session` и `session_records` | `[agent.history.postgres.auth]` |
 
 На стенде разработки и в развёртывании по умолчанию роль одна: таблица
-`[postgres_history.auth]` повторяет `[postgres.auth]` (учётка `boba-svc`).
+`[agent.history.postgres.auth]` повторяет `[postgres.auth]` (учётка `boba-svc`).
 Развести роли — по желанию администратора: тогда роль чата прав на схему
 `boba` не имеет и не должна быть суперпользователем или членом роли истории.
 Роли заводит администратор кластера; схему `boba` роли истории отдаёт
@@ -1301,24 +1295,47 @@ Chainlit держит вложения сессий в каталоге `.files`
 
 ### Чат, агент и серверы инструментов
 
-Беседу с моделью ведёт агент boba; чат говорит с ним по протоколу ACP
-версии 2. Каким путём, выбирает ключ `[env] agent_mode`: конфиг чата берёт
-`[agent] process = "${agent_launch.${env.agent_mode}}"`.
+Беседу с моделью ведёт агент boba; чат использует ACP версии 2.
+Режим выбирается явно в `[agent]`:
 
-- `agent_mode = "service"` — выкатка (compose, systemd): чат ходит в службу
-  агента `boba serve` (раздел «Служба агента» ниже) по адресу из
-  `[env] agent_scheme`, `agent_host`, `agent_port`, `agent_prefix`, входом
-  proxy с секретами `[keys] agent_proxy` и `agent_client`.
-  Своего агента в образе чата нет.
-- `agent_mode = "process"` — отладка и стенды: на каждую открытую вкладку
-  треда чат запускает свой процесс агента командой
-  `[agent_launch.process] command` с аргументами `["--stdio", "--setting-sources", ""]` и `--settings
-  <файл>`. В отладке команда —
-  `"<репозиторий>/.venv/bin/python -m boba.cli.app"` (наложение отладки, раздел 8).
+```toml
+[agent]
+    mode = "service"
+    endpoint = "https://boba.example.com/boba/acp"
 
-Обе таблицы `[agent_launch.process]` и `[agent_launch.service]` лежат в
-конфиге чата, и их ссылки должны разрешаться: конфиг разрешается при старте
-целиком. Агент службы — каталог `bin/boba.dist` образа boba,
+[agent.auth]
+    auth = "proxy"
+    issuer = "https://boba.example.com/boba"
+    client_id = "boba-chat"
+    client_secret = "${keys.agent_client}"
+    secret = "${keys.agent_proxy}"
+```
+
+В `service` AID не требует подключения к истории агента, LLM-провайдера,
+модели и промпта: ими владеет служба Boba. В `[profiles.<имя>]` чата остаются
+название, описание, роли, иконка и выбор по умолчанию. Имена профилей должны
+совпадать с выданными пользователю профилями службы.
+
+Локальный запуск задаётся отдельным наложением:
+
+```toml
+[agent]
+    mode = "process"
+    command = "/home/user/boba/.venv/bin/python -m boba.cli.app"
+
+[agent.history]
+    kind = "memory"
+```
+
+Для PostgreSQL вместо `memory` укажите `kind = "postgres"`, `schema` и
+подключение `[agent.history.postgres]`. В локальном режиме профили дополнительно
+содержат provider/model/sampling/limits/system_prompt. Файл
+`.vscode/boba/aid-process.toml` хранит эти настройки; `aid-service.toml`
+оставляет режим основной конфигурации. VS Code добавляет нужный файл третьим
+`--config`. При смене `mode` наложение целиком заменяет прежнюю ветку агента,
+поэтому параметры второго режима в итоговую модель не попадают.
+
+Агент службы — каталог `bin/boba.dist` образа boba,
 собранный Nuitka из boba-cli в режиме standalone (стадия `boba-bin`):
 исполняемый `bin/boba.dist/boba.bin` рядом со своими библиотеками (имя
 `boba` занято каталогом данных пакетов `boba/` в том же каталоге), без
@@ -1329,7 +1346,7 @@ Chainlit держит вложения сессий в каталоге `.files`
 сети (ниже), служебные `boba self-check` и `boba settings-schema`. `boba` без
 режима — интерактивный режим для человека; его пока нет, агент говорит
 `the interactive mode is not available yet`, подсказывает режимы и выходит
-с кодом 2. Прежней подкоманды `boba acp` нет: конфиг, в `[agent.process].args`
+с кодом 2. Прежней подкоманды `boba acp` нет: конфиг, в `[agent].args`
 которого осталось `"acp"`, получает отказ `invalid choice: 'acp'` при старте
 агента, и строку нужно заменить на `"--stdio"`.
 
@@ -1344,7 +1361,7 @@ Chainlit держит вложения сессий в каталоге `.files`
 вставил вопрос своим ходом, а вопрос, заданный во время хода, ждёт конца
 идущего хода, сколько бы тот ни шёл. Ожидание обрывает только уход агента:
 процесс вышел или закрыл вывод, у службы закрылся поток событий или молчал
-дольше `silence_timeout_sec` раздела `[agent_launch.service]` (служба шлёт в
+дольше `silence_timeout_sec` раздела `[agent]` (служба шлёт в
 него keepalive каждые 15 с, срок должен быть больше). Процесс, который вышел сам (упал или убит), чат заменяет
 новым при следующем вопросе вкладки: новый процесс продолжает ту же сессию.
 
@@ -1353,8 +1370,7 @@ Chainlit держит вложения сессий в каталоге `.files`
 печатает JSON Schema файла (ключи camelCase), и тест чата сверяет с ней файл,
 который чат пишет своей моделью. В файле модель профиля чата: адрес, токен,
 срок запроса, проверка TLS и повторы провайдера из `[llm.<имя>].connection`,
-транспорт из общей секции `[http]` (свой транспорт агента: сам чат к
-модели не ходит); окно, потолок ответа и возврат рассуждений — из пределов
+транспорт из `[llm.<имя>.transport]` (необязателен; сам чат к модели не ходит); окно, потолок ответа и возврат рассуждений — из пределов
 модели профиля `limits = "${model_limits.<профиль>}"`, секции
 `[model_limits.<профиль>]` (`reasoning_return = "turn"` — рассуждения прошлых ответов
 уходят модели в пределах хода, этого требуют thinking-модели вроде deepseek,
@@ -1367,10 +1383,10 @@ Chainlit держит вложения сессий в каталоге `.files`
 находит в `configOptions` ответа настройку категории `mode` и включает
 `bypassPermissions` запросом `session/set_config_option`; агент без такой
 настройки работает в своём режиме, а его вопросы разрешений чат отвечает
-согласием. Дамп HTTP-обмена с моделью (`[http].dump`) пишет
+согласием. Дамп HTTP-обмена с моделью (`[llm.main.transport.dump]`) пишет
 заголовки как есть, вместе с токеном; держите его выключенным. История с
 `kind = "postgres"` хранится в схеме `boba` по
-подключению `[postgres_history]` своей ролью (раздел «Схемы хранения» выше); с
+подключению `[agent.history.postgres]` своей ролью (раздел «Схемы хранения» выше); с
 `kind = "memory"` она живёт только в памяти процесса, и после перезапуска
 вкладки беседа начинается пустой. Адресов серверов MCP, учёток и токенов входа
 на них в файле нет.
@@ -1388,7 +1404,7 @@ Chainlit держит вложения сессий в каталоге `.files`
 
 - `public_url` — адрес чата, по которому агент забирает вложения сообщений
   пользователя. Агент работает на той же машине, что и чат, поэтому это
-  внутренний адрес процесса чата, `http://127.0.0.1:${env.port}${env.url_prefix}`,
+  внутренний адрес процесса чата, `http://127.0.0.1:${server.port}${server.url_prefix}`,
   а не публичное имя за nginx. Этот же адрес ждёт перенос истории с dev
   (раздел 6, «Переход с dev на новую версию»);
 - `question_timeout_sec` — сколько чат ждёт ответа пользователя на вопрос
@@ -1407,17 +1423,17 @@ agent process 'boba' (pid ...): agent '...' does not declare capabilities.sessio
 ответивший за `start_timeout_sec`, даёт `did not answer initialize within
 ...s`; к каждому из этих текстов приложен хвост stderr процесса. Программы
 агента нет по пути — `agent process '...' did not start from ...: [Errno 2]
-No such file or directory; check [env].agent_command`.
+No such file or directory; check [agent].command`.
 
 Серверы MCP хранятся в таблице `mcp_servers`. Пользователь добавляет HTTP и
 SSE серверы в панели `/mcp`, правит, выключает и удаляет свои записи.
 Администратор выдаёт серверы ролям через `grants`; такие серверы доступны
 пользователю только для чтения. Адрес, вход, секреты и сроки принадлежат
-записи сервера. Секреты шифруются ключом `[connections].cipher`.
+записи сервера. Секреты шифруются ключом `[mcp_servers].cipher`.
 
 Секций `[mcp.servers.*]` и списка `mcp` в профиле чата больше нет. Старые
 объявления переносятся вручную. Сроки новых пользовательских серверов
-задаёт `[mcp_user]`, по умолчанию 10 с на подключение и 60 с на вызов.
+задаёт `[mcp_servers]`, по умолчанию 10 с на подключение и 60 с на вызов.
 Изменение своего сервера перезапускает агентов пользователя перед следующим
 ходом; SQL-выдача роли появляется в новом чате. Условия выдачи, пример SQL,
 политика внутренних адресов и сохранение секретов описаны в
@@ -1510,10 +1526,9 @@ boba-mcp принимает клиентов обеих редакций на о
   сессии ACP категории `model` (`configOptions`, `session/set_config_option`).
   Ключи провайдера клиенту не показываются и от клиента не приходят.
 - **История и сессии пользователя.** История — Postgres своим подключением
-  `[postgres_history]` (своя роль, вход — `[postgres_history.auth]`)
-  ссылкой `[agent.history] postgres = "${postgres_history}"`, схема `boba`.
+  `[postgres]` (своя роль, вход — `[postgres.auth]`), схема из `[app].schema`.
   Пул соединений истории общий для всех сессий процесса —
-  `[postgres_history.pool]` (`min_size`, `max_size`, `timeout`); сверх пула
+  `[postgres.pool]` (`min_size`, `max_size`, `timeout`); сверх пула
   процесс держит одно соединение замков сессий. Таблица `session` хранит
   UUID владельца (`user_id`, FK на users той же схемы): подключение видит,
   продолжает, ветвит и удаляет только сессии своего пользователя. Таблицы
@@ -1527,39 +1542,26 @@ boba-mcp принимает клиентов обеих редакций на о
 
 Конфиг службы содержит секции `[keys]` (`session`, `agent_proxy` — ключ
 утверждений proxy чата, `agent_client` — секрет доверенного клиента
-`boba-chat` из `[agent.clients]`), `[instance]`, `[ldap]` со служебным bind
-`[ldap.auth]`, `[postgres_history]` со своим входом, провайдера модели
+`boba-chat` из `[agent.clients]`), `[paths]` и `[tls]`, `[ldap]` со служебным bind
+`[ldap.auth]`, `[postgres]` со своим входом, провайдера модели
 `[llm.main]` (`baseUrl`, вход `[llm.main.auth]`, `sslVerify`), профили
 `[agent.profiles.<профиль>]` с моделью, пределами и промптом, способы входа
-`[auth.<имя>]` и `[env]`: `port = 8660`, `listen_host`, `url_prefix`,
-`public_url`, `data`.
+`[auth.<имя>]`, `[server]` с `port = 8660`, `host`, `url_prefix`,
+`public_url` и `[paths].data_dir`.
 `public_url` — издатель токенов службы, и он обязан совпасть с адресом, по
 которому в неё ходит чат. OAuth вне localhost принимает только https, поэтому
 чат ходит в службу через nginx: `url_prefix = "/boba"`,
 `public_url = "https://boba.example.com/boba"` (раздел 13, «Адрес сервиса и
 его `public_url`»).
 
-Чат в режиме службы. В конфиге чата:
+Чат в режиме службы использует приведённые выше `[agent]` и `[agent.auth]`.
+Ключи `agent_proxy` и `agent_client` совпадают с секретами доверенного клиента
+в службе. `agent.endpoint` — полный URL ACP; `agent.auth.issuer` — публичный
+адрес OAuth службы, совпадающий с её `server.public_url`.
+При необходимости endpoint и issuer можно задавать прежним объектом адреса
+с полями scheme/host/port/path, но строка URL короче.
 
-```toml
-[env]
-    agent_mode   = "service"
-    agent_scheme = "https"
-    agent_host   = "boba.example.com"
-    agent_port   = 443
-    agent_prefix = "/boba"
-
-[keys]
-    agent_proxy  = "..."
-    agent_client = "..."
-```
-
-Значения `[keys] agent_proxy` и `agent_client` те же, что в конфиге службы.
-Конфиг чата собирает из них `[service.boba]` и вход `[agent_auth.boba]`
-(клиент `boba-chat`, издатель — сама служба), путь ACP — `/acp` под
-`[service.boba]`: `https://boba.example.com/boba/acp`. Адрес — тот, по
-которому чат видит службу через nginx, и он же издатель токена, поэтому
-`public_url` службы должен с ним совпадать. Вкладка входит в службу от имени своего пользователя
+Вкладка входит в службу от имени своего пользователя
 (логин и роли), открывает в ней сессию треда и выбирает профиль агента с
 именем профиля чата: профиль чата `general` ждёт у службы
 `[agent.profiles.general]`, выданный ролям пользователя, иначе ход
@@ -1667,15 +1669,15 @@ browser: ...` и сообщением mermaid, и модель исправля�
 Отдельной секции `apps` в записи сервера нет.
 
 У процесса aid одна песочница. Её публичный адрес строится из схемы и хоста
-`[aid].chat_url` и порта `[aid].sandbox_port`:
+`[server].public_url` и порта `[server].sandbox_port`:
 
 ```toml
-[aid]
-    chat_url = "https://boba.example.com/aid/"
+[server]
+    public_url = "https://boba.example.com/aid/"
     sandbox_port = 8502
 ```
 
-Aid слушает порт песочницы на `[aid].host`, TLS общий с основным портом чата.
+Aid слушает порт песочницы на `[server].host`, TLS общий с основным портом чата.
 Порт публикуется браузеру отдельно, напрямую либо через nginx (раздел 14).
 На нём доступны только страница-прокси `/` и шрифт `/fonts/inter/files/…`.
 Маршрутизация использует порт сокета, а не `Host`.
@@ -1686,7 +1688,7 @@ URL перед загрузкой приложения, не попадает в
 
 Приложение исполняется во внутреннем iframe без `allow-same-origin`.
 Его CSP ограничивает сеть доменами ресурса, исключает источник чата и
-запрещает отправку форм. Встроить песочницу может только origin `chat_url`
+запрещает отправку форм. Встроить песочницу может только origin `server.public_url`
 (`frame-ancestors`). Куки браузера не разделяются по портам, поэтому эти
 ограничения сохраняются и при общем хосте.
 
@@ -1913,7 +1915,7 @@ docker compose up -d --force-recreate mcp
 
 После базы файлы пользователей переносятся к сервису boba-mcp скриптом
 `docs/migrations/2026-10-05-workspace-to-mcp.sh`, а в `config.toml`
-чата и сервиса ключ `[postgres] dbname` (у чата и `[postgres_history] dbname`)
+чата и сервиса ключ `[postgres] dbname` (у чата и `[agent.history.postgres] dbname`)
 направляется на новую базу. Порядок шагов, что
 происходит с каждой таблицей, переменные скриптов и проверки после переноса
 описаны в `docs/migrations/2026-10-16-chat-agent-cutover/README.md`.
@@ -2016,15 +2018,17 @@ make -C build build APP=runtime   # runtime/ и фронт чата в ассе�
 ```toml
 tool = "${toml_dir:/home/ss/boba/packages/apps/boba-mcp/conf/plugins}"
 
-[instance]
+[paths]
     data_dir = "/home/ss/boba/.dev/data/mcp"
 
-[env]
-    port          = 8651
-    url_prefix    = "/ss/mcp"
-    public_url    = "https://boba.example.com${env.url_prefix}"
-    cgroup_base   = "/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/boba.slice/boba-debug.slice/boba-sandbox@debug.service/sandbox"
-    tool_launcher = "${oc.env:BOBA_TOOL_LAUNCHER}"
+[server]
+    port = 8651
+    url_prefix = "/ss/mcp"
+    public_url = "https://boba.example.com${server.url_prefix}"
+
+[tool_launcher]
+    provider = "${oc.env:BOBA_TOOL_LAUNCHER}"
+    cgroup_base = "/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/boba.slice/boba-debug.slice/boba-sandbox@debug.service/sandbox"
 
 [postgres]
     dbname = "aid_ss"
@@ -2033,14 +2037,11 @@ tool = "${toml_dir:/home/ss/boba/packages/apps/boba-mcp/conf/plugins}"
     process = "/home/ss/boba/runtime/models/fastembed"
 ```
 
-Наложение чата задаёт `[instance] data_dir`, `[env] port`, `url_prefix`,
-`instance_id`, `host`, `messaging_provider`, `agent_prefix`,
-`agent_mode = "${oc.env:BOBA_AGENT_MODE}"`, `dbname` секций `[postgres]` и
-`[postgres_history]` и `[agent_launch.process] command` (подраздел «Агент чата
-под отладчиком»); наложение службы агента — `data_dir`, `port`, `url_prefix`,
-`public_url` и `[postgres_history] dbname`. Плагины boba-mcp отладка читает
-прямо из пакета (ключ `tool` выше): относительный путь считался бы от каталога
-конфига compose, поэтому путь абсолютный.
+Наложение чата задаёт `[paths].data_dir`, `[server]`, `[cluster]`,
+`[messaging]`, `[agent.endpoint]` и `[postgres].dbname`. Для локального агента
+добавляется `aid-process.toml` с командой, историей и моделью; для удалённого —
+`aid-service.toml`. Наложение Boba меняет `[postgres].dbname`, пути и сервер.
+Плагины MCP debug читает из исходников по абсолютному пути `tool` выше.
 
 Секреты в наложение не кладут: ключи `[keys]`, токены и keytab у отладки те же,
 что у контейнера, и приходят из конфига compose. keytab отладка читает из
@@ -2118,8 +2119,8 @@ VS Code запускает отладку от того пользователя
 | `aid_<разработчик>_<тест>_…` | тестовые базы разработчика | тесты |
 
 Базу разработчика называет ключ `dbname` в наложении отладки каждой
-программы — `[postgres]` и `[postgres_history]` чата, `[postgres]` сервиса,
-`[postgres_history]` службы агента, `[ix.<секция>.postgres]` каждого
+программы — `[postgres]` и `[agent.history.postgres]` чата, `[postgres]` сервиса,
+`[postgres]` службы агента, `[ix.<секция>.postgres]` каждого
 индексатора. Сервер, учётку и keytab подключения отладка берёт из конфига
 compose, меняется только база:
 
@@ -2167,11 +2168,11 @@ host     playground_alexeyk500   boba-svc  10.118.0.0/16    scram-sha-256
 приложения стенда под `/aid`, `/boba` и `/mcp`. У `ss` это `/ss/aid` (чат),
 `/ss/boba` (служба агента) и `/ss/mcp` (boba-mcp) за тем же nginx, что и стенд:
 
-| Приложение | `[env]` наложения отладки |
+| Приложение | `[server]` наложения отладки |
 |---|---|
-| чат `.vscode/boba/aid.toml` | `url_prefix = "/ss/aid"`; к службе агента — `agent_prefix = "/ss/boba"`, остальные `agent_*` те же, что у стенда (`https`, `boba.example.com`, 443); адрес и вход MCP задаются записью `mcp_servers` |
-| boba-mcp `.vscode/boba/mcp.toml` | `url_prefix = "/ss/mcp"`, `public_url = "https://boba.example.com${env.url_prefix}"` |
-| служба агента `.vscode/boba/boba.toml` | `url_prefix = "/ss/boba"`, `public_url = "https://boba.example.com${env.url_prefix}"` |
+| чат `.vscode/boba/aid.toml` | `url_prefix = "/ss/aid"`; к службе — `[agent].endpoint = "https://boba.example.com/ss/boba/acp"` и соответствующий issuer в `[agent.auth]`; адрес и вход MCP задаются записью `mcp_servers` |
+| boba-mcp `.vscode/boba/mcp.toml` | `url_prefix = "/ss/mcp"`, `public_url = "https://boba.example.com${server.url_prefix}"` |
+| служба агента `.vscode/boba/boba.toml` | `url_prefix = "/ss/boba"`, `public_url = "https://boba.example.com${server.url_prefix}"` |
 
 Чат ходит в сервис и службу через nginx, как на стенде: сервис объявляет себя
 издателем токенов под адресом из `public_url`, клиент обязан называть его так
@@ -2186,7 +2187,7 @@ nginx одного разработчика лежат в одном файле 
 
 Цель `Aid: chat` запускает чат с `subProcess: true`: debugpy подключается к
 дочернему процессу, если его программа — интерпретатор python. Поэтому
-`[agent_launch.process] command` наложения отладки — `<репозиторий>/.venv/bin/python -m boba.cli.app`, а не
+`[agent] command` наложения отладки — `<репозиторий>/.venv/bin/python -m boba.cli.app`, а не
 консольный скрипт `boba`: точки останова в boba-cli и boba-agent срабатывают в
 процессе агента вкладки. Чат ждёт рукопожатия `start_timeout_sec` (30 с) и
 ответа на метод сессии `request_timeout_sec`; остановка на точке дольше этих
@@ -2194,17 +2195,17 @@ nginx одного разработчика лежат в одном файле 
 
 В режиме `service` чат не порождает агента, а ходит в службу цели
 `Boba: agent service` — как на выкатке ходит в контейнер boba. Адрес службы
-стоит в `[env]` наложения отладочного чата (`agent_prefix = "/ss/boba"` через
+стоит в `[agent].endpoint` наложения отладочного чата (путь `/ss/boba/acp` через
 nginx, подраздел «Среда разработчика»), секреты `[keys] agent_proxy` и
 `agent_client` — те же, что у стенда, из конфигов compose. Сама служба читает
 конфиг дерева compose boba с наложением `.vscode/boba/boba.toml`:
 `port = 8661`, `url_prefix = "/ss/boba"`,
-`public_url = "https://boba.example.com${env.url_prefix}"`, свой каталог
+`public_url = "https://boba.example.com${server.url_prefix}"`, свой каталог
 данных и база отладки; `krb` — `compose/boba/conf/krb`.
 
 ### Режимы process и sandbox
 
-Ключ `[env] tool_launcher` выбирает, как исполняется инструмент.
+Ключ `[tool_launcher] provider` выбирает, как исполняется инструмент.
 
 `process` — обычным дочерним процессом от того же пользователя, без bwrap и
 cgroup. В отладке это режим по умолчанию: в тело инструмента можно зайти
@@ -2241,18 +2242,19 @@ exec systemd-run --user --scope --quiet --collect --slice=boba-debug.slice -- .v
 
 Тесты берут файлы конфигурации из двух переменных: `BOBA_CONFIG_PATH` —
 файлы чата, `BOBA_MCP_CONFIG_PATH` — файлы сервиса boba-mcp. В каждой список
-через `:`: конфиг compose, наложение отладки и последним — наложение стенда
+через `:`: конфиг compose, наложение отладки, `aid-process.toml` для локального
+агента AID и последним — наложение стенда
 `.dev/stand.toml`, как повторный `--config`. Процессам, которые
 стенд поднимает сам, уходят файлы без наложения стенда. Режимы, на которые
-ссылаются наложения отладки, задают `BOBA_AGENT_MODE` и `BOBA_TOOL_LAUNCHER`;
+ссылаются наложения отладки, задают файлы агента и `BOBA_TOOL_LAUNCHER`;
 каталог программы — `BOBA_RUNTIME`, как у отладки; срез песочницы —
 `BOBA_CGROUP_BASE`:
 
 ```
 R=<репозиторий>
-BOBA_RUNTIME=$R/runtime BOBA_AGENT_MODE=process BOBA_TOOL_LAUNCHER=process \
+BOBA_RUNTIME=$R/runtime BOBA_TOOL_LAUNCHER=process \
 BOBA_CGROUP_BASE=<каталог sandbox юнита boba-sandbox@debug> \
-BOBA_CONFIG_PATH=$R/compose/aid/conf/config.toml:$R/.vscode/boba/aid.toml:$R/.dev/stand.toml \
+BOBA_CONFIG_PATH=$R/compose/aid/conf/config.toml:$R/.vscode/boba/aid.toml:$R/.vscode/boba/aid-process.toml:$R/.dev/stand.toml \
 BOBA_MCP_CONFIG_PATH=$R/compose/mcp/conf/config.toml:$R/.vscode/boba/mcp.toml:$R/.dev/stand.toml \
     $R/.venv/bin/pytest $R/packages/apps/boba-mcp/tests
 ```
@@ -2421,10 +2423,10 @@ cgroup, у которого включены контроллеры для по�
 
 - контейнер — строкой `cgroup_parent: boba-<приложение>.slice` в compose-файле;
   каталог `sandbox` приходит в него томом (`BOBA_SANDBOX_CGROUP` в `.env`), а
-  ключ `[env] cgroup_base` конфига называет точку монтирования;
+  ключ `[tool_launcher] cgroup_base` конфига называет точку монтирования;
 - юнит приложения — строкой `Slice=`; путь он получает переменной
   `BOBA_CGROUP_BASE`;
-- отладка — обёрткой `python-debug-slice.sh` и ключом `[env] cgroup_base`
+- отладка — обёрткой `python-debug-slice.sh` и ключом `[tool_launcher] cgroup_base`
   наложения отладки.
 
 Для контейнера есть ещё одна тонкость. Процесс в нём идёт от пользователя
@@ -2468,7 +2470,7 @@ cgroup, у которого включены контроллеры для по�
 **Журналы.** Контейнеры пишут в stdout: `docker logs -f <контейнер>`. Юниты —
 в журнал пользователя: `journalctl --user -u boba-<экземпляр>.service`.
 Запросы к языковой модели приложение складывает в `data/dump`, если это
-включено в `[http].dump` конфига чата и boba-mcp; каталог растёт, его чистят
+включено в `[llm.main.transport.dump]` конфига чата и boba-mcp; каталог растёт, его чистят
 по возрасту.
 
 **Что и в каком порядке перезапускать.**
@@ -2642,8 +2644,8 @@ the runtime/ directory ...`.** Программа запущена из исхо
 `BOBA_RUNTIME`. Задать `BOBA_RUNTIME=<репозиторий>/runtime` (его ставят
 `dev.sh` и цели VS Code).
 
-**`[instance]: ca_file must name the CA file of the network (PEM), ... is not a
-file`.** Путь `[instance] ca_file` не указывает на файл CA.
+**`[tls]: ca_file must name the CA file of the network (PEM), ... is not a
+file`.** Путь `[tls] ca_file` не указывает на файл CA.
 
 **`UntrustedBinaryError: launcher view: chain executable ... resolves to ...
 through a link outside the paths the outer sandbox layer sees; ...`** в строке
@@ -2716,7 +2718,7 @@ ValueError: Could not load model ...`**. В каталоге `cache_dir` про�
 
 **Чат отвечает, но инструментов сервиса нет; в логе `mcp server
 'aid_all': ...`, у агента — отказ `mcp/message 'tools/list' to server
-'...' got no MCP outcome`.** Сервис не запущен либо адрес в ключах `[env] mcp_*`
+'...' got no MCP outcome`.** Сервис не запущен либо адрес в записи `mcp_servers`
 конфига чата не совпадает с `public_url` сервиса. Сообщение `Authorization
 server metadata issuer mismatch` говорит о втором: имя, схема, порт и путь
 издателя должны совпадать буква в букву. Если после имени сервера стоит `the
@@ -2726,25 +2728,25 @@ expects server/discover`, сервер отвечает по прежней ре
 
 **`agent process '...' failed the ACP handshake, this chat speaks ACP version
 2: ...` или `... does not declare capabilities.session.mcp.acp in
-initialize`.** Вкладка не открывает беседу: `[agent.process].command` чата
+initialize`.** Вкладка не открывает беседу: `[agent].command` чата
 запускает агента другой версии или чужую программу. Хвост stderr агента
 приложен к тексту. Текст `did not answer initialize within ...s` — агент не
 поднялся за `start_timeout_sec`: смотреть тот же хвост.
 
 **`agent process '...' did not start from ...: [Errno 2] No such file or
-directory; check [env].agent_command`.** Программы агента нет по пути из
-`agent_command` в режиме `agent_mode = "process"`. На выкатке агента в образе
-чата нет: в `[env]` конфига чата должен стоять `agent_mode = "service"` с адресом
+directory; check [agent].command`.** Программы агента нет по пути из
+`[agent].command` в режиме `mode = "process"`. На выкатке агента в образе
+чата нет: в `[agent]` должен стоять `mode = "service"` с endpoint
 службы агента (раздел 5, «Служба агента»).
 
 **`<метод>: expected the agent to answer within ...s
-([agent.process].request_timeout_sec), got no answer`.** Агент жив, но не
+([agent].request_timeout_sec), got no answer`.** Агент жив, но не
 ответил на метод сессии; хвост его stderr приложен к тексту.
 
 **`[agent.history].postgres: postgres connection to ...: auth '...' cannot be
 handed to another process as a libpq connection string`** при старте чата.
-История агента идёт в базу по подключению `[postgres_history]` строкой libpq,
-а способ входа таблицы `[postgres_history.auth]` так не передать (раздел 5, «Схемы
+История агента идёт в базу по подключению `[agent.history.postgres]` строкой libpq,
+а способ входа таблицы `[agent.history.postgres.auth]` так не передать (раздел 5, «Схемы
 хранения»): нужен пароль, доверие или kerberos по keytab или паролю, либо
 история `kind = "memory"`.
 
@@ -2820,16 +2822,16 @@ ACP и MCP на схеме — логические связи, по сети о
 
 | Программа | Порт и путь по умолчанию | Где задаётся | Протокол | Кто подключается | Публичный |
 |---|---|---|---|---|---|
-| aid (чат) | 8501, префикс `/aid` | `[env] port`, `url_prefix`, адрес прослушивания `listen_host` | HTTP: страницы и API chainlit, вход (kerberos по заголовку `Negotiate`, ldap, local, proxy на `{префикс}/auth/proxy`), файлы панели `{префикс}/canvas/…`; WebSocket socket.io на `{префикс}/ws/socket.io` | браузеры через nginx; бэкенд партнёра входом proxy (раздел 15, «Вход по доверенному заголовку»); проба здоровья | да, через nginx |
-| boba-mcp | 8650, префикс `/mcp`; endpoint'ы `/mcp/chat`, `/mcp/all`, `/mcp/search` | `[env] port`, `url_prefix`, `listen_host`, `public_url`; имена endpoint'ов — `[mcp.endpoints.*]` конфига сервиса | MCP streamable-http (POST, поток SSE на GET, DELETE); OAuth: `{префикс}/token`, `{префикс}/authorize`, `{префикс}/register`, метаданные `/.well-known/oauth-authorization-server{префикс}` и `/.well-known/oauth-protected-resource{префикс}/<endpoint>` от корня хоста; файлы `{префикс}/<endpoint>/files/…` и журналы `{префикс}/<endpoint>/journals/…`; `{префикс}/health` | чат через nginx (вход proxy клиентом `boba-chat`); проба здоровья | да, через nginx |
-| boba (служба агента) | 8660, префикс `/boba`; ACP на `/boba/acp` | `[env] port`, `url_prefix`, `listen_host`, `public_url`; путь — `[agent].path` конфига службы | ACP версии 2: streamable HTTP и WebSocket на одном пути; OAuth 2.1: `{префикс}/authorize`, `{префикс}/token`, `{префикс}/register`, страница входа `{префикс}/login`, метаданные `/.well-known/…{префикс}…` от корня хоста; `{префикс}/health` | чат в режиме `service` и люди, другие клиенты ACP — через nginx; проба здоровья | да, через nginx |
+| aid (чат) | 8501, префикс `/aid` | `[server] port`, `url_prefix`, адрес прослушивания `host` | HTTP: страницы и API chainlit, вход (kerberos по заголовку `Negotiate`, ldap, local, proxy на `{префикс}/auth/proxy`), файлы панели `{префикс}/canvas/…`; WebSocket socket.io на `{префикс}/ws/socket.io` | браузеры через nginx; бэкенд партнёра входом proxy (раздел 15, «Вход по доверенному заголовку»); проба здоровья | да, через nginx |
+| boba-mcp | 8650, префикс `/mcp`; endpoint'ы `/mcp/chat`, `/mcp/all`, `/mcp/search` | `[server] port`, `url_prefix`, `host`, `public_url`; имена endpoint'ов — `[mcp.endpoints.*]` конфига сервиса | MCP streamable-http (POST, поток SSE на GET, DELETE); OAuth: `{префикс}/token`, `{префикс}/authorize`, `{префикс}/register`, метаданные `/.well-known/oauth-authorization-server{префикс}` и `/.well-known/oauth-protected-resource{префикс}/<endpoint>` от корня хоста; файлы `{префикс}/<endpoint>/files/…` и журналы `{префикс}/<endpoint>/journals/…`; `{префикс}/health` | чат через nginx (вход proxy клиентом `boba-chat`); проба здоровья | да, через nginx |
+| boba (служба агента) | 8660, префикс `/boba`; ACP на `/boba/acp` | `[server] port`, `url_prefix`, `host`, `public_url`; путь — `[agent].path` конфига службы | ACP версии 2: streamable HTTP и WebSocket на одном пути; OAuth 2.1: `{префикс}/authorize`, `{префикс}/token`, `{префикс}/register`, страница входа `{префикс}/login`, метаданные `/.well-known/…{префикс}…` от корня хоста; `{префикс}/health` | чат в режиме `service` и люди, другие клиенты ACP — через nginx; проба здоровья | да, через nginx |
 | nginx | 443, TLS | конфигурация nginx (раздел 14) | HTTPS, WebSocket | браузеры, клиенты ACP; чат, если ходит к сервисам по публичному имени | да |
-| aid, песочница MCP Apps | один порт на aid, в примерах 8502; слушает сам чат на `[aid].host` | `[aid].sandbox_port` конфига чата; адрес в браузере — хост `chat_url` с этим портом (раздел 5, «Приложения MCP-серверов») | HTTP или HTTPS по `[aid]`: только страница-прокси `/` и шрифт `/fonts/inter/files/…`, без входа, API и cookie | браузер: iframe в странице чата, напрямую или через nginx | да, тем же номером, что в конфиге |
-| отладка | чат 8601, служба агента 8661, boba-mcp 8651; префиксы `/<разработчик>/aid`, `/<разработчик>/boba`, `/<разработчик>/mcp` | `[env]` наложения отладки `.vscode/boba/<приложение>.toml` (раздел 8) | как у рабочих | nginx | через nginx |
+| aid, песочница MCP Apps | один порт на aid, в примерах 8502; слушает сам чат на `[server].host` | `[server].sandbox_port` конфига чата; адрес в браузере — хост `server.public_url` с этим портом (раздел 5, «Приложения MCP-серверов») | HTTP или HTTPS по `[server]`: только страница-прокси `/` и шрифт `/fonts/inter/files/…`, без входа, API и cookie | браузер: iframe в странице чата, напрямую или через nginx | да, тем же номером, что в конфиге |
+| отладка | чат 8601, служба агента 8661, boba-mcp 8651; префиксы `/<разработчик>/aid`, `/<разработчик>/boba`, `/<разработчик>/mcp` | `[server]` наложения отладки `.vscode/boba/<приложение>.toml` (раздел 8) | как у рабочих | nginx | через nginx |
 
-Умолчаний для порта в коде нет: ключ `[env] port` обязателен у всех трёх
-приложений, `url_prefix` — тоже у всех трёх, и без них приложение не стартует.
-Порт и префикс записаны в `[env]` конфига экземпляра числом и строкой.
+Порты по умолчанию: AID 8501, Boba 8660, MCP 8650. `server.url_prefix`
+по умолчанию пустой, `server.public_url` задаётся явно. В compose/debug
+порты и префиксы остаются явными для согласования с nginx.
 Тесты, которые сами поднимают приложения, берут свободные порты и рабочим
 портам не мешают.
 
@@ -2848,18 +2850,18 @@ ACP и MCP на схеме — логические связи, по сети о
 номера порта в конфиге, поэтому без nginx, когда браузер ходит в контейнер
 напрямую, порты публикуют тем же номером: `"8501:8501"` и `"8502:8502"`. Если доступ к приложениям в обход nginx с машины
 нежелателен, публикацию закрывают межсетевым экраном. Под systemd приложение
-слушает порт машины на адресе `listen_host`: если nginx стоит на той же
+слушает порт машины на адресе `host`: если nginx стоит на той же
 машине, достаточно `127.0.0.1`.
 
 ### Связи между программами
 
 | Связь | Протокол | Где задаётся адрес | Что важно |
 |---|---|---|---|
-| браузер → nginx → aid | HTTPS и WebSocket; от nginx — HTTP/1.1 с `Upgrade` | `location /aid/` nginx, `[env] url_prefix` чата | префикс не срезается, буферизация выключена (раздел 14) |
-| браузер → aid, порт песочницы | HTTP или HTTPS, статика | `[aid].chat_url` и `[aid].sandbox_port` конфига чата | тот же хост, что у чата, другой порт — другой источник; nginx необязателен (раздел 5, «Приложения MCP-серверов») |
+| браузер → nginx → aid | HTTPS и WebSocket; от nginx — HTTP/1.1 с `Upgrade` | `location /aid/` nginx, `[server] url_prefix` чата | префикс не срезается, буферизация выключена (раздел 14) |
+| браузер → aid, порт песочницы | HTTP или HTTPS, статика | `[server].public_url` и `[server].sandbox_port` конфига чата | тот же хост, что у чата, другой порт — другой источник; nginx необязателен (раздел 5, «Приложения MCP-серверов») |
 | приложение MCP Apps → его сервер MCP | через чат | — | браузер к серверу MCP не ходит. HTML приложения (`resources/read` адреса `ui://…`), вызовы его инструментов и чтения его ресурсов страница чата передаёт по WebSocket вкладки, а чат исполняет их своим соединением с сервером от имени пользователя |
-| aid → nginx → boba, `agent_mode = "service"` | ACP версии 2 по streamable HTTP, HTTPS | `[env] agent_scheme`, `agent_host`, `agent_port`, `agent_prefix` → `[service.boba]`, путь `/acp` | вход proxy: утверждение меняется на токен на том же адресе; адрес совпадает с `public_url` службы |
-| aid → процесс агента, `agent_mode = "process"` | ACP по stdin и stdout | `[env] agent_command` | сети между ними нет; процесс агента живёт в сети чата и сам ходит к модели и в Postgres истории |
+| aid → nginx → boba, `mode = "service"` | ACP версии 2 по streamable HTTP, HTTPS | `[agent].endpoint`, вход `[agent.auth]` | вход proxy: утверждение меняется на токен на том же адресе; адрес совпадает с `public_url` службы |
+| aid → процесс агента, `mode = "process"` | ACP по stdin и stdout | `[agent] command` | сети между ними нет; процесс агента живёт в сети чата и сам ходит к модели и в Postgres истории |
 | aid → nginx → boba-mcp | MCP streamable-http, HTTPS | `mcp_servers.data.endpoint`, включая адрес сервиса, путь и вход | на том же адресе обмен токена, загрузка и выдача файлов, журналы вызовов; адрес совпадает с `public_url` сервиса |
 | aid → другие серверы MCP | streamable-http или SSE | `mcp_servers.data.endpoint` | подключение выполняет aid от имени пользователя; stdio в пользовательском каталоге не поддерживается |
 | агент → серверы MCP | прямой связи нет | — | агент получает серверы чата записями `type: "acp"` без адреса и шлёт им запросы внутри сообщения ACP `mcp/message`; исполняет их чат |
@@ -2877,7 +2879,7 @@ boba: межсетевой экран для них — тот, что стои�
 #### Адрес сервиса и его `public_url`
 
 boba-mcp и служба агента — сами себе серверы авторизации, и издатель их
-токенов — `[env] public_url`. Клиент чата запрашивает метаданные авторизации
+токенов — `[server] public_url`. Клиент чата запрашивает метаданные авторизации
 по тому адресу, которым ходит в сервис, и сверяет издателя с этим адресом
 буква в букву. Адрес сервера авторизации OAuth вне `localhost` обязан быть
 https, поэтому в развёртывании сервис публикуется за nginx и чат ходит туда же:
@@ -2899,13 +2901,13 @@ nginx нужны оба блока `location` каждого сервиса (р�
 | Система | Порт обычно | Кто ходит | Из песочницы | Где адрес |
 |---|---|---|---|---|
 | PostgreSQL, схемы `aid` и `mcp`, индекс `ix` | 5432 | чат: пул `[postgres]`, шина сообщений; плагины boba-mcp `describer`, `kb`, `ingest` — подключением `[postgres]` сервиса | у плагинов — да | `[postgres]`: `host`, `hostaddr`, `port`, `dbname`, `sslmode`; вход — таблица `[postgres.auth]` |
-| PostgreSQL, история агента `boba` | тот же сервер | процесс агента в режиме `process` (из контейнера чата) либо служба агента | нет | `[postgres_history]` конфига чата и службы: тот же сервер; вход — таблица `[postgres_history.auth]` (раздел 5, «Схемы хранения») |
+| PostgreSQL, история агента `boba` | тот же сервер | процесс агента в режиме `process` (из контейнера чата) либо служба агента | нет | `[agent.history.postgres]` конфига чата и службы: тот же сервер; вход — таблица `[agent.history.postgres.auth]` (раздел 5, «Схемы хранения») |
 | базы пользователей: PostgreSQL, ClickHouse (HTTP-интерфейс, обычно 8123, с TLS — 8443), Oracle (listener, обычно 1521) | свой у каждой базы | плагины `pg`, `ch`, `ora` boba-mcp | да | профиль в таблице `connections` схемы MCP; доступ по `grants` на каждом вызове |
 | LDAP, Active Directory | 389, ldaps — 636 | чат: вход ldap и роли входов kerberos и proxy; служба агента: вход ldap | нет | `[ldap]`: `server`, `base_dn`; служебный bind — таблица `[ldap.auth]` |
 | Kerberos KDC | 88, TCP и UDP | чат: билеты по keytab для входа в Postgres и роли истории, делегирование (S4U) билета пользователя к его базам; служба агента: роль истории; boba-mcp: вход в Postgres по keytab; плагины с биндом `krb5.conf` — билеты служб по выданному им билету | да, у плагинов с `krb5.conf` | `[realms]` файла `krb5.conf` (`[krb] config`, каталог `conf/krb`) |
-| языковая модель, OpenAI-совместимый API | 443 | процесс агента в режиме `process` (из контейнера чата) либо служба агента; сам чат к модели не ходит | нет | чат: `[llm.main.connection]` `host`, `path`, `ssl_verify`, вход — таблица `[llm.main.connection.auth]`, прокси — `[http].proxy` либо `HTTPS_PROXY` окружения при `trust_env = true`; служба: `[llm.main]` `baseUrl`, `sslVerify`, вход — таблица `[llm.main.auth]` |
-| Confluence | 443 | плагины `confluence` и `ingest` boba-mcp | да | web-профиль `confluence` в таблице `connections` схемы MCP, grant роли `read`; прокси — `[http].proxy` конфига сервиса |
-| интернет | 80, 443 | плагин `web` (`web_fetch_page`, `web_grep_page`): адрес называет модель | да | прокси — `[http].proxy` конфига сервиса |
+| языковая модель, OpenAI-совместимый API | 443 | процесс агента в режиме `process` (из контейнера чата) либо служба агента; сам чат к модели не ходит | нет | чат: `[llm.main.connection]` `host`, `path`, `ssl_verify`, вход — таблица `[llm.main.connection.auth]`, прокси — `[tool.<плагин>.transport].proxy` либо `HTTPS_PROXY` окружения при `trust_env = true`; служба: `[llm.main]` `baseUrl`, `sslVerify`, вход — таблица `[llm.main.auth]` |
+| Confluence | 443 | плагины `confluence` и `ingest` boba-mcp | да | web-профиль `confluence` в таблице `connections` схемы MCP, grant роли `read`; прокси — `[tool.<плагин>.transport].proxy` конфига сервиса |
+| интернет | 80, 443 | плагин `web` (`web_fetch_page`, `web_grep_page`): адрес называет модель | да | прокси — `[tool.<плагин>.transport].proxy` конфига сервиса |
 | почтовый сервер, SMTP | 587 | плагин `mail` | да; в поставке плагин выключен | `[mail]`: `server`, `port`, `use_tls`; вход — таблица `[mail.auth]` |
 
 Билет службы `HTTP/<домен чата>` для входа kerberos в чат браузер получает у
@@ -2950,7 +2952,7 @@ boba паролей учёток не меняет. Внешних провай�
 
 Окружение песочницы очищается, поэтому переменные прокси контейнера
 (`HTTPS_PROXY`) телу инструмента не видны: прокси для `web`, `confluence` и
-`ingest` задаёт ключ `[http].proxy` конфига сервиса. В режиме
+`ingest` задаёт ключ `[tool.<плагин>.transport].proxy` конфига сервиса. В режиме
 `tool_launcher = "process"` (отладка, раздел 8) песочницы нет, и сеть есть у
 всех плагинов.
 
@@ -2974,7 +2976,7 @@ boba паролей учёток не меняет. Внешних провай�
 
 Приложения развёрнуты на своих префиксах: чат — `/aid/`, boba-mcp — `/mcp/`,
 служба агента — `/boba/`. Каждое приложение само отвечает под префиксом из
-ключа `[env] url_prefix` своего конфига, поэтому nginx передаёт путь запроса как есть,
+ключа `[server] url_prefix` своего конфига, поэтому nginx передаёт путь запроса как есть,
 без `rewrite`. Метаданные OAuth сервисов клиенты ищут от корня хоста, по
 путям `/.well-known/<документ>/<префикс>…`: для них у каждого сервиса второй
 блок `location`. Nginx перед приложениями должен уметь три вещи: пропускать
@@ -3134,7 +3136,7 @@ proxy_read_timeout 86400s;
 
 ### Страница песочницы MCP Apps
 
-Страницу-прокси песочницы отдаёт сам чат на порту `[aid].sandbox_port` (раздел
+Страницу-прокси песочницы отдаёт сам чат на порту `[server].sandbox_port` (раздел
 5, «Приложения MCP-серверов»), и nginx для неё ничего делать не обязан: ни
 файлов страницы, ни заголовков, ни отдельного имени хоста. Заголовки
 `frame-ancestors` и `Access-Control-Allow-Origin` для шрифта чат ставит сам.
@@ -3164,7 +3166,7 @@ server {
 ```
 
 Номер порта nginx обязан совпадать с `port` секции `apps`: адрес песочницы в
-браузере — это хост `chat_url` с этим портом. Отдельного блока `location`
+браузере — это хост `server.public_url` с этим портом. Отдельного блока `location`
 вида `/mcp-apps/` под именем чата не нужно и быть не должно: путь на имени
 чата — тот же источник, что и чат. Прежний блок nginx, который отдавал
 `sandbox.html` с диска под отдельным именем хоста, удаляют вместе с копией
@@ -3180,7 +3182,7 @@ server {
 подключает вместе с остальными (`include …/locations/*.conf`), и смотрят на
 порты его процессов на хосте (`host.docker.internal`); межсетевой экран
 машины должен пускать nginx на эти порты. Префиксы приложения
-знают сами (`[env] url_prefix` их конфигов, раздел 8), поэтому путь уходит как
+знают сами (`[server] url_prefix` их конфигов, раздел 8), поэтому путь уходит как
 есть, без `rewrite`. Браузер, открывший страницу `/<разработчик>/boba/…`,
 уводится на `/<разработчик>/aid/…`, как на стенде.
 
@@ -3193,10 +3195,10 @@ server {
    (префиксы путей, имена переменных `$dev_ss_*`) и порты 8601, 8661, 8651 на
    его; блоки файла — те же, что у стенда (подраздел «Конфигурация»), с
    префиксом разработчика и `proxy_pass` на `host.docker.internal:<порт>`;
-2. в `[env]` его наложений отладки `.vscode/boba/aid.toml`, `boba.toml`, `mcp.toml` —
+2. в `[server]` его наложений отладки `.vscode/boba/aid.toml`, `boba.toml`, `mcp.toml` —
    те же порты (`port`) и префиксы `url_prefix` (`/alexeyk500/aid` и т. д.),
    у чата — адреса соседей `mcp_prefix`, `agent_prefix`, у сервиса и службы —
-   `public_url`; базу `dbname` в `[postgres]` и `[postgres_history]` — его
+   `public_url`; базу `dbname` в `[postgres]` и `[agent.history.postgres]` — его
    `aid_alexeyk500`;
 3. открыть nginx его порты в межсетевом экране машины, проверить и перечитать
    nginx (ниже); базы разработчика заводит
@@ -3324,7 +3326,7 @@ boba-mcp.
 ### `[keys] encryption`
 
 Где лежит: `[keys] encryption` чата, откуда его берёт ссылкой
-`[connections].cipher`. Историческое имя `[connections]` пока сохранено;
+`[mcp_servers].cipher`. Историческое имя `[connections]` пока сохранено;
 ключ теперь принадлежит хранилищу MCP-серверов чата. Каталог connections
 сервиса MCP использует собственный `[connection_store].cipher`.
 

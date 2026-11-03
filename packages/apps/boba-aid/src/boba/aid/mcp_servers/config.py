@@ -4,13 +4,19 @@ from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from boba.runtime.config import ValueCipherConfig
 
-class McpUserConfig(BaseModel):
-    """Секция mcp_user; McpForms копирует сроки в новую запись сервера."""
+
+class McpDefaultsConfig(BaseModel):
+    """Сроки новых MCP-серверов; форма копирует их в запись сервера."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    SECTION: ClassVar[str] = "mcp_user"
-
     connect_timeout_sec: float = Field(default=10.0, gt=0, allow_inf_nan=False)
     call_timeout_sec: float = Field(default=60.0, gt=0, allow_inf_nan=False)
+
+
+class McpServersConfig(McpDefaultsConfig, ValueCipherConfig):
+    """Шифрование каталога MCP-серверов и сроки новых подключений."""
+
+    SECTION: ClassVar[str] = "mcp_servers"

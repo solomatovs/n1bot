@@ -34,7 +34,7 @@ from boba.aid.agent.chat import (
     ThreadIdentity,
 )
 from boba.aid.agent.client import AgentFailureKind, AgentProcessError
-from boba.aid.agent.config import AgentConfig, AgentServiceConfig
+from boba.aid.agent.config import AgentServiceConfig, AgentSettings, ServiceAgentConfig
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles, SelectedProfile
 from boba.chat.threads import StoredThread, ThreadUpsert
 from boba.cli.serve import ServeHistory
@@ -64,7 +64,6 @@ from boba.stand.signin import SignInStand
 from boba.stand.site import Stand
 from boba.stand.ui.fake_llm import Reply, ReplyBookClient, ReplyTurn, ScenarioName
 from boba.stand.ui.stand import StandPorts, StandUrl
-from boba.transport.http import HttpTransportConfig
 
 pytestmark = pytest.mark.anyio
 
@@ -121,7 +120,7 @@ async def service(
     )
     port = StandPorts().free()
     served = AgentServiceStand(
-        process_config.instance,
+        process_config.paths,
         ServeHistory(schema=history.schema(), postgres=history.postgres()),
         layer,
         profiles,
@@ -172,7 +171,11 @@ class ServiceModeStand:
         )
         self._agents_dir = tmp_path / "agents"
         base = AgentStand(self._agents_dir, history.history()).config()
-        self.config: AgentConfig = base.model_copy(update={"process": mode})
+        self.config = ServiceAgentConfig(
+            public_url=base.public_url,
+            question_timeout_sec=base.question_timeout_sec,
+            **mode.model_dump(),
+        )
         self._relays = RelayStand()
         self._servers = McpServers(NO_SERVERS)
         self._users = users
@@ -183,7 +186,9 @@ class ServiceModeStand:
         )
         self.menus = self._relays.menus(self._servers)
 
-    def launcher_of(self, profiles: ChatProfiles, config: AgentConfig) -> AgentLauncher:
+    def launcher_of(
+        self, profiles: ChatProfiles, config: AgentSettings
+    ) -> AgentLauncher:
         """Запуск агента конфигом config при профилях чата profiles."""
         return AgentLauncher(
             config,
@@ -218,20 +223,10 @@ class ServiceModeStand:
         )
 
     def profile(self) -> ChatProfileConfig:
-        provider = {
-            "kind": "openai",
-            "connection": {
-                "scheme": "http",
-                "host": "127.0.0.1",
-                "port": self._model.port,
-                "path": "/v1",
-            },
-            "transport": HttpTransportConfig().model_dump(mode="json"),
-        }
-        base = SignInStand.profile().model_dump(mode="json")
-
-        return ChatProfileConfig.model_validate(
-            {**base, "provider": provider, "model": MODEL}
+        return ChatProfileConfig(
+            display_name="Stand",
+            default=True,
+            roles=["*"],
         )
 
     async def opened(self, updates: RecordingUpdates) -> tuple[ThreadIdentity, str]:
@@ -257,14 +252,14 @@ class ServiceModeStand:
 
         return identity, session_id
 
-    def answering_within(self, request_timeout_sec: float) -> AgentConfig:
+    def answering_within(self, request_timeout_sec: float) -> ServiceAgentConfig:
         """Конфиг чата, в котором служба отвечает на метод сессии в срок
         request_timeout_sec."""
-        process = self.config.process.model_copy(
+        process = self.config.model_copy(
             update={"request_timeout_sec": request_timeout_sec}
         )
 
-        return self.config.model_copy(update={"process": process})
+        return process
 
     async def stored(self, thread_id: str) -> StoredThread:
         stored = await self._threads.get(UUID(thread_id))

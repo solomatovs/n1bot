@@ -22,7 +22,7 @@ from boba.aid.agent.chat import (
     ThreadDeleter,
 )
 from boba.aid.agent.commands import CommandMenus
-from boba.aid.agent.config import AgentConfig
+from boba.aid.agent.config import AgentConfig, AgentSettings
 from boba.aid.agent.feed import AgentFeeds, BusParts
 from boba.aid.agent.relay import McpRegistrations, McpRelay
 from boba.aid.canvas.remote import RemoteJournals
@@ -92,7 +92,7 @@ def sandbox_links(
 ) -> SandboxLinks:
     """Песочница приложений MCP Apps процесса: адрес с токеном для ленты и
     токен для страницы-прокси. Одна на процесс."""
-    return SandboxLinks(app_config.aid)
+    return SandboxLinks(app_config.server)
 
 
 def mcp_servers_ref() -> McpServers:
@@ -129,7 +129,7 @@ def storage_provider(
 ) -> StorageClient:
     """Хранилище вложений чата: файлы лежат в workspace пользователя на
     MCP-сервере его профиля."""
-    return RemoteStorageClient(app_config.aid.url_prefix, owners, mcp_servers_ref)
+    return RemoteStorageClient(app_config.server.url_prefix, owners, mcp_servers_ref)
 
 
 def session_profile(
@@ -201,10 +201,17 @@ async def chainlit_data_layer(  # noqa: PLR0913 — слой данных соб
     )
 
 
+def mcp_server_cipher(
+    config: Annotated[AppConfig, Depends(get_app_config)],
+) -> SecretCipher:
+    """Ключ шифрования учётных данных каталога mcp_servers."""
+    return SecretCipher(config.mcp_servers.cipher.get_secret_value())
+
+
 def mcp_server_store(
     app_config: Annotated[AppConfig, Depends(get_app_config)],
     pool: Annotated[AsyncPostgresPool, Depends(runtime.postgres_pool)],
-    cipher: Annotated[SecretCipher, Depends(runtime.secret_cipher)],
+    cipher: Annotated[SecretCipher, Depends(mcp_server_cipher)],
 ) -> McpServerStore:
     """Хранилище MCP-серверов процесса: таблица mcp_servers и выдачи grants."""
     return McpServerStore(pool, app_config.db_schema, cipher)
@@ -213,7 +220,7 @@ def mcp_server_store(
 def mcp_oauth_store(
     app_config: Annotated[AppConfig, Depends(get_app_config)],
     pool: Annotated[AsyncPostgresPool, Depends(runtime.postgres_pool)],
-    cipher: Annotated[SecretCipher, Depends(runtime.secret_cipher)],
+    cipher: Annotated[SecretCipher, Depends(mcp_server_cipher)],
 ) -> McpOAuthStore:
     return McpOAuthStore(pool, app_config.db_schema, cipher)
 
@@ -222,7 +229,9 @@ def mcp_browser_oauth(
     app_config: Annotated[AppConfig, Depends(get_app_config)],
     store: Annotated[McpOAuthStore, Depends(mcp_oauth_store)],
 ) -> McpBrowserOAuth:
-    redirect_uri = str(app_config.aid.chat_url).rstrip("/") + "/api/mcp/oauth/callback"
+    redirect_uri = (
+        str(app_config.server.public_url).rstrip("/") + "/api/mcp/oauth/callback"
+    )
     return McpBrowserOAuth(store, redirect_uri)
 
 
@@ -250,7 +259,7 @@ async def mcp_servers(
 
 def agent_config(
     app_config: Annotated[AppConfig, Depends(get_app_config)],
-) -> AgentConfig:
+) -> AgentSettings:
     return app_config.agent
 
 
@@ -364,7 +373,7 @@ def mcp_forms(
     app_config: Annotated[AppConfig, Depends(get_app_config)],
 ) -> McpForms:
     """Разбор запросов панели и сроки новых серверов из настроек aid."""
-    return McpForms(app_config.mcp_user)
+    return McpForms(app_config.mcp_servers)
 
 
 def mcp_directory(
@@ -373,12 +382,12 @@ def mcp_directory(
     servers: Annotated[McpServers, Depends(mcp_servers)],
 ) -> McpDirectory:
     """Операции приложения MCP-серверов над клиентом MCP: один на процесс."""
-    return McpDirectory(source, servers, app_config.mcp_user)
+    return McpDirectory(source, servers, app_config.mcp_servers)
 
 
 def agent_launcher(  # noqa: PLR0913 — запуск собирается всеми входами процесса
     app_config: Annotated[AppConfig, Depends(get_app_config)],
-    config: Annotated[AgentConfig, Depends(agent_config)],
+    config: Annotated[AgentSettings, Depends(agent_config)],
     source: Annotated[ServerSource, Depends(server_source)],
     profiles: Annotated[ChatProfiles, Depends(chat_profiles_registry)],
     users: Annotated[UsersTable, Depends(runtime.users_table)],
@@ -398,7 +407,7 @@ def agent_launcher(  # noqa: PLR0913 — запуск собирается вс�
         registrations,
         relay,
         version("boba-aid"),
-        app_config.instance.data(InstanceData.AGENTS),
+        app_config.paths.data(InstanceData.AGENTS),
     )
 
 

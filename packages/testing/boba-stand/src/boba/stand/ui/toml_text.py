@@ -32,6 +32,8 @@ class TomlText:
         scalars: list[tuple[str, object]] = []
         tables: list[tuple[str, Mapping[str, object]]] = []
         for key, value in data.items():
+            if value is None:
+                continue
             if isinstance(value, Mapping):
                 tables.append((key, value))
                 continue
@@ -70,7 +72,9 @@ class TomlText:
 
         if isinstance(value, Mapping):
             pairs = [
-                f"{cls._key(key)} = {cls._value(item)}" for key, item in value.items()
+                f"{cls._key(key)} = {cls._value(item)}"
+                for key, item in value.items()
+                if item is not None
             ]
             return f"{{{', '.join(pairs)}}}"
 

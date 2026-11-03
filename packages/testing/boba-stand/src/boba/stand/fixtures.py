@@ -140,7 +140,7 @@ def service_overlay(tmp_path_factory: pytest.TempPathFactory) -> ConfigOverlay:
     for name in ServiceData:
         (data / name.value).mkdir()
 
-    base = {"instance.data_dir": str(data)}
+    base = {"paths.data_dir": str(data)}
 
     return ConfigOverlay(StandApp.MCP.config_files().loader(), base)
 
@@ -197,7 +197,7 @@ def kerberos_workspace(
     from boba.krb import KerberosWorkspace  # noqa: PLC0415
 
     conf_dir = StandConfigPaths(StandConfigEnv.RUN).main().resolve().parent
-    krb5_conf = process_config.instance.layout(conf_dir).krb5_conf()
+    krb5_conf = process_config.paths.layout(conf_dir).krb5_conf()
     cache = tmp_path_factory.mktemp("krb-cache")
     KerberosWorkspace.configure(str(krb5_conf), str(cache))
 

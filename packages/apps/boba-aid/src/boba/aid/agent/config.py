@@ -35,8 +35,11 @@ __all__ = [
     "AgentHistoryConfig",
     "AgentHistoryKind",
     "AgentServiceConfig",
+    "AgentSettings",
     "MemoryAgentHistory",
     "PostgresAgentHistory",
+    "ProcessAgentConfig",
+    "ServiceAgentConfig",
 ]
 
 
@@ -120,8 +123,8 @@ class AgentServiceConfig(BaseModel):
 
     endpoint: HttpRoute = Field(
         description=(
-            "Адрес ACP службы: сервис [service.boba] (схема, хост, порт и "
-            "префикс) и путь ACP под ним ([agent].path службы)."
+            "Полный URL ACP службы, включая префикс и путь ACP "
+            "([agent].path в конфиге службы)."
         )
     )
     auth: ProxyAuth = Field(
@@ -162,7 +165,7 @@ class AgentServiceConfig(BaseModel):
 
 
 class PostgresAgentHistory(BaseModel):
-    """История агента в Postgres своим подключением ([postgres_history]: своя
+    """История агента в Postgres своим подключением ([agent.history.postgres]: своя
     роль с паролем, доверием pg_hba либо своим принципалом Kerberos) в своей
     схеме. Подключение чата [postgres] истории не касается.
 
@@ -176,7 +179,7 @@ class PostgresAgentHistory(BaseModel):
     db_schema: str = Field(alias="schema", min_length=1)
     postgres: PostgresConfig = Field(
         description=(
-            "Подключение истории ([postgres_history]): строкой libpq оно уходит "
+            "Подключение истории ([agent.history.postgres]): строкой libpq оно уходит "
             "агенту в файл настроек."
         )
     )
@@ -241,31 +244,29 @@ class AgentToolsConfig(BaseModel):
 
 
 class AgentConfig(BaseModel):
-    """Секция [agent]: всё, что чат aid знает об агенте и о себе для него."""
+    """Общие параметры агента: адрес вложений и ожидание ответа пользователя."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, validate_default=True)
 
-    process: AgentCommandConfig | AgentServiceConfig = Field(
-        description=(
-            "Агент: свой процесс по команде (command, args) либо "
-            "служба агента по адресу (endpoint, auth)."
-        )
-    )
+    public_url: str | None = Field(default=None, min_length=1)
+    question_timeout_sec: int = Field(default=3600, gt=0)
+
+
+class ProcessAgentConfig(AgentConfig, AgentCommandConfig):
+    """Локальный процесс: команда, история и настройки хода принадлежат AID."""
+
+    mode: Literal["process"] = "process"
     history: AgentHistoryConfig
     tools: AgentToolsConfig = Field(default_factory=AgentToolsConfig)
     limits: AgentLimitsConfig = Field(default_factory=AgentLimitsConfig)
-    public_url: str = Field(
-        min_length=1,
-        description=(
-            "Адрес чата aid: схема, хост, порт и префикс приложения. По нему "
-            "агент берёт вложения сообщений пользователя."
-        ),
-    )
-    question_timeout_sec: int = Field(
-        gt=0,
-        description=(
-            "Сколько ждать ответа пользователя на вопрос агента (форма "
-            "elicitation/create), в секундах: по истечении вопрос снимается "
-            "ответом cancel, ход идёт дальше."
-        ),
-    )
+
+
+class ServiceAgentConfig(AgentConfig, AgentServiceConfig):
+    """Удалённый агент: endpoint и авторизация; история находится у службы."""
+
+    mode: Literal["service"] = "service"
+
+
+AgentSettings = Annotated[
+    ProcessAgentConfig | ServiceAgentConfig, Field(discriminator="mode")
+]

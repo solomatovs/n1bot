@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 from boba.canvas.storage import StorageError, StorageNotFoundError
-from boba.runtime.config import InstanceConfig, ProgramRoots
+from boba.runtime.config import PathsConfig, ProgramRoots
 from boba.runtime.storage import (
     ImageStorageClient,
     ImageStorageConfig,
@@ -64,8 +64,8 @@ def _bin_dirs() -> list[str]:
     return dirs
 
 
-def _instance(data_dir: Path) -> InstanceConfig:
-    return InstanceConfig(data_dir=str(data_dir), ca_file="/etc/ssl/certs/ca.pem")
+def _instance(data_dir: Path) -> PathsConfig:
+    return PathsConfig(data_dir=str(data_dir))
 
 
 def _trusted() -> TrustedBinaries:

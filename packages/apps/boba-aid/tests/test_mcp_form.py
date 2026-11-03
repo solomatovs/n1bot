@@ -4,7 +4,7 @@ import pytest
 from pydantic import SecretStr
 
 from boba.aid.mcp_servers import McpAppError, McpAuthChoice
-from boba.aid.mcp_servers.config import McpUserConfig
+from boba.aid.mcp_servers.config import McpDefaultsConfig
 from boba.aid.mcp_servers.form import HeaderField, McpForms, McpServerAdd, McpServerForm
 from boba.mcp_client.client import BearerAuth, BrowserOAuthAuth
 
@@ -41,14 +41,14 @@ class TestMcpForms:
     )
     def test_unsafe_address_is_rejected_without_echoing_values(self, url: str) -> None:
         with pytest.raises(McpAppError) as refused:
-            McpForms(McpUserConfig()).server(self._form(url))
+            McpForms(McpDefaultsConfig()).server(self._form(url))
 
         assert "secret" not in str(refused.value)
 
     @pytest.mark.parametrize("name", ["chat", "a__b", "a_"])
     def test_reserved_or_ambiguous_name_is_rejected(self, name: str) -> None:
         with pytest.raises(McpAppError):
-            McpForms(McpUserConfig()).server(
+            McpForms(McpDefaultsConfig()).server(
                 self._form().model_copy(update={"name": name})
             )
 
@@ -61,14 +61,14 @@ class TestMcpForms:
         ],
     )
     def test_defaults_and_ipv6_are_preserved(self, url: str, port: int) -> None:
-        server = McpForms(McpUserConfig()).server(self._form(url))
+        server = McpForms(McpDefaultsConfig()).server(self._form(url))
         assert server.endpoint.service.port == port
         assert server.endpoint.path.startswith("/")
         assert server.limits.connect_timeout_sec == 10
         assert server.limits.call_timeout_sec == 60
 
     def test_bearer_and_header_secrets_are_kept_on_edit(self) -> None:
-        forms = McpForms(McpUserConfig(connect_timeout_sec=7, call_timeout_sec=91))
+        forms = McpForms(McpDefaultsConfig(connect_timeout_sec=7, call_timeout_sec=91))
         form = self._form().model_copy(
             update={
                 "auth": McpAuthChoice.BEARER,
@@ -85,7 +85,7 @@ class TestMcpForms:
                 "headers": (HeaderField(name="x-key", value=SecretStr("")),),
             }
         )
-        changed = McpForms(McpUserConfig()).server(empty, stored)
+        changed = McpForms(McpDefaultsConfig()).server(empty, stored)
         assert changed.limits == stored.limits
         assert changed.limits.call_timeout_sec == 91
         assert isinstance(changed.endpoint.auth, BearerAuth)
@@ -95,7 +95,7 @@ class TestMcpForms:
             forms.server(empty)
 
     def test_browser_oauth_is_personal_and_needs_no_entered_token(self) -> None:
-        forms = McpForms(McpUserConfig())
+        forms = McpForms(McpDefaultsConfig())
         form = self._form().model_copy(update={"auth": McpAuthChoice.OAUTH})
         server = forms.server(form)
 
@@ -110,7 +110,7 @@ class TestMcpForms:
             update={"auth": McpAuthChoice.OAUTH}
         )
         with pytest.raises(McpAppError, match="HTTPS outside loopback"):
-            McpForms(McpUserConfig()).server(form)
+            McpForms(McpDefaultsConfig()).server(form)
 
     @pytest.mark.parametrize(
         "headers",
@@ -131,14 +131,14 @@ class TestMcpForms:
     ) -> None:
         form = self._form().model_copy(update={"headers": headers})
         with pytest.raises(McpAppError) as refused:
-            McpForms(McpUserConfig()).server(form)
+            McpForms(McpDefaultsConfig()).server(form)
 
         assert "secret" not in str(refused.value)
 
     def test_payload_validation_reports_fields_without_secret_values(self) -> None:
         raw = {"form": {"name": "valid", "token": {"secret": "never-echo-me"}}}
         with pytest.raises(McpAppError) as refused:
-            McpForms(McpUserConfig()).parse(McpServerAdd, raw)
+            McpForms(McpDefaultsConfig()).parse(McpServerAdd, raw)
 
         assert "form.token" in str(refused.value)
         assert "never-echo-me" not in str(refused.value)

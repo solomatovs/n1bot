@@ -23,7 +23,7 @@ import asyncio
 import logging
 from abc import abstractmethod
 from collections.abc import Collection, Coroutine, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol
@@ -59,7 +59,12 @@ from boba.aid.agent.commands import (
     CommandMenus,
     ExecutedCommand,
 )
-from boba.aid.agent.config import AgentCommandConfig, AgentConfig, AgentServiceConfig
+from boba.aid.agent.config import (
+    AgentServiceConfig,
+    AgentSettings,
+    ProcessAgentConfig,
+    ServiceAgentConfig,
+)
 from boba.aid.agent.relay import McpRegistration, McpRegistrations, McpRelay
 from boba.aid.agent.settings import (
     AgentSettingsError,
@@ -667,10 +672,10 @@ class AgentLaunch:
     короткого процесса удаления сессии."""
 
     profile: str
-    model: ModelFile
-    system_prompt: str
     servers: Sequence[str]
-    mcp: McpFile | None
+    model: ModelFile | None = None
+    system_prompt: str = ""
+    mcp: McpFile | None = None
     role_servers: frozenset[UUID] = frozenset()
 
 
@@ -688,6 +693,18 @@ class LaunchedAgent:
 class AgentLinks(Protocol):
     """Как чат достаёт агента вкладки: свой процесс (ProcessLinks) или
     служба агента (ServiceLinks). Выбирает AgentLauncher по [agent.process]."""
+
+    def prepare(
+        self,
+        profile: SelectedProfile,
+        servers: Sequence[ServerRecord],
+        role_servers: frozenset[UUID],
+    ) -> AgentLaunch:
+        return AgentLaunch(
+            profile=profile.name,
+            servers=tuple(record.name for record in servers),
+            role_servers=role_servers,
+        )
 
     @abstractmethod
     async def link(
@@ -725,10 +742,9 @@ class ProcessLinks(AgentLinks):
     удаляется при любом несостоявшемся запуске. Процесс удаления сессии
     собирается по профилю треда из текущих [profiles]. Создаёт AgentLauncher."""
 
-    def __init__(  # noqa: PLR0913 — процесс собирается конфигом и входами чата
+    def __init__(
         self,
-        config: AgentConfig,
-        process: AgentCommandConfig,
+        config: ProcessAgentConfig,
         agents_dir: Path,
         profiles: ChatProfiles,
         relay: McpRelay,
@@ -741,13 +757,28 @@ class ProcessLinks(AgentLinks):
         self._files = SettingsFileBuilder(config)
         self._workdirs = AgentWorkdirs(agents_dir)
         self._environment = HistoryEnvironment(config.history)
-        program = process.program()
+        program = config.program()
         self._command = AgentCommand(
             executable=program[0],
-            args=(*program[1:], *process.args),
-            start_timeout_sec=process.start_timeout_sec,
-            request_timeout_sec=process.request_timeout_sec,
-            stop_timeout_sec=process.stop_timeout_sec,
+            args=(*program[1:], *config.args),
+            start_timeout_sec=config.start_timeout_sec,
+            request_timeout_sec=config.request_timeout_sec,
+            stop_timeout_sec=config.stop_timeout_sec,
+        )
+
+    def prepare(
+        self,
+        profile: SelectedProfile,
+        servers: Sequence[ServerRecord],
+        role_servers: frozenset[UUID],
+    ) -> AgentLaunch:
+        launch = super().prepare(profile, servers, role_servers)
+        model = self._specs.model(profile.name, profile.config)
+        return replace(
+            launch,
+            model=model,
+            system_prompt=getattr(profile.config, "system_prompt", ""),
+            mcp=self._files.mcp(servers),
         )
 
     async def link(
@@ -776,7 +807,7 @@ class ProcessLinks(AgentLinks):
         launch = AgentLaunch(
             profile=profile,
             model=model,
-            system_prompt=config.system_prompt,
+            system_prompt=getattr(config, "system_prompt", ""),
             servers=(),
             mcp=None,
         )
@@ -792,6 +823,8 @@ class ProcessLinks(AgentLinks):
         servers: Sequence[schema.AcpMcpServer],
         client: AgentClient,
     ) -> AgentLink:
+        if launch.model is None:
+            raise AgentSettingsError("a local agent launch requires a model")
         env = await self._environment.prepare()
         document = self._files.build(launch.profile, launch.model, launch.mcp, env)
         workdir = self._workdirs.create(thread_id)
@@ -924,7 +957,7 @@ class AgentLauncher:
 
     def __init__(  # noqa: PLR0913 — запуск собирается конфигом и входами процесса
         self,
-        config: AgentConfig,
+        config: AgentSettings,
         source: ServerSource,
         profiles: ChatProfiles,
         users: UserRows,
@@ -934,26 +967,23 @@ class AgentLauncher:
         agents_dir: Path,
     ) -> None:
         self._source = source
-        self._specs = ProfileModelSpecs()
         self._registrations = registrations
         self._relay = relay
-        self._files = SettingsFileBuilder(config)
         self._links = self._chosen(config, profiles, users, relay, version, agents_dir)
 
     @staticmethod
     def _chosen(  # noqa: PLR0913 — вид агента выбирается всеми входами запуска
-        config: AgentConfig,
+        config: AgentSettings,
         profiles: ChatProfiles,
         users: UserRows,
         relay: McpRelay,
         version: str,
         agents_dir: Path,
     ) -> AgentLinks:
-        process = config.process
-        if isinstance(process, AgentServiceConfig):
-            return ServiceLinks(process, users, relay, version)
+        if isinstance(config, ServiceAgentConfig):
+            return ServiceLinks(config, users, relay, version)
 
-        return ProcessLinks(config, process, agents_dir, profiles, relay, version)
+        return ProcessLinks(config, agents_dir, profiles, relay, version)
 
     async def prepare(
         self,
@@ -969,7 +999,6 @@ class AgentLauncher:
         McpAppError — серверы пользователя не прочитаны.
         """
         profile = identity.profile
-        model = self._specs.model(profile.name, profile.config)
         visible = await self._source.enabled(self._viewer(identity))
         granted: list[ServerRecord] = []
         selected_roles: set[UUID] = set()
@@ -983,18 +1012,7 @@ class AgentLauncher:
 
             granted.append(record)
 
-        names: list[str] = []
-        for record in granted:
-            names.append(record.name)
-
-        return AgentLaunch(
-            profile=profile.name,
-            model=model,
-            system_prompt=profile.config.system_prompt,
-            servers=tuple(names),
-            mcp=self._files.mcp(granted),
-            role_servers=frozenset(selected_roles),
-        )
+        return self._links.prepare(profile, granted, frozenset(selected_roles))
 
     @staticmethod
     def _viewer(identity: ThreadIdentity) -> McpViewer:

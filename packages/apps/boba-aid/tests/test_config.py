@@ -15,7 +15,7 @@ import pytest
 from omegaconf import DictConfig, OmegaConf
 from pydantic import SecretStr, ValidationError
 
-from boba.aid.agent.config import AgentCommandConfig, AgentConfig
+from boba.aid.agent.config import AgentCommandConfig, ProcessAgentConfig
 from boba.aid.infra.bootstrap import SandboxCors
 from boba.aid.infra.config import AppConfig
 from boba.auth.config import ProxyAuthConfig
@@ -35,16 +35,16 @@ class TestConfigStaysValid:
         bind(raw_config, path="app", model=AppConfig)
 
     def test_process_agent_needs_no_technical_sections(self) -> None:
-        config = AgentConfig.model_validate(
+        config = ProcessAgentConfig.model_validate(
             {
-                "process": {"command": "boba"},
+                "command": "boba",
                 "history": {"kind": "memory"},
                 "public_url": "https://chat.invalid",
                 "question_timeout_sec": 3600,
             }
         )
 
-        process = config.process
+        process = config
         assert isinstance(process, AgentCommandConfig)
         assert process.program() == ("boba",)
         assert tuple(process.args) == ("--stdio",)
@@ -60,7 +60,7 @@ class TestConfigStaysValid:
 
 
 class TestAppsSandbox:
-    """Песочница приложений не делит источник с чатом: [aid] с портом
+    """Песочница приложений не делит источник с чатом: [server] с портом
     страницы чата в браузере или портом, который слушает сам чат, — отказ
     конфига. Песочница платформы одна на процесс."""
 
@@ -70,8 +70,8 @@ class TestAppsSandbox:
     def _app(raw_config: DictConfig, chat_url: str, port: int) -> dict[str, Any]:
         app = OmegaConf.to_container(OmegaConf.select(raw_config, "app"), resolve=True)
         assert isinstance(app, dict)
-        aid = app["aid"]
-        aid["chat_url"] = chat_url
+        aid = app["server"]
+        aid["public_url"] = chat_url
         aid["sandbox_port"] = port
 
         return {str(key): value for key, value in app.items()}
@@ -90,7 +90,7 @@ class TestAppsSandbox:
     def test_sandbox_on_the_listening_port_of_the_chat_is_refused(
         self, raw_config: DictConfig
     ) -> None:
-        port = int(str(OmegaConf.select(raw_config, "app.aid.port")))
+        port = int(str(OmegaConf.select(raw_config, "app.server.port")))
         app = self._app(raw_config, self.CHAT, port)
 
         with pytest.raises(ValidationError) as refused:
@@ -103,9 +103,9 @@ class TestAppsSandbox:
 
         config = AppConfig.model_validate(app)
 
-        assert config.aid.sandbox_url() == "http://chat.invalid:8124/"
-        assert config.aid.sandbox_origin() == "http://chat.invalid:8124"
-        assert config.aid.sandbox_origin() != config.aid.chat_origin()
+        assert config.server.sandbox_url() == "http://chat.invalid:8124/"
+        assert config.server.sandbox_origin() == "http://chat.invalid:8124"
+        assert config.server.sandbox_origin() != config.server.chat_origin()
 
 
 class TestSandboxCors:

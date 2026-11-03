@@ -22,7 +22,7 @@ from mcp.types import Tool as MtTool
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.aid.mcp_servers import McpAppError, McpOrigin
-from boba.aid.mcp_servers.config import McpUserConfig
+from boba.aid.mcp_servers.config import McpDefaultsConfig
 from boba.aid.mcp_servers.form import (
     McpForms,
     McpServerForm,
@@ -146,7 +146,7 @@ class McpDirectory:
         self,
         source: ServerSource,
         servers: McpServers,
-        defaults: McpUserConfig,
+        defaults: McpDefaultsConfig,
     ) -> None:
         self._source = source
         self._servers = servers

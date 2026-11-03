@@ -27,7 +27,7 @@ from boba.identity.api import (
     UserIdentityMigration,
     UserIdentitySnapshot,
 )
-from boba.runtime.config import InstanceConfig
+from boba.runtime.config import PathsConfig, TlsConfig
 from boba.runtime.users import UsersTable
 
 
@@ -73,7 +73,8 @@ class IdentityStorageConfig(BaseModel):
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
     postgres: PostgresConfig
-    instance: InstanceConfig
+    paths: PathsConfig
+    tls: TlsConfig = Field(default_factory=TlsConfig)
     db_schema: str = Field(alias="schema", min_length=1)
 
 
@@ -125,7 +126,7 @@ class IdentityMigrationEntry:
             call.configs, schema=ConfigSchema(IdentityStorageConfig)
         ).load()
         config = bind(raw, "app", IdentityStorageConfig)
-        config.instance.layout(call.configs[0].resolve().parent).apply()
+        config.paths.layout(call.configs[0].resolve().parent, config.tls).apply()
         pool = await AsyncPostgresPool.get(config.postgres)
         try:
             users = UsersTable(config.postgres, config.db_schema, pool)

@@ -65,11 +65,11 @@ def run_app(raw: DictConfig, conf_dir: Path):
     UserLogContext.install()
     logging.config.dictConfig(c.logger)
     # ссылки на файлы и потоки строятся с префиксом приложения из конфига
-    AppPrefix.install(c.aid.url_prefix)
+    AppPrefix.install(c.server.url_prefix)
 
     app = FastAPI(lifespan=_run_container)
 
-    _use_chainlit_middleware(app, c.aid)
+    _use_chainlit_middleware(app, c.server)
 
     storage = providers.storage_provider(c, providers.file_owners())
     _use_file_serving(c, storage)
@@ -98,31 +98,31 @@ def run_app(raw: DictConfig, conf_dir: Path):
         # 0 отключает ws-пинг uvicorn: тогда живость сокета держит только
         # heartbeat engine.io, у которого свои интервалы
         ws_ping_interval = None
-        if c.aid.ws_ping_interval:
-            ws_ping_interval = c.aid.ws_ping_interval
+        if c.server.ws_ping_interval:
+            ws_ping_interval = c.server.ws_ping_interval
 
         ws_ping_timeout = None
-        if c.aid.ws_ping_timeout:
-            ws_ping_timeout = c.aid.ws_ping_timeout
+        if c.server.ws_ping_timeout:
+            ws_ping_timeout = c.server.ws_ping_timeout
 
         listeners = AidListeners(
             c, app, Path(chainlit_config.root).resolve(), sandbox.token
         )
         uv_config = uvicorn.Config(
             listeners,
-            host=c.aid.host,
-            port=c.aid.port,
-            ws=c.aid.ws_protocol,
+            host=c.server.host,
+            port=c.server.port,
+            ws=c.server.ws_protocol,
             log_config=None,
             log_level=None,
             access_log=True,
             ws_ping_interval=ws_ping_interval,
             ws_ping_timeout=ws_ping_timeout,
-            ws_per_message_deflate=c.aid.ws_per_message_deflate,
-            ssl_keyfile=c.aid.ssl_key,
-            ssl_certfile=c.aid.ssl_cert,
-            ssl_ca_certs=c.aid.ssl_ca_certs,
-            timeout_graceful_shutdown=c.aid.shutdown_timeout_sec,
+            ws_per_message_deflate=c.server.ws_per_message_deflate,
+            ssl_keyfile=c.server.ssl_key,
+            ssl_certfile=c.server.ssl_cert,
+            ssl_ca_certs=c.server.ssl_ca_certs,
+            timeout_graceful_shutdown=c.server.shutdown_timeout_sec,
         )
         server = SignalledServer(uv_config, ProcessStop())
         await server.serve_until_stopped(listeners.sockets())
@@ -155,13 +155,13 @@ class SandboxCors:
         """Ошибки:
         ConfigError — CORS chainlit открыт песочнице.
         """
-        origin = config.aid.sandbox_origin()
+        origin = config.server.sandbox_origin()
         for opened in (*SandboxOrigin, origin):
             if opened not in self._allowed:
                 continue
 
             msg = (
-                f"[aid].sandbox_port {config.aid.sandbox_port}: chainlit "
+                f"[aid].sandbox_port {config.server.sandbox_port}: chainlit "
                 f"[project].allow_origins {list(self._allowed)} lets {opened!r} "
                 "call the chat API with the cookies of the user, so the apps of "
                 f"the sandbox {origin} could act as the user; list in "
@@ -313,7 +313,7 @@ def _use_mcp_oauth_callback(container: Container) -> None:
     oauth = container.resolved(providers.mcp_browser_oauth)
     tokens = container.resolved(runtime.session_tokens)
     callback = McpOAuthCallback(
-        oauth, tokens, config.session.cookie, str(config.aid.chat_url)
+        oauth, tokens, config.session.cookie, str(config.server.public_url)
     )
     chainlit_app.add_api_route(
         McpOAuthCallback.ROUTE, callback.serve, methods=["GET"], include_in_schema=False
@@ -367,7 +367,7 @@ def _use_auth(container: Container) -> None:
         raise RuntimeError(msg)
 
     installer = ChainlitAuthInstaller(
-        config.aid.url_prefix,
+        config.server.url_prefix,
         config.kerberos_entries(),
         config.proxy_entries(),
         auth,

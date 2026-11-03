@@ -122,7 +122,11 @@ class ConfigLoader:
         )
 
         try:
-            merged = OmegaConf.merge(*layers)
+            merged = OmegaConf.create({})
+            for layer in layers:
+                if self._schema is not None and isinstance(merged, DictConfig):
+                    self._schema.prepare_merge(merged, layer)
+                merged = OmegaConf.merge(merged, layer)
             if isinstance(merged, DictConfig) and self._schema is not None:
                 self._schema.apply(merged)
             resolved = OmegaConf.to_container(merged, resolve=True)

@@ -69,8 +69,8 @@ from boba.aid.agent.settings import (
     SettingsFileBuilder,
 )
 from boba.chat.profiles import (
-    ChatProfileConfig,
     ChatProfiles,
+    LocalChatProfileConfig,
     ReasoningReturn,
     SelectedProfile,
 )
@@ -127,7 +127,7 @@ class TestProfileModel:
     """Профиль модели агента из профиля чата: только удалённый провайдер."""
 
     def test_local_provider_is_refused(self, specs: ProfileModelSpecs) -> None:
-        profile = ChatProfileConfig.model_validate(
+        profile = LocalChatProfileConfig.model_validate(
             {
                 "display_name": "Local",
                 "description": "onnx profile",
@@ -391,7 +391,7 @@ class TestRetiredServers:
         assert closed.value.code == AcpErrorCode.UNKNOWN_SERVER
 
     @staticmethod
-    def _profile(model: FakeModel) -> ChatProfileConfig:
+    def _profile(model: FakeModel) -> LocalChatProfileConfig:
         """Профиль стенда с сервером standard и провайдером фейковой модели."""
         provider = {
             "kind": "openai",
@@ -406,7 +406,7 @@ class TestRetiredServers:
         }
         base = SignInStand.profile().model_dump(mode="json")
 
-        return ChatProfileConfig.model_validate(
+        return LocalChatProfileConfig.model_validate(
             {**base, "provider": provider, "model": "fake-model", "mcp": ["standard"]}
         )
 
@@ -433,11 +433,11 @@ class TestForkCut:
         history = AgentHistoryStand(stand)
         agent_stand = AgentStand(tmp_path / "agents", history.history())
         config = agent_stand.config()
-        foreign = config.process.model_copy(
+        foreign = config.model_copy(
             update={"command": sys.executable, "args": [str(self.FOREIGN)]}
         )
         launcher = AgentLauncher(
-            config.model_copy(update={"process": foreign}),
+            foreign,
             FixedServers(NO_SERVERS.servers),
             SignInStand.profiles(),
             users,
@@ -514,7 +514,7 @@ class ChatLaunch:
 
     def agent(
         self,
-        profile: ChatProfileConfig,
+        profile: LocalChatProfileConfig,
         filed: FixedServerConfigs,
         relayed: FixedServerConfigs,
         updates: RecordingUpdates,
@@ -640,7 +640,7 @@ class TestLaunchConfig:
         connection: dict[str, Any],
         transport: HttpTransportConfig,
         mcp: tuple[str, ...] = (),
-    ) -> ChatProfileConfig:
+    ) -> LocalChatProfileConfig:
         provider = {
             "kind": "openai",
             "connection": connection,
@@ -648,7 +648,7 @@ class TestLaunchConfig:
         }
         base = SignInStand.profile().model_dump(mode="json")
 
-        return ChatProfileConfig.model_validate(
+        return LocalChatProfileConfig.model_validate(
             {**base, "provider": provider, "model": "fake-model", "mcp": list(mcp)}
         )
 
@@ -847,13 +847,11 @@ class TestFailedLaunch:
         history = AgentHistoryStand(stand)
         agent_stand = AgentStand(tmp_path / "agents", history.history())
         config = agent_stand.config()
-        missing = config.process.model_copy(
-            update={"command": str(tmp_path / "no-such-agent")}
-        )
+        missing = config.model_copy(update={"command": str(tmp_path / "no-such-agent")})
         relays = RelayStand()
         servers = McpServers(NO_SERVERS)
         launcher = AgentLauncher(
-            config.model_copy(update={"process": missing}),
+            missing,
             FixedServers(NO_SERVERS.servers),
             SignInStand.profiles(),
             users,
@@ -1014,7 +1012,7 @@ class DeletionStand:
         self._relays = RelayStand()
         self._servers = McpServers(NO_SERVERS)
 
-    def profile(self, model: FakeModel) -> ChatProfileConfig:
+    def profile(self, model: FakeModel) -> LocalChatProfileConfig:
         provider = {
             "kind": "openai",
             "connection": {
@@ -1027,7 +1025,7 @@ class DeletionStand:
         }
         base = SignInStand.profile().model_dump(mode="json")
 
-        return ChatProfileConfig.model_validate(
+        return LocalChatProfileConfig.model_validate(
             {**base, "provider": provider, "model": "fake-model"}
         )
 
@@ -1043,7 +1041,7 @@ class DeletionStand:
             self._agent.agents_dir(),
         )
 
-    async def opened(self, profile: ChatProfileConfig) -> tuple[str, str]:
+    async def opened(self, profile: LocalChatProfileConfig) -> tuple[str, str]:
         """Тред с одним ходом под профилем profile: id треда и сессии агента."""
         launcher = self.launcher(ChatProfiles({SignInStand.PROFILE: profile}))
         tab = TabSession()

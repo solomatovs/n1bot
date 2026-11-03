@@ -42,7 +42,6 @@ from boba.aid.agent.chat import (
 )
 from boba.aid.agent.client import AcpClientError
 from boba.aid.agent.commands import CommandError
-from boba.aid.agent.config import AgentConfig
 from boba.aid.agent.relay import AppAction, AppRequest, McpRelay
 from boba.aid.agent.settings import AgentSettingsError
 from boba.aid.canvas.panel import PanelStorage, StreamActions
@@ -54,7 +53,6 @@ from boba.aid.infra.config import AppConfig
 from boba.aid.infra.notices import FailureText, TabAction, TabEvent, TabNotices
 from boba.aid.infra.providers import (
     McpUpdates,
-    agent_config,
     canvas_opener,
     chainlit_data_layer,
     chat_profiles_registry,
@@ -338,14 +336,16 @@ class TabAgent:
 async def on_message(
     msg: cl.Message,
     selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
-    config: Annotated[AgentConfig, Depends(agent_config)],
+    config: Annotated[AppConfig, Depends(get_app_config)],
     agents: Annotated[ThreadAgents, Depends(thread_agents, scope="session")],
     registry: Annotated[ChatProfiles, Depends(chat_profiles_registry)],
 ):
     """Ход по новому вопросу вкладки."""
     tab = TabAgent(agents, registry)
     identity = tab.identity(selected)
-    question = tab.question(msg, identity, config.public_url)
+    question = tab.question(
+        msg, identity, config.agent.public_url or config.server.public_url
+    )
 
     await tab.run(identity, question, msg.command)
 

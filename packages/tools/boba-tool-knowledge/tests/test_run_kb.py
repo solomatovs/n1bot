@@ -38,7 +38,7 @@ class RunArgs:
 @pytest.fixture(scope="module")
 def kb_cfg(config_overlay: ConfigOverlay) -> KbToolConfig:
     """Конфиг с процессным запуском: кэш моделей эмбеддинга берётся с хоста."""
-    raw = config_overlay.tree({"env.tool_launcher": "process"})
+    raw = config_overlay.tree({"tool_launcher.provider": "process"})
 
     return bind(raw, path="tool.kb", model=KbToolConfig)
 

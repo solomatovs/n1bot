@@ -12,166 +12,204 @@ import pytest
 from omegaconf import DictConfig, OmegaConf
 from pydantic import ValidationError
 
-from boba.cli.serve import ServeConfig, ServeSection
-from boba.config import ConfigLoader, bind
+from boba.cli.serve import AgentServerConfig, ServeConfig, ServeSection
+from boba.config import bind
 
-INSTANCE = """
-[instance]
-    data_dir = "/srv/boba/data"
-    ca_file  = "/etc/ssl/certs/ca-certificates.crt"
+INSTANCE = r"""
+[paths]
+data_dir = "/srv/boba/data"
 
 [env]
-    listen_host = "0.0.0.0"
-    port        = 8660
-    public_url  = "https://boba.example.com/boba"
-    url_prefix  = "/boba"
+listen_host = "0.0.0.0"
+port = 8660
+public_url = "https://boba.example.com/boba"
+url_prefix = "/boba"
 
 [app]
-    schema   = "agent"
-    instance = "${instance}"
-    session  = "${session}"
-    agent   = "${agent}"
-    auth    = "${oc.dict.values:auth}"
+schema = "boba"
 
 [keys]
-    session      = "site-auth-secret-of-the-stand"
-    agent_proxy  = "site-agent-proxy-secret-of-the-stand"
-    agent_client = "agent-client-secret-of-the-stand"
+session = "site-auth-secret-of-the-stand"
+agent_proxy = "site-agent-proxy-secret-of-the-stand"
+agent_client = "agent-client-secret-of-the-stand"
 
 [ldap]
-    server  = "ldaps://dc.example.com:3269"
-    base_dn = "DC=example,DC=com"
-    [ldap.auth]
-        method   = "simple"
-        user     = "reader@example.com"
-        password = "reader-password"
-    [ldap.mapping]
-        dn = {}
-        [ldap.mapping.member_of]
-            "CN=boba,DC=example,DC=com" = ["read"]
+server = "ldaps://dc.example.com:3269"
+base_dn = "DC=example,DC=com"
 
-[postgres_history]
-    host             = "pg.example.com"
-    hostaddr         = "10.0.0.5"
-    port             = 5432
-    dbname           = "aid"
-    sslmode          = "disable"
-    application_name = "boba-agent"
-    connect_timeout  = 10
-    [postgres_history.auth]
-        method   = "password"
-        user     = "boba_history"
-        password = "history-password"
-    [postgres_history.pool]
-        min_size = 2
-        max_size = 16
-        timeout  = 30
+[ldap.auth]
+method = "simple"
+user = "reader@example.com"
+password = "reader-password"
+
+[ldap.mapping]
+
+[ldap.mapping.dn]
+
+[ldap.mapping.member_of]
+"CN=boba,DC=example,DC=com" = ["read"]
 
 [llm]
-    [llm.main]
-        kind            = "openai"
-        baseUrl         = "https://llm.example.com/v1"
-        sslVerify       = true
-        timeoutSec      = 600
-        retryAttempts   = 3
-        retryBackoffSec = 1.0
-        [llm.main.auth]
-            method = "bearer"
-            token  = "llm-token-of-the-stand"
-        [llm.main.retryStatuses]
-            429 = 5
+
+[llm.main]
+kind = "openai"
+baseUrl = "https://llm.example.com/v1"
+sslVerify = true
+timeoutSec = 600
+retryAttempts = 3
+retryBackoffSec = 1.0
+
+[llm.main.auth]
+method = "bearer"
+token = "llm-token-of-the-stand"
+
+[llm.main.retryStatuses]
+429 = 5
 
 [model_limits]
-    [model_limits.main]
-        reasoningReturn = "turn"
+
+[model_limits.main]
+reasoningReturn = "turn"
 
 [agent]
-    host                 = "${env.listen_host}"
-    port                 = "${env.port}"
-    path                 = "/acp"
-    public_url           = "${env.public_url}"
-    url_prefix           = "${env.url_prefix}"
-    shutdown_timeout_sec = 10
-    idle_sec             = 1800
-    [agent.history]
-        schema   = "boba"
-        postgres = "${postgres_history}"
-    [agent.settings]
-        [agent.settings.permissions]
-            defaultMode = "bypassPermissions"
-            allowBypass = true
-        [agent.settings.mcp]
-            callTimeoutSec = 86400
-        [agent.settings.tools]
-            alwaysLoad = []
-        [agent.settings.sessions]
-            maxOpen = 256
-        [agent.settings.limits]
-            toolResultWindowShare = 0.25
-    [agent.profiles]
-        [agent.profiles.general]
-            roles = ["*"]
-            [agent.profiles.general.model]
-                provider        = "${llm.main}"
-                model           = "general-model"
-                systemPrompt    = "general prompt of the stand"
-                contextWindow   = 128000
-                maxOutputTokens = 8192
-                reasoningReturn = "${model_limits.main.reasoningReturn}"
-                [agent.profiles.general.model.sampling]
-                    temperature      = 1.0
-                    top_p            = 0.95
-                    presence_penalty = 0.0
-                    max_tokens       = 16000
-                    reasoning_effort = "low"
-        [agent.profiles.search]
-            roles = ["*"]
-            [agent.profiles.search.model]
-                provider        = "${llm.main}"
-                model           = "search-model"
-                systemPrompt    = "search prompt of the stand"
-                contextWindow   = 128000
-                maxOutputTokens = 8192
-                reasoningReturn = "${model_limits.main.reasoningReturn}"
-    [agent.clients]
-        [agent.clients.boba-chat]
-            secret = "${keys.agent_client}"
+path = "/acp"
+idle_sec = 1800
+
+[agent.settings]
+
+[agent.settings.permissions]
+defaultMode = "bypassPermissions"
+allowBypass = true
+
+[agent.settings.mcp]
+callTimeoutSec = 86400
+
+[agent.settings.tools]
+alwaysLoad = []
+
+[agent.settings.sessions]
+maxOpen = 256
+
+[agent.settings.limits]
+toolResultWindowShare = 0.25
+
+[agent.profiles]
+
+[agent.profiles.general]
+roles = ["*"]
+
+[agent.profiles.general.model]
+provider = "${llm.main}"
+model = "general-model"
+systemPrompt = "general prompt of the stand"
+contextWindow = 128000
+maxOutputTokens = 8192
+reasoningReturn = "${model_limits.main.reasoningReturn}"
+
+[agent.profiles.general.model.sampling]
+temperature = 1.0
+top_p = 0.95
+presence_penalty = 0.0
+max_tokens = 16000
+reasoning_effort = "low"
+
+[agent.profiles.search]
+roles = ["*"]
+
+[agent.profiles.search.model]
+provider = "${llm.main}"
+model = "search-model"
+systemPrompt = "search prompt of the stand"
+contextWindow = 128000
+maxOutputTokens = 8192
+reasoningReturn = "${model_limits.main.reasoningReturn}"
+
+[agent.clients]
+
+[agent.clients.boba-chat]
+secret = "${keys.agent_client}"
 
 [auth]
-    [auth.ldap]
-        type             = "ldap"
-        identity = { realm = "corporate" }
-        server           = "${ldap.server}"
-        base_dn          = "${ldap.base_dn}"
-        user_filter      = "(sAMAccountName={username})"
-        bind_dn_template = "EXAMPLE\\\\{username}"
-        [auth.ldap.roles]
-            directory = "${ldap.mapping}"
-    [auth.local]
-        type          = "local"
-        identity = { realm = "boba-local" }
-        require_roles = true
-        [auth.local.users]
-            admin = "admin-password"
-        [auth.local.roles]
-            [auth.local.roles.local]
-                [auth.local.roles.local.mapping]
-                    admin = ["read"]
-    [auth.proxy]
-        type          = "proxy"
-        identity = { realm = "corporate" }
-        secret        = "${keys.agent_proxy}"
-        max_skew_sec  = 60
-        require_roles = true
-        [auth.proxy.roles]
-            [auth.proxy.roles.header]
-                name = "X-Remote-Roles"
+
+[auth.ldap]
+type = "ldap"
+server = "${ldap.server}"
+base_dn = "${ldap.base_dn}"
+user_filter = "(sAMAccountName={username})"
+bind_dn_template = "EXAMPLE\\{username}"
+
+[auth.ldap.identity]
+realm = "corporate"
+
+[auth.ldap.roles]
+directory = "${ldap.mapping}"
+
+[auth.local]
+type = "local"
+require_roles = true
+
+[auth.local.identity]
+realm = "boba-local"
+
+[auth.local.users]
+admin = "admin-password"
+
+[auth.local.roles]
+
+[auth.local.roles.local]
+
+[auth.local.roles.local.mapping]
+admin = ["read"]
+
+[auth.proxy]
+type = "proxy"
+secret = "${keys.agent_proxy}"
+max_skew_sec = 60
+require_roles = true
+
+[auth.proxy.identity]
+realm = "corporate"
+
+[auth.proxy.roles]
+
+[auth.proxy.roles.header]
+name = "X-Remote-Roles"
 
 [session]
-    auth_secret     = "${keys.session}"
-    session_ttl_sec = 3600
-    session_max_sec = 28800
-    generation      = ""
+auth_secret = "${keys.session}"
+session_ttl_sec = 3600
+session_max_sec = 28800
+generation = ""
+
+[tls]
+ca_file = "/etc/ssl/certs/ca-certificates.crt"
+
+[server]
+host = "${env.listen_host}"
+port = "${env.port}"
+public_url = "${env.public_url}"
+url_prefix = "${env.url_prefix}"
+shutdown_timeout_sec = 10
+
+[postgres]
+host = "pg.example.com"
+hostaddr = "10.0.0.5"
+port = 5432
+dbname = "aid"
+sslmode = "disable"
+application_name = "boba-agent"
+connect_timeout = 10
+
+[postgres.auth]
+method = "password"
+user = "boba_history"
+password = "history-password"
+
+[postgres.pool]
+min_size = 2
+max_size = 16
+timeout = 30
+
 """
 
 
@@ -180,7 +218,7 @@ def raw(tmp_path: Path) -> DictConfig:
     config = tmp_path / "config.toml"
     config.write_text(INSTANCE, encoding="utf-8")
 
-    return ConfigLoader([config]).load()
+    return ServeConfig.loader([config]).load()
 
 
 class TestConfig:
@@ -190,9 +228,7 @@ class TestConfig:
         section = OmegaConf.to_container(raw.agent, resolve=True)
         assert isinstance(section, dict)
         for key in (
-            "host",
             "path",
-            "shutdown_timeout_sec",
             "idle_sec",
             "settings",
             "clients",
@@ -201,14 +237,11 @@ class TestConfig:
 
         config = ServeSection.model_validate(section)
 
-        assert config.host == "127.0.0.1"
         assert config.path == "/acp"
-        assert config.shutdown_timeout_sec == 10
         assert config.idle_sec == 1800
         assert config.clients == {}
         assert config.settings.model is None
         assert list(config.profiles) == self.PROFILES
-        assert config.history.db_schema == "boba"
 
     def test_the_instance_config_binds(self, raw: DictConfig) -> None:
         config = bind(raw, path=ServeConfig.SECTION, model=ServeConfig)
@@ -216,12 +249,12 @@ class TestConfig:
         agent = config.agent
         assert list(agent.profiles) == self.PROFILES
         assert agent.path == "/acp"
-        assert agent.url_prefix == "/boba"
+        assert config.server.url_prefix == "/boba"
         assert (
             agent.profiles["general"].model.system_prompt
             == "general prompt of the stand"
         )
-        history = agent.history
+        history = config.history
         assert history.db_schema == "boba"
         assert history.postgres.host == "pg.example.com"
         assert history.postgres.application_name == "boba-agent"
@@ -240,12 +273,12 @@ class TestConfig:
         assert list(agent.clients) == ["boba-chat"]
 
     def test_public_url_outside_the_prefix_is_refused(self, raw: DictConfig) -> None:
-        section = OmegaConf.to_container(OmegaConf.select(raw, "agent"), resolve=True)
+        section = OmegaConf.to_container(OmegaConf.select(raw, "server"), resolve=True)
         assert isinstance(section, dict)
         section["url_prefix"] = "/other"
 
         with pytest.raises(ValidationError, match="expected the url_prefix '/other'"):
-            ServeSection.model_validate(section)
+            AgentServerConfig.model_validate(section)
 
     @pytest.mark.parametrize(
         ("key", "value", "refusal"),

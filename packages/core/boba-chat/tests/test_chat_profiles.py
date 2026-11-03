@@ -7,9 +7,9 @@ from typing import Any
 import pytest
 
 from boba.chat.profiles import (
-    ChatProfileConfig,
     ChatProfiles,
     ChatSettings,
+    LocalChatProfileConfig,
     ProfileRefusal,
 )
 from boba.identity.errors import RefusalError
@@ -26,7 +26,7 @@ BACKEND: dict[str, Any] = {
 }
 
 
-def _profile(**kw) -> ChatProfileConfig:
+def _profile(**kw) -> LocalChatProfileConfig:
     base = {
         "display_name": "Profile",
         "description": "test profile",
@@ -39,7 +39,7 @@ def _profile(**kw) -> ChatProfileConfig:
         },
     }
     base.update(kw)
-    return ChatProfileConfig.model_validate(base)
+    return LocalChatProfileConfig.model_validate(base)
 
 
 class TestRegistryValidation:

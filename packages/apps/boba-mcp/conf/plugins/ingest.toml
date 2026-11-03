@@ -40,7 +40,6 @@ text_encodings         = [
 ]
 page_workers           = 4
 
-transport              = "${http}"
 
 tables                 = "${kb_tables}"
 embedding              = "${embedding.main}"

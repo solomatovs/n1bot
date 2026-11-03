@@ -91,6 +91,7 @@ from boba.db.postgres.connection import LibpqConnection, PostgresConfig
 from boba.history.postgres import PostgresHistoryStore, SessionLocks
 from boba.identity.api import AuthenticatedUser as DomainUser
 from boba.identity.api import UsersUpsert
+from boba.identity.service import ServiceAddress
 from boba.identity.signin import ProfileCatalog, SignedIn
 from boba.identity_postgres import UsersTable
 from boba.ldap import Ldap3Directory
@@ -102,13 +103,12 @@ from boba.oauth.server import (
     AuthServer,
     RegisteredClients,
     SealedValues,
-    ServiceAddress,
     ServiceAuth,
     ServiceTokens,
     TokenClaims,
     TrustedClient,
 )
-from boba.runtime.config import ProcessConfig
+from boba.runtime.config import ProcessConfig, ServerConfig
 from boba.runtime.http import HealthCheckError, HealthProbe, SignalledServer
 from boba.runtime.signin import SignInAssembly
 from boba.transport.acp.protocol import AgentSide
@@ -165,7 +165,7 @@ class AgentProfile(RoleVisibility):
 
 class ServeHistory(BaseModel):
     """Секция [agent.history]: схема истории и подключение истории
-    ([postgres_history] целиком, со своей ролью и пулом)."""
+    ([postgres] целиком, со своей ролью и пулом)."""
 
     model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
 
@@ -173,7 +173,7 @@ class ServeHistory(BaseModel):
     postgres: PostgresConfig
 
 
-class ServeSection(ServiceAddress):
+class ServeSection(BaseModel):
     """Секция [agent]: адрес службы и путь ACP, публичный адрес и префикс
     (ServiceAddress), история, слой настроек
     агента без истории и моделей, профили агента и доверенные клиенты
@@ -181,14 +181,10 @@ class ServeSection(ServiceAddress):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    host: str = Field(default="127.0.0.1", min_length=1)
-    port: int = Field(gt=0, lt=65536)
     path: str = Field(default="/acp", min_length=1, pattern=r"^/")
-    shutdown_timeout_sec: int = Field(default=10, gt=0)
     idle_sec: float = Field(default=1800, gt=0)
     """Подключение HTTP без запросов и ходов дольше idle_sec закрывается
     вместе с сессиями: клиент ушёл, не закрыв его."""
-    history: ServeHistory
     settings: SettingsLayer = Field(default_factory=SettingsLayer)
     """Слой настроек агента: права, лимиты, сессии, серверы MCP, промпт.
     Историю, профили моделей и профиль по умолчанию задаёт служба."""
@@ -223,10 +219,21 @@ class ServeSection(ServiceAddress):
         return value
 
 
+class AgentServerConfig(ServerConfig, ServiceAddress):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    port: int = Field(default=8660, gt=0, lt=65536)
+
+
 class ServeConfig(ProcessConfig):
     """Секции процесса службы: секции процесса и [agent]."""
 
+    server: AgentServerConfig
+    postgres: PostgresConfig
     agent: ServeSection
+
+    @property
+    def history(self) -> ServeHistory:
+        return ServeHistory(schema=self.db_schema, postgres=self.postgres)
 
 
 class AgentProfiles(ProfileCatalog):
@@ -263,6 +270,7 @@ class ServeAgents(UsersUpsert):
     def __init__(
         self,
         section: ServeSection,
+        history: ServeHistory,
         version: str,
         auth_methods: Sequence[schema.AgentAuthMethod],
     ) -> None:
@@ -270,21 +278,20 @@ class ServeAgents(UsersUpsert):
         self._auth_methods = list(auth_methods)
         cwd = Path.cwd()
         self._section = section
+        self._history = history
         self._version = version
         self._info = schema.Implementation(name=ServeMark.NAME.value, version=version)
         self._settings = Settings(Arguments(), env, Path.home(), cwd).effective_of(
-            self._layer(section)
+            self._layer(section, history)
         )
         self._types = LlmProviderTypes.declare([OPENAI, OLLAMA, ONNX])
         self._providers = LlmProviders(self._types)
         self._catalog = ModelCatalog(self._settings, env, self._providers)
         self._environment = Environment(env)
         self._cwd = cwd
-        self._locks = SessionLocks(section.history.postgres)
-        self._pool = AsyncPostgresPool(section.history.postgres)
-        self._users = UsersTable(
-            section.history.postgres, section.history.db_schema, self._pool
-        )
+        self._locks = SessionLocks(history.postgres)
+        self._pool = AsyncPostgresPool(history.postgres)
+        self._users = UsersTable(history.postgres, history.db_schema, self._pool)
         self._store_thread = LoopThread(ServeMark.STORE_THREAD.value)
         self._threads = SessionThreads(self._settings.sessions.max_open)
 
@@ -316,7 +323,7 @@ class ServeAgents(UsersUpsert):
         SettingsError — вошедшему не выдано ни одного профиля.
         """
         settings = self._granted(caller)
-        history = self._section.history
+        history = self._history
         store = PostgresHistoryStore(
             history.postgres, history.db_schema, caller.user_id, self._locks, self._pool
         )
@@ -362,14 +369,14 @@ class ServeAgents(UsersUpsert):
         return self._settings.model_copy(update={"model": first, "models": granted})
 
     @staticmethod
-    def _layer(section: ServeSection) -> SettingsLayer:
+    def _layer(section: ServeSection, history_config: ServeHistory) -> SettingsLayer:
         """Слой настроек агента службы: слой [agent.settings], все профили
         [agent.profiles] и история [agent.history] строкой libpq.
 
         Ошибки:
         SettingsError — вход роли истории не выразим строкой libpq.
         """
-        postgres = section.history.postgres
+        postgres = history_config.postgres
         try:
             dsn = LibpqConnection(postgres).dsn()
         except ValueError as exc:
@@ -384,7 +391,7 @@ class ServeAgents(UsersUpsert):
         history = PostgresHistorySettings(
             kind=HistoryKind.POSTGRES,
             dsn=dsn,
-            schema=section.history.db_schema,
+            schema=history_config.db_schema,
             pool=HistoryPoolSettings(
                 min_size=pool.min_size, max_size=max_size, timeout_sec=pool.timeout
             ),
@@ -765,12 +772,14 @@ class ServeHost:
         self._config = config
         section = config.agent
         self._profiles = AgentProfiles(section.profiles)
-        self._agents = ServeAgents(section, version, self._auth_methods())
+        self._agents = ServeAgents(
+            section, config.history, version, self._auth_methods()
+        )
         self._sign_ins = self._signed(config, self._profiles)
 
     def resource(self) -> str:
         section = self._config.agent
-        return f"{section.public_url.rstrip('/')}{section.path}"
+        return f"{self._config.server.public_url.rstrip('/')}{section.path}"
 
     def app(self) -> Starlette:
         """Приложение службы: маршруты входа, адрес ACP и проба готовности под
@@ -823,7 +832,7 @@ class ServeHost:
             method_id=ServeMark.AUTH_METHOD,
             name="Boba sign-in",
             description=(
-                f"OAuth 2.1 bearer token of {self._config.agent.public_url}, "
+                f"OAuth 2.1 bearer token of {self._config.server.public_url}, "
                 "checked on every HTTP request and on the WebSocket handshake; "
                 f"resource metadata: {metadata}"
             ),
@@ -847,7 +856,7 @@ class ServeHost:
         проверяющий токена адреса ACP."""
         session = self._config.session
         section = self._config.agent
-        public_url = section.public_url.rstrip("/")
+        public_url = self._config.server.public_url.rstrip("/")
         tokens = ServiceTokens(
             public_url,
             session.auth_secret,
@@ -880,23 +889,23 @@ class ServeHost:
 
     async def serve(self) -> None:
         """Слушает адрес [agent] до остановки процесса."""
-        section = self._config.agent
+        server = self._config.server
         await self.start()
         try:
             listener = SignalledServer(
                 uvicorn.Config(
                     self.app(),
-                    host=section.host,
-                    port=section.port,
+                    host=server.host,
+                    port=server.port,
                     log_config=None,
-                    timeout_graceful_shutdown=section.shutdown_timeout_sec,
+                    timeout_graceful_shutdown=server.shutdown_timeout_sec,
                 ),
                 ProcessStop(),
             )
             logger.info(
                 "boba serve listens on %s:%d, acp at %s",
-                section.host,
-                section.port,
+                server.host,
+                server.port,
                 self.resource(),
             )
             await listener.serve_until_stopped()
@@ -938,7 +947,7 @@ class ServeEntry:
         """
         try:
             section = bind(
-                ServeConfig.loader(self._paths).load(), "agent", ServeSection
+                ServeConfig.loader(self._paths).load(), "server", AgentServerConfig
             )
             probe = HealthProbe(section.port, section.url_prefix, ServeMark.HEALTH)
             checked = probe.check()

@@ -24,7 +24,7 @@ from acp_stand import REPO_ROOT, StandPorts
 from aid_stand import FixedServers
 from pydantic import SecretStr
 
-from boba.aid.mcp_servers.config import McpUserConfig
+from boba.aid.mcp_servers.config import McpDefaultsConfig
 from boba.aid.mcp_servers.directory import (
     McpAppError,
     McpDirectory,
@@ -146,7 +146,7 @@ async def _wait_listening(port: int) -> None:
 class TestMcpApp:
     async def test_listed_shows_the_servers_of_the_source(self, servers: Stand) -> None:
         """Список: записи источника в порядке имён, без подключения."""
-        directory = McpDirectory(servers.source, servers.servers, McpUserConfig())
+        directory = McpDirectory(servers.source, servers.servers, McpDefaultsConfig())
         listed = await directory.listed(VIEWER)
 
         names = [row.name for row in listed.servers]
@@ -160,7 +160,7 @@ class TestMcpApp:
     async def test_status_reports_each_server_state(self, servers: Stand) -> None:
         """Состояния: connected с числом инструментов, needs_auth с короткой
         причиной, failed с короткой причиной."""
-        directory = McpDirectory(servers.source, servers.servers, McpUserConfig())
+        directory = McpDirectory(servers.source, servers.servers, McpDefaultsConfig())
 
         connected = await directory.status(VIEWER, HTTP)
         assert connected.state is McpState.CONNECTED, connected
@@ -181,7 +181,7 @@ class TestMcpApp:
         """Карточка сервера: строка списка (адрес и транспорт), инструменты с
         пометками read-only и destructive; у сервера не на связи инструментов
         нет."""
-        directory = McpDirectory(servers.source, servers.servers, McpUserConfig())
+        directory = McpDirectory(servers.source, servers.servers, McpDefaultsConfig())
 
         detail = await directory.detail(VIEWER, HTTP)
         assert detail.state is McpState.CONNECTED, detail
@@ -201,7 +201,7 @@ class TestMcpApp:
 
     async def test_reconnect_opens_a_fresh_connection(self, servers: Stand) -> None:
         """Переподключение закрывает порт и состояние берётся заново."""
-        directory = McpDirectory(servers.source, servers.servers, McpUserConfig())
+        directory = McpDirectory(servers.source, servers.servers, McpDefaultsConfig())
 
         before = await directory.status(VIEWER, HTTP)
         assert before.state is McpState.CONNECTED, before
@@ -212,7 +212,7 @@ class TestMcpApp:
 
     async def test_name_outside_the_viewer_is_an_error(self, servers: Stand) -> None:
         """Имя не из набора зрителя — отказ McpAppError."""
-        directory = McpDirectory(servers.source, servers.servers, McpUserConfig())
+        directory = McpDirectory(servers.source, servers.servers, McpDefaultsConfig())
 
         with pytest.raises(McpAppError, match="did not find the server"):
             await directory.status(VIEWER, "missing")

@@ -13,12 +13,13 @@ import pytest
 from boba.config import ConfigError
 from boba.runtime.config import (
     ConfigArguments,
-    InstanceConfig,
     InstanceData,
+    PathsConfig,
     ProgramCommand,
     ProgramDir,
     ProgramRoots,
     SourceProgram,
+    TlsConfig,
 )
 
 
@@ -120,7 +121,7 @@ def test_program_from_sources_without_runtime_refuses(
 
 
 def test_instance_data_layout_is_fixed(tmp_path: Path) -> None:
-    instance = InstanceConfig(data_dir=str(tmp_path), ca_file="/etc/ssl/ca.pem")
+    instance = PathsConfig(data_dir=str(tmp_path))
     layout = instance.layout(tmp_path / "conf")
 
     assert instance.data(InstanceData.TOOL_LOGS) == tmp_path / "tool-logs"
@@ -130,4 +131,12 @@ def test_instance_data_layout_is_fixed(tmp_path: Path) -> None:
 
 def test_instance_paths_must_be_absolute() -> None:
     with pytest.raises(ValueError, match="absolute"):
-        InstanceConfig(data_dir="data", ca_file="/etc/ssl/ca.pem")
+        PathsConfig(data_dir="data")
+
+
+def test_missing_ca_reports_the_tls_section(tmp_path: Path) -> None:
+    paths = PathsConfig(data_dir=str(tmp_path / "data"))
+    tls = TlsConfig(ca_file=str(tmp_path / "missing.pem"))
+
+    with pytest.raises(ConfigError, match=r"\[tls\]: ca_file"):
+        paths.layout(tmp_path / "conf", tls).apply()

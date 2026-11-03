@@ -20,7 +20,7 @@ from pydantic import (
 )
 
 from boba.aid.mcp_servers import McpAppError, McpAuthChoice, ReservedHeader
-from boba.aid.mcp_servers.config import McpUserConfig
+from boba.aid.mcp_servers.config import McpDefaultsConfig
 from boba.aid.mcp_servers.store import StoredServer
 from boba.core.mcp_names import McpToolNames
 from boba.mcp_client.client import (
@@ -111,7 +111,7 @@ class McpForms:
     внутри процесса и используются лишь для пустых полей формы правки.
     """
 
-    def __init__(self, config: McpUserConfig) -> None:
+    def __init__(self, config: McpDefaultsConfig) -> None:
         self._limits = McpServerLimits(
             connect_timeout_sec=config.connect_timeout_sec,
             call_timeout_sec=config.call_timeout_sec,

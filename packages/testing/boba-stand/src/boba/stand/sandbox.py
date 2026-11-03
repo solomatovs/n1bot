@@ -208,6 +208,6 @@ def section_profile(raw: DictConfig, plugin_id: str) -> SandboxProfile:
     """Профиль плагина той же сборкой, что у приложения: base + манифест.
 
     Образы, workspace и libexec берутся из каталога программы прогона
-    (BOBA_RUNTIME), каталог данных — из [instance] конфига.
+    (BOBA_RUNTIME), каталог данных — из [paths] конфига.
     """
     return ZygoteLaunchers(raw).profile_of(plugin_launch(raw, plugin_id))

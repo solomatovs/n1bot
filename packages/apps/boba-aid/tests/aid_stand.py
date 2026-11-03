@@ -341,7 +341,7 @@ class ToolService(ServerConfigs):
         )
         session = self._app.session
         self._tokens = ServiceTokens(
-            self._app.mcp.public_url,
+            self._app.server.public_url,
             session.auth_secret,
             session.session_ttl_sec,
             session.session_max_sec,
@@ -397,7 +397,7 @@ class ToolService(ServerConfigs):
             sign_in=sign_in,
         )
         assert session.user_id is not None
-        resource = f"{self._app.mcp.public_url}/{self.ENDPOINT}"
+        resource = f"{self._app.server.public_url}/{self.ENDPOINT}"
         holder = self._tokens.holder(signed, resource, UUID(session.user_id))
         token = self._tokens.access(holder, self._config.CLIENT_ID).access_token
         configured = self.servers().servers[name]
@@ -950,7 +950,7 @@ def app_config() -> AppConfig:
 @pytest.fixture(scope="session", autouse=True)
 def app_prefix(app_config: AppConfig) -> None:
     """Как bootstrap: ссылки на файлы и потоки строятся с префиксом приложения."""
-    AppPrefix.install(app_config.aid.url_prefix)
+    AppPrefix.install(app_config.server.url_prefix)
 
 
 @pytest.fixture

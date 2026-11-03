@@ -2,7 +2,7 @@
 
 Ошибки:
 ConfigError — конфиг не загружается, секции [app].aid, [app].session,
-    [instance] не сходятся с моделями либо каталог программы не найден.
+    [paths] не сходятся с моделями либо каталог программы не найден.
 SystemExit — проба готовности: конфиг не прочитан или чат не ответил;
     самопроверка: данные пакетов или entry points описи сборки недоступны.
 """
@@ -25,8 +25,8 @@ from boba.config import ConfigError, ConfigSchema, bind
 from boba.core.package_data import PackageDataCheck, PackageDataError
 from boba.runtime.config import (
     ConfigArguments,
-    InstanceConfig,
     InstanceData,
+    PathsConfig,
     ProgramCall,
     ProgramCommand,
     ProgramDir,
@@ -114,7 +114,7 @@ class AppEntry:
     Тесты точки входа зовут export_env и attachments по отдельности.
     """
 
-    SECTION: ClassVar[str] = "app.aid"
+    SECTION: ClassVar[str] = "app.server"
 
     SESSION_SECTION: ClassVar[str] = "app.session"
 
@@ -203,7 +203,7 @@ class AppEntry:
 
     def attachments(self, raw: DictConfig) -> ChainlitFiles:
         """Каталог вложений — files/ данных экземпляра."""
-        instance = bind(raw, InstanceConfig.SECTION, InstanceConfig)
+        instance = bind(raw, PathsConfig.SECTION, PathsConfig)
         root = Path(os.environ[ChainlitEnv.APP_ROOT])
 
         return ChainlitFiles(root, instance.data(InstanceData.FILES))

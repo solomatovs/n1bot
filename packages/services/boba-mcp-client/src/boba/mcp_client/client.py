@@ -122,6 +122,7 @@ from mcp.shared.subscriptions import event_to_notification
 from mcp.shared.uri_template import InvalidUriTemplate, UriTemplate
 from mcp.types.version import KNOWN_PROTOCOL_VERSIONS, MODERN_PROTOCOL_VERSIONS
 from pydantic import (
+    AnyHttpUrl,
     AnyUrl,
     BaseModel,
     ConfigDict,
@@ -266,6 +267,23 @@ class HttpLocation(BaseModel):
         description="Путь от корня хоста: пустой или с ведущим «/».",
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _from_url(cls, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        url = AnyHttpUrl(value)
+        if url.username or url.password or url.query or url.fragment:
+            raise ValueError(
+                "service URLs must contain only scheme, host, port and path"
+            )
+        return {
+            "scheme": url.scheme,
+            "host": (url.host or "").strip("[]"),
+            "port": url.port,
+            "path": url.path or "",
+        }
+
     def url(self) -> str:
         """Адрес строкой; пустой путь — корень хоста «/»."""
         path = self.path
@@ -297,6 +315,15 @@ class HttpRoute(BaseModel):
 
     service: HttpLocation
     path: str = Field(pattern=r"^/", description="Путь под префиксом сервиса.")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _from_url(cls, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        location = HttpLocation.model_validate(value)
+        prefix, _, route = location.path.rpartition("/")
+        return {"service": location.at(prefix), "path": f"/{route}"}
 
     def location(self) -> HttpLocation:
         return self.service.under(self.path)

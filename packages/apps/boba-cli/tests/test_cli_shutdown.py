@@ -351,7 +351,7 @@ class TestServe:
         )
         port = StandPorts().free()
         config = ServeStandConfig(
-            process_config.instance,
+            process_config.paths,
             ServeHistory(schema=history.schema, postgres=history.postgres),
             history.layer(ServeRun.SESSIONS),
             profiles,

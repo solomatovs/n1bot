@@ -19,10 +19,10 @@ from jsonschema import Draft202012Validator
 from pydantic import SecretStr
 
 from boba.aid.agent.config import (
-    AgentConfig,
     AgentHistoryKind,
     MemoryAgentHistory,
     PostgresAgentHistory,
+    ProcessAgentConfig,
 )
 from boba.aid.agent.settings import (
     AgentProviderKind,
@@ -106,14 +106,14 @@ def _model() -> ModelFile:
 
 def _config(
     tmp_path: Path, history: PostgresAgentHistory | MemoryAgentHistory
-) -> AgentConfig:
+) -> ProcessAgentConfig:
     base = AgentStand(tmp_path / "agents", HISTORY).config()
 
     return base.model_copy(update={"history": history})
 
 
 def _written(
-    tmp_path: Path, config: AgentConfig, mcp: McpFile | None
+    tmp_path: Path, config: ProcessAgentConfig, mcp: McpFile | None
 ) -> dict[str, Any]:
     """Документ файла настроек, как его записал бы запуск агента треда."""
     builder = SettingsFileBuilder(config)

@@ -22,7 +22,7 @@ from omegaconf import DictConfig, OmegaConf
 from test_sandbox_disguise import HostOwner
 
 from boba.config import bind
-from boba.runtime.config import InstanceConfig, ProgramRoots
+from boba.runtime.config import PathsConfig, ProgramRoots
 from boba.sandbox import SandboxProfile
 from boba.sandbox.zygote import (
     ZygoteState,
@@ -219,7 +219,7 @@ class TestMountinfoHasNoHostPaths:
     def _deployment_paths(raw_config: DictConfig) -> list[str]:
         """Каталог программы, каталог данных экземпляра и conf/krb рядом с
         конфигом прогона."""
-        instance = bind(raw_config, InstanceConfig.SECTION, InstanceConfig)
+        instance = bind(raw_config, PathsConfig.SECTION, PathsConfig)
         krb = StandConfigPaths(StandConfigEnv.RUN).main().resolve().parent / "krb"
         values = (str(ProgramRoots().locate().root), instance.data_dir, str(krb))
 

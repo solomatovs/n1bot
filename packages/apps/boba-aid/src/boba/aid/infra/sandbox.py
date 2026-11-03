@@ -210,15 +210,15 @@ class AidListeners:
         token: SandboxToken,
     ) -> None:
         self._chat = chat
-        self._host = config.aid.host
-        self._chat_port = config.aid.port
-        self._sandbox_port = config.aid.sandbox_port
+        self._host = config.server.host
+        self._chat_port = config.server.port
+        self._sandbox_port = config.server.sandbox_port
         self._scheme = ListenScheme.PLAIN
-        if config.aid.ssl_cert:
+        if config.server.ssl_cert:
             self._scheme = ListenScheme.TLS
 
         self._check(root)
-        site = SandboxSite(root, config.aid.chat_origin(), token)
+        site = SandboxSite(root, config.server.chat_origin(), token)
         self._sites: dict[int, ASGIApp] = {self._sandbox_port: site.app}
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:

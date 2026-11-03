@@ -41,14 +41,18 @@ from pydantic import (
 from pydantic.alias_generators import to_camel
 
 from boba.aid.agent.config import (
-    AgentConfig,
     AgentHistoryConfig,
     AgentHistoryKind,
     MemoryAgentHistory,
     PostgresAgentHistory,
+    ProcessAgentConfig,
 )
 from boba.aid.mcp_servers.sources import ServerRecord
-from boba.chat.profiles import ChatProfileConfig, ReasoningReturn
+from boba.chat.profiles import (
+    ChatProfileConfig,
+    LocalChatProfileConfig,
+    ReasoningReturn,
+)
 from boba.core.secrets import SecretReveal
 from boba.db.postgres.connection import LibpqConnection
 from boba.transport.http import HttpTransportConfig
@@ -159,7 +163,7 @@ class PermissionsFile(FileModel):
 
 class HistoryPoolFile(FileModel):
     """Ключ `history.pool`: пул соединений истории процесса агента — из
-    пула подключения истории [postgres_history].pool."""
+    пула подключения истории [agent.history.postgres.pool]."""
 
     min_size: int = Field(ge=1)
     max_size: int = Field(ge=1)
@@ -238,6 +242,10 @@ class ProfileModelSpecs:
         AgentSettingsError — провайдер профиля не удалённый, без адреса или
             со входом negotiate, который в процесс агента не передать.
         """
+        if not isinstance(profile, LocalChatProfileConfig):
+            raise AgentSettingsError(
+                f"chat profile {name!r} has no local model settings"
+            )
         remote: list[str] = []
         for kind in AgentProviderKind:
             remote.append(kind.value)
@@ -301,7 +309,7 @@ class SettingsFileBuilder:
     запуска агента: argv называет только его, окружение ребёнка — минимальный
     набор SDK."""
 
-    def __init__(self, config: AgentConfig) -> None:
+    def __init__(self, config: ProcessAgentConfig) -> None:
         self._history = self._history_file(config.history)
         self._tools = ToolsFile(always_load=config.tools.always_load)
         self._limits = LimitsFile(
@@ -311,13 +319,15 @@ class SettingsFileBuilder:
     def build(
         self,
         name: str,
-        model: ModelFile,
+        model: ModelFile | None,
         mcp: McpFile | None,
         env: Mapping[str, str],
     ) -> SettingsFile:
         """Файл процесса агента с единственным профилем модели name; mcp None
         — процесс не зовёт инструментов серверов (короткий процесс удаления
         сессии)."""
+        if model is None:
+            raise AgentSettingsError("a local agent settings file requires a model")
         return SettingsFile(
             model=name,
             models={name: model},
@@ -330,7 +340,8 @@ class SettingsFileBuilder:
             system_prompt_file=WorkdirFile.SYSTEM_PROMPT.value,
         )
 
-    def mcp(self, servers: Sequence[ServerRecord]) -> McpFile | None:
+    @staticmethod
+    def mcp(servers: Sequence[ServerRecord]) -> McpFile | None:
         """Сроки серверов MCP агента: вызов не обрывается раньше, чем его
         оборвал бы ретранслятор чата у самого терпеливого сервера набора;
         None — серверов у треда нет."""

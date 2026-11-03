@@ -9,11 +9,12 @@ import pytest
 from omegaconf import OmegaConf
 
 from boba.config import ConfigError
-from boba.runtime.config import ProgramRoots
+from boba.runtime.config import PathsConfig, ProgramRoots, TlsConfig
 from boba.runtime.launchers import (
     NoLaunchers,
     PluginLaunch,
     ProcessLaunchers,
+    SandboxDefaults,
     ToolLaunchers,
     ZygoteLaunchers,
 )
@@ -35,8 +36,8 @@ PG_SECTION: dict[str, object] = {
 """Секция плагина pg, как её даёт conf/plugins/pg.toml."""
 
 
-def _instance(data_dir: Path) -> dict[str, object]:
-    return {"data_dir": str(data_dir), "ca_file": "/etc/ssl/certs/ca-certificates.crt"}
+def _paths(data_dir: Path) -> dict[str, object]:
+    return {"data_dir": str(data_dir)}
 
 
 def _process_section(data_dir: Path) -> dict[str, object]:
@@ -44,7 +45,7 @@ def _process_section(data_dir: Path) -> dict[str, object]:
     (data_dir / "workspace").mkdir(parents=True, exist_ok=True)
 
     return {
-        "instance": _instance(data_dir),
+        "paths": _paths(data_dir),
         "tool_launcher": {
             "provider": "process",
             "timeout_sec": 60,
@@ -74,7 +75,8 @@ def test_process_without_the_section_launches_no_tool_sections(
 def _sandbox_section(data_dir: Path) -> dict[str, object]:
     """Способ запуска песочницей; пути плагинов — в их конфигах."""
     return {
-        "instance": _instance(data_dir),
+        "paths": _paths(data_dir),
+        "tls": {},
         "tool_launcher": {"provider": "sandbox", "cgroup_base": str(data_dir)},
     }
 
@@ -101,6 +103,19 @@ def test_sandbox_provider_builds_zygote_launchers(
     assert isinstance(launchers, ZygoteLaunchers)
 
 
+@pytest.mark.parametrize("ca_file", [None, "/etc/company/ca.pem"])
+def test_sandbox_network_uses_the_configured_ca_bundle(
+    program: Path, tmp_path: Path, ca_file: str | None
+) -> None:
+    tls = TlsConfig() if ca_file is None else TlsConfig(ca_file=ca_file)
+    defaults = SandboxDefaults(
+        ProgramRoots().locate(), PathsConfig(data_dir=str(tmp_path)), str(tmp_path), tls
+    )
+
+    assert f"{tls.ca_file}:{SandboxDefaults.CA_FILE}" in defaults.network_binds()
+    assert defaults.network_env() == {"SSL_CERT_FILE": SandboxDefaults.CA_FILE}
+
+
 def test_sandbox_probe_needs_no_plugin_directory(program: Path, tmp_path: Path) -> None:
     """Пути плагинов называют их конфиги: способ запуска каталога образов не
     ищет."""
@@ -113,7 +128,7 @@ def test_sandbox_probe_needs_no_plugin_directory(program: Path, tmp_path: Path) 
 
 def test_sandbox_without_cgroup_base_is_refused(program: Path, tmp_path: Path) -> None:
     raw = OmegaConf.create(
-        {"instance": _instance(tmp_path), "tool_launcher": {"provider": "sandbox"}}
+        {"paths": _paths(tmp_path), "tool_launcher": {"provider": "sandbox"}}
     )
 
     with pytest.raises(ConfigError, match="cgroup_base"):
@@ -137,7 +152,7 @@ def test_process_provider_builds_process_launchers(
 
 def test_process_probe_requires_existing_workdir(tmp_path: Path) -> None:
     section = _process_section(tmp_path)
-    section["instance"] = _instance(tmp_path / "absent")
+    section["paths"] = _paths(tmp_path / "absent")
     raw = OmegaConf.create(section)
 
     launchers = ToolLaunchers(raw).build()

@@ -1059,7 +1059,6 @@ async def main(argv: Sequence[str] | None = None) -> None:
                 ).run(
                     invocation.config,
                     tuple(HistorySchema),
-                    section="app.agent.history",
                 )
             except Exception as exc:
                 raise SystemExit(f"boba migrate failed: {exc}") from exc

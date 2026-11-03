@@ -27,7 +27,7 @@ from boba.cli.serve import ServeConfig, ServeHistory, ServeHost, ServeMark
 from boba.core.secrets import SecretReveal
 from boba.db.postgres.connection.auth import KeytabAuth
 from boba.krb import KerberosWorkspace
-from boba.runtime.config import InstanceConfig
+from boba.runtime.config import PathsConfig
 from boba.stand.service_signin import ServiceSignIn
 from boba.stand.ui.toml_text import TomlText
 
@@ -109,7 +109,7 @@ class ServeStandConfig:
 
     def __init__(  # noqa: PLR0913 — служба собирается всеми частями стенда
         self,
-        instance: InstanceConfig,
+        instance: PathsConfig,
         history: ServeHistory,
         settings: Mapping[str, Any],
         profiles: ServiceProfiles,
@@ -144,9 +144,16 @@ class ServeStandConfig:
         return self._app(self._history_section())
 
     def _app(self, history: object) -> dict[str, Any]:
+        if isinstance(history, ServeHistory):
+            location = history.model_dump(mode="python", by_alias=True)
+        elif isinstance(history, Mapping):
+            location = dict(history)
+        else:
+            raise TypeError("the service history requires a storage location")
         return {
-            "schema": "agent_service_stand",
-            "instance": self._instance.model_dump(mode="json"),
+            "schema": location["schema"],
+            "postgres": location["postgres"],
+            "paths": self._instance.model_dump(mode="json"),
             "auth": [
                 {
                     "type": "proxy",
@@ -161,15 +168,16 @@ class ServeStandConfig:
                 "session_max_sec": 3600,
                 "generation": "stand",
             },
-            "agent": {
+            "server": {
                 "host": "127.0.0.1",
-                "port": self.public_port,
-                "path": self.PATH,
+                "port": self.port,
                 "public_url": self.public_url,
                 "url_prefix": self.PREFIX,
                 "shutdown_timeout_sec": 2,
+            },
+            "agent": {
+                "path": self.PATH,
                 "idle_sec": self._idle_sec,
-                "history": history,
                 "settings": self._settings,
                 "profiles": self._profiles.section(),
                 "clients": {
@@ -218,7 +226,7 @@ class AgentServiceStand:
 
     def __init__(  # noqa: PLR0913 — служба собирается всеми частями стенда
         self,
-        instance: InstanceConfig,
+        instance: PathsConfig,
         history: ServeHistory,
         settings: Mapping[str, Any],
         profiles: ServiceProfiles,

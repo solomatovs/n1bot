@@ -332,7 +332,7 @@ class Stands:
     ) -> AgentServiceStand:
         port = StandPorts().free()
         stand = AgentServiceStand(
-            self._process.instance,
+            self._process.paths,
             ServeHistory(schema=self._history.schema, postgres=self._history.postgres),
             self._history.layer(max_sessions),
             self._profiles,

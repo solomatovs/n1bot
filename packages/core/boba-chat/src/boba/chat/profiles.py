@@ -25,7 +25,9 @@ __all__ = [
     "ChatProfiles",
     "ChatRoleConfig",
     "ChatSettings",
+    "LocalChatProfileConfig",
     "ModelLimits",
+    "ProfileConfig",
     "ProfileRefusal",
     "ProfilesSection",
     "ReasoningReturn",
@@ -73,24 +75,20 @@ class ModelLimits(BaseModel):
     )
 
 
-class ChatProfileConfig(ChatSettings, RoleVisibility):
+class ChatProfileConfig(RoleVisibility):
     """Секция [profiles.<name>]: режим работы бота, выбираемый пользователем."""
 
+    model_config = ConfigDict(extra="forbid")
     roles: StringList = Field(default=[])
-
-    limits: ModelLimits = Field(
-        description="Пределы модели профиля ссылкой `${model_limits.<имя>}`."
-    )
 
     display_name: Annotated[
         str,
         Field(description="Название профиля в интерфейсе выбора."),
     ]
 
-    description: Annotated[
-        str,
-        Field(description="Описание профиля под названием; markdown."),
-    ]
+    description: str = Field(
+        default="", description="Описание профиля под названием; markdown."
+    )
 
     icon: str = Field(
         default="",
@@ -103,7 +101,16 @@ class ChatProfileConfig(ChatSettings, RoleVisibility):
     )
 
 
-class ProfilesSection(RootModel[dict[str, ChatProfileConfig]]):
+class LocalChatProfileConfig(ChatProfileConfig, ChatSettings):
+    """Профиль локального агента: к представлению добавлены модель и её пределы."""
+
+    limits: ModelLimits
+
+
+ProfileConfig = LocalChatProfileConfig | ChatProfileConfig
+
+
+class ProfilesSection(RootModel[dict[str, ProfileConfig]]):
     """Секция [profiles] верхнего уровня: профили чата по имени."""
 
 

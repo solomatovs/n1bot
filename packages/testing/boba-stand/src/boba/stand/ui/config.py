@@ -492,8 +492,8 @@ class StandFiles:
         процесс на конфиге отладки не пишет в её базу. Отдаёт файлы процесса."""
         overlay = StandOverlay()
         overlay.set(("postgres", "dbname"), database)
-        if app.table("postgres_history"):
-            overlay.set(("postgres_history", "dbname"), database)
+        if app.table("agent").get("mode") == "process":
+            overlay.set(("agent", "history", "postgres", "dbname"), database)
 
         self.write(overlay)
 
@@ -673,8 +673,8 @@ class ServiceStand(StandService):
             }
 
         overlay.replace(("mcp", "endpoints"), endpoints)
-        overlay.set(("mcp", "public_url"), f"http://127.0.0.1:{self.app_port}")
-        overlay.set(("mcp", "url_prefix"), "")
+        overlay.set(("server", "public_url"), f"http://127.0.0.1:{self.app_port}")
+        overlay.set(("server", "url_prefix"), "")
         overlay.replace(
             ("mcp", "clients"),
             {
@@ -754,7 +754,7 @@ class ServiceStand(StandService):
 
 
 class StandEnv:
-    """Свой каталог данных ([instance].data_dir) и секция [env] наложения
+    """Свой каталог данных ([paths].data_dir) и секция [env] наложения
     приложения стенда: порт, имя инстанса и способ запуска инструментов.
     Создают конфиги стенда на запись; каталоги данных, которые приложение
     ждёт готовыми, заводит put."""
@@ -781,10 +781,10 @@ class StandEnv:
         if sandbox:
             launcher = "sandbox"
 
-        overlay.set(("instance", "data_dir"), str(self._data_dir))
-        overlay.set(("env", "port"), port)
-        overlay.set(("env", "instance_id"), f"stand{port}")
-        overlay.set(("env", "tool_launcher"), launcher)
+        overlay.set(("paths", "data_dir"), str(self._data_dir))
+        overlay.set(("server", "port"), port)
+        overlay.set(("cluster", "node_id"), f"stand{port}")
+        overlay.set(("tool_launcher", "provider"), launcher)
 
 
 class StandPlugins:
@@ -865,15 +865,8 @@ class StandConfig(StandService, ServerSeedSpec):
     service_port: int = field(default_factory=StandPorts().free)
     """Порт сервиса boba-mcp стенда чата."""
 
-    agent_history: dict[str, Any] = field(
-        default_factory=lambda: {
-            "kind": "postgres",
-            "schema": "boba",
-            "postgres": "${postgres_history}",
-        }
-    )
-    """Секция [agent.history] чата: по умолчанию Postgres стенда подключением
-    истории [postgres_history] рабочего конфига, схема boba в базе стенда."""
+    agent_history: dict[str, Any] | None = None
+    """История локального агента; None использует настройки process-наложения."""
 
     agent_process: dict[str, Any] = field(
         default_factory=lambda: {
@@ -1009,33 +1002,28 @@ class StandConfig(StandService, ServerSeedSpec):
         if not agent:
             return
 
-        overlay.set(("postgres_history", "dbname"), self.db_name)
         start_sec, request_sec = self.agent_timeouts_sec
-        process: dict[str, Any] = {
-            "command": self.agent_process["command"],
-            "args": self.agent_process["args"],
+        selected: dict[str, Any] = {
+            "public_url": self.base_url,
+            "question_timeout_sec": 600,
             "start_timeout_sec": start_sec,
             "request_timeout_sec": request_sec,
-            "stop_timeout_sec": 10,
         }
         if self.agent_service:
-            process = {
-                **self.agent_service,
-                "start_timeout_sec": start_sec,
-                "request_timeout_sec": request_sec,
-                "silence_timeout_sec": 60,
-            }
-
-        overlay.replace(
-            ("agent",),
-            {
-                **agent,
-                "public_url": self.base_url,
-                "question_timeout_sec": 600,
-                "process": process,
-                "history": dict(self.agent_history),
-            },
-        )
+            selected.update(mode="service", **self.agent_service)
+            selected["silence_timeout_sec"] = 60
+        else:
+            history = dict(self.agent_history or agent.get("history", {}))
+            if not history:
+                raise StandError("a local agent requires its process config overlay")
+            if isinstance(history.get("postgres"), dict):
+                history["postgres"] = {**history["postgres"], "dbname": self.db_name}
+            selected.update(mode="process", history=history, **self.agent_process)
+            selected["stop_timeout_sec"] = 10
+            for key in ("tools", "limits"):
+                if key in agent:
+                    selected[key] = agent[key]
+        overlay.replace(("agent",), selected)
 
     @staticmethod
     def _shrink_pools(overlay: StandOverlay) -> None:
@@ -1047,9 +1035,9 @@ class StandConfig(StandService, ServerSeedSpec):
         """Каталог данных и секция [env] стенда: порт, имя инстанса, префикс и
         шина, если стенд её задал."""
         StandEnv(self.app, self.data_dir).put(overlay, self.app_port, self.sandbox)
-        overlay.set(("env", "url_prefix"), self.url_prefix)
+        overlay.set(("server", "url_prefix"), self.url_prefix)
         if self.messaging:
-            overlay.set(("env", "messaging_provider"), self.messaging)
+            overlay.set(("messaging", "provider"), self.messaging)
 
     def env(self) -> dict[str, str]:
         """Окружение процесса приложения: конфиг целиком в файлах --config,
@@ -1161,8 +1149,8 @@ class StandConfig(StandService, ServerSeedSpec):
         if self.app is not StandApp.AID:
             return
 
-        overlay.set(("aid", "chat_url"), self.base_url)
-        overlay.set(("aid", "sandbox_port"), self.sandbox_port)
+        overlay.set(("server", "public_url"), self.base_url)
+        overlay.set(("server", "sandbox_port"), self.sandbox_port)
 
     def server_records(self) -> Mapping[str, Mapping[str, Any]]:
         """Серверы, которые посев выдаёт ролям стенда через таблицу grants."""

@@ -24,7 +24,7 @@ pytestmark = pytest.mark.anyio
 def reload_config(raw_config: DictConfig, config_overlay: ConfigOverlay) -> DictConfig:
     """Конфиг с процессным запуском и одним pg: тест про обвязки, не про
     песочницу и хранилища."""
-    changes: dict[str, object] = {"env.tool_launcher": "process"}
+    changes: dict[str, object] = {"tool_launcher.provider": "process"}
     for plugin_id in raw_config["tool"]:
         changes[f"tool.{plugin_id}.enable"] = plugin_id == "pg"
 

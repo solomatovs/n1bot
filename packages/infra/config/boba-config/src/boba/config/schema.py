@@ -65,6 +65,25 @@ class ConfigSchema:
 
         return sections
 
+    def prepare_merge(self, lower: DictConfig, upper: DictConfig) -> None:
+        """Новый вариант discriminated union заменяет предыдущую секцию целиком."""
+        for name, field in self._model_type.model_fields.items():
+            key = field.alias or name
+            discriminator = field.discriminator
+            if (
+                not isinstance(discriminator, str)
+                or key not in upper
+                or key not in lower
+            ):
+                continue
+            old = lower[key]
+            new = upper[key]
+            if not isinstance(old, DictConfig) or not isinstance(new, DictConfig):
+                continue
+            if discriminator in old and discriminator in new:
+                if old[discriminator] != new[discriminator]:
+                    del lower[key]
+
     def _field(
         self,
         annotation: Any,
@@ -179,6 +198,10 @@ class ConfigSchema:
 
     @staticmethod
     def _matches(model: type[BaseModel], node: DictConfig) -> bool:
+        if model.model_config.get("extra") == "forbid":
+            names = {field.alias or name for name, field in model.model_fields.items()}
+            if not set(node.keys()).issubset(names):
+                return False
         literals = {
             field.alias or name: get_args(field.annotation)
             for name, field in model.model_fields.items()

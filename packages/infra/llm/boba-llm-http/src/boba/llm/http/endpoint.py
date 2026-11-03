@@ -79,6 +79,7 @@ class HttpLlmProvider(LlmProvider):
     )
 
     transport: HttpTransportConfig = Field(
+        default_factory=HttpTransportConfig,
         description=(
             "Поведение HTTP-транспорта процесса: таймауты, пул, дамп обмена; "
             'ссылкой `transport = "${http}"`.'

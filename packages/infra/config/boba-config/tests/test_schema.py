@@ -36,6 +36,7 @@ class _Local(BaseModel):
 
 
 class _Image(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     kind: Literal["image"]
     mount_dir: str
     timeout: int = 60
@@ -187,6 +188,29 @@ def test_selected_variant_keeps_its_required_fields(loader: ConfigLoader) -> Non
     assert "chunk_bytes" not in raw.storage
     with pytest.raises(ConfigError, match="mount_dir"):
         bind(raw, "app", _App)
+
+
+def test_switching_variant_removes_fields_of_the_previous_mode(
+    loader: ConfigLoader,
+    tmp_path: Path,
+) -> None:
+    main = tmp_path / "config.toml"
+    main.write_text(
+        CONFIG.replace('kind = "local"', 'kind = "local"\nchunk_bytes = 4096')
+    )
+    raw = loader.load_over(
+        OmegaConf.create(
+            {
+                "storage": {"kind": "image", "mount_dir": "/workspace"},
+                "copied_chunk": "unused",
+            }
+        )
+    )
+
+    storage = bind(raw, "app", _App).storage
+    assert isinstance(storage, _Image)
+    assert storage.mount_dir == "/workspace"
+    assert "chunk_bytes" not in raw.storage
 
 
 def test_included_section_keeps_its_defaults(

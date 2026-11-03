@@ -41,7 +41,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from importlib.resources import files
-from typing import Any, ClassVar, Self, TypeVar
+from typing import Any, ClassVar, TypeVar
 from urllib.parse import urlencode, urlsplit
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
@@ -97,6 +97,7 @@ from boba.identity.errors import (
     ExternalServiceError,
 )
 from boba.identity.principal import IdentityRealm, UserIdentity
+from boba.identity.service import ServiceAddress
 from boba.identity.signin import ProxyRequest, SignedIn, SignInMetadata
 from boba.identity.sso import SsoChallenge
 
@@ -108,6 +109,7 @@ __all__ = [
     "RegisteredClients",
     "ResourceTokens",
     "SealedValues",
+    "ServiceAddress",
     "ServiceAuth",
     "ServiceTokens",
     "TokenClaim",
@@ -152,35 +154,6 @@ class TokenClaims(BaseModel):
     @model_validator(mode="after")
     def _identity_matches_login(self) -> TokenClaims:
         SignInMetadata.parse(self.metadata).identity_for(self.login)
-
-        return self
-
-
-class ServiceAddress(BaseModel):
-    """Адрес службы для клиентов: публичный адрес и префикс пути.
-
-    База секции службы ([mcp] у boba-mcp, [agent] у службы агента). Служба
-    сама отвечает под url_prefix, прокси передаёт путь как есть; от
-    public_url строятся метаданные OAuth, адреса входа и издатель токена,
-    поэтому его путь обязан совпадать с префиксом.
-    """
-
-    public_url: str = Field(min_length=1)
-    """Адрес службы, каким его видят клиенты, с префиксом. Вне localhost —
-    только https."""
-    url_prefix: str = Field(pattern=r"^(/[^/]+)*$")
-    """Префикс путей службы: пусто либо `/имя`, без `/` в конце."""
-
-    @model_validator(mode="after")
-    def _prefix_of_public_url(self) -> Self:
-        path = urlsplit(self.public_url).path.rstrip("/")
-        if path != self.url_prefix:
-            msg = (
-                f"public_url {self.public_url!r} has the path {path!r}, expected "
-                f"the url_prefix {self.url_prefix!r}: the service answers under "
-                "url_prefix and builds its OAuth addresses from public_url"
-            )
-            raise ValueError(msg)
 
         return self
 

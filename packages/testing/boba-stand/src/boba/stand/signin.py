@@ -12,8 +12,8 @@ from typing import ClassVar
 from pydantic import SecretStr
 
 from boba.chat.profiles import (
-    ChatProfileConfig,
     ChatProfiles,
+    LocalChatProfileConfig,
     ModelLimits,
     ReasoningReturn,
 )
@@ -59,17 +59,16 @@ class SignInStand:
     @classmethod
     def profile(
         cls, *, default: bool = True, roles: list[str] | None = None
-    ) -> ChatProfileConfig:
+    ) -> LocalChatProfileConfig:
         if roles is None:
             roles = ["*"]
 
-        return ChatProfileConfig.model_validate(
+        return LocalChatProfileConfig.model_validate(
             {
                 "display_name": "Stand",
                 "description": "stand profile",
                 "default": default,
                 "roles": roles,
-                "tools": ["echo"],
                 "provider": cls.provider(),
                 "model": "fake",
                 "limits": cls.limits(),

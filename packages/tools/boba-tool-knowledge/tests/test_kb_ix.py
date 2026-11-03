@@ -55,7 +55,7 @@ class Body:
 def kb_cfg(config_overlay: ConfigOverlay) -> KbToolConfig:
     """Конфиг с процессным запуском: кэш моделей эмбеддинга берётся с хоста,
     живой индекс ix — из базы приложения."""
-    raw = config_overlay.tree({"env.tool_launcher": "process"})
+    raw = config_overlay.tree({"tool_launcher.provider": "process"})
 
     return bind(raw, path="tool.kb", model=KbToolConfig)
 

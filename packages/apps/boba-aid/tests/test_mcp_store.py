@@ -15,7 +15,7 @@ from pydantic import SecretStr
 from boba.aid.data.data_layer import PostgresDataLayer
 from boba.aid.infra.config import AppConfig
 from boba.aid.mcp_servers import McpAppError, McpAuthChoice, McpOrigin
-from boba.aid.mcp_servers.config import McpUserConfig
+from boba.aid.mcp_servers.config import McpDefaultsConfig
 from boba.aid.mcp_servers.directory import McpDirectory, McpState
 from boba.aid.mcp_servers.form import HeaderField, McpForms, McpServerForm
 from boba.aid.mcp_servers.sources import McpViewer, StoredServers
@@ -73,7 +73,7 @@ async def stored(
     other = await layer.create_user(StandTokens.user(identifier="corporate:mcp-other"))
     assert owner is not None
     assert other is not None
-    cipher = SecretCipher(app_config.connections.cipher.get_secret_value())
+    cipher = SecretCipher(app_config.mcp_servers.cipher.get_secret_value())
     store = McpServerStore(pool, schema, cipher)
     users = UsersTable(app_config.postgres, schema, pool)
 
@@ -105,7 +105,7 @@ class TestStoredServers:
     async def test_add_encrypts_grants_and_round_trips(
         self, stored: StoreStand
     ) -> None:
-        server = McpForms(McpUserConfig()).server(self._form())
+        server = McpForms(McpDefaultsConfig()).server(self._form())
         server_id = await stored.store.add("personal", server, stored.owner.user_id)
         rows = await stored.store.visible_to(stored.owner.user_id, stored.owner.roles)
         assert len(rows) == 1
@@ -131,7 +131,7 @@ class TestStoredServers:
     async def test_replace_keeps_grants_and_enabled_and_unique_name(
         self, stored: StoreStand
     ) -> None:
-        forms = McpForms(McpUserConfig())
+        forms = McpForms(McpDefaultsConfig())
         server = forms.server(self._form())
         server_id = await stored.store.add("personal", server, stored.owner.user_id)
         tokens = sql.SQL(
@@ -168,7 +168,7 @@ class TestStoredServers:
     async def test_role_grant_is_visible_but_read_only(
         self, stored: StoreStand, auth: Literal["bearer", "proxy"]
     ) -> None:
-        server = McpForms(McpUserConfig()).server(self._form())
+        server = McpForms(McpDefaultsConfig()).server(self._form())
         if auth == "proxy":
             proxy = ProxyAuth(
                 issuer=server.endpoint.service,
@@ -205,7 +205,7 @@ class TestStoredServers:
             await stored.source.set_enabled(stored.owner, "shared", False)
 
         servers = McpServers(stored.source)
-        directory = McpDirectory(stored.source, servers, McpUserConfig())
+        directory = McpDirectory(stored.source, servers, McpDefaultsConfig())
         try:
             view = await directory.form(stored.owner, "shared")
             assert not view.editable
@@ -237,7 +237,7 @@ class TestStoredServers:
     async def test_wrong_key_and_malformed_data_do_not_expose_secrets(
         self, stored: StoreStand
     ) -> None:
-        server = McpForms(McpUserConfig()).server(self._form())
+        server = McpForms(McpDefaultsConfig()).server(self._form())
         await stored.store.add("personal", server, stored.owner.user_id)
         wrong = McpServerStore(stored.pool, stored.schema, SecretCipher(bytes(32)))
         with pytest.raises(McpServerStoreError, match="personal") as refused:
@@ -262,7 +262,7 @@ class TestStoredServers:
         self, stored: StoreStand
     ) -> None:
         servers = McpServers(stored.source)
-        directory = McpDirectory(stored.source, servers, McpUserConfig())
+        directory = McpDirectory(stored.source, servers, McpDefaultsConfig())
         try:
             added = await directory.save(stored.owner, self._form())
             assert added.state is McpState.PENDING
@@ -346,7 +346,7 @@ async def test_saved_headers_and_bearer_reach_the_real_server(
         ),
     )
     servers = McpServers(stored.source)
-    directory = McpDirectory(stored.source, servers, McpUserConfig())
+    directory = McpDirectory(stored.source, servers, McpDefaultsConfig())
     try:
         await directory.save(stored.owner, form)
         assert (

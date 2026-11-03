@@ -265,7 +265,7 @@ async def test_migration_cli_plans_applies_and_rolls_back_the_same_uuid(
     overlay.write_text(
         f'[app]\nschema = "{SCHEMA}"\n'
         f"[postgres]\ndbname = {json.dumps(test_database)}\n"
-        f"[instance]\ndata_dir = {json.dumps(str(tmp_path / 'instance'))}\n",
+        f"[paths]\ndata_dir = {json.dumps(str(tmp_path / 'instance'))}\n",
         encoding="utf-8",
     )
     mapping = tmp_path / "mapping.toml"

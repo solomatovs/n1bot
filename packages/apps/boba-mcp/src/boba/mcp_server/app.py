@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Annotated, Self
 
 import uvicorn
-from pydantic import ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from boba.access import RoleConfig
 from boba.auth.credentials import NoRefresh
@@ -38,6 +38,7 @@ from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.context import CallContexts
 from boba.identity.run import Runs
+from boba.identity.service import ServiceAddress
 from boba.identity_postgres import UsersTable
 from boba.mcp_server.auth import ServiceMark
 from boba.mcp_server.server import (
@@ -50,7 +51,6 @@ from boba.oauth.server import (
     AuthServer,
     RegisteredClients,
     SealedValues,
-    ServiceAddress,
     ServiceAuth,
     ServiceTokens,
     TrustedClient,
@@ -62,6 +62,7 @@ from boba.runtime.config import (
     ProgramCall,
     ProgramCommand,
     RawConfig,
+    ServerConfig,
     ValueCipherConfig,
 )
 from boba.runtime.di import Container, Depends
@@ -74,7 +75,7 @@ __all__ = ["McpAppConfig", "McpEntry", "McpHost", "McpSection"]
 logger = logging.getLogger(__name__)
 
 
-class McpSection(ServiceAddress):
+class McpSection(BaseModel):
     """Секция [mcp]: адрес сервиса и его префикс (ServiceAddress), пределы
     запусков, endpoint'ы и доверенные клиенты. Endpoint
     [mcp.endpoints.<имя>] — набор инструментов (tools), роли, которым он
@@ -83,9 +84,6 @@ class McpSection(ServiceAddress):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    host: str = Field(default="127.0.0.1", min_length=1)
-    port: int = Field(gt=0, lt=65536)
-    shutdown_timeout_sec: int = Field(default=10, gt=0)
     """Сколько остановка ждёт, пока клиенты закроют соединения сами; дальше
     соединения рвутся, и сервис гасит запуски и зиготы. Без срока остановка
     ждала бы keep-alive соединений прокси бесконечно и не доходила до
@@ -96,12 +94,18 @@ class McpSection(ServiceAddress):
     """Доверенные клиенты OAuth по client_id: им разрешён вход proxy."""
 
 
+class McpServerConfig(ServerConfig, ServiceAddress):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    port: int = Field(default=8650, gt=0, lt=65536)
+
+
 class McpAppConfig(ProcessConfig):
     """Секции процесса сервиса: секции процесса, [mcp], хранилище workspace и
     каталоги соединений и пользователей."""
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
+    server: McpServerConfig
     mcp: McpSection
     roles: dict[str, RoleConfig]
     """Права инструментов по ролям; отсутствие гранта запрещает вызов."""
@@ -238,6 +242,7 @@ class McpHost:
         """Поднимает сервисы, слушает адрес секции [mcp] до остановки процесса
         и гасит запуски и зиготы на выходе."""
         section = self._config.mcp
+        server = self._config.server
         Container.set_root(self._container)
         await self._container.start()
         try:
@@ -251,7 +256,7 @@ class McpHost:
                 self._container.resolved(providers.connection_params),
                 section.limits,
                 self._config.storage,
-                StorageFactory(self._config.instance).create(self._config.storage),
+                StorageFactory(self._config.paths).create(self._config.storage),
             )
             stop = ProcessStop()
             stop.on_stop(StoppedRuns(self._container.resolved(providers.runs)))
@@ -259,17 +264,17 @@ class McpHost:
             listener = SignalledServer(
                 uvicorn.Config(
                     endpoints.app(),
-                    host=section.host,
-                    port=section.port,
+                    host=server.host,
+                    port=server.port,
                     log_config=None,
-                    timeout_graceful_shutdown=section.shutdown_timeout_sec,
+                    timeout_graceful_shutdown=server.shutdown_timeout_sec,
                 ),
                 stop,
             )
             logger.info(
                 "boba-mcp listens on %s:%d, mcp endpoints: %s",
-                section.host,
-                section.port,
+                server.host,
+                server.port,
                 ", ".join(endpoints.paths()),
             )
             await listener.serve_until_stopped()
@@ -282,7 +287,7 @@ class McpHost:
         """Вход сервиса: сервер авторизации над способами входа [auth] и
         проверяющие токена endpoint'ов."""
         session = self._config.session
-        public_url = section.public_url.rstrip("/")
+        public_url = self._config.server.public_url.rstrip("/")
         generation = session.session_generation()
         logger.info("session generation of this process: %s", generation)
         tokens = ServiceTokens(
@@ -363,7 +368,7 @@ class McpEntry:
 
     def health(self, paths: Sequence[Path]) -> None:
         """Проба готовности по [mcp]: порт и префикс сервиса."""
-        section = bind(McpAppConfig.loader(paths).load(), "mcp", McpSection)
+        section = bind(McpAppConfig.loader(paths).load(), "server", McpServerConfig)
         probe = HealthProbe(section.port, section.url_prefix, McpEndpoints.HEALTH)
 
         sys.stdout.write(f"{probe.check()}\n")

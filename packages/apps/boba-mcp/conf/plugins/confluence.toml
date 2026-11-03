@@ -9,7 +9,6 @@ tools           = [
 body_format     = "view"
 max_text_chars  = 6000
 
-transport       = "${http}"
 
 [sandbox]
     program   = "plugins/docs"

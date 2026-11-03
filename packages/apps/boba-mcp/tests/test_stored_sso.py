@@ -143,7 +143,7 @@ async def service(
         store = ConnectionStore(pool, app.db_schema, cipher, ConnectionTypes.discover())
         session = app.session
         tokens = ServiceTokens(
-            app.mcp.public_url,
+            app.server.public_url,
             session.auth_secret,
             session.session_ttl_sec,
             session.session_max_sec,

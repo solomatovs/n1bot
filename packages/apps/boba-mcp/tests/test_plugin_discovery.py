@@ -28,7 +28,7 @@ def _enabled_only(
     """Изменения конфига сервиса: включены только плагины enabled, способ
     запуска — launcher."""
     kept = frozenset(enabled)
-    changes: dict[str, object] = {"env.tool_launcher": launcher}
+    changes: dict[str, object] = {"tool_launcher.provider": launcher}
     for plugin_id in raw["tool"]:
         changes[f"tool.{plugin_id}.enable"] = plugin_id in kept
 

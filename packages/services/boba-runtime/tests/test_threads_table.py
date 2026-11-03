@@ -16,6 +16,7 @@ from boba.chat.threads import (
     ThreadUpsert,
 )
 from boba.db.postgres import AsyncPostgresPool, PostgresSchema
+from boba.identity.principal import UserIdentity
 from boba.identity.session import Login
 from boba.identity.signin import SignedIn, SignInMetadata
 from boba.runtime.config import RuntimeConfig
@@ -25,6 +26,15 @@ from boba.runtime.users import UsersTable
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 SCHEMA = "automation_threads_test"
+
+
+def _signed(login: str) -> SignedIn:
+    identity = UserIdentity(realm="test", login=Login(login))
+    return SignedIn(
+        identifier=identity.identifier,
+        display_name=login,
+        sign_in=SignInMetadata(identity=identity),
+    )
 
 
 @pytest.fixture
@@ -49,11 +59,7 @@ async def test_upsert_get_list_and_author(
     tables: tuple[UsersTable, ThreadsTable],
 ) -> None:
     users, threads = tables
-    owner = await users.ensure_user(
-        SignedIn(
-            identifier=Login("owner"), display_name="owner", sign_in=SignInMetadata()
-        )
-    )
+    owner = await users.ensure_user(_signed("owner"))
     thread_id = uuid4()
 
     created = await threads.upsert(
@@ -78,7 +84,7 @@ async def test_upsert_get_list_and_author(
     assert [t.id for t in listed] == [thread_id]
     assert listed[0].updated_at == listed[0].created_at
 
-    assert await threads.get_thread_author(str(thread_id)) == "owner"
+    assert await threads.get_thread_author(str(thread_id)) == "test:owner"
 
     assert await threads.delete(thread_id) == owner.id
     assert await threads.get(thread_id) is None
@@ -108,11 +114,7 @@ async def test_activity_moves_forward_only(
     tables: tuple[UsersTable, ThreadsTable],
 ) -> None:
     users, threads = tables
-    owner = await users.ensure_user(
-        SignedIn(
-            identifier=Login("active"), display_name="active", sign_in=SignInMetadata()
-        )
-    )
+    owner = await users.ensure_user(_signed("active"))
     older = uuid4()
     newer = uuid4()
     await threads.upsert(ThreadUpsert(id=older, user_id=owner.id))
@@ -145,11 +147,7 @@ async def test_pages_follow_activity_without_repeats_or_gaps(
     """Страницы по (updated_at, id) курсора: тред, сдвинутый между страницами,
     и удалённый тред-курсор не дают ни повторов, ни пропусков."""
     users, threads = tables
-    owner = await users.ensure_user(
-        SignedIn(
-            identifier=Login("pager"), display_name="pager", sign_in=SignInMetadata()
-        )
-    )
+    owner = await users.ensure_user(_signed("pager"))
     base = datetime.now(UTC) + timedelta(days=1)
     ids: list[UUID] = []
     for index in range(7):

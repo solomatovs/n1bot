@@ -38,10 +38,11 @@ from boba.config import bind
 from boba.identity.context import CallContexts
 from boba.krb import KerberosWorkspace
 from boba.runtime.config import (
-    InstanceConfig,
     InstanceData,
+    PathsConfig,
     ProgramRoot,
     ProgramRoots,
+    TlsConfig,
 )
 from boba.sandbox import (
     BindSpec,
@@ -275,7 +276,7 @@ class SandboxDefaults:
     KRB5_CONF: ClassVar[str] = "/etc/krb5.conf"
     """Куда плагину с сетью кладётся krb5.conf процесса: нужен для билетов."""
     CA_FILE: ClassVar[str] = "/etc/ssl/certs/ca-certificates.crt"
-    """Куда плагину с сетью кладётся CA-файл контура ([instance].ca_file)."""
+    """Куда плагину с сетью кладётся CA-файл контура ([paths].ca_file)."""
 
     HOST: ClassVar[dict[str, Any]] = {
         "stderr_tail_bytes": 4096,
@@ -316,16 +317,21 @@ class SandboxDefaults:
     }
 
     def __init__(
-        self, program: ProgramRoot, instance: InstanceConfig, cgroup_base: str
+        self,
+        program: ProgramRoot,
+        instance: PathsConfig,
+        cgroup_base: str,
+        tls: TlsConfig | None = None,
     ) -> None:
         self._program = program
         self._instance = instance
+        self._tls = tls or TlsConfig()
         self._cgroup_base = cgroup_base
 
     def network_binds(self) -> list[str]:
         """Имена, krb5.conf процесса (если kerberos настроен файлом) и CA
         контура."""
-        binds = [*self.NETWORK_BINDS, f"{self._instance.ca_file}:{self.CA_FILE}"]
+        binds = [*self.NETWORK_BINDS, f"{self._tls.ca_file}:{self.CA_FILE}"]
 
         krb5_conf = KerberosWorkspace.krb5_config()
         if Path(krb5_conf).is_file():
@@ -334,7 +340,7 @@ class SandboxDefaults:
         return binds
 
     def network_env(self) -> dict[str, str]:
-        return {InstanceConfig.CA_ENV: self.CA_FILE}
+        return {TlsConfig.CA_ENV: self.CA_FILE}
 
     def images(self, sandbox: PluginSandbox) -> list[str]:
         """Каталог программы плагина в /plugin и каталоги данных конфига —
@@ -503,8 +509,11 @@ class ZygoteLaunchers(SectionLaunchers):
         self._raw = raw
         self._program = ProgramRoots().locate()
         section = bind(raw, ToolLaunchers.SECTION, SandboxCgroupConfig)
-        instance = bind(raw, InstanceConfig.SECTION, InstanceConfig)
-        self._defaults = SandboxDefaults(self._program, instance, section.cgroup_base)
+        instance = bind(raw, PathsConfig.SECTION, PathsConfig)
+        tls = bind(raw, TlsConfig.SECTION, TlsConfig)
+        self._defaults = SandboxDefaults(
+            self._program, instance, section.cgroup_base, tls
+        )
         self._zygotes = ZygoteRegistry(self._program.interpreter)
         self._cgroups = CgroupProbe(self._program.interpreter.probe)
         self._output = PluginOutput()
@@ -757,5 +766,5 @@ class ToolLaunchers:
             case SandboxLauncherConfig():
                 return ZygoteLaunchers(raw)
             case ProcessLauncherConfig():
-                instance = bind(raw, InstanceConfig.SECTION, InstanceConfig)
+                instance = bind(raw, PathsConfig.SECTION, PathsConfig)
                 return ProcessLaunchers(section, instance.data(InstanceData.WORKSPACE))

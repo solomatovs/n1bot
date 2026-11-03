@@ -1,4 +1,4 @@
-"""Ключ шифрования значений таблиц ([connections].cipher): проверяется на
+"""Ключ шифрования значений таблиц: проверяется на
 границе конфига, а не в момент использования."""
 
 from __future__ import annotations
@@ -7,10 +7,9 @@ import base64
 import secrets
 
 import pytest
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from pydantic import ValidationError
 
-from boba.config import bind
 from boba.runtime.config import ValueCipherConfig
 
 
@@ -18,7 +17,9 @@ class TestValueCipherConfig:
     def test_config_of_the_app_gives_a_32_byte_key(
         self, raw_config: DictConfig
     ) -> None:
-        section = bind(raw_config, "connections", ValueCipherConfig)
+        section = ValueCipherConfig.model_validate(
+            {"cipher": OmegaConf.select(raw_config, "mcp_servers.cipher")}
+        )
 
         assert len(section.cipher.get_secret_value()) == 32
         assert "**" in repr(section.cipher)

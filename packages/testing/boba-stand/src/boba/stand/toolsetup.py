@@ -89,7 +89,7 @@ class ToolSetup:
     @staticmethod
     def sandbox_changes() -> dict[str, object]:
         """Зиготы тестов живут в песочнице: режимные развилки конфига — sandbox."""
-        return {"env.tool_launcher": "sandbox"}
+        return {"tool_launcher.provider": "sandbox"}
 
     @staticmethod
     def caller(zygote_stand: ZygoteStand, raw: Any, section: str) -> ZygoteToolCaller:

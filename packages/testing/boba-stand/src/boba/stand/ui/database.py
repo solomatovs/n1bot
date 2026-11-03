@@ -41,7 +41,7 @@ from boba.ix_core.database import IxDatabase
 from boba.krb import KerberosWorkspaceConfig
 from boba.mcp_client.client import McpServerConfig, StdioCommand
 from boba.runtime.config import (
-    InstanceConfig,
+    PathsConfig,
     ProcessConfig,
     RuntimeConfig,
     ValueCipherConfig,
@@ -171,13 +171,16 @@ class StandDatabase:
         self._postgres = postgres.model_copy(update={"dbname": name, "pool": pool})
         runtime = bind(self._built, path=RuntimeConfig.SECTION, model=RuntimeConfig)
         self._schema = runtime.db_schema
-        self._cipher = SecretCipher(runtime.connections.cipher.get_secret_value())
+        key = ValueCipherConfig.model_validate(
+            {"cipher": OmegaConf.select(self._built, "mcp_servers.cipher")}
+        )
+        self._cipher = SecretCipher(key.cipher.get_secret_value())
         tool_config = bind(self._tools, path="app", model=ProcessConfig)
         cipher = bind(self._tools, path="app.connection_store", model=ValueCipherConfig)
         self._connection_schema = tool_config.db_schema
         self._connection_cipher = SecretCipher(cipher.cipher.get_secret_value())
         self._types = ConnectionTypes.discover()
-        instance = bind(self._built, path=InstanceConfig.SECTION, model=InstanceConfig)
+        instance = bind(self._built, path=PathsConfig.SECTION, model=PathsConfig)
         layout = instance.layout(app.config_path().parent)
         self._krb: KerberosWorkspaceConfig = layout.kerberos()
 
@@ -197,7 +200,6 @@ class StandDatabase:
         raw = OmegaConf.create(self._built)
         OmegaConf.set_readonly(raw, False)
         OmegaConf.update(raw, "postgres.dbname", self._name)
-        OmegaConf.update(raw, "postgres_history.dbname", self._name)
         targets = list(
             await application.targets(
                 raw,
@@ -220,7 +222,7 @@ class StandDatabase:
         tools = OmegaConf.create(self._tools)
         OmegaConf.set_readonly(tools, False)
         OmegaConf.update(tools, "postgres.dbname", self._name)
-        OmegaConf.update(tools, "env.tool_launcher", "process")
+        OmegaConf.update(tools, "tool_launcher.provider", "process")
         plugin_sources = PluginMigrations()
         tool_migrations = ApplicationMigrations((plugin_sources,))
         targets.extend(
@@ -703,7 +705,10 @@ class StandServerSeed(ServerSeed):
             .load()
         )
         runtime = bind(built, RuntimeConfig.SECTION, RuntimeConfig)
-        cipher = SecretCipher(runtime.connections.cipher.get_secret_value())
+        key = ValueCipherConfig.model_validate(
+            {"cipher": OmegaConf.select(built, "mcp_servers.cipher")}
+        )
+        cipher = SecretCipher(key.cipher.get_secret_value())
         pool = AsyncPostgresPool(runtime.postgres)
         await pool.open()
         try:

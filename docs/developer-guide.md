@@ -420,7 +420,7 @@ PLUGIN: Final = ToolPlugin(id="redis", tools=tuple(TOOLS), network=True)
 - `tools` — инструменты фасада `@tool`.
 - `network` — телу нужна сеть: сервер даёт песочнице сеть хоста и
   кладёт в неё `/etc/resolv.conf`, `/etc/hosts` и `krb5.conf` из
-  `[env].krb`.
+  `conf/krb`.
 - `setup` — хранилище плагина: `PluginSetup(KnowledgeBaseSchemaConfig,
   KbSchema)` — модель секции и фабрика хранилища с методом `setup()`;
   сервер зовёт подкоманду `setup` на старте (раздел 13).
@@ -1126,7 +1126,7 @@ async with credentials.applied_async():
 
 `applied_async()` кладёт байты ccache во временный файл вызова (в песочнице
 это приватный tmpfs), выставляет `KRB5CCNAME` и удаляет файл по выходу.
-`krb5.conf` из `[env].krb` сервер кладёт в песочницу каждого плагина с
+`krb5.conf` из `conf/krb/krb5.conf` сервер кладёт в песочницу каждого плагина с
 сетью (`network=True` в объявлении), биндов в файле плагина не нужно.
 
 Служебное подключение PostgreSQL в `[tool.ingest]` — отдельная настройка
@@ -1281,7 +1281,7 @@ async def redis_restore_stream(
 
 Профиль песочницы плагина сервер собирает из дефолтов, каталога программы
 (`ProgramRoot`: `libexec`, шаблон workspace), каталога данных экземпляра
-(`[instance] data_dir`), секции `[sandbox]` файла плагина и манифеста:
+(`[paths] data_dir`), секции `[sandbox]` файла плагина и манифеста:
 
 - `rootfs` — ext4-образ корня, монтируется fuse2fs read-only один раз на
   жизнь зиготы;
@@ -1291,7 +1291,7 @@ async def redis_restore_stream(
   каталога данных в точку внутри корня. Точка обязана быть в корне (`data`
   в `[tool.boba.sandbox]`), а нет каталога — плагин не поднимается;
 - `network = true` в манифесте — сеть хоста и read-only файлы
-  `/etc/resolv.conf`, `/etc/hosts`, CA-файл контура `[instance] ca_file` на
+  `/etc/resolv.conf`, `/etc/hosts`, CA-файл контура `[tls] ca_file` на
   `/etc/ssl/certs/ca-certificates.crt` (с `SSL_CERT_FILE` на него) и
   `conf/krb/krb5.conf` экземпляра на `/etc/krb5.conf`, если он есть; без сети
   их нет.
@@ -1513,10 +1513,10 @@ BOBA_RUNTIME=$PWD/runtime BOBA_TOOL_LAUNCHER=process .venv/bin/python -m boba.mc
 базой и каталогом данных (руководство администратора, раздел 8,
 «Конфигурация отладки»).
 
-Каталог данных экземпляра называет `[instance] data_dir`, раскладка внутри
+Каталог данных экземпляра называет `[paths] data_dir`, раскладка внутри
 фиксирована (`InstanceData`), `conf/krb` лежит рядом с `config.toml`
 (`InstanceConf`). Компонент, которому нужен путь в данных, берёт секцию
-`[instance]` и зовёт `instance.data(InstanceData.<часть>)`, а не заводит ключ
+`[paths]` и зовёт `paths.data(InstanceData.<часть>)`, а не заводит ключ
 с путём.
 
 Тело запускается без хоста той же программой плагина, что и в песочнице:
@@ -1607,7 +1607,7 @@ BOBA_TOOL_LAUNCHER=process .venv/bin/python -m boba.runtime.toolcli redis redis_
 выполняет `uv sync --all-packages --all-extras` и называет каталог программы
 `BOBA_RUNTIME=<репозиторий>/runtime`. Тесты берут файлы конфигурации из
 переменных `BOBA_CONFIG_PATH` (чат) и `BOBA_MCP_CONFIG_PATH` (boba-mcp):
-конфиг compose, наложение отладки и последним наложение стенда
+конфиг compose, наложение отладки, `aid-process.toml` для AID и последним наложение стенда
 `.dev/stand.toml` через `:`, как описано в руководстве
 администратора (раздел 8, «Тесты»); долгий прогон запускают в своей сессии
 tmux с выводом в файл:
@@ -1615,8 +1615,8 @@ tmux с выводом в файл:
 ```bash
 source dev.sh
 S=$PWD/.dev/stand.toml
-BOBA_AGENT_MODE=process BOBA_TOOL_LAUNCHER=process \
-BOBA_CONFIG_PATH=$PWD/compose/aid/conf/config.toml:$PWD/.vscode/boba/aid.toml:$S \
+BOBA_TOOL_LAUNCHER=process \
+BOBA_CONFIG_PATH=$PWD/compose/aid/conf/config.toml:$PWD/.vscode/boba/aid.toml:$PWD/.vscode/boba/aid-process.toml:$S \
 BOBA_MCP_CONFIG_PATH=$PWD/compose/mcp/conf/config.toml:$PWD/.vscode/boba/mcp.toml:$S \
     .venv/bin/pytest packages/testing/boba-stand/tests/test_plugin_manifests.py -q
 ```
@@ -2129,3 +2129,22 @@ reads spec 1 only», и плагин пересобирается под сер�
 В режиме `process` шаги те же, программа плагина —
 `python -m boba.sandbox.program <id>` интерпретатором сервиса из окружения
 разработчика, без песочницы и зигот.
+
+
+### Общие настройки приложений
+
+Сетевые поля принадлежат `[server]`, каталог данных — `[paths]`, исходящие
+CA — `[tls]`. `ProcessConfig` предоставляет эти общие модели; приложение
+расширяет модель сервера своими полями. `ServiceAddress` в boba-identity
+проверяет согласованность OAuth public_url/url_prefix и используется OAuth,
+MCP и Boba без зависимости общего runtime от инфраструктуры OAuth.
+
+У AID `[agent].mode` — discriminator process/service. `ConfigSchema`
+перед слиянием слоёв заменяет ветку целиком, если явный discriminator сменился.
+Обычные таблицы сливаются рекурсивно, списки заменяются. ServiceLinks не
+строит локальную модель и файл настроек. UI-профиль `ChatProfileConfig`
+отделён от `LocalChatProfileConfig` с моделью и её пределами.
+
+Пустой HTTP transport получает `HttpTransportConfig` из default_factory
+модели потребителя; для своего прокси/CA/повторов задайте transport явно.
+AID хранит ключ шифрования секретов MCP-серверов в `[mcp_servers].cipher`.

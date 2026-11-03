@@ -35,9 +35,10 @@ from boba.auth.config import (
     KerberosAuthConfig,
     ProxyAuthConfig,
 )
-from boba.chat.profiles import ChatProfileConfig, ChatRoleConfig
+from boba.chat.profiles import ChatRoleConfig, ProfileConfig
 from boba.config import ConfigError, ConfigLoader, ConfigSchema, bind
 from boba.db.postgres.connection import PostgresConfig
+from boba.identity.service import PublicAddress
 from boba.identity.token import CookieSpec, SessionRenewal
 from boba.krb import KerberosWorkspace, KerberosWorkspaceConfig
 from boba.krb.seal import SsoTickets, TicketSealer
@@ -52,11 +53,11 @@ __all__ = [
     "ConfigArguments",
     "InstalledProgram",
     "InstanceConf",
-    "InstanceConfig",
     "InstanceData",
     "InstanceLayout",
     "LocalMessagingConfig",
     "MessagingConfig",
+    "PathsConfig",
     "PostgresMessagingConfig",
     "ProcessConfig",
     "ProcessLogging",
@@ -68,10 +69,12 @@ __all__ = [
     "ProgramRoots",
     "RawConfig",
     "RuntimeConfig",
+    "ServerConfig",
     "SessionConfig",
     "SourceProgram",
     "SourceTree",
     "StreamJournalConfig",
+    "TlsConfig",
     "TokenConfig",
     "ValueCipherConfig",
 ]
@@ -383,7 +386,7 @@ class ProgramRoots:
 
 
 class InstanceData(StrEnum):
-    """Фиксированная раскладка каталога данных экземпляра ([instance].data_dir):
+    """Фиксированная раскладка каталога данных экземпляра ([paths].data_dir):
     единственного места, куда пишет программа."""
 
     KRB_CACHE = "krb/cache"
@@ -405,8 +408,33 @@ class InstanceConf(StrEnum):
     """krb5.conf; keytab'ы лежат рядом и называются в конфиге именем файла."""
 
 
-class InstanceConfig(BaseModel):
-    """Секция [instance]: каталог данных экземпляра и CA-файл контура.
+class TlsConfig(BaseModel):
+    """Доверенные CA исходящих подключений процесса и сетевых песочниц."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    SECTION: ClassVar[str] = "tls"
+    CA_ENV: ClassVar[str] = "SSL_CERT_FILE"
+    ca_file: str = Field(default="/etc/ssl/certs/ca-certificates.crt", min_length=1)
+
+    @field_validator("ca_file")
+    @classmethod
+    def _absolute(cls, value: str) -> str:
+        if not os.path.isabs(value):
+            raise ValueError("[tls].ca_file must be an absolute path")
+        return os.path.normpath(value)
+
+
+class ServerConfig(PublicAddress):
+    """Общие параметры HTTP-сервера приложения."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+    host: str = Field(default="127.0.0.1", min_length=1)
+    port: int = Field(gt=0, lt=65536)
+    shutdown_timeout_sec: int = Field(default=10, gt=0)
+
+
+class PathsConfig(BaseModel):
+    """Секция [paths]: каталог данных экземпляра и CA-файл контура.
 
     Раскладка внутри каталога данных фиксирована (InstanceData), а conf/krb
     лежит рядом с config.toml (InstanceConf): других путей экземпляра в
@@ -417,10 +445,7 @@ class InstanceConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    SECTION: ClassVar[str] = "instance"
-
-    CA_ENV: ClassVar[str] = "SSL_CERT_FILE"
-    """Переменная, из которой CA берут httpx (trust_env) и OpenSSL."""
+    SECTION: ClassVar[str] = "paths"
 
     data_dir: str = Field(
         min_length=1,
@@ -428,19 +453,12 @@ class InstanceConfig(BaseModel):
             "Каталог данных экземпляра: абсолютный путь, раскладка внутри фиксирована."
         ),
     )
-    ca_file: str = Field(
-        min_length=1,
-        description=(
-            "CA-файл контура (PEM): им проверяют TLS httpx и библиотеки процесса, "
-            "его же видят песочницы плагинов с сетью."
-        ),
-    )
 
-    @field_validator("data_dir", "ca_file")
+    @field_validator("data_dir")
     @classmethod
     def _absolute(cls, value: str) -> str:
         if not os.path.isabs(value):
-            msg = f"[instance]: expected an absolute path, got {value!r}"
+            msg = f"[paths]: expected an absolute path, got {value!r}"
             raise ValueError(msg)
 
         return os.path.normpath(value)
@@ -448,8 +466,8 @@ class InstanceConfig(BaseModel):
     def data(self, part: InstanceData) -> Path:
         return Path(self.data_dir) / part.value
 
-    def layout(self, conf_dir: Path) -> InstanceLayout:
-        return InstanceLayout(conf_dir=conf_dir, instance=self)
+    def layout(self, conf_dir: Path, tls: TlsConfig | None = None) -> InstanceLayout:
+        return InstanceLayout(conf_dir=conf_dir, paths=self, tls=tls or TlsConfig())
 
 
 @dataclass(frozen=True)
@@ -457,12 +475,13 @@ class InstanceLayout:
     """Каталог экземпляра целиком: conf/ (где лежит config.toml) и данные.
 
     Собирает его вход процесса из каталога главного файла конфига и секции
-    [instance]; apply() ставит процессу kerberos и CA из модели (CLAUDE.md
+    [paths]; apply() ставит процессу kerberos и CA из модели (CLAUDE.md
     §17: в окружение пишет только вход).
     """
 
     conf_dir: Path
-    instance: InstanceConfig
+    paths: PathsConfig
+    tls: TlsConfig
 
     def krb5_conf(self) -> Path:
         return self.conf_dir / InstanceConf.KRB5_CONF.value
@@ -470,22 +489,22 @@ class InstanceLayout:
     def kerberos(self) -> KerberosWorkspaceConfig:
         return KerberosWorkspaceConfig(
             config=str(self.krb5_conf()),
-            ccache_dir=str(self.instance.data(InstanceData.KRB_CACHE)),
+            ccache_dir=str(self.paths.data(InstanceData.KRB_CACHE)),
         )
 
     def apply(self) -> None:
         """Рабочий каталог kerberos и KRB5_CONFIG, CA-файл контура в
         SSL_CERT_FILE; CA-файла нет — ConfigError."""
-        ca_file = Path(self.instance.ca_file)
+        ca_file = Path(self.tls.ca_file)
         if not ca_file.is_file():
             msg = (
-                f"[instance]: ca_file must name the CA file of the network "
+                f"[tls]: ca_file must name the CA file of the network "
                 f"(PEM), {ca_file} is not a file"
             )
             raise ConfigError(msg)
 
         self.kerberos().apply()
-        os.environ[InstanceConfig.CA_ENV] = str(ca_file)
+        os.environ[TlsConfig.CA_ENV] = str(ca_file)
 
 
 class RawConfig:
@@ -781,9 +800,9 @@ class ProcessConfig(BaseModel):
             "её ссылкой ${app.schema}."
         ),
     )
-    instance: InstanceConfig = Field(
-        description="Секция [instance] ссылкой ${instance}: данные и CA экземпляра."
-    )
+    paths: PathsConfig
+    tls: TlsConfig = Field(default_factory=TlsConfig)
+    server: ServerConfig
     auth: list[AuthConfig]
     logger: dict[str, Any] = Field(default_factory=ProcessLogging.default)
     session: TokenConfig
@@ -805,7 +824,7 @@ class ProcessConfig(BaseModel):
         файла конфига, где лежит conf/krb. Ставит процессу kerberos и CA."""
         config = bind(raw, path=cls.SECTION, model=cls)
         # кэши билетов раскладывает приложение: строкам соединений пути не задают
-        config.instance.layout(conf_dir).apply()
+        config.paths.layout(conf_dir, config.tls).apply()
 
         return config
 
@@ -867,10 +886,7 @@ class RuntimeConfig(ProcessConfig):
             "единственный пул, его получают все таблицы приложения."
         ),
     )
-    connections: ValueCipherConfig = Field(
-        description="Секция [connections]: шифрование соединений пользователей."
-    )
-    profiles: dict[str, ChatProfileConfig]
+    profiles: dict[str, ProfileConfig]
     roles: dict[str, ChatRoleConfig]
     session: SessionConfig
     cluster: ClusterConfig

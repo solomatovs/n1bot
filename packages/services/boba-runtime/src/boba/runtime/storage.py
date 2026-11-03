@@ -42,8 +42,8 @@ from boba.canvas.storage import (
     StorageUrl,
 )
 from boba.runtime.config import (
-    InstanceConfig,
     InstanceData,
+    PathsConfig,
     ProgramRoot,
     ProgramRoots,
 )
@@ -276,12 +276,12 @@ class StorageClient(ABC):
 class StorageFactory:
     """Выбирает реализацию хранилища по конфигу.
 
-    Создаёт его сервис boba-mcp над секцией [instance]: образы workspace
+    Создаёт его сервис boba-mcp над секцией [paths]: образы workspace
     пользователей лежат в каталоге данных экземпляра, шаблон образа, bwrap и
     fuse2fs — в каталоге программы (ProgramRoot).
     """
 
-    def __init__(self, instance: InstanceConfig) -> None:
+    def __init__(self, instance: PathsConfig) -> None:
         self._instance = instance
 
     def create(self, config: StorageConfig) -> StorageClient:

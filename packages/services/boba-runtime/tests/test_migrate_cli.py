@@ -37,17 +37,17 @@ async def test_migrate_uses_only_storage_config_and_refuses_repeat(  # noqa: PLR
     pool: AsyncPostgresPool,
 ) -> None:
     name = f"migrate_cli_{uuid4().hex[:12]}"
-    instance = runtime_config.instance.model_copy(
+    instance = runtime_config.paths.model_copy(
         update={"data_dir": str(tmp_path / "data")}
     )
     connection = test_postgres.model_dump(mode="json", exclude_none=True)
     location = {"schema": name, "postgres": "${postgres}"}
-    app: dict[str, object] = {"instance": "${instance}", **location}
+    app: dict[str, object] = {"paths": "${paths}", **location}
     if module == "boba.cli.app":
         app["agent"] = {"history": location}
 
     document: dict[str, object] = {
-        "instance": instance.model_dump(mode="json"),
+        "paths": instance.model_dump(mode="json"),
         "postgres": connection,
         "app": app,
     }

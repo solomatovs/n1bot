@@ -19,7 +19,6 @@ from boba.auth import AuthService, JwtTokens, SignIns
 from boba.auth.credentials import KerberosCredentialSource
 from boba.chat.profiles import ChatProfiles
 from boba.config import bind
-from boba.connection_broker.crypto import SecretCipher
 from boba.connection_broker.params import ConnectionParams
 from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.tickets import ServiceTickets
@@ -44,9 +43,9 @@ from boba.runtime.bus import PgMessageBus
 from boba.runtime.commands import CommandRunner
 from boba.runtime.config import (
     AppName,
-    InstanceConfig,
     InstanceData,
     LocalMessagingConfig,
+    PathsConfig,
     ProcessConfig,
     RawConfig,
     RuntimeConfig,
@@ -354,26 +353,9 @@ def connection_types() -> ConnectionTypes:
     return ConnectionTypes.discover()
 
 
-def secret_cipher(
-    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
-) -> SecretCipher:
-    """Шифр секретов хранилищ процесса ключом [connections].cipher: общий у
-    соединений и MCP-серверов."""
-    return SecretCipher(config.connections.cipher.get_secret_value())
-
-
-async def connection_store(
-    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
-    types: Annotated[ConnectionTypes, Depends(connection_types)],
-    pool: Annotated[AsyncPostgresPool, Depends(postgres_pool)],
-    cipher: Annotated[SecretCipher, Depends(secret_cipher)],
-) -> ConnectionStore:
-    """Хранилище соединений; роли из [roles] попадают в таблицу roles на старте."""
-    store = ConnectionStore(pool, config.db_schema, cipher, types)
-
-    await store.sync_roles(config.roles)
-
-    return store
+def connection_store() -> ConnectionStore:
+    """Каталог connections предоставляет сборка MCP-сервера."""
+    raise RuntimeError("connection_store must be supplied by the MCP application")
 
 
 def call_ambient() -> CallAmbient:
@@ -400,7 +382,7 @@ def call_journals(
     if not section.enable:
         return CallJournals(None, active)
 
-    instance = bind(raw, InstanceConfig.SECTION, InstanceConfig)
+    instance = bind(raw, PathsConfig.SECTION, PathsConfig)
     vault = DirVault(str(instance.data(InstanceData.TOOL_LOGS)))
     return CallJournals(StreamJournal(vault, section.reserve_bytes), active)
 

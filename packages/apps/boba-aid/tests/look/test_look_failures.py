@@ -593,7 +593,7 @@ class ServiceStand:
         listen = StandPorts().free()
         self.proxy = FaultProxy(listen)
         self._address = ServeAddress(listen=listen, public=self.proxy.port)
-        self._instance = process_config.instance
+        self._instance = process_config.paths
         history = AgentHistoryStand(stand)
         self._history = ServeHistory(
             schema=history.schema(), postgres=history.postgres()
