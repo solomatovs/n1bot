@@ -25,6 +25,7 @@ import uvicorn
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.access import GrantCheck, ToolGrants
+from boba.access_postgres.roles import RoleToolsTable
 from boba.auth.proxy import ProxyAssertionVerifier
 from boba.cancellation import ProcessStop, StopReason
 from boba.config import ConfigSchema, bind
@@ -69,7 +70,6 @@ from boba.runtime.di import Container, Depends
 from boba.runtime.http import HealthProbe, SignalledServer
 from boba.runtime.launchers import ToolLaunchers
 from boba.runtime.storage import StorageConfig, StorageFactory
-from boba.mcp_server.endpoints import McpEndpointStore
 
 __all__ = ["McpAppConfig", "McpEntry", "McpHost", "McpSection"]
 
@@ -90,6 +90,7 @@ class McpSection(BaseModel):
     ждала бы keep-alive соединений прокси бесконечно и не доходила до
     завершения запусков."""
     limits: RunLimits
+    endpoints: dict[str, McpEndpoint] = Field(min_length=1)
     clients: dict[str, TrustedClient] = Field(default_factory=dict)
     """Доверенные клиенты OAuth по client_id: им разрешён вход proxy."""
 
@@ -236,27 +237,30 @@ class McpHost:
         server = self._config.server
         Container.set_root(self._container)
         try:
-            pool = await self._container.get(mcp_pool)
-            self._endpoint_store = McpEndpointStore(
-                self._config.postgres, self._config.db_schema, pool
-            )
             users = await self._container.get(mcp_users)
             self._container.provide(providers.identity_users, users)
-            configured_endpoints = await self._endpoint_store.list()
-            self._endpoints = EndpointCatalog(configured_endpoints)
-            self._container.provide(providers.profile_catalog, self._endpoints)
+            permissions = RoleToolsTable(
+                self._config.postgres,
+                self._config.db_schema,
+                self._container.resolved(mcp_pool),
+            )
             self._container.provide(
                 providers.tool_grants,
-                ToolGrants(roles={}, profiles=configured_endpoints, check=GrantCheck.STRICT),
+                ToolGrants(
+                    roles={},
+                    profiles=self._config.mcp.endpoints,
+                    check=GrantCheck.STRICT,
+                    role_permissions=permissions,
+                ),
             )
             await self._container.start()
-            auth = self._auth(section, configured_endpoints)
+            auth = self._auth(section)
             endpoints = McpEndpoints(
                 self._container.resolved(providers.tool_registry),
                 self._container.resolved(providers.runs),
                 self._container.resolved(providers.call_journals),
                 auth,
-                configured_endpoints,
+                section.endpoints,
                 self._container.resolved(providers.connection_params),
                 section.limits,
                 self._config.storage,
@@ -287,9 +291,7 @@ class McpHost:
             Container.set_root(None)
             await self._container.aclose()
 
-    def _auth(
-        self, section: McpSection, endpoints: dict[str, McpEndpoint]
-    ) -> ServiceAuth:
+    def _auth(self, section: McpSection) -> ServiceAuth:
         """Вход сервиса: сервер авторизации над способами входа [auth] и
         проверяющие токена endpoint'ов."""
         session = self._config.session
@@ -308,7 +310,7 @@ class McpHost:
 
         sealed = SealedValues(session.auth_secret, ServiceMark.SEALED_SALT)
         resources: dict[str, str] = {}
-        for name in endpoints:
+        for name in section.endpoints:
             resources[name] = f"{public_url}/{name}"
 
         server = AuthServer(
@@ -369,7 +371,6 @@ class McpEntry:
                         "boba.identity_postgres",
                         "boba.access_postgres",
                         "boba.connection_broker",
-                        "boba.mcp_server",
                     ),
                 )
 

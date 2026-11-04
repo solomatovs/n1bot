@@ -171,11 +171,15 @@ class ConnectionOfferRule(RoleVisibility):
 
 
 class McpEndpoint(ProfileGrant):
-    """Stored endpoint policy: its role grant, selected tools and metadata."""
+    """Секция [mcp.endpoints.<имя>]: грант профиля (роли, инструменты),
+    правила предложения соединений и промпты. Правило пишется явно, у
+    endpoint'а без соединений — пустым списком; промпты — таблицей по именам
+    (обычно ${toml_dir:prompts/<имя>}), у endpoint'а без промптов — пустой.
+    Конфиг сервиса разбирает секцию на старте; EndpointCatalog берёт её
+    грантом профиля, RoleToolServers — правилами, McpEndpoints — промптами."""
 
-    description: str = ""
-    connections: list[ConnectionOfferRule] = Field(default_factory=list)
-    prompts: dict[str, PromptFile] = Field(default_factory=dict)
+    connections: list[ConnectionOfferRule]
+    prompts: dict[str, PromptFile]
 
     def offer(self, roles: frozenset[str]) -> frozenset[OfferedSource]:
         """Источники соединений по первому подходящему правилу; ни одно не
