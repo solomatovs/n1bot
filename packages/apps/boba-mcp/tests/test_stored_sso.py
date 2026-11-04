@@ -56,7 +56,6 @@ class StoredSsoConfig(ServiceStand):
     def write(self) -> None:
         super().write()
         document = tomllib.loads(self.files.overlay.read_text())
-        document["env"]["tool_launcher"] = "sandbox"
         document["app"]["auth"].append("${auth.kerberos}")
         kerberos = self.app.table("auth.kerberos")
         principal = Stand.required().reader_principal
@@ -119,7 +118,7 @@ async def service(
         tmp_path,
         StandPorts().free(),
         test_postgres.dbname,
-        False,
+        True,
         db_schema=f"mcp_sso_{uuid4().hex[:12]}",
         generation="stored-sso",
         plugins=("pg",),

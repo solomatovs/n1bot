@@ -38,6 +38,7 @@ from boba.kerberos import DelegatedAuth, KeytabAuth
 from boba.mcp_server.app import McpAppConfig, mcp_connections
 from boba.mcp_server.server import RunLimits
 from boba.stand.overlay import ConfigOverlay
+from boba.stand.roles import RoleSeed
 from boba.stand.site import Stand
 from boba.toolrun.stream_calls import WorkflowTool
 from boba.transport.http.connection import HttpConnection
@@ -69,7 +70,7 @@ async def store(
     await PostgresMigrations().apply((MigrationTarget(test_postgres, plan),))
     try:
         store = await mcp_connections(config, pool, ConnectionTypes.discover())
-        await store.sync_roles(("dev",))
+        await RoleSeed(store).add(("dev",))
         yield store
     finally:
         async with pool.connection() as conn:
@@ -268,16 +269,16 @@ async def test_role_cannot_call_a_tool_from_another_users_catalog(
     assert dag.is_error
 
 
-async def test_stored_offer_cannot_resolve_an_ungranted_profile(
+async def test_stored_connection_outside_the_user_catalog_is_refused(
     service: ServiceStand,
 ) -> None:
     calls = CatalogCalls(service)
     async with await calls.client(analyst=True) as client:
-        result = await client.call_tool_mcp(
-            calls.TOOL, {"connection": "not-granted"}
-        )
+        result = await client.call_tool_mcp(calls.TOOL, {"connection": "not-granted"})
     assert result.is_error
-    assert "not offered" in calls.text(result)
+    message = calls.text(result)
+    assert "not among the connections" in message
+    assert "not-granted" not in message
 
 
 async def test_keytab_credentials_are_prepared_by_mcp(

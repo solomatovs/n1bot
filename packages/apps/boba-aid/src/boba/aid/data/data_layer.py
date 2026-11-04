@@ -56,7 +56,7 @@ from boba.chat.threads import (
 )
 from boba.identity.api import StoredUser, UserRows
 from boba.identity.context import Scope
-from boba.identity.session import Login
+from boba.identity.session import Login, UserMetadataField
 from boba.identity.signin import SignInMetadata
 from boba.messaging import (
     AnyMessage,
@@ -226,11 +226,16 @@ class ThreadDicts:
     @staticmethod
     def user(stored: StoredUser) -> PersistedUser:
         identified = stored.authenticated()
+        metadata = identified.sign_in.render()
+        metadata[UserMetadataField.ROLES] = sorted(stored.roles)
+        if not stored.roles:
+            metadata[UserMetadataField.PROFILES] = []
+            metadata[UserMetadataField.PROFILE] = ""
         return PersistedUser(
             id=str(identified.id),
             identifier=identified.identifier,
             createdAt=Codec.iso(stored.created_at),
-            metadata=dict(stored.meta),
+            metadata=metadata,
         )
 
     @staticmethod
@@ -314,11 +319,13 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership, FeedRows):
 
     @data_boundary
     async def create_user(self, user: ChainlitUser) -> PersistedUser | None:
-        # в строку users уходит только вход без билета; настройки строки не трогаются
+        # В базе остаются личность и членство; metadata сессии живёт в JWT.
         sign_in = SignInMetadata.parse(dict(user.metadata))
         identifier = Login(user.identifier)
         sign_in.identity_for(identifier)
-        stored = await self._users.upsert(identifier, sign_in.stored())
+        stored = await self._users.upsert(
+            identifier, sign_in.identity_for(identifier), sign_in.roles
+        )
 
         return ThreadDicts.user(stored)
 

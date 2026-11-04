@@ -29,6 +29,7 @@ from boba.db.postgres.connection import (
     PostgresPoolConfig,
 )
 from boba.identity.context import Subject
+from boba.stand.roles import RoleSeed
 from boba.transport.http.connection import HttpConnection
 
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]
@@ -56,7 +57,7 @@ async def store(pool: AsyncPostgresPool) -> ConnectionStore:
         )
 
     built = ConnectionStore(pool, SCHEMA, cipher, ConnectionTypes.discover())
-    await built.sync_roles([ROLE])
+    await RoleSeed(built).add([ROLE])
     return built
 
 

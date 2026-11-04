@@ -22,6 +22,7 @@ import pytest
 from acp.experimental.v2 import schema
 from acp_stand import AgentHistoryStand, AgentStand, FakeModel, RecordingUpdates
 from aid_stand import FixedServers, RelayStand, TabSession
+from psycopg import sql
 from pydantic import SecretStr
 
 from boba.aid.agent.chat import (
@@ -42,7 +43,7 @@ from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.principal import UserIdentity
 from boba.identity.session import Login
-from boba.identity.signin import SignInMetadata
+from boba.identity.signin import SignedIn, SignInMetadata
 from boba.mcp_client.client import (
     FixedServerConfigs,
     HttpLocation,
@@ -60,6 +61,7 @@ from boba.stand.agent_service import (
     ServiceProfiles,
 )
 from boba.stand.names import StandNames
+from boba.stand.roles import RoleSeed
 from boba.stand.signin import SignInStand
 from boba.stand.site import Stand
 from boba.stand.ui.fake_llm import Reply, ReplyBookClient, ReplyTurn, ScenarioName
@@ -84,6 +86,9 @@ def chainlit_context(auth_token: str) -> None:
 async def runtime_schema(pool: AsyncPostgresPool) -> None:
     """Таблицы чата в схеме набора: threads и users."""
     async with pool.connection() as conn:
+        await conn.execute(
+            sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
+        )
         await PostgresSchema(SCHEMA).apply_packages(
             conn, ("boba.identity_postgres", "boba.runtime")
         )
@@ -207,7 +212,12 @@ class ServiceModeStand:
         sign_in = SignInMetadata(
             roles=frozenset({"dev"}), identity=UserIdentity.model_validate(self.LOGIN)
         )
-        owner = await self._users.upsert(Login(self.LOGIN), sign_in.render())
+        await RoleSeed(self._users).add(["dev"])
+        owner = await self._users.ensure_user(
+            SignedIn(
+                identifier=Login(self.LOGIN), display_name="Alice", sign_in=sign_in
+            )
+        )
         thread_id = str(uuid4())
         await self._threads.upsert(ThreadUpsert(id=UUID(thread_id), user_id=owner.id))
         tab = TabSession()

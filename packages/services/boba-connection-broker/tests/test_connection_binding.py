@@ -10,7 +10,7 @@ import pytest
 from psycopg import sql
 from pydantic import SecretStr, create_model
 
-from boba.auth.credentials import KerberosCredentialSource, NoRefresh
+from boba.connection_broker.credentials import KerberosCredentialSource, NoRefresh
 from boba.connection_broker.crypto import SecretCipher
 from boba.connection_broker.params import ConnectionParams
 from boba.connection_broker.store import ConnectionStore

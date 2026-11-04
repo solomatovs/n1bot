@@ -24,8 +24,6 @@ import uuid
 from collections.abc import AsyncIterator, Callable
 from typing import Annotated, Any, ClassVar, Literal
 
-from chainlit.auth import get_current_user
-from chainlit.user import PersistedUser, User
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.datastructures import UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -33,6 +31,7 @@ from pydantic import ValidationError
 from python_multipart.multipart import MultipartParser, parse_options_header
 from starlette.datastructures import Headers
 
+from boba.aid.auth.request import authenticated_user
 from boba.aid.canvas.remote import RemoteJournals
 from boba.aid.domain.fields import FileField
 from boba.aid.infra.session import ChainlitSession, session_source_ref
@@ -49,6 +48,7 @@ from boba.canvas.transfer import (
     UploadPolicy,
 )
 from boba.core.validation import ValidationText
+from boba.identity.api import AuthenticatedUser
 from boba.identity.errors import AuthenticationError
 from boba.identity.session import Login
 from boba.mcp_client.client import McpCaller, McpClientError, McpServers, RelayedFile
@@ -252,8 +252,8 @@ class SessionFiles:
 class UploadRoute:
     """Замена chainlit-роутов вложения: файл течёт в хранилище и обратно."""
 
-    CURRENT_USER: ClassVar[Any] = Depends(get_current_user)
-    """Та же проверка токена, что и у chainlit; дефолт сигнатуры — только класс."""
+    CURRENT_USER: ClassVar[Any] = Depends(authenticated_user)
+    """Проверенный общий principal из подписанного токена."""
 
     def __init__(self, storage: StorageClient, policy: UploadPolicy) -> None:
         self._storage = storage
@@ -281,7 +281,7 @@ class UploadRoute:
         request: Request,
         session_id: str,
         ask_parent_id: str | None = None,
-        current_user: Any = CURRENT_USER,
+        current_user: AuthenticatedUser = CURRENT_USER,
     ) -> JSONResponse:
         """Принимает файл и отдаёт ссылку в том же виде, что и chainlit."""
         started = time.monotonic()
@@ -340,7 +340,7 @@ class UploadRoute:
         request: Request,
         file_id: str,
         session_id: str,
-        current_user: Any = CURRENT_USER,
+        current_user: AuthenticatedUser = CURRENT_USER,
     ) -> Response:
         """Отдаёт ранее загруженный файл потоком прямо из хранилища."""
         session = self._session(session_id, current_user)
@@ -460,20 +460,25 @@ class UploadRoute:
         }
 
     @staticmethod
-    def _session(session_id: str, current_user: Any) -> ChainlitSession:
+    def _session(
+        session_id: str, current_user: AuthenticatedUser
+    ) -> ChainlitSession:
         session = session_source_ref().by_id(session_id)
         if not session.present:
             msg = f"chainlit session {session_id} is not found"
             raise HTTPException(status_code=404, detail=msg)
 
-        if not current_user:
-            return session
-
-        # current_user — cl.User из JWT chainlit, логин в нём как набран
         if session.identifier != Login(current_user.identifier):
             msg = (
                 f"session {session_id} belongs to another user: "
                 f"{session.identifier!r}, not {current_user.identifier!r}"
+            )
+            raise AuthenticationError(msg)
+
+        if session.user_id != str(current_user.id):
+            msg = (
+                f"session {session_id} belongs to user UUID {session.user_id!r}, "
+                f"not {current_user.id}"
             )
             raise AuthenticationError(msg)
 
@@ -494,22 +499,6 @@ class UploadRoute:
         return str(user_id)
 
 
-class PersistedSignIn:
-    """Зависимость FastAPI маршрутов файлов панели и журналов: вошедший по
-    токену chainlit пользователь со строкой users; без неё — 401."""
-
-    async def __call__(
-        self,
-        current_user: Annotated[User | PersistedUser | None, Depends(get_current_user)],
-    ) -> PersistedUser:
-        if not isinstance(current_user, PersistedUser):
-            got = type(current_user).__name__
-            msg = f"sign-in required: expected a persisted user, got {got}"
-            raise HTTPException(status_code=401, detail=msg)
-
-        return current_user
-
-
 class CanvasServing:
     """Отдаёт файл панели по треду, каталогу и имени; сессия здесь ни при чём.
 
@@ -527,7 +516,7 @@ class CanvasServing:
         thread_id: str,
         dir: ScopeDir,  # noqa: A002
         name: str,
-        current_user: Annotated[PersistedUser, Depends(PersistedSignIn())],
+        current_user: Annotated[AuthenticatedUser, Depends(authenticated_user)],
         mime: Annotated[str, Query(min_length=1)],
     ) -> Response:
         """Файл панели вида mime — каким его назвала ссылка."""
@@ -582,7 +571,7 @@ class StreamServing:
         request: Request,
         thread_id: str,
         call_id: str,
-        current_user: Annotated[PersistedUser, Depends(PersistedSignIn())],
+        current_user: Annotated[AuthenticatedUser, Depends(authenticated_user)],
         channel: str = ToolChannel.STDOUT.value,
     ) -> Response:
         # служебные каналы вызова наружу не отдаются: скачать можно то же,
@@ -604,7 +593,7 @@ class StreamServing:
 
         caller = McpCaller(
             login=Login(current_user.identifier),
-            roles=ChainlitSession.roles_of(current_user),
+            roles=current_user.roles,
         )
         try:
             files = await self._servers_ref().journal_files(address.server, caller)

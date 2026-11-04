@@ -10,7 +10,9 @@ ValueError — пустой секрет или поколение при сбо
 from __future__ import annotations
 
 import time
+from datetime import datetime
 from typing import Any
+from uuid import UUID
 
 import jwt
 
@@ -76,15 +78,17 @@ class JwtTokens(TokenIssuer, TokenReader):
             update={"sign_in": signed.sign_in.issued_at(self._generation)}
         )
 
-    def issue(self, signed: SignedIn) -> str:
+    def issue(
+        self, signed: SignedIn, user_id: UUID, created_at: datetime, issued_at: int
+    ) -> str:
         claims = SessionClaims.of_signed(
-            self.stamp(signed), int(time.time()), self._ttl_sec
+            self.stamp(signed), user_id, created_at, issued_at, self._ttl_sec
         )
 
         return self._encode(claims)
 
-    def renew(self, claims: SessionClaims) -> str:
-        renewed = claims.renewed(int(time.time()), self._ttl_sec)
+    def renew(self, claims: SessionClaims, issued_at: int) -> str:
+        renewed = claims.renewed(issued_at, self._ttl_sec)
         metadata = renewed.sign_in().issued_at(self._generation).render()
 
         return self._encode(renewed.model_copy(update={"metadata": metadata}))

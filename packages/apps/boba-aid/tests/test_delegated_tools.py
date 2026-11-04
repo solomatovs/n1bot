@@ -40,6 +40,7 @@ from boba.kerberos import (
 )
 from boba.krb import SpnegoAcceptor, TicketCapture
 from boba.krb.seal import SsoTickets
+from boba.stand.roles import RoleSeed
 from boba.stand.site import Stand
 from boba.stand.toolsetup import Call
 from boba.transport.http.connection import HttpConnection, NegotiateAuth, UrlScheme
@@ -71,7 +72,7 @@ pytestmark = [
 @pytest.fixture
 async def store(pool: AsyncPostgresPool, tool_service: ToolService) -> ConnectionStore:
     built = await tool_service.catalog(pool)
-    await built.sync_roles([ROLE])
+    await RoleSeed(built).add([ROLE])
     return built
 
 

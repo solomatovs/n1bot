@@ -44,7 +44,7 @@ from boba.stand.ui.config import (
     StandToolNames,
     StandUrl,
 )
-from boba.stand.ui.database import StandServerSeed
+from boba.stand.ui.database import StandServerSeed, seed_service_roles
 
 __all__ = [
     "REPO_ROOT",
@@ -125,6 +125,8 @@ class StandProcess(Generic[ConfigT]):
             self.companion.start(boot_timeout_sec)
 
         self.config.write()
+        if isinstance(self.config, ServiceStand):
+            seed_service_roles(self.config)
         self.process = self._spawn()
         deadline = time.monotonic() + boot_timeout_sec
         path = self.config.url_prefix + self.config.app.ready_path

@@ -1,20 +1,27 @@
 """Загрузка вложения: тело идёт в хранилище потоком, а не через память или tmp."""
 
+from __future__ import annotations
+
 import tempfile
 import unicodedata
 from collections.abc import AsyncIterator, Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, ClassVar
 from uuid import UUID
 
 import pytest
-from chainlit.auth import get_current_user
+from aid_stand import StandTokens
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from boba.aid.auth.request import authenticated_user
 from boba.aid.data.upload import UploadRoute
 from boba.canvas.storage import StorageFullError
 from boba.canvas.transfer import UploadPolicy
+from boba.identity.api import AuthenticatedUser
+from boba.identity.session import Login
+from boba.identity.signin import SignInMetadata
 from boba.runtime.http import DomainErrorMiddleware
 from boba.runtime.storage import LocalStorageClient
 from boba.workspace.launcher import ReadWindow
@@ -24,10 +31,21 @@ pytestmark = pytest.mark.anyio
 CHUNK = 64 * 1024
 
 
+def signed_user(user: FakeUser) -> AuthenticatedUser:
+    return AuthenticatedUser(
+        id=user.id,
+        identifier=Login(user.identifier),
+        created_at=datetime(2024, 1, 1, tzinfo=UTC),
+        sign_in=SignInMetadata(),
+    )
+
+
 class FakeUser:
     """Пользователь сессии: роуту нужны только identifier и id."""
 
-    def __init__(self, identifier: str = "ivanov", user_id: UUID = UUID(int=7)) -> None:
+    def __init__(
+        self, identifier: str = "corporate:ivanov", user_id: UUID = UUID(int=7)
+    ) -> None:
         self.identifier = identifier
         self.id = user_id
 
@@ -35,7 +53,7 @@ class FakeUser:
 class FakeSession:
     """Сессия chainlit в объёме, который читает и пишет UploadRoute."""
 
-    INSTANCES: ClassVar[dict[str, "FakeSession"]] = {}
+    INSTANCES: ClassVar[dict[str, FakeSession]] = {}
 
     def __init__(self, session_id: str, files_dir: Path) -> None:
         self.id = session_id
@@ -44,6 +62,7 @@ class FakeSession:
         self.files: dict[str, dict[str, Any]] = {}
         self.files_spec: dict[str, Any] = {}
         self.files_dir = files_dir
+        self.token = StandTokens.issue_for(self.user.identifier, self.user.id)
         self.INSTANCES[session_id] = self
 
 
@@ -95,7 +114,9 @@ def app_builder(
     def build(policy: UploadPolicy) -> FastAPI:
         app = FastAPI()
         UploadRoute(storage, policy).install(app)
-        app.dependency_overrides[get_current_user] = lambda: session.user
+        app.dependency_overrides[authenticated_user] = lambda: signed_user(
+            session.user
+        )
         app.add_middleware(DomainErrorMiddleware)
         return app
 
@@ -446,8 +467,8 @@ async def test_foreign_session_is_rejected(
     client_app: FastAPI,
     session: FakeSession,
 ):
-    client_app.dependency_overrides[get_current_user] = lambda: FakeUser(
-        "petrov", UUID(int=8)
+    client_app.dependency_overrides[authenticated_user] = lambda: signed_user(
+        FakeUser("petrov", UUID(int=8))
     )
 
     async with transport(client_app) as client:

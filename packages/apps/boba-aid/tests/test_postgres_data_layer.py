@@ -4,22 +4,29 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
 
+import httpx
 import pytest
-from aid_stand import FixedServers, NoTabs, Seed, StandTokens
+from aid_stand import FixedServers, NoTabs, Seed, SessionStub, StandTokens
 from chainlit.step import StepDict
 from chainlit.types import Feedback as FeedbackPayload
 from chainlit.types import Pagination, ThreadFilter
 from chainlit.user import PersistedUser
+from fastapi import FastAPI
 
+from boba.aid.auth.composite import SessionCallback
 from boba.aid.data.data_layer import PostgresDataLayer
 from boba.aid.data.remote_storage import FileOwners, RemoteStorageClient
 from boba.aid.domain.fields import ThreadMetaField
 from boba.aid.infra.config import AppConfig
+from boba.aid.infra.session import ChainlitSession, ChainlitSessions
+from boba.auth import AuthService, SignIns
 from boba.canvas.keys import ObjectKey, ScopeDir
 from boba.chat.threads import DataRejectedError, ThreadUpsert
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import Scope
-from boba.identity.session import UserMetadataField
+from boba.identity.session import Login, UserMetadataField
+from boba.identity.signin import SignInMetadata
+from boba.identity.token import SessionRenewal
 from boba.mcp_client.client import FixedServerConfigs, McpServers
 from boba.messaging import (
     Envelope,
@@ -33,6 +40,32 @@ from boba.runtime.threads import ThreadsTable
 from boba.runtime.users import UsersTable
 
 pytestmark = pytest.mark.anyio
+
+
+@pytest.fixture
+def session_callback(
+    app_config: AppConfig,
+    pool: AsyncPostgresPool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> SessionCallback:
+    """Проверка сессии Chainlit через общий AuthService и таблицу users."""
+    import chainlit.auth as chainlit_auth
+
+    from boba.runtime.users import UsersTable
+
+    session = app_config.session
+    auth = AuthService(
+        sign_ins=SignIns(None, {}, {}),
+        tokens=StandTokens.tokens(),
+        cookie=session.cookie_spec(),
+        users=UsersTable(app_config.postgres, app_config.db_schema, pool),
+        renewal=SessionRenewal.of(session.session_ttl_sec, session.session_max_sec),
+    )
+
+    callback = SessionCallback(auth, ChainlitSessions(StandTokens()))
+    monkeypatch.setattr(chainlit_auth, "authenticate_user", callback.authenticate)
+
+    return callback
 
 
 async def test_create_and_get_user(layer: PostgresDataLayer):
@@ -93,27 +126,27 @@ async def test_identifier_case_cannot_split_a_user(layer: PostgresDataLayer):
 
 
 async def test_partner_jwt_signs_in_as_the_canonical_user(
-    layer: PostgresDataLayer, monkeypatch: pytest.MonkeyPatch
+    layer: PostgresDataLayer,
+    session_callback: SessionCallback,
 ) -> None:
-    """Путь /auth/jwt и подключения сокета: chainlit сам декодирует JWT партнёра
-    и зовёт authenticate_user; на выходе — строка users с каноничным логином."""
-    import chainlit.data as chainlit_data
+    """JWT с известной личностью использует каноничную строку users."""
     from chainlit.auth import authenticate_user
     from chainlit.auth.jwt import create_jwt
-
-    monkeypatch.setattr(chainlit_data, "_data_layer", layer)
-    monkeypatch.setattr(chainlit_data, "_data_layer_initialized", True)
 
     first = await layer.create_user(StandTokens.user(identifier="corporate:ivanov.ii"))
     if first is None:
         raise AssertionError("first sign-in is created")
 
-    partner_token = create_jwt(StandTokens.user(identifier="corporate:Ivanov.II"))
+    partner_token = create_jwt(
+        StandTokens.user(
+            identifier="corporate:Ivanov.II",
+            user_id=first.id,
+            created_at=first.createdAt,
+        )
+    )
     user = await authenticate_user(partner_token)
 
-    if not isinstance(user, PersistedUser):
-        raise AssertionError(f"authenticate_user returns the persisted user: {user!r}")
-
+    assert isinstance(user, PersistedUser)
     if user.id != first.id:
         raise AssertionError("partner spelling signs in as the same users row")
 
@@ -524,3 +557,128 @@ async def test_feedback_changes_reach_the_thread_scope(
     second = seen[1].message
     assert isinstance(second, FeedbackChanged)
     assert second.value is None
+
+
+async def test_chainlit_keeps_the_signed_role_snapshot_without_database_reads(
+    layer: PostgresDataLayer,
+    app_config: AppConfig,
+    pool: AsyncPostgresPool,
+    session_callback: SessionCallback,
+) -> None:
+    from chainlit.auth import authenticate_user
+    from chainlit.auth.jwt import create_jwt
+
+    from boba.stand.roles import RoleSeed
+
+    users = UsersTable(None, app_config.db_schema, pool)
+    metadata: dict[str, object] = {
+        "provider": "KerberosAuth",
+        "principal": "alice@EXAMPLE.COM",
+        "sso_ticket": "ticket-for-this-session",
+        "generation": StandTokens.GENERATION,
+        "roles": ["read"],
+        "profiles": ["general"],
+        "profile": "general",
+    }
+    transient = StandTokens.user(
+        identifier="corporate:session-fields",
+        metadata=metadata,
+    )
+    created = await layer.create_user(transient)
+    assert created is not None
+    await RoleSeed(users).add(["read"])
+    query = (
+        users._query()
+        .add(
+            "insert into {schema}.user_roles (user_id, role_id) "
+            "select %(id)s, id from {schema}.roles where role = 'read' "
+            "on conflict (user_id, role_id) do update set managed = false",
+            id=UUID(created.id),
+        )
+        .build()
+    )
+    await users._execute(query, "administrator assigns role")
+    token_user = StandTokens.user(
+        identifier="corporate:session-fields",
+        metadata=metadata,
+        user_id=created.id,
+        created_at=created.createdAt,
+    )
+    token = create_jwt(token_user)
+    authenticated = await authenticate_user(token)
+    assert authenticated.metadata["roles"] == ["read"]
+    assert authenticated.metadata["profiles"] == ["general"]
+    assert authenticated.metadata["sso_ticket"] == "ticket-for-this-session"
+    assert authenticated.metadata["generation"] == StandTokens.GENERATION
+    query = (
+        users._query()
+        .add(
+            "delete from {schema}.user_roles where user_id = %(id)s",
+            id=UUID(created.id),
+        )
+        .build()
+    )
+    await users._execute(query, "administrator removes membership")
+    revoked = await authenticate_user(token)
+    assert isinstance(revoked, PersistedUser)
+    assert revoked.metadata["roles"] == ["read"]
+    assert revoked.metadata["profiles"] == ["general"]
+    assert revoked.metadata["profile"] == "general"
+    assert revoked.metadata["sso_ticket"] == "ticket-for-this-session"
+    assert revoked.metadata["generation"] == StandTokens.GENERATION
+    stub = SessionStub(created.id, None, identifier=transient.identifier)
+    stub.user = PersistedUser(
+        id=revoked.id,
+        identifier=revoked.identifier,
+        createdAt=revoked.createdAt,
+        metadata={},
+    )
+    stub.token = token
+    active = ChainlitSession(stub, StandTokens()).signed_in().sign_in()
+    assert active.roles == frozenset({"read"})
+    assert active.ticket() == SignInMetadata.parse(transient.metadata).ticket()
+
+
+async def test_chainlit_accepts_a_valid_token_without_reading_or_creating_a_user_row(
+    app_config: AppConfig,
+    pool: AsyncPostgresPool,
+    session_callback: SessionCallback,
+) -> None:
+    from chainlit.auth import authenticate_user
+    from chainlit.auth.jwt import create_jwt
+
+    user = StandTokens.user("corporate:missing-user")
+    token = create_jwt(user)
+    authenticated = await authenticate_user(token)
+    assert isinstance(authenticated, PersistedUser)
+    assert authenticated.id == user.metadata[UserMetadataField.USER_ID]
+
+    from boba.runtime.users import UsersTable
+
+    users = UsersTable(app_config.postgres, app_config.db_schema, pool)
+    assert await users.stored(Login("corporate:missing-user")) is None
+
+
+async def test_auth_jwt_route_checks_and_reuses_the_session_token(
+    layer: PostgresDataLayer,
+    session_callback: SessionCallback,
+) -> None:
+    from chainlit.auth.jwt import create_jwt
+
+    user = StandTokens.user("corporate:jwt-exchange")
+    created = await layer.create_user(user)
+    assert created is not None
+    token = create_jwt(user)
+    app = FastAPI()
+    session_callback.install(app)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://stand"
+    ) as client:
+        response = await client.post(
+            "/auth/jwt", headers={"Authorization": f"Bearer {token}"}
+        )
+
+    assert response.status_code == 200
+    cookie = response.headers["set-cookie"]
+    assert cookie.split(";", 1)[0].endswith(f"={token}")

@@ -10,7 +10,6 @@ from boba.chat.threads import StoredThread
 from boba.identity.api import StoredUser
 from boba.identity.principal import UserIdentity
 from boba.identity.session import Login
-from boba.identity.signin import SignInMetadata
 
 
 @pytest.fixture(autouse=True)
@@ -24,9 +23,7 @@ class TestUserDict:
             id=UUID(int=7),
             identifier=Login("corporate:boba"),
             created_at=datetime.now(UTC),
-            meta=SignInMetadata(
-                identity=UserIdentity(realm="corporate", login=Login("boba"))
-            ).render(),
+            identity=UserIdentity(realm="corporate", login=Login("boba")),
         )
 
         persisted = ThreadDicts.user(stored)

@@ -7,6 +7,19 @@ name = "boba-access-postgres"
 version = "0.0.33.dev1"
 description = "PostgreSQL schema for shared user and role grants."
 requires-python = ">=3.11,<4"
+dependencies = [
+    "boba-access==0.0.33.dev1",
+    "boba-db-postgres==0.0.33.dev1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "boba-identity==0.0.33.dev1",
+    "boba-identity-postgres==0.0.33.dev1",
+    "boba-stand==0.0.33.dev1",
+    "psycopg>=3.3,<4",
+    "pytest>=9.1,<10",
+]
 
 [tool.setuptools.package-data]
 "boba.access_postgres" = ["schema/*.sql"]

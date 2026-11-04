@@ -26,6 +26,7 @@ __all__ = [
     "ProxyHeaderNames",
     "ProxyRequest",
     "ProxySignIn",
+    "SessionAccess",
     "SignInMetadata",
     "SignedIn",
 ]
@@ -36,8 +37,8 @@ class SignInMetadata(BaseModel):
     принципал SSO, запечатанный билет и поколение сессий, при котором вход
     выпущен.
 
-    Единственная модель этих ключей: из словаря chainlit, из claims JWT и из
-    строки users читается она же. Рендер отдаёт только заполненные ключи.
+    Одна модель для словаря Chainlit и claims JWT. В users хранятся только
+    личность и членство в ролях. Рендер отдаёт только заполненные ключи.
     Поколение живёт в metadata, а не в claims, потому что cookie парольного
     входа выпускает chainlit из cl.User, и metadata — единственное, что он
     переносит в токен целиком.
@@ -54,6 +55,18 @@ class SignInMetadata(BaseModel):
     principal: str = ""
     sealed_ticket: str = ""
     generation: str = ""
+
+    def with_access(
+        self, roles: frozenset[str], profiles: frozenset[str]
+    ) -> SignInMetadata:
+        """Обновляет права, сохраняя личность и credentials сессии."""
+        selected = self.profile
+        if selected not in profiles:
+            selected = ""
+
+        return self.model_copy(
+            update={"roles": roles, "profiles": profiles, "profile": selected}
+        )
 
     @classmethod
     def parse(cls, raw: Mapping[str, object]) -> SignInMetadata:
@@ -75,7 +88,7 @@ class SignInMetadata(BaseModel):
         )
 
     def render(self) -> dict[str, object]:
-        """Ключи UserMetadataField для cl.User, claims JWT и строки users."""
+        """Ключи UserMetadataField для cl.User и claims JWT."""
         rendered: dict[str, object] = {}
         if self.provider:
             rendered[UserMetadataField.PROVIDER] = self.provider
@@ -102,21 +115,6 @@ class SignInMetadata(BaseModel):
             rendered[UserMetadataField.GENERATION] = self.generation
 
         return rendered
-
-    def persistable(self) -> SignInMetadata:
-        """То, что можно хранить в строке users: без билета, поколения и выбора
-        профиля — они принадлежат сессии, а не пользователю."""
-        return self.model_copy(
-            update={"sealed_ticket": "", "generation": "", "profile": ""}
-        )
-
-    def stored(self) -> dict[str, object]:
-        """Metadata строки users с явным снимком ролей и профилей, включая пустой."""
-        metadata = self.persistable().render()
-        metadata[UserMetadataField.ROLES] = sorted(self.roles)
-        metadata[UserMetadataField.PROFILES] = sorted(self.profiles)
-
-        return metadata
 
     def identity_for(self, identifier: str) -> UserIdentity:
         """Подтверждённая личность именно этого идентификатора входа."""
@@ -230,6 +228,42 @@ class ProfileCatalog(Protocol):
     @abstractmethod
     def known(self, name: str) -> bool:
         """Есть ли профиль с таким именем."""
+
+
+class SessionAccess:
+    """Сверяет права сессии с текущими ролями для входа AID и OAuth служб.
+
+    Каталог профилей передаёт сборка входа; класс не читает БД и токены.
+    Обновление может сузить ранее выданные профили, но не расширить их.
+    """
+
+    def __init__(self, profiles: ProfileCatalog | None) -> None:
+        self._profiles = profiles
+
+    def current(self, sign_in: SignInMetadata, roles: frozenset[str]) -> SignInMetadata:
+        profiles = sign_in.profiles
+        if not roles:
+            return sign_in.with_access(roles, frozenset())
+
+        if roles == sign_in.roles:
+            return sign_in.with_access(roles, profiles)
+
+        if self._profiles is not None:
+            profiles &= self._profiles.granted_by_roles(roles)
+
+        return sign_in.with_access(roles, profiles)
+
+    def resource(
+        self, sign_in: SignInMetadata, roles: frozenset[str]
+    ) -> SignInMetadata:
+        """Области ресурса дополнительно ограничены его каталогом разрешений."""
+        current = self.current(sign_in, roles)
+        if self._profiles is None:
+            return current
+
+        profiles = current.profiles & self._profiles.granted_by_roles(roles)
+
+        return current.with_access(roles, profiles)
 
 
 class SignedIn(BaseModel):

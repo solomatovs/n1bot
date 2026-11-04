@@ -1,5 +1,7 @@
-"""Вход по паролю: статическая таблица и bind в каталоге через порт UserDirectory;
-роли — по правилам конфига.
+"""Вход по паролю и общая сборка результата провайдера.
+
+Local и LDAP проверяют credentials разными способами; `SignedInFactory`
+применяет к результату одинаковые правила ролей и профилей.
 
 Ошибки:
 AuthenticationError — логин не зарегистрирован или пароль неверен.
@@ -12,6 +14,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
+from dataclasses import dataclass
 from enum import StrEnum
 
 from pydantic import SecretStr
@@ -36,6 +39,7 @@ from boba.identity.errors import (
     ExternalServiceError,
     InternalServiceError,
 )
+from boba.identity.principal import UserIdentity
 from boba.identity.session import (
     LoginTemplate,
     SignInProvider,
@@ -48,6 +52,8 @@ __all__ = [
     "LdapSignIn",
     "LocalSignIn",
     "LoginField",
+    "SignInDetails",
+    "SignedInFactory",
 ]
 
 
@@ -65,6 +71,49 @@ class LoginField(StrEnum):
     SSO = "/login/sso"
 
 
+@dataclass(frozen=True)
+class SignInDetails:
+    """Проверенная личность и факты, из которых собирается итог входа."""
+
+    provider: SignInProvider
+    identity: UserIdentity
+    display_name: str
+    facts: PrincipalFacts
+    principal: str = ""
+    sealed_ticket: str = ""
+
+
+class SignedInFactory:
+    """Общий выход провайдера после проверки учётных данных.
+
+    Получает уже подтверждённую личность и факты входа, применяет единые
+    правила ролей и профилей и формирует `SignedIn` для AuthService и OAuth.
+    """
+
+    def __init__(self, roles: RoleProviders, profiles: ProfileProviders) -> None:
+        self._roles = roles
+        self._profiles = profiles
+
+    async def create(self, details: SignInDetails) -> SignedIn:
+        roles = frozenset(await self._roles.admit(details.facts, details.identity))
+        grant = await self._profiles.granted(details.facts, roles)
+        sign_in = SignInMetadata(
+            provider=details.provider.value,
+            identity=details.identity,
+            principal=details.principal,
+            sealed_ticket=details.sealed_ticket,
+            roles=roles,
+            profiles=grant.granted,
+            profile=grant.selected,
+        )
+
+        return SignedIn(
+            identifier=details.identity.identifier,
+            display_name=details.display_name,
+            sign_in=sign_in,
+        )
+
+
 class LocalSignIn(PasswordSignIn):
     """Вход по статической таблице логин/пароль из конфига."""
 
@@ -72,8 +121,7 @@ class LocalSignIn(PasswordSignIn):
         self, config: LocalAuthConfig, roles: RoleProviders, profiles: ProfileProviders
     ) -> None:
         self._config = config
-        self._roles = roles
-        self._profiles = profiles
+        self._signed_in = SignedInFactory(roles, profiles)
 
     @property
     def realms(self) -> frozenset[str]:
@@ -89,20 +137,15 @@ class LocalSignIn(PasswordSignIn):
             return None
 
         facts = PrincipalFacts(login=username)
-        roles = frozenset(await self._roles.admit(facts))
-        grant = await self._profiles.granted(facts, roles)
         login = UserLogin.of(username)
         identity = self._config.identity.identity(login.key)
-        sign_in = SignInMetadata(
-            provider=SignInProvider.LOCAL.value,
-            identity=identity,
-            roles=roles,
-            profiles=grant.granted,
-            profile=grant.selected,
-        )
-
-        return SignedIn(
-            identifier=identity.identifier, display_name=login.display, sign_in=sign_in
+        return await self._signed_in.create(
+            SignInDetails(
+                provider=SignInProvider.LOCAL,
+                identity=identity,
+                display_name=login.display,
+                facts=facts,
+            )
         )
 
 
@@ -118,8 +161,7 @@ class LdapSignIn(PasswordSignIn):
     ) -> None:
         self._config = config
         self._directory = directory
-        self._roles = roles
-        self._profiles = profiles
+        self._signed_in = SignedInFactory(roles, profiles)
         self._logger = logging.getLogger(__name__)
 
     @property
@@ -204,20 +246,15 @@ class LdapSignIn(PasswordSignIn):
         facts = PrincipalFacts(
             login=entry.samaccountname, dn=entry.dn, member_of=tuple(entry.member_of)
         )
-        roles = frozenset(await self._roles.admit(facts))
-        grant = await self._profiles.granted(facts, roles)
         login = UserLogin.of(entry.samaccountname)
         identity = self._config.identity.identity(login.key)
-        sign_in = SignInMetadata(
-            provider=SignInProvider.LDAP.value,
-            identity=identity,
-            roles=roles,
-            profiles=grant.granted,
-            profile=grant.selected,
-        )
-
-        return SignedIn(
-            identifier=identity.identifier, display_name=login.display, sign_in=sign_in
+        return await self._signed_in.create(
+            SignInDetails(
+                provider=SignInProvider.LDAP,
+                identity=identity,
+                display_name=login.display,
+                facts=facts,
+            )
         )
 
 

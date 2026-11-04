@@ -32,7 +32,7 @@ def test_explicit_rules_link_different_backend_names_to_one_identifier() -> None
     assert directory.identity(Login("a.smith")).identifier == "corp:alice"
 
 
-def test_identity_survives_metadata_serialization_and_persistence() -> None:
+def test_identity_and_session_fields_survive_token_metadata_serialization() -> None:
     identity = UserIdentity(realm="corp", login=Login("alice"))
     metadata = SignInMetadata(
         identity=identity,
@@ -40,12 +40,12 @@ def test_identity_survives_metadata_serialization_and_persistence() -> None:
         sealed_ticket="session-ticket",
         generation="session-generation",
     )
-    persisted = SignInMetadata.parse(metadata.persistable().render())
+    persisted = SignInMetadata.parse(metadata.render())
 
     assert persisted.identity_for("corp:alice") == identity
     assert persisted.roles == {"read"}
-    assert persisted.sealed_ticket == ""
-    assert persisted.generation == ""
+    assert persisted.sealed_ticket == "session-ticket"
+    assert persisted.generation == "session-generation"
 
 
 def test_a_sign_in_cannot_pair_an_identifier_with_another_identity() -> None:

@@ -27,9 +27,10 @@ from boba.identity.admission import (
 )
 from boba.identity.directory import SimpleBind
 from boba.identity.errors import AuthorizationError
-from boba.identity.principal import IdentityRule
-from boba.identity.session import UserLogin
+from boba.identity.principal import IdentityRule, UserIdentity
+from boba.identity.session import Login, UserLogin
 from boba.identity.signin import PasswordSignIn
+from boba.stand.roles import MemoryRoles
 from boba.stand.signin import SignInStand
 from boba.stand_core.fakes import FakeSecret
 
@@ -197,7 +198,9 @@ async def test_kerberos_providers_join_principal_and_directory_roles() -> None:
     providers = KerberosRoleProviders(principal=principal, ldap=ldap)
     facts = PrincipalFacts(principal="alice@X", member_of=("CN=Devs,OU=G",))
 
-    by_principal = await RoleProviders([PrincipalRoles(principal)], True).admit(facts)
+    by_principal = await RoleProviders(
+        [PrincipalRoles(principal)], True, MemoryRoles({"adm"})
+    ).admit(facts, UserIdentity(realm="test", login=Login("alice")))
     if by_principal != ["adm"]:
         raise AssertionError(f'principal provider alone gives ["adm"]: {by_principal}')
 
@@ -210,10 +213,13 @@ async def test_kerberos_providers_join_principal_and_directory_roles() -> None:
 
 
 async def test_no_providers_with_require_roles_refuses() -> None:
-    providers = RoleProviders([], require_roles=True)
+    providers = RoleProviders([], require_roles=True, catalog=MemoryRoles(()))
 
     with pytest.raises(AuthorizationError, match="no role came"):
-        await providers.admit(PrincipalFacts(login="alice"))
+        await providers.admit(
+            PrincipalFacts(login=Login("alice")),
+            UserIdentity(realm="test", login=Login("alice")),
+        )
 
 
 class TestUserLoginCanon:

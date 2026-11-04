@@ -24,11 +24,11 @@ from typing import Annotated, Self
 import uvicorn
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.access import RoleConfig
-from boba.auth.credentials import NoRefresh
+from boba.access import GrantCheck, ToolGrants
 from boba.auth.proxy import ProxyAssertionVerifier
 from boba.cancellation import ProcessStop, StopReason
 from boba.config import ConfigSchema, bind
+from boba.connection_broker.credentials import NoRefresh
 from boba.connection_broker.crypto import SecretCipher
 from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.tools import ConnectionTools
@@ -69,6 +69,7 @@ from boba.runtime.di import Container, Depends
 from boba.runtime.http import HealthProbe, SignalledServer
 from boba.runtime.launchers import ToolLaunchers
 from boba.runtime.storage import StorageConfig, StorageFactory
+from boba.mcp_server.endpoints import McpEndpointStore
 
 __all__ = ["McpAppConfig", "McpEntry", "McpHost", "McpSection"]
 
@@ -89,7 +90,6 @@ class McpSection(BaseModel):
     ждала бы keep-alive соединений прокси бесконечно и не доходила до
     завершения запусков."""
     limits: RunLimits
-    endpoints: dict[str, McpEndpoint] = Field(min_length=1)
     clients: dict[str, TrustedClient] = Field(default_factory=dict)
     """Доверенные клиенты OAuth по client_id: им разрешён вход proxy."""
 
@@ -107,8 +107,6 @@ class McpAppConfig(ProcessConfig):
 
     server: McpServerConfig
     mcp: McpSection
-    roles: dict[str, RoleConfig]
-    """Права инструментов по ролям; отсутствие гранта запрещает вызов."""
     postgres: PostgresConfig
     connection_store: ValueCipherConfig
     """Ключ шифрования секретов каталога MCP, отдельный от подписи токенов."""
@@ -153,7 +151,6 @@ async def mcp_connections(
     """Тот же брокер, что у AID, но с данными и ключом экземпляра MCP."""
     cipher = SecretCipher(config.connection_store.cipher.get_secret_value())
     store = ConnectionStore(pool, config.db_schema, cipher, types)
-    await store.sync_roles(config.roles)
     return store
 
 
@@ -216,12 +213,6 @@ class McpHost:
         self._container.provide(providers.own_tools, catalog_tools)
         # сигнал «обнови билет входа» слушает страница чата: у сервиса её нет
         self._container.provide(providers.refresh_signal, NoRefresh())
-        # Endpoint ограничивает набор инструментов, роль — права внутри него.
-        self._endpoints = EndpointCatalog(config.mcp.endpoints)
-        self._container.provide(
-            providers.tool_grants, self._endpoints.grants(config.roles)
-        )
-        self._container.provide(providers.profile_catalog, self._endpoints)
         self._container.eager(providers.connection_types)
         self._container.eager(providers.call_ambient)
         self._container.eager(providers.runs)
@@ -244,15 +235,28 @@ class McpHost:
         section = self._config.mcp
         server = self._config.server
         Container.set_root(self._container)
-        await self._container.start()
         try:
-            auth = self._auth(section)
+            pool = await self._container.get(mcp_pool)
+            self._endpoint_store = McpEndpointStore(
+                self._config.postgres, self._config.db_schema, pool
+            )
+            users = await self._container.get(mcp_users)
+            self._container.provide(providers.identity_users, users)
+            configured_endpoints = await self._endpoint_store.list()
+            self._endpoints = EndpointCatalog(configured_endpoints)
+            self._container.provide(providers.profile_catalog, self._endpoints)
+            self._container.provide(
+                providers.tool_grants,
+                ToolGrants(roles={}, profiles=configured_endpoints, check=GrantCheck.STRICT),
+            )
+            await self._container.start()
+            auth = self._auth(section, configured_endpoints)
             endpoints = McpEndpoints(
                 self._container.resolved(providers.tool_registry),
                 self._container.resolved(providers.runs),
                 self._container.resolved(providers.call_journals),
                 auth,
-                section.endpoints,
+                configured_endpoints,
                 self._container.resolved(providers.connection_params),
                 section.limits,
                 self._config.storage,
@@ -283,7 +287,9 @@ class McpHost:
             Container.set_root(None)
             await self._container.aclose()
 
-    def _auth(self, section: McpSection) -> ServiceAuth:
+    def _auth(
+        self, section: McpSection, endpoints: dict[str, McpEndpoint]
+    ) -> ServiceAuth:
         """Вход сервиса: сервер авторизации над способами входа [auth] и
         проверяющие токена endpoint'ов."""
         session = self._config.session
@@ -302,7 +308,7 @@ class McpHost:
 
         sealed = SealedValues(session.auth_secret, ServiceMark.SEALED_SALT)
         resources: dict[str, str] = {}
-        for name in section.endpoints:
+        for name in endpoints:
             resources[name] = f"{public_url}/{name}"
 
         server = AuthServer(
@@ -316,7 +322,13 @@ class McpHost:
             users=self._container.resolved(mcp_users),
         )
 
-        return ServiceAuth(public_url, server, tokens, ServiceMark.NAME, resources)
+        return ServiceAuth(
+            public_url,
+            server,
+            tokens,
+            ServiceMark.NAME,
+            resources,
+        )
 
     def _clients(self, section: McpSection, sealed: SealedValues) -> RegisteredClients:
         """Клиенты OAuth: доверенные из [mcp.clients] и регистрирующиеся сами."""
@@ -357,6 +369,7 @@ class McpEntry:
                         "boba.identity_postgres",
                         "boba.access_postgres",
                         "boba.connection_broker",
+                        "boba.mcp_server",
                     ),
                 )
 

@@ -171,15 +171,11 @@ class ConnectionOfferRule(RoleVisibility):
 
 
 class McpEndpoint(ProfileGrant):
-    """Секция [mcp.endpoints.<имя>]: грант профиля (роли, инструменты),
-    правила предложения соединений и промпты. Правило пишется явно, у
-    endpoint'а без соединений — пустым списком; промпты — таблицей по именам
-    (обычно ${toml_dir:prompts/<имя>}), у endpoint'а без промптов — пустой.
-    Конфиг сервиса разбирает секцию на старте; EndpointCatalog берёт её
-    грантом профиля, RoleToolServers — правилами, McpEndpoints — промптами."""
+    """Stored endpoint policy: its role grant, selected tools and metadata."""
 
-    connections: list[ConnectionOfferRule]
-    prompts: dict[str, PromptFile]
+    description: str = ""
+    connections: list[ConnectionOfferRule] = Field(default_factory=list)
+    prompts: dict[str, PromptFile] = Field(default_factory=dict)
 
     def offer(self, roles: frozenset[str]) -> frozenset[OfferedSource]:
         """Источники соединений по первому подходящему правилу; ни одно не
@@ -192,7 +188,9 @@ class McpEndpoint(ProfileGrant):
 
 
 # RoleTools первым: иначе __init__ протокола CallerServers молча пропустит его __init__
-class RoleToolServers(RoleTools[tuple[frozenset[str], str]], CallerServers):
+class RoleToolServers(
+    RoleTools[tuple[frozenset[str], str, frozenset[str]]], CallerServers
+):
     """Реализация CallerServers на основе ролей и профиля пользователя.
 
     Сборка MCP передаёт реестр и ConnectionParams. Кэш хранит доступные
@@ -217,11 +215,12 @@ class RoleToolServers(RoleTools[tuple[frozenset[str], str]], CallerServers):
         TokenClaimsError."""
         subject = self._subjects.current()
 
-        return self.tools((subject.roles, subject.profile))
+        tools = await self._registry.for_caller(subject.roles, subject.profile)
+        return self.tools((subject.roles, subject.profile, frozenset(tools)))
 
-    def _server(self, key: tuple[frozenset[str], str]) -> ToolServer:
-        roles, profile = key
-        tools = self._registry.for_headless(roles, profile)
+    def _server(self, key: tuple[frozenset[str], str, frozenset[str]]) -> ToolServer:
+        roles, _, names = key
+        tools = {tool.name: tool for tool in self._registry.tools if tool.name in names}
         sources = self._endpoint.offer(roles)
         if OfferedSource.STORED not in sources:
             for name in ConnectionTool:

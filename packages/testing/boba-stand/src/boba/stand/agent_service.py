@@ -25,9 +25,11 @@ import uvicorn
 
 from boba.cli.serve import ServeConfig, ServeHistory, ServeHost, ServeMark
 from boba.core.secrets import SecretReveal
+from boba.db.postgres import AsyncPostgresPool, PostgresTable
 from boba.db.postgres.connection.auth import KeytabAuth
 from boba.krb import KerberosWorkspace
 from boba.runtime.config import PathsConfig
+from boba.stand.roles import RoleSeed
 from boba.stand.service_signin import ServiceSignIn
 from boba.stand.ui.toml_text import TomlText
 
@@ -127,6 +129,17 @@ class ServeStandConfig:
         self._sign_in = ServiceSignIn(
             self.public_url, self.CLIENT_ID, self.CLIENT_SECRET, self.PROXY_SECRET
         )
+
+    async def prepare_roles(self) -> None:
+        pool = AsyncPostgresPool(self._history.postgres)
+        await pool.open()
+        try:
+            table = PostgresTable(None, self._history.db_schema, pool)
+            await RoleSeed(table).add(
+                ("dev", "analyst", "nobody", "ADM", "DEV", "GST", "read", "wrt")
+            )
+        finally:
+            await pool.close()
 
     def app(self) -> dict[str, Any]:
         """Секция [app] службы для ServeConfig в процессе теста: подключение
@@ -250,6 +263,7 @@ class AgentServiceStand:
         return self._config.ws_url()
 
     async def start(self) -> None:
+        await self._config.prepare_roles()
         await self.host.start()
         server = uvicorn.Server(
             uvicorn.Config(
@@ -352,6 +366,7 @@ class AgentServiceProcess:
         Ошибки:
         AgentServiceProcessError — процесс вышел или не ответил за WAIT_SEC.
         """
+        await self._config.prepare_roles()
         config = ServeFiles.CONFIG.under(self._workdir)
         config.parent.mkdir(parents=True, exist_ok=True)
         krb = Path(KerberosWorkspace.krb5_config()).parent

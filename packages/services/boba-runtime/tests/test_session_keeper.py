@@ -4,7 +4,8 @@
 from __future__ import annotations
 
 import time
-from uuid import UUID
+from datetime import UTC, datetime
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 import jwt
 import pytest
@@ -37,6 +38,8 @@ def _token(identifier: str, expires_in: int) -> str:
     identity = UserIdentity(realm="corporate", login=Login(identifier))
     claims = {
         "identifier": identity.identifier,
+        "user_id": str(uuid5(NAMESPACE_URL, identity.identifier)),
+        "created_at": datetime(2026, 1, 1, tzinfo=UTC).isoformat(),
         "metadata": {
             "generation": "stand-generation",
             "identity": identity.model_dump(mode="json"),

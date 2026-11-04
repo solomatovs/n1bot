@@ -12,9 +12,10 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from typing import Any, ClassVar
+from uuid import UUID
 
 import pytest
-from aid_stand import FakeTurn
+from aid_stand import FakeTurn, StandTokens
 from chainlit.config import config as chainlit_config
 from chainlit.server import sio
 from chainlit.session import WebsocketSession
@@ -81,8 +82,14 @@ async def session() -> AsyncIterator[EmittedEvents]:
         user_env={},
         client_type="webapp",
         thread_id=THREAD,
-        user=PersistedUser(id=USER_ID, identifier="tester", createdAt="", metadata={}),
+        user=PersistedUser(
+            id=USER_ID,
+            identifier="corporate:tester",
+            createdAt="2026-01-01T00:00:00+00:00",
+            metadata={},
+        ),
     )
+    session.token = StandTokens.issue_for("corporate:tester", UUID(USER_ID))
     # ветки chainlit вокруг on_chat_start в тесте не нужны: проверяется реконнект
     session.restored = True
     session.has_first_interaction = True

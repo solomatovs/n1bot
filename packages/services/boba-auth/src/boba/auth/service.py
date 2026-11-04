@@ -1,7 +1,7 @@
 """Вход пользователя слоями: SignIns — способы входа [auth] без токена и
 хранения, AuthService — сессия приложения с браузером поверх них (токен,
-cookie, продление, строка users). Строка users заводится входом; чужой токен
-строку не заводит.
+cookie и продление). Строка users заводится входом; проверка токена
+восстанавливает личность и права из подписанных claims без чтения БД.
 
 Ошибки:
 AuthenticationError — логин или пароль неверен, подпись proxy-запроса не сходится,
@@ -30,7 +30,15 @@ from boba.identity.api import (
 )
 from boba.identity.context import DelegatedTicket
 from boba.identity.errors import AuthenticationError, ExternalServiceError
-from boba.identity.signin import PasswordSignIn, ProxyRequest, ProxySignIn, SignedIn
+from boba.identity.signin import (
+    PasswordSignIn,
+    ProfileCatalog,
+    ProxyRequest,
+    ProxySignIn,
+    SessionAccess,
+    SignedIn,
+    SignInMetadata,
+)
 from boba.identity.sso import (
     SpnegoExchange,
     SsoChallenge,
@@ -69,7 +77,7 @@ class SignInProviders(BaseModel):
 
 
 class IssuedSession(BaseModel):
-    """Итог входа: кто вошёл, его строка users и токен сессии."""
+    """Подтверждённая сессия: данные входа, пользователь и выданный ему токен."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -93,11 +101,21 @@ class SignIns:
         password: PasswordSignIn | None,
         sso: Mapping[str, SpnegoExchange],
         proxy: Mapping[str, ProxySignIn],
+        profiles: ProfileCatalog | None = None,
     ) -> None:
         self._password = password
         self._sso = dict(sso)
         self._proxy = dict(proxy)
         self._selection = RealmSelection()
+        self._access = SessionAccess(profiles)
+
+    def current(self, sign_in: SignInMetadata, roles: frozenset[str]) -> SignInMetadata:
+        return self._access.current(sign_in, roles)
+
+    def resource(
+        self, sign_in: SignInMetadata, roles: frozenset[str]
+    ) -> SignInMetadata:
+        return self._access.resource(sign_in, roles)
 
     def providers(self) -> SignInProviders:
         realms: tuple[str, ...] = ()
@@ -177,11 +195,12 @@ class SignIns:
 
 
 class AuthService(Authenticator):
-    """Сессия приложения с браузером поверх способов входа: токен и cookie
-    сессии, её продление и строка users вошедшего.
+    """Сессия браузера поверх способов входа: выпуск и проверка токена,
+    cookie и явное продление с текущими данными пользователя.
 
     Создаётся провайдером процесса чата из SignIns, читателя токенов и
-    секции [session]; им пользуются маршруты входа приложения.
+    секции [session]. Выпуск и продление читают users; проверка подписанного
+    токена локальная.
     """
 
     def __init__(
@@ -326,36 +345,36 @@ class AuthService(Authenticator):
             return SsoRefused(reason=str(exc))
 
     async def issue(self, signed: SignedIn) -> IssuedSession:
-        """Строка users по итогу входа и токен сессии с claims этого входа; итог
-        помечен поколением сессий, как и токен."""
+        """Заводит строку users и выпускает токен с UUID и правами пользователя."""
         stamped = self._tokens.stamp(signed)
         user = await self._users.ensure_user(stamped)
-        token = self._tokens.issue(stamped)
+        stamped = stamped.model_copy(
+            update={"sign_in": self._sign_ins.current(stamped.sign_in, user.roles)}
+        )
+        user = user.model_copy(update={"sign_in": stamped.sign_in})
+        issued_at = int(time.time())
+        token = self._tokens.issue(stamped, user.id, user.created_at, issued_at)
 
         return IssuedSession(signed=stamped, user=user, token=token)
 
     async def user_of_token(self, token: str) -> AuthenticatedUser:
-        """Пользователь входа: строка users по токену, metadata — из токена."""
+        """Личность и роли из проверенного JWT; чтения БД здесь нет."""
+        session = await self.session_of_token(token)
+
+        return session.user
+
+    async def session_of_token(self, token: str) -> IssuedSession:
+        """Читает действующую сессию из JWT без чтения БД и перевыпуска токена."""
         try:
             claims = self._tokens.read(token)
         except TokenRejectedError as exc:
             message = f"sign-in token rejected as {exc.reason}: {exc}"
             raise AuthenticationError(message) from exc
 
-        stored = await self._users.get_user(claims.identifier)
-        if stored is None:
-            message = (
-                f"sign-in of {claims.identifier!r} not persisted: the token is "
-                "valid but the users table has no row with this identifier"
-            )
-            raise AuthenticationError(message)
+        signed = claims.signed()
+        user = claims.authenticated_user()
 
-        return AuthenticatedUser(
-            id=stored.id,
-            identifier=stored.identifier,
-            sign_in=claims.sign_in(),
-            settings=stored.settings,
-        )
+        return IssuedSession(signed=signed, user=user, token=token)
 
     def ticket_of_token(self, token: str) -> DelegatedTicket | None:
         """Билет SSO-входа из токена; None — токен негоден или вход не через SPNEGO.
@@ -365,10 +384,9 @@ class AuthService(Authenticator):
         """
         try:
             claims = self._tokens.read_stale(token, self._renewal.grace_sec)
-        except TokenRejectedError as exc:
+        except TokenRejectedError:
             # в лог идёт причина отказа, сам токен туда не попадает
-            # nosemgrep: python-logger-credential-disclosure
-            logger.info("sign-in token rejected on refresh: %s", exc.reason)
+            logger.info("sign-in token rejected on refresh")
             return None
 
         return claims.ticket()
@@ -405,6 +423,21 @@ class AuthService(Authenticator):
             )
             raise AuthenticationError(msg)
 
+        user = await self._current_user(claims)
+        signed = signed.model_copy(update={"sign_in": user.sign_in})
+        claims = claims.model_copy(
+            update={
+                "metadata": user.sign_in.render(),
+                "created_at": user.created_at,
+            }
+        )
+
+        renewed = self._tokens.renew(claims, now)
+
+        return IssuedSession(signed=signed, user=user, token=renewed)
+
+    async def _current_user(self, claims: SessionClaims) -> AuthenticatedUser:
+        """Читает пользователя только при явном продлении сессии."""
         stored = await self._users.get_user(claims.identifier)
         if stored is None:
             message = (
@@ -413,14 +446,19 @@ class AuthService(Authenticator):
             )
             raise AuthenticationError(message)
 
-        user = AuthenticatedUser(
+        if stored.id != claims.user_id:
+            message = (
+                f"sign-in token of {claims.identifier!r} names user UUID "
+                f"{claims.user_id}, but users stores {stored.id}: sign in again"
+            )
+            raise AuthenticationError(message)
+
+        return AuthenticatedUser(
             id=stored.id,
             identifier=stored.identifier,
-            sign_in=signed.sign_in,
-            settings=stored.settings,
+            created_at=stored.created_at,
+            sign_in=self._sign_ins.current(claims.sign_in(), stored.roles),
         )
-
-        return IssuedSession(signed=signed, user=user, token=self._tokens.renew(claims))
 
     def _exchange(self, realm: str = "") -> SpnegoExchange:
         return self._sign_ins.exchange(realm)

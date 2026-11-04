@@ -66,7 +66,11 @@ async def session(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[WebsocketSes
     monkeypatch.setattr(config.features.mcp.sse, "enabled", True)
     monkeypatch.setattr(config.features.mcp.streamable_http, "enabled", True)
     monkeypatch.setattr(config.features.mcp.stdio, "enabled", True)
-    monkeypatch.setattr(config.features.mcp.stdio, "allowed_executables", ["python"])
+    monkeypatch.setattr(
+        config.features.mcp.stdio,
+        "allowed_executables",
+        [Path(sys.executable).name],
+    )
 
     def emit(event: str, data: Any) -> None:
         return None

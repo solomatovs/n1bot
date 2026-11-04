@@ -41,10 +41,12 @@ from boba.auth.roles import (
     RoleProviders,
 )
 from boba.auth.signin import CompositeSignIn, LdapSignIn, LocalSignIn
-from boba.auth.sso import SpnegoGate, SsoSignIn
+from boba.auth.sso import SsoSignIn
+from boba.identity.api import RoleCatalog
 from boba.identity.directory import UserDirectory
 from boba.identity.signin import PasswordSignIn, ProfileCatalog, ProxySignIn
 from boba.identity.sso import SpnegoExchange
+from boba.runtime.signin_kerberos import SpnegoGate
 
 __all__ = ["SignInAssembly"]
 
@@ -52,9 +54,12 @@ __all__ = ["SignInAssembly"]
 class SignInAssembly:
     """Входы приложения по [auth]: пароли, SPNEGO и proxy с их провайдерами."""
 
-    def __init__(self, directory: UserDirectory, profiles: ProfileCatalog) -> None:
+    def __init__(
+        self, directory: UserDirectory, profiles: ProfileCatalog, roles: RoleCatalog
+    ) -> None:
         self._directory = directory
         self._profiles = profiles
+        self._roles = roles
 
     def build(self, configs: Sequence[AuthConfig], secret: str) -> SignIns:
         """Одна сборка способов входа для AID, MCP и службы агента."""
@@ -63,12 +68,12 @@ class SignInAssembly:
         for config in configs:
             realm = config.identity.realm
             if isinstance(config, KerberosAuthConfig):
-                sso[realm] = SpnegoGate(self.sso(config, secret))
+                sso[realm] = SpnegoGate(self.sso(config), secret)
 
             if isinstance(config, ProxyAuthConfig):
                 proxy[realm] = self.proxy(config)
 
-        return SignIns(self.password(configs), sso, proxy)
+        return SignIns(self.password(configs), sso, proxy, self._profiles)
 
     def password(self, configs: Sequence[AuthConfig]) -> CompositeSignIn | None:
         """Провайдеры паролей из [auth]: local и ldap по порядку конфига."""
@@ -78,16 +83,16 @@ class SignInAssembly:
 
         return CompositeSignIn(providers)
 
-    def sso(self, config: KerberosAuthConfig, secret: str) -> SsoSignIn:
+    def sso(self, config: KerberosAuthConfig) -> SsoSignIn:
         roles = RoleProviders(
-            list(self._kerberos_roles(config.roles)), config.require_roles
+            list(self._kerberos_roles(config.roles)), config.require_roles, self._roles
         )
 
-        return SsoSignIn(config, secret, roles, self._by_roles())
+        return SsoSignIn(config, roles, self._by_roles())
 
     def proxy(self, config: ProxyAuthConfig) -> HmacProxySignIn:
         roles = RoleProviders(
-            list(self._proxy_roles(config.roles)), config.require_roles
+            list(self._proxy_roles(config.roles)), config.require_roles, self._roles
         )
         profiles = ProfileProviders(list(self._proxy_profiles(config.profiles)))
 
@@ -97,13 +102,17 @@ class SignInAssembly:
         for config in configs:
             if isinstance(config, LocalAuthConfig):
                 roles = RoleProviders(
-                    list(self._local_roles(config.roles)), config.require_roles
+                    list(self._local_roles(config.roles)),
+                    config.require_roles,
+                    self._roles,
                 )
                 yield LocalSignIn(config, roles, self._by_roles())
 
             if isinstance(config, LdapAuthConfig):
                 roles = RoleProviders(
-                    list(self._ldap_roles(config.roles)), config.require_roles
+                    list(self._ldap_roles(config.roles)),
+                    config.require_roles,
+                    self._roles,
                 )
                 yield LdapSignIn(config, self._directory, roles, self._by_roles())
 

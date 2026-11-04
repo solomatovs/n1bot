@@ -5,6 +5,8 @@ from __future__ import annotations
 import secrets
 import time
 from collections.abc import Callable
+from datetime import UTC, datetime
+from uuid import UUID
 
 import jwt
 import pytest
@@ -16,10 +18,17 @@ from boba.identity.signin import SignedIn, SignInMetadata
 from boba.identity.token import ClaimKey, TokenRejectedError, TokenRejection
 
 SECRET = secrets.token_urlsafe(32)
+USER_ID = UUID(int=7)
+CREATED_AT = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 def _encode(secret: str, identifier: str, ttl_sec: int) -> str:
-    claims = {"identifier": identifier, "exp": int(time.time()) + ttl_sec}
+    claims = {
+        "identifier": identifier,
+        "user_id": str(USER_ID),
+        "created_at": CREATED_AT.isoformat(),
+        "exp": int(time.time()) + ttl_sec,
+    }
 
     return jwt.encode(claims, secret, algorithm="HS256")
 
@@ -36,7 +45,8 @@ class TestJwtTokens:
             ),
         )
 
-        claims = tokens.read(tokens.issue(signed))
+        issued_at = int(time.time())
+        claims = tokens.read(tokens.issue(signed, USER_ID, CREATED_AT, issued_at))
 
         assert claims.signed() == tokens.stamp(signed)
         assert claims.sign_in().generation == "stand-generation"
@@ -50,7 +60,10 @@ class TestJwtTokens:
                 identity=UserIdentity(realm="corporate", login=Login("alice"))
             ),
         )
-        token = JwtTokens(SECRET, 60, "generation-a").issue(signed)
+        issued_at = int(time.time())
+        token = JwtTokens(SECRET, 60, "generation-a").issue(
+            signed, USER_ID, CREATED_AT, issued_at
+        )
 
         with pytest.raises(TokenRejectedError) as caught:
             JwtTokens(SECRET, 60, "generation-b").read(token)
@@ -73,7 +86,10 @@ class TestJwtTokens:
                 identity=UserIdentity(realm="corporate", login=Login("alice"))
             ),
         )
-        token = JwtTokens(SECRET, 60, "stand-generation").issue(signed)
+        issued_at = int(time.time())
+        token = JwtTokens(SECRET, 60, "stand-generation").issue(
+            signed, USER_ID, CREATED_AT, issued_at
+        )
 
         raw = jwt.decode(token, SECRET, algorithms=["HS256"])
 
@@ -112,6 +128,8 @@ def test_current_generation_without_verified_identity_is_refused(
         {
             "identifier": identifier,
             "metadata": {"generation": "stand-generation"},
+            "user_id": str(USER_ID),
+            "created_at": CREATED_AT.isoformat(),
             "exp": int(time.time()) + 60,
         },
         SECRET,

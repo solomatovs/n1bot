@@ -13,9 +13,8 @@ from boba.auth.config import (
     PrincipalRolesConfig,
 )
 from boba.config import bind
-from boba.identity.admission import RoleExcludeConfig, RoleMappingConfig
+from boba.identity.admission import PrincipalFacts, RoleExcludeConfig, RoleMappingConfig
 from boba.identity.errors import AuthorizationError
-from boba.krb import SpnegoIdentity
 from boba.stand.signin import SignInStand
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -43,22 +42,22 @@ async def test_unparsed_pac_is_refused_when_sid_exclusions_are_configured(
 ) -> None:
     roles = PrincipalRolesConfig(sid_ex=RoleExcludeConfig(root=["S-1-5-21-1"]))
     config = _config(raw_config, roles)
-    sign_in = SignInStand.assembly().sso(config, "secret")
+    sign_in = SignInStand.assembly().sso(config)
 
-    identity = SpnegoIdentity(principal=_principal(config), pac_parsed=False)
+    facts = PrincipalFacts(principal=_principal(config), pac_parsed=False)
 
     with pytest.raises(AuthorizationError):
-        await sign_in.signed_in(identity, "")
+        await sign_in.roles_of(facts)
 
 
 async def test_unparsed_pac_passes_without_sid_exclusions(raw_config: Any) -> None:
     config = _config(raw_config, PrincipalRolesConfig())
     principal = _principal(config)
     roles = PrincipalRolesConfig(principal=RoleMappingConfig(root={principal: ["DEV"]}))
-    sign_in = SignInStand.assembly().sso(_config(raw_config, roles), "secret")
+    sign_in = SignInStand.assembly().sso(_config(raw_config, roles))
 
-    identity = SpnegoIdentity(principal=principal, pac_parsed=False)
+    facts = PrincipalFacts(principal=principal, pac_parsed=False)
 
-    signed = await sign_in.signed_in(identity, "")
+    admitted = await sign_in.roles_of(facts)
 
-    assert "DEV" in signed.sign_in.roles
+    assert "DEV" in admitted

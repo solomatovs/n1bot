@@ -8,7 +8,6 @@ version = "0.0.33.dev1"
 description = "Boba connection broker: хранилище соединений и грантов на postgres, соединения субъекта на вызов, билеты kerberos для тел инструментов."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-identity-postgres==0.0.33.dev1",
     "boba-tool-io==0.0.33.dev1",
     "cryptography>=45.0.1",
     "boba-toolkit==0.0.33.dev1",
@@ -16,6 +15,7 @@ dependencies = [
     "boba-access==0.0.33.dev1",
     "boba-connections==0.0.33.dev1",
     "boba-kerberos==0.0.33.dev1",
+    "boba-krb[seal]==0.0.33.dev1",
     "boba-toolrun==0.0.33.dev1",
     "boba-db-postgres==0.0.33.dev1",
     "pydantic>=2.12,<3",
@@ -26,7 +26,6 @@ dependencies = [
 dev = [
     "boba-db-clickhouse==0.0.33.dev1",
     "boba-transport-http==0.0.33.dev1",
-    "boba-auth==0.0.33.dev1",
     "boba-stand==0.0.33.dev1",
     "boba-stand-core==0.0.33.dev1",
     "pytest>=9.1,<10",

@@ -281,6 +281,22 @@ def ghosted(
 
 @pytest.fixture(scope="module")
 def cookie(app: StandProcess) -> str:
+    return _login_cookie(app)
+
+
+@pytest.fixture(scope="module")
+def sandbox_cookie(sandboxed: StandProcess) -> str:
+    """Вход в ту же БД, где sandboxed хранит серверы и grants пользователя."""
+    return _login_cookie(sandboxed)
+
+
+@pytest.fixture(scope="module")
+def ghost_cookie(ghosted: StandProcess) -> str:
+    """Вход в ту же БД, где ghosted хранит историю пользователя."""
+    return _login_cookie(ghosted)
+
+
+def _login_cookie(app: StandProcess) -> str:
     credential = app.config.credential()
     response = httpx.post(
         f"{app.config.base_url}/login",
@@ -1081,9 +1097,9 @@ class TestUnavailableServer:
     возврата к треду."""
 
     async def test_agent_answers_while_a_server_of_the_profile_is_down(
-        self, ghosted: StandProcess, cookie: str
+        self, ghosted: StandProcess, ghost_cookie: str
     ) -> None:
-        tab = ChatSocket(ghosted, cookie, str(uuid4()))
+        tab = ChatSocket(ghosted, ghost_cookie, str(uuid4()))
         await tab.open()
         try:
             await tab.send(f"hello {ScenarioName.THINKING_ANSWER.value}")
@@ -1102,9 +1118,13 @@ class TestUnavailableServer:
         assert answered, (tab.trace(), ghosted.tail(60))
         noted = [note for note in notes if "'ghost' isn't available" in note]
         assert noted, (notes, ghosted.tail(60))
-        assert noted[0].endswith("(no connection)"), noted
+        assert noted[0] == (
+            "The MCP server 'ghost' isn't available right now, so its tools "
+            "can't be used in this turn. It will be tried again with your "
+            "next message. (no connection)"
+        ), noted
 
-        again = ChatSocket(ghosted, cookie, tab.thread_id)
+        again = ChatSocket(ghosted, ghost_cookie, tab.thread_id)
         await again.open(resumed=True)
         try:
             replayed = again.notices()
@@ -2388,14 +2408,14 @@ class TestFeed:
         return found
 
     async def test_elements_of_a_turn_are_the_same_after_a_reload(
-        self, sandboxed: StandProcess, cookie: str
+        self, sandboxed: StandProcess, sandbox_cookie: str
     ) -> None:
         """Вложение вопроса, файл итога send_file и ссылка панели canvas_open
         после перезагрузки треда приходят теми же кадрами element, что вживую.
         Текст показывает панель: вложение — кнопка открытия в панели с путём
         файла в workspace, как у файлов итогов."""
         app = sandboxed
-        tab = ChatSocket(app, cookie, str(uuid4()))
+        tab = ChatSocket(app, sandbox_cookie, str(uuid4()))
         await tab.open()
         file_id = tab.upload("note.txt", b"shown text", "text/plain")
         await tab.send(f"attach {ScenarioName.ANSWER.value}", (file_id,))
@@ -2418,7 +2438,7 @@ class TestFeed:
         live = self._shown(tab)
         await tab.end_session()
 
-        again = ChatSocket(app, cookie, tab.thread_id)
+        again = ChatSocket(app, sandbox_cookie, tab.thread_id)
         await again.open(resumed=True)
         try:
             assert not again.errors(), (again.errors(), app.tail(60))

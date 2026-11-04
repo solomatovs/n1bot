@@ -29,6 +29,10 @@ payload = [
     "boba-doc[readers,ocr]==0.0.33.dev1",
 ]
 dev = [
+    "boba-connection-broker==0.0.33.dev1",
+    "boba-connections==0.0.33.dev1",
+    "boba-db-postgres==0.0.33.dev1",
+    "boba-mcp==0.0.33.dev1",
     "boba-runtime==0.0.33.dev1",
     "boba-stand==0.0.33.dev1",
     "omegaconf>=2.3,<3",

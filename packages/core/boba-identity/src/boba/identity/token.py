@@ -1,7 +1,7 @@
 """Токен и cookie входа: claims, порты выпуска и чтения, cookie целиком и чанками.
 
-Claims входа: identifier, display_name, metadata, exp, iat, since; chainlit
-выпускает их без since. Правило
+Claims входа: identifier, user_id, created_at, display_name, metadata, exp,
+iat, since; chainlit выпускает user_id в metadata и не пишет since. Правило
 продления сессии — SessionRenewal: когда просить обмен и до какого потолка можно
 перевыпускать токен без нового входа. Cookie длиннее лимита браузера едет чанками
 name_0..name_n; сборка и разбор — только здесь.
@@ -14,8 +14,10 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from collections.abc import Iterator, Mapping
+from datetime import datetime
 from enum import StrEnum
 from typing import Any, ClassVar, Literal, Protocol
+from uuid import UUID
 
 from pydantic import (
     BaseModel,
@@ -27,8 +29,9 @@ from pydantic import (
 )
 
 from boba.core.validation import ValidationText
+from boba.identity.api import AuthenticatedUser
 from boba.identity.context import DelegatedTicket
-from boba.identity.session import Login
+from boba.identity.session import Login, UserMetadataField
 from boba.identity.signin import SignedIn, SignInMetadata
 
 __all__ = [
@@ -78,17 +81,21 @@ class ClaimKey(StrEnum):
     IDENTIFIER = "identifier"
     DISPLAY_NAME = "display_name"
     METADATA = "metadata"
+    USER_ID = "user_id"
+    CREATED_AT = "created_at"
     EXP = "exp"
     IAT = "iat"
     SINCE = "since"
 
 
 class SessionClaims(BaseModel):
-    """Тело токена входа: кто вошёл, metadata входа и сроки."""
+    """Тело токена входа: пользователь, identity, права, metadata и сроки."""
 
     model_config = ConfigDict(frozen=True, extra="ignore")
 
     identifier: Login
+    user_id: UUID
+    created_at: datetime
     display_name: str = ""
     metadata: Mapping[str, object] = Field(default_factory=dict)
     exp: int = Field(gt=0)
@@ -125,11 +132,66 @@ class SessionClaims(BaseModel):
 
         return filled
 
+    @model_validator(mode="before")
     @classmethod
-    def of_signed(cls, signed: SignedIn, issued_at: int, ttl_sec: int) -> SessionClaims:
+    def _user_id_from_metadata(cls, data: object) -> object:
+        """Chainlit JWT хранит UUID в metadata; собственный JWT — отдельным claim."""
+        if not isinstance(data, Mapping):
+            return data
+
+        if data.get(ClaimKey.USER_ID.value):
+            return data
+
+        metadata = data.get(ClaimKey.METADATA.value)
+        if not isinstance(metadata, Mapping):
+            return data
+
+        user_id = metadata.get(UserMetadataField.USER_ID)
+        if not isinstance(user_id, str) or not user_id:
+            return data
+
+        filled = dict(data)
+        filled[ClaimKey.USER_ID.value] = user_id
+
+        return filled
+
+    @model_validator(mode="before")
+    @classmethod
+    def _created_at_from_metadata(cls, data: object) -> object:
+        """Chainlit JWT хранит дату создания пользователя в metadata."""
+        if not isinstance(data, Mapping):
+            return data
+
+        if data.get(ClaimKey.CREATED_AT.value):
+            return data
+
+        metadata = data.get(ClaimKey.METADATA.value)
+        if not isinstance(metadata, Mapping):
+            return data
+
+        created_at = metadata.get(UserMetadataField.CREATED_AT)
+        if not isinstance(created_at, str) or not created_at:
+            return data
+
+        filled = dict(data)
+        filled[ClaimKey.CREATED_AT.value] = created_at
+
+        return filled
+
+    @classmethod
+    def of_signed(
+        cls,
+        signed: SignedIn,
+        user_id: UUID,
+        created_at: datetime,
+        issued_at: int,
+        ttl_sec: int,
+    ) -> SessionClaims:
         """Claims нового входа: сессия начинается сейчас."""
         return cls(
             identifier=signed.identifier,
+            user_id=user_id,
+            created_at=created_at,
             display_name=signed.display_name,
             metadata=signed.sign_in.render(),
             exp=issued_at + ttl_sec,
@@ -177,6 +239,8 @@ class SessionClaims(BaseModel):
     def render(self) -> dict[str, Any]:
         return {
             ClaimKey.IDENTIFIER.value: self.identifier,
+            ClaimKey.USER_ID.value: str(self.user_id),
+            ClaimKey.CREATED_AT.value: self.created_at.isoformat(),
             ClaimKey.DISPLAY_NAME.value: self.display_name,
             ClaimKey.METADATA.value: dict(self.metadata),
             ClaimKey.EXP.value: self.exp,
@@ -188,6 +252,15 @@ class SessionClaims(BaseModel):
         return SignedIn(
             identifier=self.identifier,
             display_name=self.display_name,
+            sign_in=self.sign_in(),
+        )
+
+    def authenticated_user(self) -> AuthenticatedUser:
+        """Principal из подписанных claims, общий для всех сервисов."""
+        return AuthenticatedUser(
+            id=self.user_id,
+            identifier=self.identifier,
+            created_at=self.created_at,
             sign_in=self.sign_in(),
         )
 
@@ -254,10 +327,16 @@ class TokenIssuer(Protocol):
     """Выпуск токена входа по итогу входа и его перевыпуск по прежним claims."""
 
     @abstractmethod
-    def issue(self, signed: SignedIn) -> str: ...
+    def issue(
+        self,
+        signed: SignedIn,
+        user_id: UUID,
+        created_at: datetime,
+        issued_at: int,
+    ) -> str: ...
 
     @abstractmethod
-    def renew(self, claims: SessionClaims) -> str: ...
+    def renew(self, claims: SessionClaims, issued_at: int) -> str: ...
 
 
 class TokenReader(Protocol):

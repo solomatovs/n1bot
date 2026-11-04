@@ -1,6 +1,6 @@
 """SSO через Kerberos/SPNEGO в chainlit: роуты входа и обновления над общим обменом.
 
-Обмен, допуск и билет — boba.auth.sso; здесь cl.User, JWT-cookie chainlit,
+Обмен, допуск и билет — runtime Kerberos adapter; здесь cl.User, JWT-cookie chainlit,
 кнопка на странице логина и подмена токена живым сокет-сессиям.
 
 Ошибки: AuthenticationError, AuthorizationError — отказ входа;

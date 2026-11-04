@@ -17,8 +17,8 @@ from uuid import uuid4
 import pytest
 from psycopg import sql
 
-from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.config import bind
+from boba.connection_broker.credentials import KerberosCredentialSource, NoRefresh
 from boba.connection_broker.crypto import SecretCipher
 from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.tickets import SectionTickets, ServiceTickets

@@ -30,7 +30,6 @@ from boba.auth.config import (
     KerberosRoleProviders,
     PrincipalRolesConfig,
 )
-from boba.auth.sso import SpnegoGate
 from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.identity.admission import RoleExcludeConfig
@@ -41,6 +40,7 @@ from boba.identity.sso import OwnRequest, SsoChallenge, SsoRequest, SsoSigned
 from boba.identity.token import CookieSpec, SessionRenewal
 from boba.krb import KerberosEnv, ServiceTicketIssuer
 from boba.runtime.config import RuntimeConfig
+from boba.runtime.signin_kerberos import SpnegoGate
 from boba.runtime.users import UsersTable
 from boba.stand.signin import SignInStand
 from boba.stand.site import Stand
@@ -105,7 +105,7 @@ def _kerberos_auth(
             None,
             {
                 "corporate": SpnegoGate(
-                    SignInStand.assembly().sso(config, session.auth_secret)
+                    SignInStand.assembly().sso(config), session.auth_secret
                 )
             },
             {},
@@ -278,16 +278,9 @@ class Refresh:
         return "".join(chunks[index] for index in sorted(chunks))
 
 
-async def _signed_in(auth: KerberosAuth, tmp_path: Path) -> cl.User:
-    """Пользователь chainlit входа SPNEGO — тот, что попадает в JWT сессии."""
-    outcome = await Sso.signed(auth, Browser.token(tmp_path))
-    signed = outcome.signed
-
-    return cl.User(
-        identifier=signed.identifier,
-        display_name=signed.display_name,
-        metadata=signed.sign_in.render(),
-    )
+async def _signed_in(auth: KerberosAuth, tmp_path: Path) -> IssuedSession:
+    """Итог настоящего SSO-входа с полным подписанным токеном сессии."""
+    return await Sso.signed(auth, Browser.token(tmp_path))
 
 
 async def test_sign_in_puts_principal_and_ticket_into_the_jwt(
@@ -296,8 +289,8 @@ async def test_sign_in_puts_principal_and_ticket_into_the_jwt(
     tmp_path: Path,
     krb5_env: None,
 ) -> None:
-    user = await _signed_in(kerberos_auth, tmp_path)
-    metadata = user.metadata
+    session = await _signed_in(kerberos_auth, tmp_path)
+    metadata = session.signed.sign_in.render()
     if metadata.get(UserMetadataField.PRINCIPAL) != USER_PRINCIPAL:
         raise AssertionError(f"principal must be in metadata: {metadata}")
     if not metadata.get(UserMetadataField.TICKET):
@@ -305,7 +298,7 @@ async def test_sign_in_puts_principal_and_ticket_into_the_jwt(
     if not metadata.get(UserMetadataField.ROLES):
         raise AssertionError(f"roles must be mapped: {metadata}")
 
-    sso = ChainlitSessions(StandTokens()).ticket_of_token(create_jwt(user))
+    sso = ChainlitSessions(StandTokens()).ticket_of_token(session.token)
     if sso is None:
         raise AssertionError("JWT of the sign-in must carry the ticket")
     if sso.principal != USER_PRINCIPAL:
@@ -319,22 +312,22 @@ async def test_sign_in_puts_principal_and_ticket_into_the_jwt(
         raise AssertionError(f"ticket must belong to the user: {ticket.principal}")
 
 
-async def test_users_row_keeps_no_ticket(
+async def test_users_row_keeps_identity_while_ticket_stays_in_jwt(
     kerberos_auth: KerberosAuth,
     users: UsersTable,
     tmp_path: Path,
     krb5_env: None,
 ) -> None:
-    """Билет живёт только в JWT: строка users, заведённая входом, идёт без него."""
-    user = await _signed_in(kerberos_auth, tmp_path)
-    stored = await users.get_user(Login(user.identifier))
+    """В БД остаётся identity и роли, а principal и билет только в JWT."""
+    session = await _signed_in(kerberos_auth, tmp_path)
+    stored = await users.get_user(Login(session.user.identifier))
     assert stored is not None, "sign-in must persist the users row"
-    if stored.sign_in.sealed_ticket:
-        raise AssertionError(
-            f"the users row must not carry the ticket: {stored.sign_in}"
-        )
-    if stored.sign_in.principal != USER_PRINCIPAL:
-        raise AssertionError(f"the rest of metadata must survive: {stored.sign_in}")
+    assert stored.sign_in.identity is not None
+    assert not stored.sign_in.sealed_ticket
+    assert not stored.sign_in.principal
+    claims = StandTokens().read(session.token)
+    assert claims.sign_in().principal == USER_PRINCIPAL
+    assert claims.sign_in().ticket() is not None
 
 
 async def test_stale_jwt_without_ticket_is_refused(
@@ -359,8 +352,8 @@ async def test_refresh_issues_a_new_jwt_with_a_fresh_ticket(
     krb5_env: None,
 ) -> None:
     """Билет входа на исходе, а сессия жива: обмен выдаёт новый JWT с новым билетом."""
-    user = await _signed_in(kerberos_auth, tmp_path)
-    token = create_jwt(user)
+    session = await _signed_in(kerberos_auth, tmp_path)
+    token = session.token
     before = ChainlitSessions(StandTokens()).ticket_of_token(token)
     if before is None:
         raise AssertionError("JWT of the sign-in must carry the ticket")
@@ -402,17 +395,20 @@ async def test_refresh_of_another_principal_is_refused(
     kerberos_auth: KerberosAuth, tmp_path: Path, krb5_env: None
 ) -> None:
     """Чужой SPNEGO-токен под чужой сессией: сессия остаётся при своём."""
-    stranger = cl.User(
-        identifier="stranger",
-        metadata={
-            UserMetadataField.PROVIDER: SignInProvider.KERBEROS,
-            UserMetadataField.PRINCIPAL: f"stranger@{STAND.krb_realm}",
-            UserMetadataField.TICKET: "sealed-of-a-stranger",
-            UserMetadataField.ROLES: ["read"],
-        },
+    session = await _signed_in(kerberos_auth, tmp_path)
+    sign_in = session.signed.sign_in.model_copy(
+        update={
+            "identity": IdentityRule(realm="corporate").identity(Login("stranger")),
+            "principal": f"stranger@{STAND.krb_realm}",
+            "sealed_ticket": "sealed-of-a-stranger",
+        }
     )
+    stranger = session.signed.model_copy(
+        update={"identifier": Login("corporate:stranger"), "sign_in": sign_in}
+    )
+    stranger_token = StandTokens.issue(stranger)
     status, renewed = await Refresh.exchange(
-        kerberos_auth, Browser.token(tmp_path), create_jwt(stranger)
+        kerberos_auth, Browser.token(tmp_path), stranger_token
     )
     if status != 403:
         raise AssertionError(f"a foreign principal must be refused: {status}")
@@ -443,9 +439,9 @@ async def test_refresh_without_its_own_header_is_refused(
     kerberos_auth: KerberosAuth, tmp_path: Path, krb5_env: None
 ) -> None:
     """Запрос чужого сайта заголовок не несёт: обмена не будет даже с cookie."""
-    user = await _signed_in(kerberos_auth, tmp_path)
+    session = await _signed_in(kerberos_auth, tmp_path)
     status = await Refresh.status(
-        kerberos_auth, Browser.token(tmp_path), create_jwt(user), own_header=False
+        kerberos_auth, Browser.token(tmp_path), session.token, own_header=False
     )
     if status != 403:
         raise AssertionError(f"cross-site refresh must be refused: {status}")
@@ -458,8 +454,8 @@ async def test_refresh_of_an_excluded_principal_is_refused(
     krb5_env: None,
 ) -> None:
     """Запрет в AD появился после входа: обмен спрашивает допуск заново."""
-    user = await _signed_in(kerberos_auth, tmp_path)
-    token = create_jwt(user)
+    session = await _signed_in(kerberos_auth, tmp_path)
+    token = session.token
 
     # вход и его билет остаются прежними, меняется только политика допуска
     status = await Refresh.status(excluding_auth, Browser.token(tmp_path), token)

@@ -27,6 +27,7 @@ from boba.auth.config import (
     PrincipalRolesConfig,
 )
 from boba.identity.admission import PrincipalFacts, RoleRules
+from boba.identity.api import RoleCatalog
 from boba.identity.directory import (
     ADUserEntry,
     DirectoryBinding,
@@ -43,6 +44,7 @@ from boba.identity.errors import (
     ExternalServiceError,
     InternalServiceError,
 )
+from boba.identity.principal import UserIdentity
 
 __all__ = [
     "DirectoryLookup",
@@ -255,14 +257,22 @@ class RoleProviders:
     roles.<провайдер> конфига; входы работают только с этим композитом.
     """
 
-    def __init__(self, providers: Sequence[RoleProvider], require_roles: bool) -> None:
+    def __init__(
+        self,
+        providers: Sequence[RoleProvider],
+        require_roles: bool,
+        catalog: RoleCatalog,
+    ) -> None:
         self._providers = list(providers)
         self._require_roles = require_roles
+        self._catalog = catalog
 
-    async def admit(self, facts: PrincipalFacts) -> list[str]:
+    async def admit(self, facts: PrincipalFacts, identity: UserIdentity) -> list[str]:
         roles: set[str] = set()
         for provider in self._providers:
             roles.update(await provider.roles_of(facts))
+
+        roles = set(await self._catalog.resolve_roles(identity, roles))
 
         if self._require_roles and not roles:
             msg = (

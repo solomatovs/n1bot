@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import time
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -34,6 +35,7 @@ pytestmark = pytest.mark.anyio
 
 COOKIE = "access_token"
 SECRET = "proxy-route-secret"
+CREATED_AT = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 class Users(PersistedUsers, UsersUpsert):
@@ -49,6 +51,7 @@ class Users(PersistedUsers, UsersUpsert):
         created = AuthenticatedUser(
             id=UUID(int=100 + len(self.rows)),
             identifier=signed.identifier,
+            created_at=CREATED_AT,
             sign_in=signed.sign_in,
         )
         self.rows[signed.identifier] = created

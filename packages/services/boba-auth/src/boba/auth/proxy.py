@@ -33,11 +33,12 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from boba.auth.config import ProxyAuthConfig
 from boba.auth.profiles import ProfileProviders
 from boba.auth.roles import HeaderAttribute, RoleProviders
+from boba.auth.signin import SignedInFactory, SignInDetails
 from boba.identity.admission import PrincipalFacts
 from boba.identity.errors import AuthenticationError, AuthorizationError
 from boba.identity.principal import UserIdentity
 from boba.identity.session import SignInProvider, UserLogin
-from boba.identity.signin import ProxyRequest, ProxySignIn, SignedIn, SignInMetadata
+from boba.identity.signin import ProxyRequest, ProxySignIn, SignedIn
 
 __all__ = [
     "AssertionClaim",
@@ -270,8 +271,7 @@ class HmacProxySignIn(ProxySignIn):
         self._config = config
         self._signature = ProxySignature(config.secret.get_secret_value())
         self._networks = config.networks()
-        self._roles = roles
-        self._profiles = profiles
+        self._signed_in = SignedInFactory(roles, profiles)
 
     async def sign_in(self, request: ProxyRequest) -> SignedIn:
         if request.identity is not None:
@@ -296,19 +296,13 @@ class HmacProxySignIn(ProxySignIn):
         login = UserLogin.of(request.login)
         identity = self._identity_of(request, login)
         facts = self._facts_of(request, login)
-        roles = frozenset(await self._roles.admit(facts))
-        grant = await self._profiles.granted(facts, roles)
-
-        sign_in = SignInMetadata(
-            provider=SignInProvider.PROXY.value,
-            identity=identity,
-            roles=roles,
-            profiles=grant.granted,
-            profile=grant.selected,
-        )
-
-        return SignedIn(
-            identifier=identity.identifier, display_name=login.display, sign_in=sign_in
+        return await self._signed_in.create(
+            SignInDetails(
+                provider=SignInProvider.PROXY,
+                identity=identity,
+                display_name=login.display,
+                facts=facts,
+            )
         )
 
     def _identity_of(self, request: ProxyRequest, login: UserLogin) -> UserIdentity:

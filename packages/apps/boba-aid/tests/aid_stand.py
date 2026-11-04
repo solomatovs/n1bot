@@ -17,6 +17,7 @@ from collections.abc import (
     Sequence,
 )
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar
@@ -109,6 +110,7 @@ from boba.runtime.threads import ThreadsTable
 from boba.runtime.users import UsersTable
 from boba.stand.migrate import StandSchema
 from boba.stand.refs import StandRefs
+from boba.stand.roles import RoleSeed
 from boba.stand.service_signin import ServiceSignIn
 from boba.stand.site import StandConfigEnv, StandConfigPaths
 from boba.stand.storage import StorageSeed
@@ -156,17 +158,35 @@ class TabSession:
 
         metadata = SignInMetadata(
             provider=SignInProvider.KERBEROS.value,
+            identity=UserIdentity.model_validate(self.LOGIN),
             roles=roles,
             principal=self.PRINCIPAL,
             sealed_ticket=sealed_ticket,
         )
-        self.raw.token = create_jwt(StandTokens.user(self.LOGIN, metadata.render()))
+        user = self._set_user(metadata)
+        self.raw.token = create_jwt(user)
 
     def password_sign_in(self, roles: frozenset[str]) -> None:
         from chainlit.auth.jwt import create_jwt
 
-        metadata = SignInMetadata(provider=SignInProvider.LOCAL.value, roles=roles)
-        self.raw.token = create_jwt(StandTokens.user(self.LOGIN, metadata.render()))
+        metadata = SignInMetadata(
+            provider=SignInProvider.LOCAL.value,
+            identity=UserIdentity.model_validate(self.LOGIN),
+            roles=roles,
+        )
+        user = self._set_user(metadata)
+        self.raw.token = create_jwt(user)
+
+    def _set_user(self, sign_in: SignInMetadata) -> ChainlitUser:
+        user = StandTokens.user(self.LOGIN, sign_in.render())
+        self.raw.user = PersistedUser(
+            id=str(user.metadata[UserMetadataField.USER_ID]),
+            identifier=user.identifier,
+            createdAt=str(user.metadata[UserMetadataField.CREATED_AT]),
+            metadata=user.metadata,
+        )
+
+        return user
 
     def registration(self, user_id: UUID, profile: str) -> McpRegistration:
         return McpRegistration(
@@ -370,6 +390,10 @@ class ToolService(ServerConfigs):
             await conn.execute(
                 sql.SQL("delete from {}.connections").format(sql.Identifier(schema))
             )
+            await conn.execute(
+                sql.SQL("delete from {}.users").format(sql.Identifier(schema))
+            )
+        self._signed.clear()
 
         cipher = SecretCipher(self._app.connection_store.cipher.get_secret_value())
         return ConnectionStore(pool, schema, cipher, ConnectionTypes.discover())
@@ -398,6 +422,17 @@ class ToolService(ServerConfigs):
         )
         assert session.user_id is not None
         resource = f"{self._app.server.public_url}/{self.ENDPOINT}"
+        pool = AsyncPostgresPool(self._app.postgres)
+        await pool.open()
+        try:
+            users = UsersTable(None, self._app.db_schema, pool)
+            await RoleSeed(users).user(
+                UUID(session.user_id),
+                sign_in.identity_for(signed.identifier),
+                sign_in.roles,
+            )
+        finally:
+            await pool.close()
         holder = self._tokens.holder(signed, resource, UUID(session.user_id))
         token = self._tokens.access(holder, self._config.CLIENT_ID).access_token
         configured = self.servers().servers[name]
@@ -627,7 +662,12 @@ class OwnerRows(UserRows):
 
         return self._owner
 
-    async def upsert(self, identifier: Login, meta: Mapping[str, Any]) -> StoredUser:
+    async def upsert(
+        self,
+        identifier: Login,
+        identity: UserIdentity | None = None,
+        roles: frozenset[str] | None = None,
+    ) -> StoredUser:
         raise NotImplementedError
 
 
@@ -999,6 +1039,9 @@ async def layer(
             ),
         )
 
+    await RoleSeed(UsersTable(None, schema, pool)).add(
+        ("read", "wrt", "dev", "analyst", "ADM", "DEV", "GST")
+    )
     data_layer = PostgresDataLayer(
         users=UsersTable(app_config.postgres, schema, pool),
         threads=ThreadsTable(app_config.postgres, schema, pool),
@@ -1089,8 +1132,37 @@ class StandTokens(TokenReader):
         return JwtTokens(cls.secret(), cls.TTL_SEC, cls.GENERATION)
 
     @classmethod
+    def issue(cls, signed: SignedIn) -> str:
+        issued_at = int(time.time())
+        user_id = uuid5(NAMESPACE_URL, f"boba-aid-stand:{signed.identifier}")
+        created_at = datetime(2026, 1, 1, tzinfo=UTC)
+
+        return cls.tokens().issue(signed, user_id, created_at, issued_at)
+
+    @classmethod
+    def issue_for(cls, identifier: str, user_id: UUID) -> str:
+        """Выпустить JWT для тестовой Chainlit-сессии с заданной строкой users."""
+        identity = UserIdentity.model_validate(identifier)
+        signed = SignedIn(
+            identifier=Login(identity.identifier),
+            display_name=identity.login,
+            sign_in=SignInMetadata(identity=identity),
+        )
+
+        return cls.tokens().issue(
+            signed,
+            user_id,
+            datetime(2026, 1, 1, tzinfo=UTC),
+            int(time.time()),
+        )
+
+    @classmethod
     def user(
-        cls, identifier: str, metadata: dict[str, Any] | None = None
+        cls,
+        identifier: str,
+        metadata: dict[str, Any] | None = None,
+        user_id: str | None = None,
+        created_at: str = "2026-01-01T00:00:00+00:00",
     ) -> ChainlitUser:
         """cl.User стенда с поколением сессий в metadata, как его помечает вход."""
         if ":" not in identifier:
@@ -1098,9 +1170,17 @@ class StandTokens(TokenReader):
         else:
             identity = UserIdentity.model_validate(identifier)
 
+        resolved_user_id = user_id
+        if resolved_user_id is None:
+            resolved_user_id = str(
+                uuid5(NAMESPACE_URL, f"boba-aid-stand:{identity.identifier}")
+            )
+
         marked: dict[str, Any] = {
             UserMetadataField.GENERATION: cls.GENERATION,
             UserMetadataField.IDENTITY: identity.model_dump(mode="json"),
+            UserMetadataField.USER_ID: resolved_user_id,
+            UserMetadataField.CREATED_AT: created_at,
         }
         if metadata is not None:
             marked.update(metadata)
@@ -1153,7 +1233,12 @@ class SessionStub:
         )
         # токен входа как у живой сессии: без него ход отказывает
         signed = SignedIn(identifier=Login(name), display_name="", sign_in=sign_in)
-        self.token = StandTokens.tokens().issue(signed)
+        self.token = StandTokens.tokens().issue(
+            signed,
+            UUID(self.user.id),
+            datetime.fromisoformat(self.user.createdAt),
+            int(time.time()),
+        )
 
 
 class ChatSessionStand:
@@ -1245,8 +1330,22 @@ class ChatSessionStand:
         from chainlit.auth.jwt import create_jwt
         from chainlit.context import init_http_context
 
-        token = create_jwt(StandTokens.user(user.identifier, dict(login_metadata)))
-        context = init_http_context(user=user, auth_token=token, thread_id=thread_id)
+        token_user = StandTokens.user(
+            user.identifier,
+            dict(login_metadata),
+            user_id=user.id,
+            created_at=user.createdAt,
+        )
+        token = create_jwt(token_user)
+        session_user = PersistedUser(
+            id=user.id,
+            identifier=user.identifier,
+            createdAt=user.createdAt,
+            metadata=token_user.metadata,
+        )
+        context = init_http_context(
+            user=session_user, auth_token=token, thread_id=thread_id
+        )
         context.session.chat_profile = profile
         self.enter(profile)
 

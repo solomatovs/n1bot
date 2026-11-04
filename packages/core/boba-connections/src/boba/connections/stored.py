@@ -161,9 +161,6 @@ class ConnectionRepository(Protocol):
     """Хранилище соединений и грантов; реализация — ConnectionStore на postgres."""
 
     @abstractmethod
-    async def sync_roles(self, names: Iterable[str]) -> None: ...
-
-    @abstractmethod
     async def add(self, name: str, connection: ConnectionBase) -> UUID: ...
 
     @abstractmethod

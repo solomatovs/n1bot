@@ -15,7 +15,7 @@ SecretCryptoError — секрет строки не расшифровался 
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import replace
 from typing import Any, ClassVar
 from uuid import UUID
@@ -48,8 +48,6 @@ from boba.connections.stored import (
 )
 from boba.db.postgres import PgQuery, PostgresPool, PostgresTable
 from boba.identity.context import Subject
-from boba.identity.errors import ExternalServiceError
-from boba.identity_postgres import UsersTable
 
 logger = logging.getLogger(__name__)
 
@@ -79,17 +77,9 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
         self._types = types
         self._cipher = cipher
         self._grants = SubjectGrantsQuery()
-        self._users = UsersTable(None, db_schema, pool)
 
     def _failure(self, action: str, exc: Exception) -> Exception:
         return ConnectionStoreError(self._detail(action, exc))
-
-    async def sync_roles(self, names: Iterable[str]) -> None:
-        """Добавляет в roles имена, которых там ещё нет; ничего не удаляет."""
-        try:
-            await self._users.sync_roles(names)
-        except ExternalServiceError as exc:
-            raise ConnectionStoreError(str(exc)) from exc
 
     async def add(self, name: str, connection: ConnectionBase) -> UUID:
         """Новая строка connections; уникальность имени — забота вызывающего."""

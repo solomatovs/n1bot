@@ -11,6 +11,7 @@ __pycache__
 !/docs/mcp-servers-user.md
 !/docs/developer-guide.md
 !/docs/codebase-audit.md
+!/docs/authentication-review.md
 !/docs/migration-from-dev.md
 !/docs/knowledge-graph-plan.md
 !/docs/knowledge-schema.sql

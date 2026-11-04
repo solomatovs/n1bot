@@ -17,9 +17,11 @@ from boba.chat.profiles import (
     ModelLimits,
     ReasoningReturn,
 )
+from boba.identity.api import RoleCatalog
 from boba.ldap import Ldap3Directory
 from boba.llm.http.openai import OpenAiProvider
 from boba.runtime.signin import SignInAssembly
+from boba.stand.roles import MemoryRoles
 from boba.transport.http import HttpTransportConfig
 from boba.transport.http.connection import BearerAuth, HttpConnection
 
@@ -81,8 +83,25 @@ class SignInStand:
         return ChatProfiles({cls.PROFILE: cls.profile(roles=roles)})
 
     @classmethod
-    def assembly(cls, profiles: ChatProfiles | None = None) -> SignInAssembly:
+    def assembly(
+        cls, profiles: ChatProfiles | None = None, roles: RoleCatalog | None = None
+    ) -> SignInAssembly:
         if profiles is None:
             profiles = cls.profiles()
 
-        return SignInAssembly(Ldap3Directory(), profiles)
+        if roles is None:
+            roles = MemoryRoles(
+                {
+                    "read",
+                    "wrt",
+                    "admin",
+                    "adm",
+                    "dev",
+                    "DEV",
+                    "ADM",
+                    "GST",
+                    "ops",
+                    "analyst",
+                }
+            )
+        return SignInAssembly(Ldap3Directory(), profiles, roles)

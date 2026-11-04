@@ -35,7 +35,7 @@ from boba.auth.config import (
     KerberosAuthConfig,
     ProxyAuthConfig,
 )
-from boba.chat.profiles import ChatRoleConfig, ProfileConfig
+from boba.chat.profiles import ProfileConfig
 from boba.config import ConfigError, ConfigLoader, ConfigSchema, bind
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.service import PublicAddress
@@ -887,7 +887,6 @@ class RuntimeConfig(ProcessConfig):
         ),
     )
     profiles: dict[str, ProfileConfig]
-    roles: dict[str, ChatRoleConfig]
     session: SessionConfig
     cluster: ClusterConfig
     messaging: MessagingConfig

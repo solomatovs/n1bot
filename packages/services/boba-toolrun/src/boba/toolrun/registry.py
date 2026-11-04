@@ -231,6 +231,17 @@ class ToolRegistry:
 
         return by_name
 
+    async def for_caller(
+        self, user_roles: Iterable[str], profile: str
+    ) -> dict[str, HostedTool]:
+        roles = frozenset(user_roles)
+        access = await self.access.for_roles(roles)
+        allowed: dict[str, HostedTool] = {}
+        for tool in self.tools:
+            if access.decide(tool.name, roles, profile).allowed:
+                allowed[tool.name] = tool
+        return allowed
+
     def _select(self, roles: frozenset[str], profile: str) -> Iterator[HostedTool]:
         for tool in self.tools:
             if self.access.decide(tool.name, roles, profile).allowed:

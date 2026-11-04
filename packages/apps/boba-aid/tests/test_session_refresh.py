@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -29,6 +30,7 @@ pytestmark = pytest.mark.anyio
 
 APP_ROOT = Path(__file__).resolve().parents[1] / "assets"
 COOKIE = "access_token"
+CREATED_AT = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 class Users(PersistedUsers, UsersUpsert):
@@ -38,6 +40,7 @@ class Users(PersistedUsers, UsersUpsert):
         self.row = AuthenticatedUser(
             id=UUID(int=7),
             identifier=Login("local-stand:alice"),
+            created_at=CREATED_AT,
             sign_in=SignInMetadata(roles=frozenset({"DEV"})),
         )
 

@@ -34,7 +34,6 @@ from fastmcp import Client
 from fastmcp.client.auth import OAuth
 from fastmcp.client.transports import StreamableHttpTransport
 from key_value.aio.stores.memory import MemoryStore
-from omegaconf import OmegaConf
 from playwright.sync_api import Browser, Page, expect
 
 from boba.auth.service import SignInProviders
@@ -683,7 +682,7 @@ def deployed() -> DeployedService:
     with chat_path.open("rb") as handle:
         chat = tomllib.load(handle)
 
-    public = str(service["env"]["public_url"]).rstrip("/")
+    public = str(service["server"]["public_url"]).rstrip("/")
     try:
         health = httpx.get(f"{public}/health", timeout=10.0)
     except httpx.HTTPError as exc:
@@ -710,8 +709,10 @@ def deployed() -> DeployedService:
             "names no user with roles"
         )
 
-    selected = OmegaConf.select(OmegaConf.create(service), "app.auth")
-    kinds = {provider.type for provider in selected}
+    kinds = {
+        str(provider.get("type", name))
+        for name, provider in service.get("auth", {}).items()
+    }
     password = bool(kinds.intersection({"local", "ldap"}))
     providers = SignInProviders(
         password=password, sso="kerberos" in kinds, proxy="proxy" in kinds

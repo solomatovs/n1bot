@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import socket
+import time
 from enum import StrEnum
 from typing import ClassVar
 from urllib.parse import urlsplit
@@ -70,7 +71,7 @@ class SandboxToolProfiles:
     def http_hosts(self) -> list[str]:
         """Хост из публичного адреса сервиса для DNS-пробы в сети песочницы."""
         hosts: list[str] = []
-        address = OmegaConf.select(self._raw, "mcp.public_url")
+        address = OmegaConf.select(self._raw, "server.public_url")
         host = urlsplit(str(address)).hostname if address else None
         if host:
             hosts.append(host)
@@ -102,15 +103,19 @@ def _networked(raw_config: DictConfig) -> list[tuple[str, SandboxProfile]]:
 
 def _resolvable_host(raw_config: DictConfig) -> str:
     """Хост из конфига, который резолвится снаружи; без него тест падает."""
-    for host in SandboxToolProfiles(raw_config).http_hosts():
-        try:
-            socket.getaddrinfo(host, None)
-        except socket.gaierror:
-            continue
+    hosts = SandboxToolProfiles(raw_config).http_hosts()
+    for host in hosts:
+        for attempt in range(3):
+            try:
+                socket.getaddrinfo(host, None)
+            except socket.gaierror:
+                if attempt < 2:
+                    time.sleep(0.2)
+                    continue
+            else:
+                return host
 
-        return host
-
-    pytest.fail("ни один сервисный хост конфига не резолвится на самой машине")
+    pytest.fail(f"service hosts {hosts!r} do not resolve on the host")
 
 
 class TestNetworkProfiles:

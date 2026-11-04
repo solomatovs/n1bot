@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from datetime import UTC, datetime
 from uuid import UUID
 
 import jwt
@@ -23,6 +24,7 @@ pytestmark = pytest.mark.anyio
 
 SECRET = "stand-secret"
 GENERATION = "stand-generation"
+CREATED_AT = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 class Users(PersistedUsers, UsersUpsert):
@@ -34,7 +36,8 @@ class Users(PersistedUsers, UsersUpsert):
             "corporate:reader": AuthenticatedUser(
                 id=UUID(int=7),
                 identifier=Login("corporate:reader"),
-                sign_in=SignInMetadata(),
+                created_at=CREATED_AT,
+                sign_in=SignInMetadata(roles=frozenset({"read"})),
             )
         }
 
@@ -46,6 +49,7 @@ class Users(PersistedUsers, UsersUpsert):
         created = AuthenticatedUser(
             id=UUID(int=100 + len(self.rows)),
             identifier=signed.identifier,
+            created_at=CREATED_AT,
             sign_in=signed.sign_in,
         )
         self.rows[signed.identifier] = created
@@ -88,6 +92,8 @@ def _token(secret: str, **claims: object) -> str:
 
     payload: dict[str, object] = {
         "identifier": "corporate:reader",
+        "user_id": str(UUID(int=7)),
+        "created_at": CREATED_AT.isoformat(),
         "metadata": metadata,
         "exp": int(time.time()) + 60,
         "iat": int(time.time()),
@@ -107,7 +113,7 @@ async def test_valid_token_yields_the_users_row_with_token_metadata() -> None:
 
     assert (user.id, user.identifier) == (UUID(int=7), "corporate:reader")
     assert user.roles == frozenset({"read"})
-    assert users.asked == ["corporate:reader"]
+    assert not users.asked
 
 
 @pytest.mark.parametrize(
@@ -130,13 +136,15 @@ async def test_bad_tokens_are_refused_before_users(token: str) -> None:
 
 
 async def test_unknown_identifier_is_refused_and_not_created() -> None:
-    """Токен подтверждает роли, но личность не заводит: строки users нет — входа нет."""
+    """Проверка подписанного токена не читает БД и не заводит строку users."""
     users = Users()
     token = _token(SECRET, identifier="corporate:stranger", metadata={"roles": ["DEV"]})
 
-    with pytest.raises(AuthenticationError, match="corporate:stranger"):
-        await _service(users).user_of_token(token)
+    user = await _service(users).user_of_token(token)
 
+    assert user.identifier == "corporate:stranger"
+    assert user.roles == frozenset({"DEV"})
+    assert not users.asked
     assert "corporate:stranger" not in users.rows
 
 
@@ -222,6 +230,8 @@ class TestRenew:
         old = jwt.encode(
             {
                 "identifier": "corporate:reader",
+                "user_id": str(UUID(int=7)),
+                "created_at": CREATED_AT.isoformat(),
                 "metadata": {
                     "generation": GENERATION,
                     "identity": {"realm": "corporate", "login": "reader"},
@@ -254,3 +264,22 @@ class TestRenew:
 
         with pytest.raises(AuthenticationError, match="not persisted"):
             await service.renew(stranger)
+
+
+async def test_token_validation_is_local_and_renewal_reads_current_roles() -> None:
+    users = Users()
+    service = _service(users)
+    token = _token(SECRET, metadata={"roles": ["read"], "profiles": ["general"]})
+    users.rows["corporate:reader"] = users.rows["corporate:reader"].model_copy(
+        update={"sign_in": SignInMetadata()}
+    )
+    current = await service.user_of_token(token)
+    assert current.roles == frozenset({"read"})
+    assert current.profiles == frozenset({"general"})
+    assert not users.asked
+
+    renewed = await service.renew(token)
+    assert not renewed.user.roles
+    assert not renewed.signed.sign_in.roles
+    assert not service.tokens.read(renewed.token).sign_in().roles
+    assert users.asked == ["corporate:reader"]

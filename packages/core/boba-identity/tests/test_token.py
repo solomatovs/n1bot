@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from uuid import UUID
+
 import pytest
 from pydantic import ValidationError
 
@@ -14,7 +17,14 @@ class TestSessionRenewal:
 
     @staticmethod
     def _claims(exp: int, iat: int, since: int) -> SessionClaims:
-        return SessionClaims(identifier=Login("alice"), exp=exp, iat=iat, since=since)
+        return SessionClaims(
+            identifier=Login("alice"),
+            user_id=UUID(int=7),
+            created_at=datetime(2026, 1, 1, tzinfo=UTC),
+            exp=exp,
+            iat=iat,
+            since=since,
+        )
 
     def test_signal_goes_when_the_token_is_about_to_expire(self) -> None:
         renewal = SessionRenewal.of(ttl_sec=3600, max_sec=86400)
@@ -63,7 +73,13 @@ class TestClaimsLogin:
 
     def test_identifier_is_canonical_and_display_keeps_the_spelling(self) -> None:
         claims = SessionClaims.model_validate(
-            {"identifier": " Ivanov.II ", "exp": 10, "iat": 5}
+            {
+                "identifier": " Ivanov.II ",
+                "user_id": str(UUID(int=7)),
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "exp": 10,
+                "iat": 5,
+            }
         )
 
         assert claims.identifier == "ivanov.ii"
@@ -71,7 +87,13 @@ class TestClaimsLogin:
 
     def test_given_display_name_wins(self) -> None:
         claims = SessionClaims.model_validate(
-            {"identifier": "Ivanov.II", "display_name": "Иван Иванов", "exp": 10}
+            {
+                "identifier": "Ivanov.II",
+                "display_name": "Иван Иванов",
+                "user_id": str(UUID(int=7)),
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "exp": 10,
+            }
         )
 
         assert claims.identifier == "ivanov.ii"
@@ -79,9 +101,21 @@ class TestClaimsLogin:
 
     def test_blank_identifier_is_rejected(self) -> None:
         with pytest.raises(ValidationError):
-            SessionClaims.model_validate({"identifier": "   ", "exp": 10})
+            SessionClaims.model_validate(
+                {
+                    "identifier": "   ",
+                    "user_id": str(UUID(int=7)),
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "exp": 10,
+                }
+            )
 
     def test_rendered_claims_carry_the_canonical_login(self) -> None:
-        claims = SessionClaims(identifier=Login("Petrov.PP"), exp=10)
+        claims = SessionClaims(
+            identifier=Login("Petrov.PP"),
+            user_id=UUID(int=7),
+            created_at=datetime(2026, 1, 1, tzinfo=UTC),
+            exp=10,
+        )
 
         assert claims.render()["identifier"] == "petrov.pp"

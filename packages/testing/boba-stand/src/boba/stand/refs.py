@@ -13,7 +13,7 @@ from typing import ClassVar
 from omegaconf import DictConfig
 
 from boba.access import GrantCheck, ProfileGrant, ToolGrant, ToolGrants
-from boba.auth.credentials import KerberosCredentialSource, NoRefresh
+from boba.connection_broker.credentials import KerberosCredentialSource, NoRefresh
 from boba.connection_broker.params import ConnectionParams
 from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.tickets import ServiceTickets

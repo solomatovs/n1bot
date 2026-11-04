@@ -104,7 +104,7 @@ async def test_user_rows(
     tables: tuple[UsersTable, ThreadsTable],
 ) -> None:
     users, _ = tables
-    stored = await users.upsert(Login("reader"), {"roles": ["DEV"]})
+    stored = await users.upsert(Login("reader"))
 
     assert (await users.stored_by_id(stored.id)) == stored
     assert (await users.stored(Login("reader"))) == stored

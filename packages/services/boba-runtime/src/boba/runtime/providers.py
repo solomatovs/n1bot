@@ -16,9 +16,9 @@ from omegaconf import DictConfig
 
 from boba.access import GrantCheck, ToolGrants
 from boba.auth import AuthService, JwtTokens, SignIns
-from boba.auth.credentials import KerberosCredentialSource
 from boba.chat.profiles import ChatProfiles
 from boba.config import bind
+from boba.connection_broker.credentials import KerberosCredentialSource
 from boba.connection_broker.params import ConnectionParams
 from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.tickets import ServiceTickets
@@ -116,6 +116,9 @@ async def postgres_pool(
     его получают все таблицы приложения; закрывается с контейнером."""
     pool = await AsyncPostgresPool.get(config.postgres)
     try:
+        async with pool.connection():
+            pass
+
         yield pool
     finally:
         await pool.close()
@@ -393,7 +396,6 @@ async def users_table(
 ) -> UsersTable:
     """Строки users и авторы тредов в схеме приложения на пуле процесса."""
     table = UsersTable(config.postgres, config.db_schema, pool)
-    await table.sync_roles(config.roles)
     return table
 
 
@@ -417,14 +419,22 @@ def session_tokens(
     return JwtTokens(session.auth_secret, session.session_ttl_sec, generation)
 
 
+def identity_users(
+    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
+    pool: Annotated[AsyncPostgresPool, Depends(postgres_pool)],
+) -> IdentityUsers:
+    return IdentityUsers(config.postgres, config.db_schema, pool)
+
+
 def sign_ins(
     config: Annotated[ProcessConfig, Depends(get_process_config)],
     directory: Annotated[UserDirectory, Depends(user_directory)],
     profiles: Annotated[ProfileCatalog, Depends(profile_catalog)],
+    catalog: Annotated[IdentityUsers, Depends(identity_users)],
 ) -> SignIns:
     """Способы входа процесса из [auth]: пароли, SPNEGO и proxy с их
     провайдерами ролей и профилей."""
-    assembly = SignInAssembly(directory, profiles)
+    assembly = SignInAssembly(directory, profiles, catalog)
 
     return assembly.build(config.auth, config.session.auth_secret)
 

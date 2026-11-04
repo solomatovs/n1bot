@@ -798,6 +798,15 @@ class IngestSection(BaseModel):
     table_shape: TableShape
 
 
+class ConfluenceToolSettings(BaseModel):
+    """Параметры инструмента, не содержащие сам connection."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    body_format: str
+    max_text_chars: int
+
+
 class ConfluenceSite:
     """Живой Confluence глазами теста: тот же профиль, что у инструментов."""
 
@@ -825,8 +834,15 @@ class ConfluenceSite:
 
     @classmethod
     def load(cls) -> ConfluenceSite:
-        built = StandApp.AID.tools_app().raw()
-        config = bind(built, path=ConfluenceSection.SECTION, model=ConfluenceSection)
+        tools_app = StandApp.AID.tools_app()
+        built = tools_app.config_files().loader(tools_app.paths()).load()
+        settings = bind(
+            built, path=ConfluenceSection.SECTION, model=ConfluenceToolSettings
+        )
+        config = ConfluenceSection(
+            confluence=bind(built, path="confluence", model=HttpConnection),
+            **settings.model_dump(),
+        )
         ingest = bind(built, path=IngestSection.SECTION, model=IngestSection)
         return cls(config, ingest.table_shape)
 
@@ -1136,6 +1152,7 @@ def indexed_page(
         tool="confluence_index_page",
         arguments={
             "page_id": confluence_page.page_id,
+            "connection": "confluence",
             "attachments": True,
         },
     )
@@ -1251,6 +1268,13 @@ def _connection_catalog(stand_database: str, llm_port: int) -> TableResult:
     stand_postgres = bind(built, path="postgres", model=PostgresConfig)
     postgres = stand_postgres.model_copy(update={"dbname": stand_database})
     clickhouse = bind(built, path="clickhouse", model=ClickHouseConfig)
+    confluence = bind(
+        StandApp.AID.tools_app().config_files().loader(
+            StandApp.AID.tools_app().paths()
+        ).load(),
+        path="confluence",
+        model=HttpConnection,
+    )
     web = HttpConnection(
         scheme=UrlScheme(StandUrl.SCHEME.value),
         host=StandUrl.HOST.value,
@@ -1268,6 +1292,7 @@ def _connection_catalog(stand_database: str, llm_port: int) -> TableResult:
         ("main", oracle.connection()),
         (StandDatabase.SINK_ORA, sinks.ora_connection),
         ("main", postgres),
+        ("confluence", confluence),
         ("stand", web),
     )
 
@@ -1294,6 +1319,7 @@ CATALOG_DOM: tuple[str, ...] = (
     StandDatabase.SINK_CH,
     StandDatabase.SINK_ORA,
     "stand",
+    "confluence",
     "postgres",
     "clickhouse",
     "oracle",
@@ -1522,6 +1548,7 @@ class TestConfluenceTools:
             tool="confluence_spaces",
             arguments={
                 "pattern": confluence_page.space_key,
+                "connection": "confluence",
                 "space_type": "global",
                 "limit": 200,
             },
@@ -1542,6 +1569,7 @@ class TestConfluenceTools:
             tool="confluence_search",
             arguments={
                 "query": ProbeText.CONFLUENCE_QUERY.value,
+                "connection": "confluence",
                 "snippet_chars": 100,
                 "offset": 0,
                 "limit": ConfluenceSite.SEARCH_LIMIT,
@@ -1563,7 +1591,11 @@ class TestConfluenceTools:
     def test_fetch(self, feed: ToolFeed, confluence_page: ConfluencePage) -> None:
         call = ToolCall(
             tool="confluence_fetch",
-            arguments={"page_id": confluence_page.page_id, "as_markdown": True},
+            arguments={
+                "page_id": confluence_page.page_id,
+                "connection": "confluence",
+                "as_markdown": True,
+            },
         )
         result = MarkdownResult(text=confluence_page.markdown)
         feed.call(call, ToolExpect.of(result, dom=[confluence_page.word]))
@@ -1584,6 +1616,7 @@ class TestConfluenceTools:
             tool="confluence_grep",
             arguments={
                 "page_id": confluence_page.page_id,
+                "connection": "confluence",
                 **grep.arguments(as_markdown=True),
             },
         )
@@ -1606,6 +1639,7 @@ class TestIngestTools:
             tool="confluence_index_space",
             arguments={
                 "space_key": ProbeText.NO_SPACE.value,
+                "connection": "confluence",
             },
         )
         path = CflRestBuilder().space_path(ProbeText.NO_SPACE.value)
@@ -1629,6 +1663,7 @@ class TestIngestTools:
             tool="confluence_attachment",
             arguments={
                 "page_id": confluence_attachment.page_id,
+                "connection": "confluence",
                 "filename": confluence_attachment.filename,
                 "ocr": False,
             },
@@ -2196,7 +2231,9 @@ class TestAddressTools:
         self, feed: ToolFeed, confluence_site: ConfluenceSite
     ) -> None:
         url = str(confluence_site.profile.public_url())
-        call = ToolCall(tool="confluence_address")
+        call = ToolCall(
+            tool="confluence_address", arguments={"connection": "confluence"}
+        )
         expect = ToolExpect(
             patterns=[
                 TablePattern.row("url"),

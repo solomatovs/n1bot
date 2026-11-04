@@ -120,6 +120,31 @@ class TestPrincipalFormat:
 
 
 class TestExpiredSignIn:
+    def test_signed_token_is_the_source_of_identity_metadata(
+        self,
+        chat_session: ChatSessionStand,
+    ) -> None:
+        """Chainlit's persisted user may omit per-login metadata."""
+        session = chat_session.use(
+            user_id=str(UUID(int=5)),
+            thread_id="thread-hydrated-user",
+            identifier="corporate:alice",
+        )
+        stub = session.raw
+        assert stub is not None
+        stub.user.id = str(StandTokens().read(stub.token).user_id)
+        stub.user.metadata = {}
+
+        claims = session.signed_in()
+
+        assert claims.identifier == "corporate:alice"
+        assert claims.sign_in().identity_for(claims.identifier).login == "alice"
+        assert session.identifier == claims.identifier
+        assert session.user_id == str(claims.user_id)
+        assert session.metadata == claims.metadata
+        assert session.roles == claims.sign_in().roles
+        assert session.profiles == claims.sign_in().profiles
+
     def test_expired_token_refuses_the_call_context(
         self,
         chat_session: ChatSessionStand,

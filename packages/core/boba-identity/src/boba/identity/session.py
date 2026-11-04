@@ -47,6 +47,8 @@ class UserMetadataField:
     PROFILE: Final = "profile"
     GENERATION: Final = "generation"
     IDENTITY: Final = "identity"
+    USER_ID: Final = "user_id"
+    CREATED_AT: Final = "created_at"
 
 
 class SignInProvider(StrEnum):

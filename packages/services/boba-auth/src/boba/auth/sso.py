@@ -1,146 +1,91 @@
-"""SSO через Kerberos/SPNEGO, общее для приложений: обмен, допуск, билет входа.
+"""Вход Kerberos-принципала: личность, роли и профили без SPNEGO I/O.
 
-Приложение вешает обмен на свой URL: SpnegoGate отдаёт исход (вызов, вход,
-отказ), а JWT, cookie и страницу логина делает вызывающий.
+`SsoSignIn` получает уже проверенные факты от runtime Kerberos adapter и
+возвращает общий `SignedIn`. Проверку билета и его шифрование выполняет adapter.
 
 Ошибки:
-AuthorizationError — принципал не допущен (исключён или без ролей).
-ExternalServiceError — креды kerberos истекли или недоступен LDAP.
-InternalServiceError — keytab/SPN/делегирование/конфиг непригодны.
+AuthorizationError — принципал не допущен или не соответствует шаблону.
+AuthenticationError — каталог не нашёл пользователя.
+ExternalServiceError — каталог недоступен.
+InternalServiceError — служебный поиск каталога завершился ошибкой.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
 
 from boba.auth.config import KerberosAuthConfig
-from boba.auth.profiles import ProfileGrant, ProfileProviders
+from boba.auth.profiles import ProfileProviders
 from boba.auth.roles import RoleProviders
+from boba.auth.signin import SignedInFactory, SignInDetails
 from boba.identity.admission import PrincipalFacts
-from boba.identity.context import DelegatedTicket
-from boba.identity.errors import (
-    AuthorizationError,
-    BaseError,
-    ExternalServiceError,
-    InternalServiceError,
-)
-from boba.identity.principal import UserIdentity
-from boba.identity.session import (
-    LoginTemplate,
-    SignInProvider,
-    UserLogin,
-)
-from boba.identity.signin import SignedIn, SignInMetadata
-from boba.identity.sso import (
-    SpnegoExchange,
-    SsoAdmission,
-    SsoChallenge,
-    SsoRefused,
-    SsoRequest,
-    SsoSigned,
-)
-from boba.kerberos import (
-    CredentialsExpiredError,
-    DelegationNotPermittedError,
-    InvalidTokenError,
-    KerberosError,
-    KeytabError,
-    NegotiateToken,
-)
-from boba.krb import (
-    KerberosWorkspace,
-    SpnegoAcceptor,
-    SpnegoIdentity,
-    TicketCapture,
-)
-from boba.krb.seal import SsoTickets, TicketSealer
+from boba.identity.errors import AuthorizationError
+from boba.identity.session import LoginTemplate, SignInProvider, UserLogin
+from boba.identity.signin import SignedIn
+from boba.identity.sso import SsoAdmission
 from boba.toolkit.template import TemplateError
 
-__all__ = [
-    "KerberosErrorToDomain",
-    "SpnegoGate",
-    "SsoSignIn",
-]
+__all__ = ["SsoSignIn"]
 
-
-class KerberosErrorToDomain:
-    "Классификация ошибок kerberos-слоя в доменную ошибку."
-
-    @staticmethod
-    def map(e: KerberosError, action: str) -> BaseError:
-        # нужен повторный логин — не наша вина
-        if isinstance(e, CredentialsExpiredError):
-            message = f"{action}: Kerberos credentials expired, please re-login: {e}"
-            return ExternalServiceError("kerberos", message)
-
-        # делегирование запрещено политикой (msDS-AllowedToDelegateTo) — конфиг AD
-        if isinstance(e, DelegationNotPermittedError):
-            return InternalServiceError(
-                internal_detail=f"{action}: kerberos delegation not permitted: {e}",
-                user_detail=None,
-            )
-
-        # keytab/SPN сервиса непригодны — наша сторона
-        if isinstance(e, KeytabError):
-            return InternalServiceError(
-                internal_detail=f"{action}: kerberos keytab or SPN unusable: {e}",
-                user_detail=None,
-            )
-
-        return InternalServiceError(
-            internal_detail=f"{action}: kerberos error: {e}",
-            user_detail=None,
-        )
+logger = logging.getLogger(__name__)
 
 
 class SsoSignIn(SsoAdmission):
-    """Вход по SPNEGO-личности: роли по правилам конфига и запечатанный билет."""
+    """Создаёт общий результат входа из проверенного Kerberos-принципала.
+
+    Runtime adapter передаёт факты SPNEGO и запечатанный делегированный билет;
+    этот класс применяет правила ролей и профилей и не знает о Kerberos I/O.
+    """
 
     def __init__(
         self,
         config: KerberosAuthConfig,
-        secret: str,
         roles: RoleProviders,
         profiles: ProfileProviders,
     ) -> None:
-        if not secret:
-            msg = (
-                "sso sign-in: [session].auth_secret is required to seal the "
-                "sign-in ticket, got an empty string"
-            )
-            raise ValueError(msg)
-
         self._config = config
-        self.acceptor = SpnegoAcceptor(config.accept, config.delegation)
-        self.capture = TicketCapture(config.delegation)
-        self.sealer = TicketSealer(secret)
-        self._logger = logging.getLogger(SsoSignIn.__name__)
         self._roles = roles
-        self._profiles = profiles
+        self._signed_in = SignedInFactory(roles, profiles)
 
     @property
     def config(self) -> KerberosAuthConfig:
         return self._config
 
-    def tickets(self) -> SsoTickets:
-        """Открыватель билетов входа для обвязок инструментов."""
-        return SsoTickets(
-            sealer=self.sealer, krb5_config=KerberosWorkspace.krb5_config()
+    async def signed_in(self, facts: PrincipalFacts, sealed: str) -> SignedIn:
+        """Итог входа: каноническая личность, роли БД, профили и шифротекст билета."""
+        username = self._username_from_principal(
+            self._config.principal_format, facts.principal
+        )
+        login = UserLogin.of(username)
+        identity = self._config.identity.identity(login.key)
+        if not sealed:
+            logger.warning(
+                "kerberos: sign-in of %s carries no delegated ticket", facts.principal
+            )
+
+        return await self._signed_in.create(
+            SignInDetails(
+                provider=SignInProvider.KERBEROS,
+                identity=identity,
+                display_name=login.display,
+                facts=facts,
+                principal=facts.principal,
+                sealed_ticket=sealed,
+            )
         )
 
-    @staticmethod
-    def facts_of(identity: SpnegoIdentity) -> PrincipalFacts:
-        """Факты SPNEGO-личности: принципал, SID-ы групп и разобрался ли PAC."""
-        return PrincipalFacts(
-            principal=identity.principal,
-            group_sids=tuple(identity.group_sids),
-            pac_parsed=identity.pac_parsed,
+    async def roles_of(self, facts: PrincipalFacts) -> list[str]:
+        """Роли по проверенным фактам SPNEGO; также повторно проверяются при refresh."""
+        username = self._username_from_principal(
+            self._config.principal_format, facts.principal
         )
+        identity = self._config.identity.identity(UserLogin.of(username).key)
+
+        return await self._roles.admit(facts, identity)
 
     @staticmethod
     def _username_from_principal(principal_format: str, principal: str) -> str:
-        """user@REALM | DOMAIN\\user -> sAMAccountName по шаблону с {username}."""
+        """user@REALM | DOMAIN\\user -> логин по шаблону с `{username}`."""
         try:
             return LoginTemplate.username_of(principal_format, principal)
         except TemplateError as exc:
@@ -149,209 +94,3 @@ class SsoSignIn(SsoAdmission):
                 f"principal_format {principal_format!r}: {exc}"
             )
             raise AuthorizationError(message) from exc
-
-    def sealed_of(self, identity: SpnegoIdentity) -> str:
-        """Запечатанный билет входа; пустая строка — делегирования у входа нет."""
-        ticket = self.capture.capture(identity)
-        if ticket is None:
-            return ""
-
-        return self.sealer.seal(ticket)
-
-    async def signed_in(self, identity: SpnegoIdentity, sealed: str) -> SignedIn:
-        """Итог входа: логин из принципала, роли и профили провайдерами, билет
-        в metadata."""
-        username = self._username_from_principal(
-            self._config.principal_format, identity.principal
-        )
-        login = UserLogin.of(username)
-        user = self._config.identity.identity(login.key)
-        facts = self.facts_of(identity)
-        roles = await self.roles_of(facts)
-        grant = await self._profiles.granted(facts, frozenset(roles))
-        sign_in = self._sign_in_of(identity.principal, sealed, roles, grant, user)
-
-        return SignedIn(
-            identifier=user.identifier, display_name=login.display, sign_in=sign_in
-        )
-
-    async def roles_of(self, facts: PrincipalFacts) -> list[str]:
-        """Роли провайдерами конфига по фактам SPNEGO.
-
-        Зовётся и при входе, и при повторном обмене: запрет в AD должен
-        отсекать обмен так же, как отсёк бы новый вход.
-        """
-        return await self._roles.admit(facts)
-
-    def _sign_in_of(
-        self,
-        principal: str,
-        sealed: str,
-        roles: Sequence[str],
-        grant: ProfileGrant,
-        user: UserIdentity,
-    ) -> SignInMetadata:
-        """Metadata входа: провайдер, принципал, роли, профили и билет."""
-        if not sealed:
-            # без билета сессия останется без делегированных кредов: причина в логе выше
-            self._logger.warning(
-                "kerberos: sign-in of %s carries no delegated ticket", principal
-            )
-
-        return SignInMetadata(
-            provider=SignInProvider.KERBEROS.value,
-            identity=user,
-            principal=principal,
-            sealed_ticket=sealed,
-            roles=frozenset(roles),
-            profiles=grant.granted,
-            profile=grant.selected,
-        )
-
-
-class SpnegoGate(SpnegoExchange):
-    """SPNEGO-обмен на URL приложения: вход и молчаливое обновление билета сессии."""
-
-    def __init__(self, sign_in: SsoSignIn) -> None:
-        self._sign_in = sign_in
-        self._logger = logging.getLogger(SpnegoGate.__name__)
-
-    @property
-    def sign_in(self) -> SsoSignIn:
-        return self._sign_in
-
-    async def handshake(self, request: SsoRequest) -> SsoChallenge | SsoSigned:
-        """Вход: токен из Authorization → личность → допуск → SignedIn."""
-        client = request.client
-        found = NegotiateToken.of(request.authorization)
-        if isinstance(found, str):
-            # начало handshake токена не несёт — это не ошибка
-            return self._challenge(request, found, logging.INFO)
-
-        try:
-            identity = await self._accepted(found, client, "accept")
-        except InvalidTokenError as e:
-            return self._challenge(request, str(e), logging.WARNING)
-
-        sealed = self._sign_in.sealed_of(identity)
-        signed = await self._sign_in.signed_in(identity, sealed)
-        self._logger.info(
-            "kerberos: sign-in ticket sealed [%d chars] [principal=%s]",
-            len(sealed),
-            identity.principal,
-        )
-
-        return SsoSigned(signed=signed, principal=identity.principal)
-
-    async def refresh(
-        self, request: SsoRequest, session: DelegatedTicket | None
-    ) -> SsoChallenge | SsoRefused | SsoSigned:
-        """Повторный SPNEGO живой сессии: свежий билет под тем же принципалом."""
-        client = request.client
-        refused = self._refresh_allowed(request, session)
-        if refused is not None:
-            self._logger.warning("kerberos refresh refused: %s", refused.reason)
-            return refused
-
-        found = NegotiateToken.of(request.authorization)
-        if isinstance(found, str):
-            return self._challenge(request, found, logging.INFO)
-
-        try:
-            identity = await self._accepted(found, client, "refresh")
-        except InvalidTokenError as e:
-            return self._challenge(request, str(e), logging.INFO)
-
-        outcome = await self._refreshed(identity, session, client)
-        if isinstance(outcome, SsoRefused):
-            self._logger.warning("kerberos refresh refused: %s", outcome.reason)
-
-        return outcome
-
-    @staticmethod
-    def _refresh_allowed(
-        request: SsoRequest, session: DelegatedTicket | None
-    ) -> SsoRefused | None:
-        if not request.own_request:
-            # заголовок ставит только свой fetch: чужая страница обмен не запустит
-            reason = f"refresh without its own header [{request.client}]"
-            return SsoRefused(reason=reason)
-
-        if session is None:
-            reason = (
-                f"kerberos refresh from [{request.client}]: request carries no "
-                "delegated sign-in ticket"
-            )
-            return SsoRefused(reason=reason)
-
-        return None
-
-    async def _refreshed(
-        self, identity: SpnegoIdentity, session: DelegatedTicket | None, client: str
-    ) -> SsoRefused | SsoSigned:
-        if session is None:
-            reason = (
-                f"kerberos refresh from [{client}]: request carries no "
-                "delegated sign-in ticket"
-            )
-            return SsoRefused(reason=reason)
-
-        if identity.principal != session.principal:
-            reason = (
-                f"refresh token of {identity.principal} does not match the "
-                f"session of {session.principal}"
-            )
-            return SsoRefused(reason=reason)
-
-        try:
-            await self._sign_in.roles_of(self._sign_in.facts_of(identity))
-        except AuthorizationError as exc:
-            reason = f"{identity.principal} is no longer admitted: {exc}"
-            return SsoRefused(reason=reason)
-
-        sealed = self._sign_in.sealed_of(identity)
-        if not sealed:
-            reason = (
-                f"kerberos refresh of {session.principal}: the SPNEGO token "
-                "carries no delegated credentials"
-            )
-            return SsoRefused(reason=reason)
-
-        signed = await self._sign_in.signed_in(identity, sealed)
-        self._logger.info(
-            "kerberos: refreshed sign-in ticket [principal=%s] [client=%s]",
-            identity.principal,
-            client,
-        )
-
-        return SsoSigned(signed=signed, principal=identity.principal)
-
-    async def _accepted(self, token: bytes, client: str, stage: str) -> SpnegoIdentity:
-        try:
-            identity = await self._sign_in.acceptor.accept_async(token)
-        except InvalidTokenError:
-            raise
-        except KerberosError as e:
-            self._logger.exception(
-                "kerberos: spnego %s of the token from [client=%s] failed: %s",
-                stage,
-                client,
-                e,
-            )
-            action = f"spnego {stage} of the token from [{client}]"
-            raise KerberosErrorToDomain.map(e, action) from e
-
-        self._logger.info(
-            "kerberos authenticated [principal=%s] [client=%s]",
-            identity.principal,
-            client,
-        )
-
-        return identity
-
-    def _challenge(self, request: SsoRequest, reason: str, level: int) -> SsoChallenge:
-        self._logger.log(
-            level, "kerberos challenge [client=%s]: %s", request.client, reason
-        )
-
-        return SsoChallenge(reason=reason, level=level)

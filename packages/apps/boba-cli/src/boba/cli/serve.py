@@ -29,7 +29,7 @@ import logging.config
 import os
 import sys
 import time
-from collections.abc import AsyncGenerator, Iterator, Mapping, Sequence
+from collections.abc import AsyncGenerator, Iterable, Iterator, Mapping, Sequence
 from contextlib import aclosing, asynccontextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -90,8 +90,10 @@ from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import LibpqConnection, PostgresConfig
 from boba.history.postgres import PostgresHistoryStore, SessionLocks
 from boba.identity.api import AuthenticatedUser as DomainUser
-from boba.identity.api import UsersUpsert
+from boba.identity.api import PersistedUsers, RoleCatalog, UsersUpsert
+from boba.identity.principal import UserIdentity
 from boba.identity.service import ServiceAddress
+from boba.identity.session import Login
 from boba.identity.signin import ProfileCatalog, SignedIn
 from boba.identity_postgres import UsersTable
 from boba.ldap import Ldap3Directory
@@ -256,7 +258,7 @@ class AgentProfiles(ProfileCatalog):
         return name in self._profiles
 
 
-class ServeAgents(UsersUpsert):
+class ServeAgents(PersistedUsers, UsersUpsert, RoleCatalog):
     """Общая сборка процесса службы и вход ACP на подключение.
 
     Создаёт ServeHost: настройки агента из [agent] (все профили, история
@@ -302,6 +304,16 @@ class ServeAgents(UsersUpsert):
 
     async def _open_storage(self) -> None:
         await self._pool.open()
+
+    async def resolve_roles(
+        self, identity: UserIdentity, candidates: Iterable[str]
+    ) -> frozenset[str]:
+        return await self._store_thread.run(
+            self._users.resolve_roles(identity, candidates)
+        )
+
+    async def get_user(self, identifier: Login) -> DomainUser | None:
+        return await self._store_thread.run(self._users.get_user(identifier))
 
     async def ensure_user(self, signed: SignedIn) -> DomainUser:
         return await self._store_thread.run(self._users.ensure_user(signed))
@@ -519,14 +531,8 @@ class CallerTokens:
 
         try:
             claims = TokenClaims.model_validate(token.claims)
-        except ValidationError as exc:
-            # в журнал идёт причина отказа, а не сам токен
-            # nosemgrep: python-logger-credential-disclosure
-            logger.warning(
-                "token of client %r carries no login and roles: %s",
-                token.client_id,
-                exc,
-            )
+        except ValidationError:
+            logger.warning("request token has invalid claims")
             return None
 
         return Caller(
@@ -775,7 +781,7 @@ class ServeHost:
         self._agents = ServeAgents(
             section, config.history, version, self._auth_methods()
         )
-        self._sign_ins = self._signed(config, self._profiles)
+        self._sign_ins = self._signed(config, self._profiles, self._agents)
 
     def resource(self) -> str:
         section = self._config.agent
@@ -845,10 +851,12 @@ class ServeHost:
         return JSONResponse({"sessions": self._agents.opened_sessions()})
 
     @staticmethod
-    def _signed(config: ServeConfig, profiles: ProfileCatalog) -> SignIns:
+    def _signed(
+        config: ServeConfig, profiles: ProfileCatalog, roles: RoleCatalog
+    ) -> SignIns:
         """Способы входа процесса из [auth]: пароли, SPNEGO и proxy с их
         провайдерами ролей и профилей."""
-        assembly = SignInAssembly(Ldap3Directory(), profiles)
+        assembly = SignInAssembly(Ldap3Directory(), profiles, roles)
         return assembly.build(config.auth, config.session.auth_secret)
 
     def _auth(self) -> ServiceAuth:

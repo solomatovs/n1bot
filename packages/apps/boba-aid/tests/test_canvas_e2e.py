@@ -44,6 +44,8 @@ from boba.aid.mcp_servers.sources import McpViewer, StoredServers
 from boba.aid.mcp_servers.store import McpServerStore
 from boba.config import ConfigError, bind
 from boba.connection_broker.crypto import SecretCipher
+from boba.identity.api import AuthenticatedUser
+from boba.identity.session import Login
 from boba.mcp_client.client import (
     HttpEndpoint,
     HttpLocation,
@@ -540,56 +542,42 @@ def _app_config(stand: E2eStand) -> AppConfig:
 
 async def _user_row(
     config: AppConfig, identifier: str
-) -> tuple[str, Mapping[str, Any]]:
-    """Строка users пользователя стенда по логину: id и metadata входа.
+) -> AuthenticatedUser:
+    """Пользователь стенда: identity и роли из общей таблицы users.
 
     Пул свой и закрывается здесь же: общий пул процесса привязан к циклу
     событий того теста, который его открыл.
     """
-    from psycopg import sql
-
-    from boba.chat.threads import ChatTable
-    from boba.db.postgres import AsyncPostgresPool, PgQueryBuilder
+    from boba.db.postgres import AsyncPostgresPool
 
     pool = AsyncPostgresPool(config.postgres)
     await pool.open()
     try:
-        query = (
-            PgQueryBuilder(
-                users=sql.Identifier(config.db_schema, ChatTable.USERS.value)
-            )
-            .add(
-                "select id, meta from {users} where identifier = %(identifier)s",
-                identifier=identifier,
-            )
-            .build()
+        from boba.runtime.users import UsersTable
+
+        user = await UsersTable(None, config.db_schema, pool).get_user(
+            Login(f"aid-debug-local:{identifier}")
         )
-        async with pool.connection() as conn:
-            cursor = await conn.execute(query.text, query.params)
-            row = await cursor.fetchone()
     finally:
         await pool.close()
 
-    if row is None:
+    if user is None:
         raise AssertionError(f"stand user {identifier!r} has no users row yet")
 
-    return str(row[0]), dict(row[1])
+    return user
 
 
 async def _store(thread_id: str, files: Mapping[str, bytes], stand: E2eStand) -> None:
     """Кладёт файлы в workspace пользователя стенда на сервисе boba-mcp тем
     же путём, каким их кладёт чат: клиентом MCP от имени пользователя."""
-    from uuid import UUID
-
     from boba.canvas.keys import ObjectKey
     from boba.db.postgres import AsyncPostgresPool
-    from boba.identity.signin import SignInMetadata
     from boba.mcp_client.client import McpCaller, McpServers
     from boba.stand.storage import StorageSeed
 
     config = _app_config(stand)
-    owner, meta = await _user_row(config, LOGIN[0])
-    caller = McpCaller(login=LOGIN[0], roles=SignInMetadata.parse(meta).roles)
+    owner = await _user_row(config, LOGIN[0])
+    caller = McpCaller(login=owner.identifier, roles=owner.roles)
     pool = AsyncPostgresPool(config.postgres)
     await pool.open()
     cipher = SecretCipher(config.mcp_servers.cipher.get_secret_value())
@@ -597,7 +585,7 @@ async def _store(thread_id: str, files: Mapping[str, bytes], stand: E2eStand) ->
         McpServerStore(pool, config.db_schema, cipher),
         UsersTable(config.postgres, config.db_schema, pool),
     )
-    viewer = McpViewer(user_id=UUID(owner), login=caller.login, roles=caller.roles)
+    viewer = McpViewer(user_id=owner.id, login=caller.login, roles=caller.roles)
     names = await source.enabled_names(viewer)
     assert names, "the file owner has no granted MCP servers"
     server = names[0]
@@ -608,7 +596,7 @@ async def _store(thread_id: str, files: Mapping[str, bytes], stand: E2eStand) ->
             raise AssertionError(f"mcp server {server!r} offers no file storage")
 
         for name, blob in files.items():
-            key = ObjectKey(user_id=owner, scope_id=thread_id, name=name)
+            key = ObjectKey(user_id=str(owner.id), scope_id=thread_id, name=name)
             await asyncio.wait_for(remote.upload(key, StorageSeed().chunks(blob)), 120)
     finally:
         await servers.stop()
@@ -634,11 +622,15 @@ class _SessionProbe:
         self.session: dict[str, str] = {}
         self.verdicts: list[Mapping[str, Any]] = []
         self.socket: Any = None
+        self.requests: list[str] = []
+        self.browser_errors: list[str] = []
         self._joined = asyncio.Event()
 
     def watch(self, page: Page) -> None:
         page.on("request", self._on_request)
         page.on("websocket", self._on_websocket)
+        page.on("requestfailed", self._on_request_failed)
+        page.on("console", self._on_console)
 
     async def joined(self) -> None:
         try:
@@ -647,9 +639,19 @@ class _SessionProbe:
             msg = (
                 "chat page after sign-in: expected a sessionId and a threadId in "
                 f"the socket traffic within {self.JOIN_SEC:.0f}s, got "
-                f"{sorted(self.session)}"
+                f"{sorted(self.session)}; requests={self.requests}; "
+                f"browser_errors={self.browser_errors}"
             )
             raise AssertionError(msg) from exc
+
+    def _on_request_failed(self, request: Any) -> None:
+        self.requests.append(
+            f"{request.method} {request.url}: {request.failure}"
+        )
+
+    def _on_console(self, message: Any) -> None:
+        if message.type == "error":
+            self.browser_errors.append(message.text)
 
     def _on_request(self, request: Any) -> None:
         if request.method != "POST":
@@ -1052,6 +1054,11 @@ async def panel(app_server: E2eProcesses) -> AsyncIterator[CanvasPage]:
         inputs = page.locator("form input")
         await inputs.nth(0).fill(LOGIN[0])
         await inputs.nth(1).fill(LOGIN[1])
+
+        realm = page.locator("form select#realm")
+        if await realm.count():
+            await realm.select_option("aid-debug-local")
+
         await page.locator('form button[type="submit"]').first.click()
 
         await probe.joined()

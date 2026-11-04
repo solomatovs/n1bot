@@ -32,6 +32,7 @@ from boba.db.postgres.connection import (
     PostgresPoolConfig,
 )
 from boba.identity.context import Subject
+from boba.stand.roles import RoleSeed
 from boba.stand_core.fakes import FakeSecret
 from boba.transport.http.connection import BearerAuth, HttpConnection
 
@@ -237,11 +238,13 @@ async def test_remove_drops_row_and_grants(store: ConnectionStore) -> None:
         raise AssertionError("grants must go with the row")
 
 
-async def test_sync_roles_adds_missing_only(store: ConnectionStore) -> None:
-    await store.sync_roles(["wrt", "read"])
+async def test_administrator_adds_roles_without_changing_existing_ids(
+    store: ConnectionStore,
+) -> None:
+    await RoleSeed(store).add(["wrt", "read"])
     before = StoredRole.by_name(await store.roles())
 
-    await store.sync_roles(["read", "admin"])
+    await RoleSeed(store).add(["read", "admin"])
     after = StoredRole.by_name(await store.roles())
 
     if set(after) != {"wrt", "read", "admin"}:
@@ -251,7 +254,7 @@ async def test_sync_roles_adds_missing_only(store: ConnectionStore) -> None:
 
 
 async def test_grant_revoke_listing(store: ConnectionStore) -> None:
-    await store.sync_roles(["read"])
+    await RoleSeed(store).add(["read"])
     roles = StoredRole.by_name(await store.roles())
     connection_id = await store.add("main", _pg(FakeSecret.DB))
 
@@ -273,7 +276,7 @@ async def test_grant_revoke_listing(store: ConnectionStore) -> None:
 
 
 async def test_for_subject_by_user_role_and_kind(store: ConnectionStore) -> None:
-    await store.sync_roles(["read", "wrt"])
+    await RoleSeed(store).add(["read", "wrt"])
     roles = StoredRole.by_name(await store.roles())
 
     personal = await store.add("mine", _pg(FakeSecret.DB))
@@ -318,7 +321,7 @@ async def test_for_subject_by_user_role_and_kind(store: ConnectionStore) -> None
 async def test_for_subject_lists_doubly_granted_row_once(
     store: ConnectionStore,
 ) -> None:
-    await store.sync_roles(["read"])
+    await RoleSeed(store).add(["read"])
     roles = StoredRole.by_name(await store.roles())
     connection_id = await store.add("main", _pg(FakeSecret.DB))
     await store.grant(connection_id, GrantTarget.user(UUID(int=1)))
@@ -336,7 +339,7 @@ async def test_for_subject_lists_doubly_granted_row_once(
 async def test_for_subject_marks_duplicate_names_within_a_kind(
     store: ConnectionStore,
 ) -> None:
-    await store.sync_roles(["read"])
+    await RoleSeed(store).add(["read"])
     roles = StoredRole.by_name(await store.roles())
     personal = await store.add("main", _pg(FakeSecret.DB))
     by_role = await store.add("main", _pg(FakeSecret.DB))

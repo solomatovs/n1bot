@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, ClassVar
+from typing import Any
 from uuid import UUID
 
 import pytest
-from aid_stand import ChatSessionStand
+from aid_stand import ChatSessionStand, StandTokens
 
 from boba.aid.infra.log_context import (
     RequestUserContext,
@@ -16,7 +16,6 @@ from boba.aid.infra.log_context import (
     UserLogContext,
 )
 from boba.aid.infra.session import ChainlitSession
-from boba.auth import JwtTokens
 from boba.identity.principal import UserIdentity
 from boba.identity.session import Login
 from boba.identity.signin import SignedIn, SignInMetadata
@@ -102,13 +101,12 @@ class TestUserInEveryRecord:
 
 
 class TestRequestUserMiddleware:
-    SECRET: ClassVar[str] = "log-context-secret"
-    COOKIE: ClassVar[str] = "access_token"
+    COOKIE = "access_token"
 
     @classmethod
     def _middleware(cls, app: Any) -> RequestUserMiddleware:
         return RequestUserMiddleware(
-            app, tokens=JwtTokens(cls.SECRET, 60, "stand-generation"), cookie=cls.COOKIE
+            app, tokens=StandTokens.tokens(), cookie=cls.COOKIE
         )
 
     @staticmethod
@@ -138,11 +136,10 @@ class TestRequestUserMiddleware:
                 identity=UserIdentity(realm="corporate", login=Login("sidorov"))
             ),
         )
-        token = JwtTokens(self.SECRET, 60, "stand-generation").issue(signed)
+        token = StandTokens.issue(signed)
         scope = self._scope([(b"authorization", f"Bearer {token}".encode())])
         self._run(self._middleware(app), scope)
-        if seen != ["corporate:sidorov"]:
-            raise AssertionError('seen == ["sidorov"]')
+        assert seen == ["corporate:sidorov"], seen
         if RequestUserContext.get() != "":
             raise AssertionError('RequestUserContext.get() == ""')
 

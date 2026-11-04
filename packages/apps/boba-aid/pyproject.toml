@@ -82,6 +82,7 @@ boba-aid = "boba.aid.infra.entry:cli"
 
 [tool.boba.unimported]
 websockets = "WebSocket backend uvicorn: выбирается по aid.ws_protocol, загружается сервером динамически"
+boba-access-postgres = "Команда migrate передаёт пакет схемы по имени через importlib"
 
 
 [tool.setuptools.package-data]

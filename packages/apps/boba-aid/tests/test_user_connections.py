@@ -30,6 +30,7 @@ from boba.identity.session import UserMetadataField
 from boba.kerberos import DelegatedAuth, DelegationMode, KeytabAuth
 from boba.krb import KeytabCredentials
 from boba.krb.seal import SsoTickets
+from boba.stand.roles import RoleSeed
 from boba.stand.site import Stand
 from boba.stand.toolsetup import Call
 from boba.stand_core.context import CallStand
@@ -49,7 +50,7 @@ pytestmark = [
 @pytest.fixture
 async def store(pool: AsyncPostgresPool, tool_service: ToolService) -> ConnectionStore:
     built = await tool_service.catalog(pool)
-    await built.sync_roles([ROLE])
+    await RoleSeed(built).add([ROLE])
     return built
 
 

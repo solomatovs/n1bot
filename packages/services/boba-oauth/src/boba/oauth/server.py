@@ -10,9 +10,10 @@ OAuthProvider fastmcp: local и ldap входят формой на шаге aut
 клиент называет при входе (RFC 8707), без него вход не начинается; адрес
 принимает только токен своего ресурса (ResourceTokens). Вход человека
 продлевается токеном обновления до потолка сессии; все входы разом снимает
-смена поколения сессий (рестарт либо generation в конфиге). Cookie сессии и
-строк пользователей нет; начатые входы, коды авторизации и клиенты
-динамической регистрации живут без хранения, запечатанными значениями:
+смена поколения сессий (рестарт либо generation в конфиге). Личность и роли
+читаются из users/user_roles службы при доступе и обновлении токена.
+Cookie сессии нет; начатые входы, коды авторизации и клиенты динамической
+регистрации живут без хранения, запечатанными значениями:
 начатый вход — в адресе страницы входа, итог входа — в коде авторизации,
 запись зарегистрировавшегося клиента — в его же идентификаторе. Шаг входа
 принимается только со страницы входа, открытой в этом же браузере: её
@@ -38,7 +39,7 @@ import logging
 import secrets
 import time
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from importlib.resources import files
 from typing import Any, ClassVar, TypeVar
@@ -86,11 +87,10 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 from starlette.routing import BaseRoute, Mount, Route
 
-from boba.auth import SignIns
+from boba.auth import AuthUsers, SignIns
 from boba.auth.http import SsoRequests, SsoResponses
 from boba.auth.proxy import AssertionRejectedError, ProxyAssertionVerifier
 from boba.auth.signin import LoginField
-from boba.identity.api import UsersUpsert
 from boba.identity.errors import (
     AuthenticationError,
     AuthorizationError,
@@ -98,7 +98,12 @@ from boba.identity.errors import (
 )
 from boba.identity.principal import IdentityRealm, UserIdentity
 from boba.identity.service import ServiceAddress
-from boba.identity.signin import ProxyRequest, SignedIn, SignInMetadata
+from boba.identity.session import Login
+from boba.identity.signin import (
+    ProxyRequest,
+    SignedIn,
+    SignInMetadata,
+)
 from boba.identity.sso import SsoChallenge
 
 __all__ = [
@@ -336,10 +341,8 @@ class ServiceTokens:
         try:
             claims = self._issuer.verify_token(token)
             TokenClaims.model_validate(claims)
-        except (JoseError, ValidationError) as exc:
-            # в журнал идёт причина отказа, а не сам токен
-            # nosemgrep: python-logger-credential-disclosure
-            logger.info("access token is rejected: %s", type(exc).__name__)
+        except (JoseError, ValidationError):
+            logger.info("OAuth access-token validation failed")
             return None
 
         issued = self._sign_in(claims.get(TokenClaim.METADATA.value)).generation
@@ -390,14 +393,25 @@ class ServiceTokens:
     def renewed(self, refresh: RefreshToken) -> OAuthToken:
         """Новая пара токенов тому же держателю: тот же вход, новый срок,
         потолок сессии прежний; TokenError — токен обновления не принят."""
+        holder = self.refresh_holder(refresh)
+
+        return self.session(holder, refresh.client_id)
+
+    def refresh_holder(self, refresh: RefreshToken) -> TokenHolder:
+        """Читает держателя refresh-токена перед проверкой его текущих прав."""
         read = self._refresh(refresh.token)
         if read is None:
             raise TokenError(
                 "invalid_grant", "the refresh token is not accepted: sign in again"
             )
 
-        _, held = read
-        holder = TokenHolder(
+        claims, held = read
+        if claims["client_id"] != refresh.client_id:
+            raise TokenError(
+                "invalid_grant", "the refresh token belongs to another client"
+            )
+
+        return TokenHolder(
             login=held.login,
             sign_in=SignInMetadata.parse(held.metadata),
             started=held.started,
@@ -405,17 +419,13 @@ class ServiceTokens:
             user_id=held.user_id,
         )
 
-        return self.session(holder, refresh.client_id)
-
     def _refresh(self, token: str) -> tuple[dict[str, Any], RefreshClaims] | None:
         try:
             claims = self._issuer.verify_token(token, self.REFRESH)
             held = RefreshClaims.model_validate(claims.get("upstream_claims"))
             SignInMetadata.parse(held.metadata).identity_for(held.login)
-        except (JoseError, ValueError) as exc:
-            # в журнал идёт причина отказа, а не сам токен
-            # nosemgrep: python-logger-credential-disclosure
-            logger.info("refresh token is rejected: %s", type(exc).__name__)
+        except (JoseError, ValueError):
+            logger.info("OAuth refresh-token validation failed")
             return None
 
         issued = SignInMetadata.parse(held.metadata).generation
@@ -446,18 +456,22 @@ class ResourceTokens(TokenVerifier):
     Создаётся входом службы на каждый ресурс (endpoint MCP у boba-mcp, адрес
     ACP у службы агента) и отдаётся в RemoteAuthProvider: без токена и с
     токеном другого ресурса ответ — 401 со ссылкой на метаданные ресурса, без
-    обязательной области — 403 insufficient_scope.
+    обязательной области — 403 insufficient_scope. Подпись, срок, поколение,
+    resource и scopes проверяются по JWT; запрос к users/user_roles не делается.
     """
 
     def __init__(
-        self, tokens: ServiceTokens, resource: str, scopes: Sequence[str]
+        self,
+        tokens: ServiceTokens,
+        resource: str,
+        scopes: Sequence[str],
     ) -> None:
         super().__init__(required_scopes=list(scopes))
         self._tokens = tokens
         self._resource = resource
 
     async def verify_token(self, token: str) -> AccessToken | None:
-        """Вызывающий по токену; None — токен не принят (401)."""
+        """Локально проверяет JWT; None — токен не принят (401)."""
         read = self._tokens.read(token)
         if read is None:
             return None
@@ -509,13 +523,8 @@ class SealedValues:
         try:
             record = self._box.decrypt(sealed.encode(self.ENCODING), ttl=ttl_sec)
             return model.model_validate_json(record)
-        except (InvalidToken, ValidationError) as exc:
-            logger.info(
-                "sealed %s %.16s… is not accepted: %s",
-                model.__name__,
-                sealed,
-                type(exc).__name__,
-            )
+        except (InvalidToken, ValidationError):
+            logger.info("sealed OAuth value is not accepted")
             return None
 
 
@@ -629,7 +638,7 @@ class AuthServer(OAuthProvider):
         clients: RegisteredClients,
         sealed: SealedValues,
         resources: Sequence[str],
-        users: UsersUpsert | None = None,
+        users: AuthUsers | None = None,
     ) -> None:
         super().__init__(
             base_url=public_url,
@@ -744,7 +753,9 @@ class AuthServer(OAuthProvider):
             return self._tokens.holder(signed, resource)
 
         user = await self._users.ensure_user(signed)
-
+        signed = signed.model_copy(
+            update={"sign_in": self._sign_ins.resource(signed.sign_in, user.roles)}
+        )
         return self._tokens.holder(signed, resource, user.id)
 
     async def exchange_identity_assertion(
@@ -846,7 +857,41 @@ class AuthServer(OAuthProvider):
         scopes: list[str],
     ) -> OAuthToken:
         """Новая пара токенов по токену обновления, без формы входа."""
-        return self._tokens.renewed(refresh_token)
+        if refresh_token.client_id != client.client_id:
+            raise TokenError(
+                "invalid_grant", "the refresh token belongs to another client"
+            )
+
+        requested = frozenset(scopes)
+        if not requested.issubset(refresh_token.scopes):
+            raise TokenError(
+                "invalid_scope", "requested scopes exceed the refresh token grant"
+            )
+
+        holder = self._tokens.refresh_holder(refresh_token)
+        sign_in = await self._refresh_access(holder)
+        granted = requested & sign_in.profiles
+        sign_in = sign_in.with_access(sign_in.roles, granted)
+        holder = replace(holder, sign_in=sign_in)
+
+        return self._tokens.session(holder, refresh_token.client_id)
+
+    async def _refresh_access(self, holder: TokenHolder) -> SignInMetadata:
+        if self._users is None:
+            return holder.sign_in
+
+        stored = await self._users.get_user(Login(holder.login))
+        if stored is None:
+            raise TokenError(
+                "invalid_grant", "the session user no longer exists: sign in again"
+            )
+
+        if stored.id != holder.user_id:
+            raise TokenError(
+                "invalid_grant", "the session user has changed: sign in again"
+            )
+
+        return self._sign_ins.resource(holder.sign_in, stored.roles)
 
     async def load_access_token(self, token: str) -> AccessToken | None:
         return self._tokens.read(token)

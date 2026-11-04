@@ -16,7 +16,7 @@ from pydantic import (
 from boba.aid.agent.config import AgentSettings, ProcessAgentConfig
 from boba.aid.mcp_servers.config import McpServersConfig
 from boba.auth.config import AuthConfig
-from boba.chat.profiles import ChatRoleConfig, LocalChatProfileConfig, ProfileConfig
+from boba.chat.profiles import LocalChatProfileConfig, ProfileConfig
 from boba.runtime.config import RuntimeConfig, ServerConfig
 
 LOGGING_CONFIG: dict[str, Any] = {
@@ -202,15 +202,6 @@ class AppConfig(RuntimeConfig):
             min_length=1,
             description=(
                 "Профили чата по имени; в конфиге подключается ссылкой ${profiles}."
-            ),
-        ),
-    ]
-
-    roles: Annotated[
-        dict[str, ChatRoleConfig],
-        Field(
-            description=(
-                "Права ролей по имени; в конфиге подключается ссылкой ${roles}."
             ),
         ),
     ]

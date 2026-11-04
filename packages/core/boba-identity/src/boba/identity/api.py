@@ -7,27 +7,27 @@ AuthenticationError — у входа нет строки users.
 from __future__ import annotations
 
 from abc import abstractmethod
-from collections.abc import Mapping
+from collections.abc import Iterable
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, Protocol
+from typing import Protocol
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from boba.core.validation import ValidationText
 from boba.identity.context import (
     Credential,
 )
 from boba.identity.errors import AuthenticationError
 from boba.identity.principal import UserIdentity
-from boba.identity.session import Login, UserMetadataField
+from boba.identity.session import Login
 from boba.identity.signin import SignedIn, SignInMetadata
 
 __all__ = [
     "AuthenticatedUser",
     "Authenticator",
     "PersistedUsers",
+    "RoleCatalog",
     "StoredUser",
     "UserIdentityAssignment",
     "UserIdentityChange",
@@ -40,15 +40,14 @@ __all__ = [
 
 
 class AuthenticatedUser(BaseModel):
-    """Пользователь входа: строка users, metadata этого входа и настройки строки."""
+    """Пользователь и роли, записанные в подтверждённой сессии."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     id: UUID
     identifier: Login
+    created_at: datetime
     sign_in: SignInMetadata
-    settings: Mapping[str, object] = {}
-    """Строка users как есть: metadata входа."""
 
     @property
     def roles(self) -> frozenset[str]:
@@ -70,36 +69,35 @@ class UsersColumn(StrEnum):
     ID = "id"
     IDENTIFIER = "identifier"
     CREATED_AT = "created_at"
-    META = "meta"
+    REALM = "realm"
+    LOGIN = "login"
+    ROLES = "roles"
 
 
 class StoredUser(BaseModel):
-    """Строка users как её хранит база: id, логин, время создания и metadata."""
+    """Пользователь и его членство в ролях; данные сессии здесь не хранятся."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     id: UUID
     identifier: Login
     created_at: datetime
-    meta: Mapping[str, Any] = {}
+    identity: UserIdentity | None = None
+    roles: frozenset[str] = frozenset()
 
     def authenticated(self) -> AuthenticatedUser:
+        sign_in = SignInMetadata(identity=self.identity, roles=self.roles)
         try:
-            sign_in = SignInMetadata.parse(self.meta)
             sign_in.identity_for(self.identifier)
         except ValueError as exc:
-            reason = str(exc)
-            if isinstance(exc, ValidationError):
-                reason = ValidationText.of(exc)
-
-            msg = f"stored user {self.id} cannot be authenticated: {reason}"
+            msg = f"stored user {self.id} cannot be authenticated: {exc}"
             raise AuthenticationError(msg) from exc
 
         return AuthenticatedUser(
             id=self.id,
             identifier=self.identifier,
+            created_at=self.created_at,
             sign_in=sign_in,
-            settings=self.meta,
         )
 
 
@@ -153,9 +151,7 @@ class UserIdentityChange(BaseModel):
 
     @model_validator(mode="after")
     def _same_user(self) -> UserIdentityChange:
-        identity = SignInMetadata.parse(self.after.meta).identity_for(
-            self.after.identifier
-        )
+        SignInMetadata(identity=self.after.identity).identity_for(self.after.identifier)
         if self.before is None:
             return self
 
@@ -167,10 +163,8 @@ class UserIdentityChange(BaseModel):
             msg = "identity migration must preserve the users creation time"
             raise ValueError(msg)
 
-        expected = dict(self.before.meta)
-        expected[UserMetadataField.IDENTITY] = identity.model_dump(mode="json")
-        if self.after.meta != expected:
-            msg = "identity migration may change only identity metadata"
+        if self.after.roles != self.before.roles:
+            msg = "identity migration must preserve role membership"
             raise ValueError(msg)
 
         return self
@@ -211,27 +205,40 @@ class UserRows(Protocol):
         """None — строки с таким id нет."""
 
     @abstractmethod
-    async def upsert(self, identifier: Login, meta: Mapping[str, Any]) -> StoredUser:
-        """Новая строка либо metadata поверх прежней."""
+    async def upsert(
+        self,
+        identifier: Login,
+        identity: UserIdentity | None = None,
+        roles: frozenset[str] | None = None,
+    ) -> StoredUser:
+        """Создаёт пользователя, сохраняя UUID и членство существующей строки."""
 
 
 class Authenticator(Protocol):
-    """Пользователь входа по токену запроса: cookie либо заголовок Authorization."""
+    """Пользователь по подписанному токену запроса: cookie либо bearer header."""
 
     @abstractmethod
     async def user_of_token(self, token: str) -> AuthenticatedUser:
-        """AuthenticationError — токен негоден или вход не сохранён слоем данных."""
+        """AuthenticationError — подпись, срок, identity или поколение не приняты."""
 
 
 class UsersUpsert(Protocol):
-    """Строка users по итогу входа: создаётся или обновляет metadata."""
+    """Пользователь после входа: личность и актуальное членство."""
 
     @abstractmethod
     async def ensure_user(self, signed: SignedIn) -> AuthenticatedUser: ...
 
 
+class RoleCatalog(Protocol):
+    """Существующие роли для автоматического назначения и ручное членство."""
+
+    async def resolve_roles(
+        self, identity: UserIdentity, candidates: Iterable[str]
+    ) -> frozenset[str]: ...
+
+
 class PersistedUsers(Protocol):
-    """Строки users по идентификатору входа: id строки и сохранённые metadata."""
+    """Пользователь по идентификатору: UUID, личность и членство в ролях."""
 
     @abstractmethod
     async def get_user(self, identifier: Login) -> AuthenticatedUser | None:

@@ -9,6 +9,8 @@ description = "Boba stand: общие фикстуры тестов — конф
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba-tool-io==0.0.33.dev1",
+    "boba-aid==0.0.33.dev1",
+    "boba-mcp==0.0.33.dev1",
     "boba-core==0.0.33.dev1",
     "agent-client-protocol==1.0.0rc3",
     "boba-db-clickhouse[payload]==0.0.33.dev1",

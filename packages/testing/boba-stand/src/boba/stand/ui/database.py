@@ -34,7 +34,7 @@ from boba.connections.stored import (
 )
 from boba.db.clickhouse.connection import ClickHouseConfig
 from boba.db.oracle.connection import OracleConfig
-from boba.db.postgres import AsyncPostgresPool, PgQuery, PgQueryBuilder
+from boba.db.postgres import AsyncPostgresPool, PgQuery, PgQueryBuilder, PostgresTable
 from boba.db.postgres.connection.config import PostgresConfig
 from boba.db.postgres.migrate import MigrationTarget, PostgresMigrations
 from boba.ix_core.database import IxDatabase
@@ -51,10 +51,12 @@ from boba.runtime.plugins import PluginMigrations
 from boba.stand.database import TestDatabase
 from boba.stand.edm import EdmDataset, EdmSource, EdmSources
 from boba.stand.ix_index import IxPage, IxPages, SharedIndexers, StandIxStack
+from boba.stand.roles import RoleSeed
 from boba.stand.stream_sinks import SinkSources, StreamSinks
 from boba.stand.ui.config import (
     ServerSeed,
     ServerSeedSpec,
+    ServiceStand,
     StandApp,
     StandConfig,
     StandError,
@@ -258,6 +260,11 @@ class StandDatabase:
                 )
 
         await PostgresMigrations().apply(isolated)
+        async with self._pool() as pool:
+            for schema in schemas:
+                await RoleSeed(PostgresTable(None, schema, pool)).add(
+                    ("ADM", "DEV", "GST", "read", "wrt")
+                )
 
     async def _ensure_database(self) -> None:
         maintenance = AsyncPostgresPool(self._maintenance)
@@ -463,6 +470,7 @@ class StandDatabase:
 
     async def _seed_connections(self, llm_port: int) -> None:
         clickhouse = bind(self._built, path="clickhouse", model=ClickHouseConfig)
+        confluence = bind(self._tools, path="confluence", model=HttpConnection)
         web = HttpConnection(
             scheme=UrlScheme(StandUrl.SCHEME.value),
             host=StandUrl.HOST.value,
@@ -495,6 +503,7 @@ class StandDatabase:
             rows = [
                 await store.add("main", self._postgres),
                 await store.add("main", clickhouse),
+                await store.add("confluence", confluence),
                 await store.add("stand", web),
             ]
             await self._grant_stand_roles(store, rows)
@@ -763,3 +772,24 @@ class StandServerSeed(ServerSeed):
                     await conn.execute(grant.text, grant.params)
         finally:
             await pool.close()
+
+
+def seed_service_roles(config: ServiceStand) -> None:
+    """Явные данные тестового администратора до старта процесса MCP."""
+
+    async def seed() -> None:
+        raw = config.app.config_files().loader(config.files.paths(config.app)).load()
+        postgres = bind(raw, "postgres", PostgresConfig)
+        app = bind(raw, "app", ProcessConfig)
+        pool = AsyncPostgresPool(postgres)
+        await pool.open()
+        try:
+            table = PostgresTable(None, app.db_schema, pool)
+            grants = dict(config.role_tools)
+            if "*" in grants:
+                await RoleSeed(table).add(("ADM", "DEV", "GST", "dev", "read", "wrt"))
+            await RoleSeed(table).tools(grants)
+        finally:
+            await pool.close()
+
+    run_blocking(seed())

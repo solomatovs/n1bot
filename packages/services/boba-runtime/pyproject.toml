@@ -21,6 +21,7 @@ dependencies = [
     "boba-db-postgres==0.0.33.dev1",
     "boba-connection-broker==0.0.33.dev1",
     "boba-identity==0.0.33.dev1",
+    "boba-kerberos==0.0.33.dev1",
     "boba-sandbox==0.0.33.dev1",
     "boba-config==0.0.33.dev1",
     "boba-toolkit==0.0.33.dev1",

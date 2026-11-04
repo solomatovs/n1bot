@@ -14,6 +14,7 @@ import threading
 import time
 from collections.abc import Iterator
 from contextlib import ExitStack
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, ClassVar, cast
 from uuid import UUID
@@ -1328,21 +1329,26 @@ class TestStreamDownload:
 
     @staticmethod
     def _app(servers: McpServers) -> Any:
-        from chainlit.auth import get_current_user
-        from chainlit.user import PersistedUser
         from fastapi import FastAPI
 
+        from boba.aid.auth.request import authenticated_user
         from boba.aid.data.upload import StreamServing
         from boba.aid.domain.keys import StreamUrl
+        from boba.identity.api import AuthenticatedUser
+        from boba.identity.session import Login
+        from boba.identity.signin import SignInMetadata
 
         serving = StreamServing(lambda: REMOTE.journals, lambda: servers)
 
         app = FastAPI()
         app.add_api_route(StreamUrl.ROUTE, serving.serve, methods=["GET"])
-        user = PersistedUser(
-            id=USER, identifier="corporate:tester", createdAt="2024-01-01T00:00:00Z"
+        user = AuthenticatedUser(
+            id=UUID(USER),
+            identifier=Login("corporate:tester"),
+            created_at=datetime(2024, 1, 1, tzinfo=UTC),
+            sign_in=SignInMetadata(roles=frozenset({"read"})),
         )
-        app.dependency_overrides[get_current_user] = lambda: user
+        app.dependency_overrides[authenticated_user] = lambda: user
         return app
 
     def test_log_downloads_whole_and_by_range(

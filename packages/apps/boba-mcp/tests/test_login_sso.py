@@ -30,7 +30,6 @@ from boba.access import ProfileGrant
 from boba.auth import SignIns
 from boba.auth.config import KerberosAuthConfig
 from boba.auth.proxy import ProxyAssertionVerifier
-from boba.auth.sso import SpnegoGate
 from boba.config import bind
 from boba.krb import KerberosEnv
 from boba.ldap import Ldap3Directory
@@ -44,6 +43,8 @@ from boba.oauth.server import (
     ServiceTokens,
 )
 from boba.runtime.signin import SignInAssembly
+from boba.runtime.signin_kerberos import SpnegoGate
+from boba.stand.roles import MemoryRoles
 from boba.stand.site import Stand
 from boba.stand.ui.stand import StandApp
 
@@ -85,9 +86,13 @@ def server(chat_config: DictConfig, krb5_env: None) -> AuthServer:
     """Сервер авторизации сервиса с одним способом входа — kerberos."""
     config = bind(chat_config, path="auth.kerberos", model=KerberosAuthConfig)
     catalog = EndpointCatalog({ENDPOINT: ProfileGrant(tools=["*"], roles=["*"])})
-    assembly = SignInAssembly(Ldap3Directory(), catalog)
+    assembly = SignInAssembly(
+        Ldap3Directory(),
+        catalog,
+        MemoryRoles({"dev", "ADM", "DEV", "read", "wrt", "weak", "analyst"}),
+    )
     sign_ins = SignIns(
-        None, {"corporate": SpnegoGate(assembly.sso(config, SECRET))}, {}
+        None, {"corporate": SpnegoGate(assembly.sso(config), SECRET)}, {}
     )
 
     return AuthServer(

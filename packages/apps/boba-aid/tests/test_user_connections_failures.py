@@ -22,8 +22,8 @@ from pydantic import SecretStr, create_model
 
 from boba.aid.auth.kerberos import KerberosAuth
 from boba.aid.data.data_layer import PostgresDataLayer
-from boba.auth.credentials import KerberosCredentialSource
 from boba.config import bind
+from boba.connection_broker.credentials import KerberosCredentialSource
 from boba.connection_broker.crypto import SecretCipher
 from boba.connection_broker.store import ConnectionStore
 from boba.connections.manifest import ConnectionTypes
@@ -38,6 +38,7 @@ from boba.krb.seal import SsoTickets, TicketSealer
 from boba.messaging import MemoryMessageBus
 from boba.runtime.refresh import BusRefreshSignal
 from boba.stand.connections import StandUserConnections
+from boba.stand.roles import RoleSeed
 from boba.stand.site import Stand
 from boba.stand.toolstand import ProbeTools
 from boba.stand_core.context import CallStand
@@ -97,7 +98,7 @@ async def store(pool: AsyncPostgresPool, cipher: SecretCipher) -> ConnectionStor
         )
 
     built = ConnectionStore(pool, SCHEMA, cipher, ConnectionTypes.discover())
-    await built.sync_roles([ROLE])
+    await RoleSeed(built).add([ROLE])
     return built
 
 

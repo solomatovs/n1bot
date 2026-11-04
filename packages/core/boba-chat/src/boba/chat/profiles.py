@@ -23,7 +23,6 @@ from boba.llm.providers import ChatModelConfig
 __all__ = [
     "ChatProfileConfig",
     "ChatProfiles",
-    "ChatRoleConfig",
     "ChatSettings",
     "LocalChatProfileConfig",
     "ModelLimits",
@@ -112,12 +111,6 @@ ProfileConfig = LocalChatProfileConfig | ChatProfileConfig
 
 class ProfilesSection(RootModel[dict[str, ProfileConfig]]):
     """Секция [profiles] верхнего уровня: профили чата по имени."""
-
-
-class ChatRoleConfig(BaseModel):
-    """Объявление роли чата; права на tools принадлежат MCP."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
 class ProfileRefusal(StrEnum):

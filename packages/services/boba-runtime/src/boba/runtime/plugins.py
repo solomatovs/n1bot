@@ -388,7 +388,13 @@ class ToolLoader:
 
         grants = self._grants
 
-        return ToolAccess(frozenset(known), grants.roles, grants.profiles, grants.check)
+        return ToolAccess(
+            frozenset(known),
+            grants.roles,
+            grants.profiles,
+            grants.check,
+            grants.role_permissions,
+        )
 
     def _absent_tools(self) -> Iterator[str]:
         """Инструменты из секций включённых плагинов, которых нет среди поднятых."""

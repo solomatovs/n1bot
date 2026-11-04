@@ -651,11 +651,6 @@ class ServiceStand(StandService):
         overlay.set(("postgres", "dbname"), self.db_name)
         overlay.set(("postgres", "pool", "min_size"), 1)
         overlay.set(("postgres", "pool", "max_size"), 6)
-        roles: dict[str, Any] = {}
-        for name, tools in self.role_tools.items():
-            roles[name] = {"tools": list(tools)}
-        overlay.replace(("roles",), roles)
-
         if not self.sandbox:
             files_dir = self.workdir / "files"
             files_dir.mkdir(parents=True, exist_ok=True)
@@ -1089,7 +1084,6 @@ class StandConfig(StandService, ServerSeedSpec):
         не все инструменты, чтобы было видно пересечение роли и профиля. Сценарий
         fake llm выбирается по тексту сообщения, поэтому имя модели свободно.
         """
-        overlay.replace(("roles",), {"ADM": {}, "DEV": {}, "GST": {}})
 
         profiles: dict[str, Any] = {
             "general": {

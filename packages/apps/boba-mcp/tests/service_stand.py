@@ -31,10 +31,10 @@ from boba.auth.config import (
     ProxyAuthConfig,
     ProxyRoleProviders,
 )
-from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.auth.proxy import ProxyAssertionVerifier
 from boba.canvas.keys import WorkspaceMount
 from boba.config import ConfigLoader, bind
+from boba.connection_broker.credentials import KerberosCredentialSource, NoRefresh
 from boba.connection_broker.params import ConnectionParams
 from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.tools import ConnectionTools
@@ -67,6 +67,7 @@ from boba.runtime.journal import DirVault, StreamJournal
 from boba.runtime.signin import SignInAssembly
 from boba.runtime.storage import LocalStorageClient, LocalStorageConfig
 from boba.stand import fake_caller, fake_connection, fake_toolmod
+from boba.stand.roles import MemoryRoles
 from boba.stand.service_signin import ServiceSignIn
 from boba.stand.toolstand import ToolStand
 from boba.tool_io.chain import CallAmbient
@@ -298,9 +299,11 @@ class ServiceStand:
                 )
             )
 
-        sign_ins = SignInAssembly(Ldap3Directory(), catalog).build(
-            [local, *proxies], "stand-session-secret"
-        )
+        sign_ins = SignInAssembly(
+            Ldap3Directory(),
+            catalog,
+            MemoryRoles({"dev", "ADM", "DEV", "read", "wrt", "weak", "analyst"}),
+        ).build([local, *proxies], "stand-session-secret")
         # в сервисе точку workspace ставит загрузчик плагинов из профиля песочницы
         WorkspaceMount.configure("/workspace")
         public_url = self.public_url

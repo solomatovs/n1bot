@@ -44,6 +44,7 @@ from boba.aid.agent.client import AcpClientError
 from boba.aid.agent.commands import CommandError
 from boba.aid.agent.relay import AppAction, AppRequest, McpRelay
 from boba.aid.agent.settings import AgentSettingsError
+from boba.aid.auth.chainlit_user import ChainlitPrincipal
 from boba.aid.canvas.panel import PanelStorage, StreamActions
 from boba.aid.canvas.remote import RemoteJournals, RemoteStreams
 from boba.aid.canvas.tools import CanvasOpener
@@ -71,6 +72,7 @@ from boba.aid.infra.providers import (
 )
 from boba.aid.infra.session import (
     ChainlitSession,
+    SessionSignInError,
     current_session,
 )
 from boba.aid.infra.socket_events import SocketEvents
@@ -104,6 +106,7 @@ from boba.cancellation import StopReason
 from boba.canvas.canvas import CanvasAction, CanvasFileRequest, RenderVerdicts
 from boba.chat.profiles import ChatProfiles, SelectedProfile
 from boba.chat.threads import DataLayerError
+from boba.identity.api import AuthenticatedUser
 from boba.identity.context import Scope
 from boba.identity.errors import RefusalError
 from boba.identity.locks import LockBusyError
@@ -411,8 +414,15 @@ async def set_chat_profiles(
     """Профили, выданные входу пользователя; выбор профиля обязателен.
     Загрузка файлов включена, если среди выданных пользователю серверов
     есть объявивший хранилище файлов: своего хранилища у чата нет."""
-    granted = ChainlitSession.profiles_of(user)
-    uploads = ProfileUploads(servers, source, user)
+    principal = ChainlitPrincipal.restore(user)
+    if principal is None:
+        try:
+            principal = current_session().authenticated_user()
+        except SessionSignInError:
+            principal = None
+
+    granted = principal.profiles if principal is not None else frozenset()
+    uploads = ProfileUploads(servers, source, principal)
     overrides = await uploads.overrides()
 
     profiles: list[cl.ChatProfile] = []
@@ -446,11 +456,14 @@ class ProfileUploads:
     """
 
     def __init__(
-        self, servers: McpServers, source: ServerSource, user: cl.User | None
+        self,
+        servers: McpServers,
+        source: ServerSource,
+        principal: AuthenticatedUser | None,
     ) -> None:
         self._servers = servers
         self._source = source
-        self._user = user
+        self._principal = principal
 
     async def overrides(self) -> ChainlitConfigOverrides:
         upload = SpontaneousFileUploadFeature(enabled=await self.enabled())
@@ -479,16 +492,16 @@ class ProfileUploads:
             await notices.uploads_off(exc)
 
     async def _host(self) -> FilesHost | None:
-        user = self._user
-        if user is None:
+        principal = self._principal
+        if principal is None:
             return None
 
         try:
-            viewer = self._viewer(user)
+            viewer = self._viewer(principal)
             names = await self._source.enabled_names(viewer)
         except McpAppError as exc:
             raise McpClientError(
-                f"Looking up file servers of {user.identifier!r} failed: {exc}"
+                f"Looking up file servers of {principal.identifier!r} failed: {exc}"
             ) from exc
 
         if not names:
@@ -496,22 +509,14 @@ class ProfileUploads:
 
         return await self._servers.files_host(names, viewer.caller())
 
-    def _viewer(self, user: cl.User) -> McpViewer:
+    def _viewer(self, principal: AuthenticatedUser) -> McpViewer:
         """Ошибки:
         McpAppError — у входа нет строки users: серверы ему не выданы.
         """
-        user_id = getattr(user, "id", None)
-        if not user_id:
-            msg = (
-                f"the file upload of {user.identifier!r} is unknown: the sign-in "
-                "has no users row"
-            )
-            raise McpAppError(msg)
-
         return McpViewer(
-            user_id=UUID(str(user_id)),
-            login=Login(user.identifier),
-            roles=ChainlitSession.roles_of(user),
+            user_id=principal.id,
+            login=Login(principal.identifier),
+            roles=principal.roles,
         )
 
 
@@ -560,7 +565,7 @@ async def on_chat_start(
     except RefusalError:
         return
 
-    uploads = ProfileUploads(servers, source, session.user)
+    uploads = ProfileUploads(servers, source, session.authenticated_user())
     await uploads.explain(TabNotices())
 
 

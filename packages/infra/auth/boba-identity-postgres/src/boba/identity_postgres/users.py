@@ -1,7 +1,7 @@
 """Таблица users приложения: единственный владелец строки пользователя.
 
-Одна схема и один набор запросов: строка входа, чтение по логину и id, metadata
-входа в jsonb meta.
+Личность хранится явными колонками, членство — в user_roles. Данные сессии
+и произвольные metadata в users не сохраняются.
 
 Ошибки:
 ExternalServiceError — postgres недоступен либо прежний логин ещё не сопоставлен
@@ -17,12 +17,11 @@ from datetime import UTC, datetime
 from typing import Any, ClassVar
 from uuid import UUID
 
-from psycopg.types.json import Jsonb
-
 from boba.db.postgres import Cursor, PostgresTable
 from boba.identity.api import (
     AuthenticatedUser,
     PersistedUsers,
+    RoleCatalog,
     StoredUser,
     UserIdentityChange,
     UserIdentityMigration,
@@ -32,13 +31,14 @@ from boba.identity.api import (
     UsersUpsert,
 )
 from boba.identity.errors import ExternalServiceError
-from boba.identity.session import Login, UserMetadataField
-from boba.identity.signin import SignedIn, SignInMetadata
+from boba.identity.principal import UserIdentity
+from boba.identity.session import Login
+from boba.identity.signin import SignedIn
 
 __all__ = ["UsersTable"]
 
 
-class UsersTable(PostgresTable, UserRows, PersistedUsers, UsersUpsert):
+class UsersTable(PostgresTable, UserRows, PersistedUsers, UsersUpsert, RoleCatalog):
     """Общие users, роли и членство: вход приложения и сохранённая личность."""
 
     LABEL: ClassVar[str] = "identity"
@@ -46,28 +46,33 @@ class UsersTable(PostgresTable, UserRows, PersistedUsers, UsersUpsert):
     def _failure(self, action: str, exc: Exception) -> Exception:
         return ExternalServiceError("identity", self._detail(action, exc))
 
-    def _stored(self, row: Mapping[str, Any]) -> StoredUser:
-        meta = row[UsersColumn.META.value]
-        if meta is None:
-            meta = {}
+    SELECT = """
+        select u.id, u.identifier, u.created_at, u.realm, u.login,
+            array(select r.role from {schema}.user_roles as m
+                join {schema}.roles as r on r.id = m.role_id
+                where m.user_id = u.id order by r.role) as roles
+        from {schema}.users as u
+    """
 
+    def _stored(self, row: Mapping[str, Any]) -> StoredUser:
+        identity = None
+        if row[UsersColumn.REALM] is not None:
+            identity = UserIdentity(
+                realm=row[UsersColumn.REALM], login=row[UsersColumn.LOGIN]
+            )
         return StoredUser(
-            id=row[UsersColumn.ID.value],
-            identifier=row[UsersColumn.IDENTIFIER.value],
-            created_at=row[UsersColumn.CREATED_AT.value],
-            meta=meta,
+            id=row[UsersColumn.ID],
+            identifier=row[UsersColumn.IDENTIFIER],
+            created_at=row[UsersColumn.CREATED_AT],
+            identity=identity,
+            roles=frozenset(row[UsersColumn.ROLES]),
         )
 
     async def stored(self, identifier: Login) -> StoredUser | None:
         query = (
             self._query()
             .add(
-                """
-                select id, identifier, created_at, meta
-                from {schema}.users
-                where identifier = %(identifier)s
-                limit 1
-                """,
+                self.SELECT + "where u.identifier = %(identifier)s limit 1",
                 identifier=identifier,
             )
             .build()
@@ -82,12 +87,7 @@ class UsersTable(PostgresTable, UserRows, PersistedUsers, UsersUpsert):
         query = (
             self._query()
             .add(
-                """
-                select id, identifier, created_at, meta
-                from {schema}.users
-                where id = %(user_id)s
-                limit 1
-                """,
+                self.SELECT + "where u.id = %(user_id)s limit 1",
                 user_id=user_id,
             )
             .build()
@@ -105,67 +105,67 @@ class UsersTable(PostgresTable, UserRows, PersistedUsers, UsersUpsert):
 
         return stored.authenticated()
 
-    async def upsert(self, identifier: Login, meta: Mapping[str, Any]) -> StoredUser:
-        """Новая строка либо metadata поверх прежней; что писать — решает вызывающий."""
-        sign_in = SignInMetadata.parse(meta)
-        previous = ""
-        checked_identity = None
-        if sign_in.identity is not None:
-            previous = sign_in.identity_for(identifier).login
-            checked_identity = Jsonb(sign_in.identity.model_dump(mode="json"))
+    async def upsert(
+        self,
+        identifier: Login,
+        identity: UserIdentity | None = None,
+        roles: frozenset[str] | None = None,
+    ) -> StoredUser:
+        if identity is not None and not identity.matches(identifier):
+            raise ValueError("user identifier must match the confirmed identity")
 
+        async def persist(cur: Cursor) -> StoredUser:
+            user_id = await self._upsert(cur, identifier, identity)
+            if roles is not None:
+                await self._sync_roles(cur, user_id, roles)
+            query = (
+                self._query()
+                .add(
+                    self.SELECT + "where u.identifier = %(identifier)s",
+                    identifier=identifier,
+                )
+                .build()
+            )
+            await cur.execute(query.text, query.params)
+            row = await cur.fetchone()
+            if row is None:
+                raise RuntimeError("inserted user is missing")
+            return self._stored(row)
+
+        return await self._transacted("ensure user and role membership", persist)
+
+    async def _upsert(
+        self, cur: Cursor, identifier: Login, identity: UserIdentity | None
+    ) -> UUID:
         query = (
             self._query()
             .add(
                 """
-                insert into {schema}.users (
-                    identifier,
-                    created_at,
-                    meta
-                )
-                select
-                    %(identifier)s,
-                    %(created_at)s,
-                    %(meta)s
-                where not exists (
-                    select 1 from {schema}.users
-                    where identifier = %(previous)s
-                      and identifier != %(identifier)s
-                )
-                and not exists (
-                    select 1 from {schema}.users
-                    where identifier = %(identifier)s
-                      and meta -> %(identity_key)s
-                          is distinct from %(checked_identity)s::jsonb
-                )
-                on conflict (identifier) do update set
-                    meta = coalesce({schema}.users.meta, '{{}}'::jsonb) || excluded.meta
-                returning
-                    id, identifier, created_at, meta
-                """,
+            insert into {schema}.users (identifier, realm, login)
+            select %(identifier)s, %(realm)s, %(login)s
+            where not exists (
+                select 1 from {schema}.users
+                where identifier = %(previous)s and identifier != %(identifier)s
+            )
+            and not exists (
+                select 1 from {schema}.users where identifier = %(identifier)s
+                and (realm is distinct from %(realm)s
+                    or login is distinct from %(login)s)
+            )
+            on conflict (identifier) do update set identifier = excluded.identifier
+            where {schema}.users.realm is not distinct from excluded.realm
+                and {schema}.users.login is not distinct from excluded.login
+            returning id
+            """,
                 identifier=identifier,
-                created_at=datetime.now(UTC),
-                meta=Jsonb(dict(meta)),
-                previous=previous,
-                checked_identity=checked_identity,
-                identity_key=UserMetadataField.IDENTITY,
+                realm=identity.realm if identity is not None else None,
+                login=identity.login if identity is not None else None,
+                previous=identity.login if identity is not None else "",
             )
             .build()
         )
-
-        async def persist(cur: Cursor) -> Mapping[str, Any] | None:
-            await cur.execute(query.text, query.params)
-            row = await cur.fetchone()
-            if row is None:
-                return None
-
-            if UserMetadataField.ROLES in meta:
-                await self._sync_roles(cur, row[UsersColumn.ID.value], sign_in.roles)
-
-            return row
-
-        row = await self._transacted("ensure user and role membership", persist)
-
+        await cur.execute(query.text, query.params)
+        row = await cur.fetchone()
         if row is None:
             msg = (
                 f"sign-in of {identifier!r}: legacy or conflicting user requires "
@@ -173,42 +173,45 @@ class UsersTable(PostgresTable, UserRows, PersistedUsers, UsersUpsert):
                 "and personal grants have not been reassigned"
             )
             raise ExternalServiceError("identity", msg)
+        return row[UsersColumn.ID]
 
-        return self._stored(row)
-
-    async def sync_roles(self, names: Iterable[str]) -> None:
-        """Регистрирует имена ролей, не меняя членство пользователей."""
-        async with self._transaction("sync role names") as cur:
-            await self._add_roles(cur, names)
-
-    async def _add_roles(self, cur: Cursor, names: Iterable[str]) -> None:
-        roles = sorted(names)
-
+    async def resolve_roles(
+        self, identity: UserIdentity, candidates: Iterable[str]
+    ) -> frozenset[str]:
         query = (
             self._query()
             .add(
                 """
-            insert into {schema}.roles (role)
-            select unnest(%(roles)s::text[])
-            on conflict (role) do nothing
+            select r.role from {schema}.roles as r
+            where r.role = any(%(roles)s::text[])
+                or exists (
+                    select 1 from {schema}.user_roles as m
+                    join {schema}.users as u on u.id = m.user_id
+                    where m.role_id = r.id and not m.managed
+                        and u.identifier = %(identifier)s
+                        and u.realm = %(realm)s and u.login = %(login)s
+                )
             """,
-                roles=roles,
+                roles=list(candidates),
+                identifier=identity.identifier,
+                realm=identity.realm,
+                login=identity.login,
             )
             .build()
         )
-        await cur.execute(query.text, query.params)
+        rows = await self._rows(query, "resolve roles")
+        return frozenset(row["role"] for row in rows)
 
     async def _sync_roles(
         self, cur: Cursor, user_id: UUID, roles: frozenset[str]
     ) -> None:
-        await self._add_roles(cur, roles)
         queries = (
             self._query()
             .add(
                 """
                 delete from {schema}.user_roles as m
                 using {schema}.roles as r
-                where m.user_id = %(user_id)s and m.role_id = r.id
+                where m.user_id = %(user_id)s and m.role_id = r.id and m.managed
                     and not (r.role = any(%(roles)s::text[]))
                 """,
                 user_id=user_id,
@@ -218,8 +221,8 @@ class UsersTable(PostgresTable, UserRows, PersistedUsers, UsersUpsert):
             self._query()
             .add(
                 """
-                insert into {schema}.user_roles (user_id, role_id)
-                select %(user_id)s, id from {schema}.roles
+                insert into {schema}.user_roles (user_id, role_id, managed)
+                select %(user_id)s, id, true from {schema}.roles
                 where role = any(%(roles)s::text[])
                 on conflict do nothing
                 """,
@@ -232,10 +235,14 @@ class UsersTable(PostgresTable, UserRows, PersistedUsers, UsersUpsert):
             await cur.execute(query.text, query.params)
 
     async def ensure_user(self, signed: SignedIn) -> AuthenticatedUser:
-        signed.sign_in.identity_for(signed.identifier)
-        stored = await self.upsert(signed.identifier, signed.sign_in.stored())
-
-        return stored.authenticated()
+        identity = signed.sign_in.identity_for(signed.identifier)
+        stored = await self.upsert(signed.identifier, identity, signed.sign_in.roles)
+        return AuthenticatedUser(
+            id=stored.id,
+            identifier=stored.identifier,
+            created_at=stored.created_at,
+            sign_in=signed.sign_in.model_copy(update={"roles": stored.roles}),
+        )
 
     async def identity_snapshot(
         self, migration: UserIdentityMigration
@@ -265,7 +272,7 @@ class UsersTable(PostgresTable, UserRows, PersistedUsers, UsersUpsert):
                         )
                         raise ValueError(msg)
 
-                    before_meta: Mapping[str, object] = {}
+                    roles = frozenset()
                     created_at = datetime.now(UTC)
                 else:
                     allowed = (assignment.previous_identifier, identity.identifier)
@@ -276,16 +283,15 @@ class UsersTable(PostgresTable, UserRows, PersistedUsers, UsersUpsert):
                         )
                         raise ValueError(msg)
 
-                    before_meta = before.meta
+                    roles = before.roles
                     created_at = before.created_at
 
-                meta = dict(before_meta)
-                meta[UserMetadataField.IDENTITY] = identity.model_dump(mode="json")
                 after = StoredUser(
                     id=assignment.user_id,
                     identifier=identity.identifier,
                     created_at=created_at,
-                    meta=meta,
+                    identity=identity,
+                    roles=roles,
                 )
                 changes.append(UserIdentityChange(before=before, after=after))
 
@@ -344,17 +350,26 @@ class UsersTable(PostgresTable, UserRows, PersistedUsers, UsersUpsert):
                         self._query()
                         .add(
                             """
-                        insert into {schema}.users (id, identifier, created_at, meta)
-                        values (%(user_id)s, %(identifier)s, %(created_at)s, %(meta)s)
+                        insert into {schema}.users
+                            (id, identifier, created_at, realm, login)
+                        values
+                            (%(user_id)s, %(identifier)s, %(created_at)s,
+                             %(realm)s, %(login)s)
                         on conflict (id) do update set
                             identifier = excluded.identifier,
                             created_at = excluded.created_at,
-                            meta = excluded.meta
+                            realm = excluded.realm,
+                            login = excluded.login
                         """,
                             user_id=target.id,
                             identifier=target.identifier,
                             created_at=target.created_at,
-                            meta=Jsonb(dict(target.meta)),
+                            realm=target.identity.realm
+                            if target.identity is not None
+                            else None,
+                            login=target.identity.login
+                            if target.identity is not None
+                            else None,
                         )
                         .build()
                     )
@@ -368,11 +383,7 @@ class UsersTable(PostgresTable, UserRows, PersistedUsers, UsersUpsert):
             .build()
         )
         await cur.execute(lock.text, lock.params)
-        query = (
-            self._query()
-            .add("select id, identifier, created_at, meta from {schema}.users")
-            .build()
-        )
+        query = self._query().add(self.SELECT).build()
         await cur.execute(query.text, query.params)
         rows = await cur.fetchall()
 

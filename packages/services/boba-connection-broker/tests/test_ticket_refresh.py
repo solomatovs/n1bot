@@ -13,7 +13,7 @@ from typing import Any, ClassVar
 import pytest
 from pydantic import BaseModel, create_model
 
-from boba.auth.credentials import KerberosCredentialSource, NoRefresh
+from boba.connection_broker.credentials import KerberosCredentialSource, NoRefresh
 from boba.connection_broker.tickets import SectionTickets, ServiceTickets
 from boba.connections.credentials import ConnectionSections
 from boba.connections.manifest import ConnectionTypes

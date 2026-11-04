@@ -6,6 +6,7 @@
 # Сеть — только apt и pypi контура
 ARG BUILD_IMAGE
 ARG OS_IMAGE
+ARG ASTRA_MIRROR=download.astralinux.ru
 
 # декларации и деревья, которые лягут в корень: python образа сборки, uv и колёса
 FROM ${BUILD_IMAGE} AS decl
@@ -62,6 +63,8 @@ RUN if [ -n "${PYTHON}" ]; then python3 /opt/plugin_rootfs.py names . ${PLUGINS}
 # оверлей, точки монтирования
 FROM ${OS_IMAGE} AS root
 
+ARG ASTRA_MIRROR
+
 COPY --from=decl /out/apt.txt /out/data.txt /out/runtime.txt  /tmp/decl/
 COPY --from=decl /out/setup/      /tmp/decl/setup/
 
@@ -70,7 +73,8 @@ RUN apt="$(cat /tmp/decl/apt.txt)" \
            apt="$apt libssl1.1 libffi6 libsqlite3-0 libbz2-1.0 liblzma5 libreadline7 libncurses5 zlib1g libkrb5-3 libgssapi-krb5-2"; \
        fi \
     && if [ -n "$(echo $apt)" ]; then \
-           apt-get update && apt-get install -y --no-install-recommends $apt \
+           sed -i "s|download.astralinux.ru|${ASTRA_MIRROR}|g" /etc/apt/sources.list \
+           && apt-get update && apt-get install -y --no-install-recommends $apt \
            && rm -rf /var/lib/apt/lists/*; \
        fi
 

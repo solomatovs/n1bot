@@ -41,6 +41,8 @@ from boba.auth.config import ProxyAuthConfig
 from boba.canvas.keys import ObjectKey, ScopeDir, WorkspaceMount
 from boba.canvas.storage import StorageNotFoundError
 from boba.config import bind
+from boba.db.postgres import AsyncPostgresPool, PostgresTable
+from boba.db.postgres.connection import PostgresConfig
 from boba.mcp_client.client import (
     BearerAuth,
     FixedServerConfigs,
@@ -62,6 +64,7 @@ from boba.oauth.server import TrustedClient
 from boba.runtime.config import ProgramRoots
 from boba.stand.apps_slot import AppServer, AppsSlot
 from boba.stand.migrate import StandSchema
+from boba.stand.roles import RoleSeed
 from boba.stand.service_signin import ServiceSignIn
 from boba.stand.ui.database import run_blocking
 from boba.stand.ui.stand import StandApp
@@ -1785,12 +1788,12 @@ class BobaMcpService:
         overlay = workdir / "overlay.toml"
         public_url = f"http://{self.HOST}:{self.port}{self.PREFIX}"
         changed = {
-            "env": {
+            "server": {
                 "port": self.port,
                 "url_prefix": self.PREFIX,
                 "public_url": public_url,
-                "tool_launcher": "process",
             },
+            "tool_launcher": {"provider": "process"},
             "postgres": {"dbname": database},
             "app": {"schema": f"mcp_client_{uuid4().hex[:12]}"},
             "mcp": {
@@ -1810,6 +1813,7 @@ class BobaMcpService:
             ),
         )
         run_blocking(self._storage.create())
+        run_blocking(self._seed_roles(database, changed["app"]["schema"]))
         self._log = (workdir / "mcp.log").open("wb")
         self._process = subprocess.Popen(
             [
@@ -1820,11 +1824,25 @@ class BobaMcpService:
             ],
             env={
                 "PATH": "/usr/local/bin:/usr/bin:/bin",
+                "BOBA_TOOL_LAUNCHER": "process",
                 ProgramRoots.RUNTIME_ENV: str(self.RUNTIME),
             },
             stdout=self._log,
             stderr=subprocess.STDOUT,
         )
+
+    async def _seed_roles(self, database: str, schema: str) -> None:
+        """Подготовить роли и право на tools для OAuth-пользователя теста."""
+        raw = StandApp.MCP.config_files().loader(self._files).load()
+        postgres = bind(raw, "postgres", PostgresConfig).model_copy(
+            update={"dbname": database}
+        )
+        pool = AsyncPostgresPool(postgres)
+        await pool.open()
+        try:
+            await RoleSeed(PostgresTable(None, schema, pool)).tools({"wrt": ["*"]})
+        finally:
+            await pool.close()
 
     def _arguments(self, overlay: Path) -> list[str]:
         """Подкоманда serve и файлы конфига сервиса, последним — наложение."""

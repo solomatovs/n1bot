@@ -7,7 +7,7 @@ from chainlit.config import config as chainlit_config
 from fastapi import FastAPI
 from pydantic import BaseModel, ConfigDict
 
-from boba.aid.auth.composite import PasswordCallback
+from boba.aid.auth.composite import PasswordCallback, SessionCallback
 from boba.aid.auth.kerberos import KerberosAuth
 from boba.aid.auth.proxy import ProxyAuth
 from boba.aid.auth.refresh import PageUrls, SessionRefresh
@@ -53,6 +53,7 @@ class ChainlitAuthInstaller:
         self._session_ttl_sec = session_ttl_sec
         self._sessions = sessions
         self._app_root = app_root
+        self._session_callback = SessionCallback(auth, sessions)
         self._sso_links: list[SsoLoginLink] = []
         for config in kerberos:
             url = f"{url_prefix}{config.sso_path}"
@@ -65,6 +66,8 @@ class ChainlitAuthInstaller:
     def install(self, chainlit_app: FastAPI) -> None:
         """Ставит способы входа: SSO-роуты, proxy-роут и password-callback."""
         ChainlitSessionTtl.apply(self._session_ttl_sec)
+
+        self._session_callback.install(chainlit_app)
 
         sso_path = ""
         if len(self._kerberos) == 1:

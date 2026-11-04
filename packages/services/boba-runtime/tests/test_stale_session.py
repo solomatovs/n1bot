@@ -6,7 +6,10 @@ from __future__ import annotations
 
 import asyncio
 import secrets
+import time
+from datetime import UTC, datetime
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
 
 import jwt
 import pytest
@@ -100,7 +103,13 @@ def _token(generation: str) -> str:
         ),
     )
 
-    return JwtTokens(SECRET, 60, generation).issue(signed)
+    issued_at = int(time.time())
+    user_id = uuid5(NAMESPACE_URL, f"stale-session:{signed.identifier}")
+    created_at = datetime(2026, 1, 1, tzinfo=UTC)
+
+    return JwtTokens(SECRET, 60, generation).issue(
+        signed, user_id, created_at, issued_at
+    )
 
 
 def test_current_generation_reaches_the_app() -> None:

@@ -55,6 +55,22 @@ class LookOption(StrEnum):
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
+    cli = parser.getgroup("boba", "команда и ACP Test Compatibility Kit")
+    cli.addoption(
+        "--acp-tck",
+        action="store",
+        default=None,
+        metavar="PATH",
+        help="исполняемый файл ACP TCK для test_cli_tck.py",
+    )
+    cli.addoption(
+        "--boba-bin",
+        action="store",
+        default=None,
+        metavar="DIR",
+        help="каталог собранной команды boba для test_cli_binary.py",
+    )
+
     golden = parser.getgroup("golden", "золотые снимки запросов к модели")
     golden.addoption(
         GoldenOption.UPDATE.value,

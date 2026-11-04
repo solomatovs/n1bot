@@ -23,26 +23,6 @@ from boba.stand.database import TestDatabase
 from boba.stand.ui.fake_llm import ScenarioName
 
 
-def pytest_addoption(parser: pytest.Parser) -> None:
-    parser.addoption(
-        "--acp-tck",
-        action="store",
-        default=None,
-        metavar="PATH",
-        help="acp-tck executable; without it test_cli_tck.py fails",
-    )
-    parser.addoption(
-        "--boba-bin",
-        action="store",
-        default=None,
-        metavar="DIR",
-        help=(
-            "bin directory of the built release for the binary tests; "
-            "default: build/out/boba/bin of the main tree"
-        ),
-    )
-
-
 @pytest.fixture
 def tck_executable(request: pytest.FixtureRequest) -> Path:
     """Исполняемый файл acp-tck из `--acp-tck`; без опции или с

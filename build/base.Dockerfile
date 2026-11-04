@@ -8,6 +8,7 @@ ARG PYTHON_VERSION=3.11
 ARG GLIBC_IMAGE=dmp/glibc:2.28
 ARG GCC_IMAGE=dmp/gcc:8.5.0
 ARG PYTHON_IMAGE=dmp/python:${PYTHON_VERSION}-dist
+ARG ASTRA_MIRROR=download.astralinux.ru
 
 FROM ${PYTHON_IMAGE} AS python-dist
 
@@ -56,9 +57,12 @@ COPY --from=conf /certs/  /
 # среда сборки: gcc, наш python поверх системного, uv, CA и индексы контура
 FROM ${GCC_IMAGE} AS base
 
+ARG ASTRA_MIRROR
+
 COPY --from=conf /certs/  /
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN sed -i "s|download.astralinux.ru|${ASTRA_MIRROR}|g" /etc/apt/sources.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
         libssl1.1 libffi6 libsqlite3-0 libbz2-1.0                \
         liblzma5 libreadline7 libncurses5 zlib1g                 \
         libkrb5-dev patch xz-utils                               \

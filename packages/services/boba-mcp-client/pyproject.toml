@@ -24,6 +24,7 @@ dependencies = [
 dev = [
     "boba-oauth==0.0.33.dev1",
     "boba-stand==0.0.33.dev1",
+    "boba-db-postgres==0.0.33.dev1",
     "boba-runtime==0.0.33.dev1",
     "boba-config==0.0.33.dev1",
     "httpx>=0.28,<1",

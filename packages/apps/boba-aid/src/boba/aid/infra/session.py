@@ -30,6 +30,7 @@ from chainlit.session import WebsocketSession, ws_sessions_id
 
 from boba.aid.chat.ui_text import UiText
 from boba.canvas.canvas import CanvasScope
+from boba.identity.api import AuthenticatedUser
 from boba.identity.context import (
     DelegatedTicket,
 )
@@ -191,25 +192,22 @@ class ChainlitSession(Session, LiveSignIn):
 
     @property
     def user(self) -> cl.User | cl.PersistedUser | None:
-        """Строка users, слитая всеми входами подряд.
-
-        Metadata здесь живут дольше одного входа; ровно этот вход
-        описывает login_user().
-        """
+        """Пользователь Chainlit; подтверждённый вход читается из JWT."""
         return getattr(self._session, "user", None)
 
     @property
     def user_id(self) -> str | None:
-        return getattr(self.user, "id", None)
+        if not self.token:
+            return None
+
+        return str(self.signed_in().user_id)
 
     @property
     def identifier(self) -> str:
-        # у chainlit в сессии может лежать User из его JWT, с логином как набран
-        raw = str(getattr(self.user, "identifier", "") or "")
-        if not raw:
+        if not self.token:
             return ""
 
-        return Login(raw)
+        return self.signed_in().identifier
 
     @property
     def label(self) -> str:
@@ -221,22 +219,25 @@ class ChainlitSession(Session, LiveSignIn):
 
     @property
     def metadata(self) -> Mapping[str, object]:
-        return self.metadata_of(self.user)
+        if not self.token:
+            return {}
+
+        return self.signed_in().metadata
 
     @property
     def roles(self) -> frozenset[str]:
-        """Роли входа — из токена сессии: их выдал вход, строка users их не хранит."""
-        return self.signed_in().sign_in().roles
+        """Роли из подписанных claims входа."""
+        return self.authenticated_user().roles
 
     @property
     def profiles(self) -> frozenset[str]:
-        """Профили, выданные входу, — из токена сессии, как и роли."""
-        return self.signed_in().sign_in().profiles
+        """Выданные профили после проверки актуальных ролей."""
+        return self.authenticated_user().profiles
 
     @property
     def sign_in(self) -> SignInMetadata:
-        """Вход целиком из токена сессии: роли, профили, выбранный профиль."""
-        return self.signed_in().sign_in()
+        """Данные входа с правами последней проверки сессии."""
+        return self.authenticated_user().sign_in
 
     @property
     def chat_profile(self) -> str | None:
@@ -279,7 +280,7 @@ class ChainlitSession(Session, LiveSignIn):
         return specs.get(parent_id)
 
     def signed_in(self) -> SessionClaims:
-        """Вход, каким его выпустил токен сессии; без годного токена — отказ.
+        """Проверенный JWT с правами, принятыми SessionCallback.
 
         Chainlit проверяет токен один раз при подключении сокета, поэтому
         истёкший срок замечает именно это место — на каждом ходе.
@@ -290,7 +291,7 @@ class ChainlitSession(Session, LiveSignIn):
             raise SessionSignInError(SessionSignIn.MISSING, msg, self.language)
 
         try:
-            return self._tokens.read(token)
+            claims = self._tokens.read(token)
         except TokenRejectedError as exc:
             if exc.reason is TokenRejection.EXPIRED:
                 msg = "your sign-in has expired: reload the page to sign in again"
@@ -305,6 +306,47 @@ class ChainlitSession(Session, LiveSignIn):
             raise SessionSignInError(
                 SessionSignIn.REJECTED, msg, self.language
             ) from exc
+
+        try:
+            signed = claims.signed()
+            signed.sign_in.identity_for(signed.identifier)
+            self._ensure_session_user_matches(claims)
+        except ValueError as exc:
+            msg = (
+                f"session user does not match token identity {claims.identifier!r}: "
+                "reload the page to sign in again"
+            )
+            raise SessionSignInError(
+                SessionSignIn.REJECTED, msg, self.language
+            ) from exc
+
+        return claims
+
+    def authenticated_user(self) -> AuthenticatedUser:
+        """Проверенный principal, восстановленный из JWT текущей сессии."""
+        claims = self.signed_in()
+        return claims.authenticated_user()
+
+    def _ensure_session_user_matches(self, claims: SessionClaims) -> None:
+        """Chainlit user binds the websocket to claims; it does not supply identity.
+
+        Chainlit may hydrate ``session.user`` from its data layer, which only
+        stores user and role data. Authentication metadata and delegated SSO
+        credentials therefore come from the signed token, not that projection.
+        """
+        user = self.user
+        if user is None:
+            return
+
+        identifier = str(getattr(user, "identifier", "") or "")
+        if identifier and Login(identifier) != claims.identifier:
+            msg = "Chainlit session user identifier differs from the signed token"
+            raise ValueError(msg)
+
+        user_id = str(getattr(user, "id", "") or "")
+        if user_id and UUID(user_id) != claims.user_id:
+            msg = "Chainlit session user UUID differs from the signed token"
+            raise ValueError(msg)
 
     async def emit(self, event: str, payload: Mapping[str, Any]) -> bool:
         """Шлёт событие в сокет сессии; False — слушать некому."""
@@ -345,29 +387,6 @@ class ChainlitSession(Session, LiveSignIn):
 
         return CanvasScope(user_id=user_id, scope_id=thread_id, workspace=workspace)
 
-    @staticmethod
-    def metadata_of(user: cl.User | cl.PersistedUser | None) -> Mapping[str, object]:
-        """Metadata пользователя; у входа без metadata — пусто."""
-        if user is None:
-            return {}
-
-        metadata = user.metadata
-        if metadata is None:
-            return {}
-
-        return metadata
-
-    @classmethod
-    def roles_of(cls, user: cl.User | cl.PersistedUser | None) -> frozenset[str]:
-        """Роли пользователя из metadata; годится и вне контекста сессии."""
-        return SignInMetadata.parse(cls.metadata_of(user)).roles
-
-    @classmethod
-    def profiles_of(cls, user: cl.User | cl.PersistedUser | None) -> frozenset[str]:
-        """Профили входа из metadata; годится и вне контекста сессии."""
-        return SignInMetadata.parse(cls.metadata_of(user)).profiles
-
-
 class OwnerSessions(Protocol):
     """Живые сессии пользователя на этом инстансе: по ним хранилище файлов
     узнаёт, от чьего имени и в каком профиле пользователь сейчас работает.
@@ -390,10 +409,9 @@ class ChainlitSessions(SessionSource, LiveSessions, OwnerSessions):
         """Ссылка на билет входа из JWT; None — токен негоден или вход не SSO."""
         try:
             claims = self._tokens.read(token)
-        except TokenRejectedError as exc:
+        except TokenRejectedError:
             # в лог идёт причина отказа, сам токен туда не попадает
-            # nosemgrep: python-logger-credential-disclosure
-            logger.info("sign-in token rejected: %s", exc.reason)
+            logger.info("sign-in token rejected")
             return None
 
         return claims.ticket()
@@ -438,6 +456,16 @@ class ChainlitSessions(SessionSource, LiveSessions, OwnerSessions):
 
     def adopt_token(self, identifier: Login, token: str) -> int:
         """Живые сокет-сессии пользователя получают новый JWT; итог — сколько."""
+        try:
+            claims = self._tokens.read(token)
+        except TokenRejectedError as exc:
+            msg = f"session renewal for {identifier!r}: rejected token ({exc.reason})"
+            raise AuthenticationError(msg) from exc
+
+        if claims.identifier != identifier:
+            msg = f"session renewal for {identifier!r}: token names another user"
+            raise AuthenticationError(msg)
+
         adopted = 0
         for session in list(ws_sessions_id.values()):
             user = getattr(session, "user", None)
@@ -448,9 +476,25 @@ class ChainlitSessions(SessionSource, LiveSessions, OwnerSessions):
                 continue
 
             session.token = token
+            user.metadata = claims.sign_in().render()
+            user.display_name = claims.display_name
             adopted += 1
 
         return adopted
+
+    def refresh_user(self, token: str, user: cl.PersistedUser) -> None:
+        """Обновляет права вкладок, предъявляющих тот же JWT и UUID пользователя."""
+        for session in list(ws_sessions_id.values()):
+            if session.token != token:
+                continue
+
+            if not isinstance(session.user, cl.PersistedUser):
+                continue
+
+            if session.user.id != user.id:
+                continue
+
+            session.user = user
 
     def live_tokens(self) -> list[LiveToken]:
         """Токены живых сокет-сессий с сохранённым пользователем: для сторожа сессий."""

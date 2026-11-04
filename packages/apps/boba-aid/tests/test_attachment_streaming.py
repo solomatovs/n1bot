@@ -10,6 +10,7 @@ import hashlib
 import logging
 import tracemalloc
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
 from typing import Any, ClassVar, Self
@@ -18,14 +19,17 @@ from uuid import UUID
 import pytest
 import uvicorn
 from aid_stand import FakeUrl, StandTokens
-from chainlit.auth import get_current_user
 from fastapi import FastAPI
 from httpx import AsyncClient
 
+from boba.aid.auth.request import authenticated_user
 from boba.aid.data.upload import SessionFiles, UploadRoute
 from boba.aid.infra.session import ChainlitSession
 from boba.canvas.keys import ObjectKey
 from boba.canvas.transfer import UploadPolicy
+from boba.identity.api import AuthenticatedUser
+from boba.identity.session import Login
+from boba.identity.signin import SignInMetadata
 from boba.runtime.storage import LocalStorageClient
 
 pytestmark = pytest.mark.anyio
@@ -131,7 +135,7 @@ class ServedUser:
     """Пользователь сессии: роуту нужны только identifier и id."""
 
     def __init__(self) -> None:
-        self.identifier = "ivanov"
+        self.identifier = "corporate:ivanov"
         self.id = USER_ID
 
 
@@ -147,6 +151,7 @@ class ServedSession:
         self.files: dict[str, dict[str, Any]] = {}
         self.files_spec: dict[str, Any] = {}
         self.files_dir = files_dir
+        self.token = StandTokens.issue_for(self.user.identifier, UUID(self.user.id))
         self.INSTANCES[session_id] = self
 
 
@@ -183,7 +188,12 @@ async def served(
 
     app = FastAPI()
     UploadRoute(storage, UploadPolicy()).install(app)
-    app.dependency_overrides[get_current_user] = lambda: session.user
+    app.dependency_overrides[authenticated_user] = lambda: AuthenticatedUser(
+        id=UUID(session.user.id),
+        identifier=Login(session.user.identifier),
+        created_at=datetime(2024, 1, 1, tzinfo=UTC),
+        sign_in=SignInMetadata(provider="local"),
+    )
 
     return app, session, file_id
 

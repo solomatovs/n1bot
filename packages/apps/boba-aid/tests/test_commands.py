@@ -74,6 +74,7 @@ from boba.mcp_client.client import (
 from boba.runtime.threads import ThreadsTable
 from boba.runtime.users import UsersTable
 from boba.stand.names import StandNames
+from boba.stand.roles import RoleSeed
 from boba.stand.signin import SignInStand
 from boba.stand.site import Stand
 from boba.stand.ui.fake_llm import ScenarioName
@@ -223,7 +224,7 @@ async def store(pool: AsyncPostgresPool) -> ConnectionStore:
     built = ConnectionStore(
         pool, CONNECTIONS_SCHEMA, cipher, ConnectionTypes.discover()
     )
-    await built.sync_roles(list(CommandsTab.ROLES))
+    await RoleSeed(built).add(list(CommandsTab.ROLES))
 
     return built
 

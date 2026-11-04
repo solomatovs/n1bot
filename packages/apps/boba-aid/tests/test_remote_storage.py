@@ -20,6 +20,7 @@ from boba.aid.mcp_servers.sources import ServerSource
 from boba.canvas.keys import ObjectKey, ScopeDir
 from boba.canvas.storage import StorageError, StorageNotFoundError
 from boba.identity.api import StoredUser
+from boba.identity.principal import UserIdentity
 from boba.identity.session import Login, UserMetadataField
 from boba.mcp_client.client import McpCaller, McpServers, McpToolServer
 from boba.toolrun.call_id import CallFields
@@ -71,9 +72,10 @@ def _storage(
     users = OwnerRows(
         StoredUser(
             id=USER,
-            identifier=Login("alice"),
+            identifier=Login("corporate:alice"),
             created_at=datetime.now(UTC),
-            meta=meta,
+            identity=UserIdentity(realm="corporate", login=Login("alice")),
+            roles=frozenset(meta.get("roles", ())),
         )
     )
     owners = FileOwners(lambda: sessions, lambda: users, lambda: source)
@@ -152,7 +154,7 @@ class TestRemoteStorage:
         storage = _storage(servers, granted, _signed_in())
         key = ObjectKey(user_id=str(USER), scope_id=THREAD, name="gone.bin")
         await storage.upload_stream(key.render(), _source(b"gone"))
-        caller = McpCaller(login="alice", roles=frozenset({"dev"}))
+        caller = McpCaller(login="corporate:alice", roles=frozenset({"dev"}))
         port = await servers.port("boba", caller)
         journals = service.journal_dir / ServiceProcess.OWNER
         own = await self._journaled(port, THREAD, journals)
