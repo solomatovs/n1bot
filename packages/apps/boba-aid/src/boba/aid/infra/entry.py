@@ -148,6 +148,7 @@ class AppEntry:
                         ).run(
                             call.paths,
                             "boba.aid",
+                            options=call.migration,
                         )
                     )
                 except Exception as exc:

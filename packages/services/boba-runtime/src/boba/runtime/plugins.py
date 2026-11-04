@@ -36,8 +36,9 @@ from boba.connection_broker.tickets import SectionTickets, ServiceTickets
 from boba.core.types import StringList
 from boba.core.validation import ValidationText
 from boba.db.postgres.connection import PostgresConfig
-from boba.db.postgres.migrate import MigrationPlan, MigrationScript, MigrationTarget
+from boba.db.postgres.migrate import MigrationPlan, MigrationTarget
 from boba.runtime.launchers import PluginLaunch, SectionLaunchers, ToolLaunchers
+from boba.runtime.migrate import MigrationSources
 from boba.runtime.refs import ExecRefs
 from boba.toolkit.manifest import ToolDecl
 from boba.toolkit.ports import StreamSpecs
@@ -70,6 +71,7 @@ class PluginMeta(BaseModel):
 
     enable: bool = False
     tools: StringList = []
+    migration_version: str | None = None
 
 
 class PluginSections:
@@ -188,11 +190,13 @@ class PluginKits:
         return PluginKit(launch=launch, meta=meta, section=section)
 
 
-class PluginMigrations:
+class PluginMigrations(MigrationSources):
     """Читает SQL-планы включённых плагинов для migrate MCP и тестовых баз.
 
-    Способы запуска исполняют только migration-plan; подключение к БД
-    остаётся у общего мигратора. Boba и AID этот компонент не подключают.
+    Реализация MigrationSources: программа плагина отдаёт migration-plan
+    с SQL выбранной версии. ApplicationMigrations исполняет его тем же
+    механизмом, что план MCP. Boba и AID этот источник
+    не подключают.
     """
 
     async def targets(self, raw: DictConfig) -> Sequence[MigrationTarget]:
@@ -214,7 +218,10 @@ class PluginMigrations:
 
                 launch = PluginLaunch(manifest, values)
                 document = await asyncio.to_thread(
-                    launchers.migration_of, launch, values
+                    launchers.migration_of,
+                    launch,
+                    values,
+                    sections.meta(plugin).migration_version,
                 )
                 try:
                     storage = MigrationPlan.model_validate_json(document)
@@ -226,19 +233,6 @@ class PluginMigrations:
                 connection = bind(
                     OmegaConf.create(values), storage.connection, PostgresConfig
                 )
-                if not storage.stream:
-                    owners = sorted(
-                        {script.name.split("/")[0] for script in storage.scripts}
-                    )
-                    stream = "storage:" + ",".join(owners)
-                    adoption = MigrationScript(
-                        name="adopt legacy plugin schema",
-                        text="select 1",
-                    )
-                    storage = storage.model_copy(
-                        update={"stream": stream, "adoption": (adoption,)}
-                    )
-
                 targets.append(MigrationTarget(connection, storage))
         finally:
             launchers.stop()

@@ -40,7 +40,7 @@ dev = [
 ]
 
 [tool.setuptools.package-data]
-"boba.tool.describer" = ["schema/*.sql"]
+"boba.tool.describer" = ["migrations/*/*.sql"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

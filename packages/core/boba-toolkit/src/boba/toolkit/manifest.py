@@ -126,7 +126,7 @@ class PluginStorage(Protocol):
     Реализуют KbSchema и DescriberStore."""
 
     @abstractmethod
-    def migration(self) -> str: ...
+    def migration(self, version: str | None = None) -> str: ...
 
 
 @dataclass(frozen=True)

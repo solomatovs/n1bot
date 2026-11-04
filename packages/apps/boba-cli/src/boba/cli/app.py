@@ -35,7 +35,7 @@ import sys
 from asyncio.streams import FlowControlMixin
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import aclosing
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -100,6 +100,7 @@ from boba.llm.http.ollama import MANIFEST as OLLAMA
 from boba.llm.http.openai import MANIFEST as OPENAI
 from boba.llm.onnx.chat import MANIFEST as ONNX
 from boba.llm.providers import LlmProviders, LlmProvidersError, LlmProviderTypes
+from boba.runtime.config import MigrationArguments, MigrationOptions
 from boba.transport.acp.protocol import AgentSide, BatchTransport
 
 logger = logging.getLogger(__name__)
@@ -161,6 +162,7 @@ class ServeInvocation:
 
     command: Command
     config: tuple[Path, ...]
+    migration: MigrationOptions = field(default_factory=MigrationOptions)
 
 
 class InteractiveMode:
@@ -218,6 +220,7 @@ class ArgumentParser:
     PROG: ClassVar[str] = "boba"
 
     def __init__(self) -> None:
+        self._migration = MigrationArguments()
         self._parser = argparse.ArgumentParser(
             prog=self.PROG,
             description=(
@@ -270,8 +273,9 @@ class ArgumentParser:
         )
         migrate = commands.add_parser(
             Command.MIGRATE.value,
-            help="create storage tables in an empty PostgreSQL schema",
+            help="create or upgrade the agent's PostgreSQL storage",
         )
+        self._migration.add(migrate)
         migrate.add_argument(
             ServeFlag.CONFIG,
             required=True,
@@ -308,7 +312,11 @@ class ArgumentParser:
             return ServeInvocation(command=command, config=tuple(space.config))
 
         if command is Command.MIGRATE:
-            return ServeInvocation(command=command, config=tuple(space.config))
+            return ServeInvocation(
+                command=command,
+                config=tuple(space.config),
+                migration=self._migration.read(space),
+            )
 
         if not command.serves:
             return Invocation(command=command, arguments=Arguments())
@@ -1056,6 +1064,7 @@ async def main(argv: Sequence[str] | None = None) -> None:
                 ).run(
                     invocation.config,
                     "boba.cli",
+                    options=invocation.migration,
                 )
             except Exception as exc:
                 raise SystemExit(f"boba migrate failed: {exc}") from exc

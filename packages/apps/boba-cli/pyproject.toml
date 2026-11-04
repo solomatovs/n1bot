@@ -59,4 +59,4 @@ include = ["boba*"]
 namespaces = true
 
 [tool.setuptools.package-data]
-"boba.cli" = ["schema/*.sql", "upgrades/*.sql", "adoption/*.sql"]
+"boba.cli" = ["migrations/*/*.sql"]

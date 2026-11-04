@@ -18,7 +18,7 @@ import json
 import subprocess
 import sys
 from abc import abstractmethod
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -436,7 +436,12 @@ class SectionLaunchers(Protocol):
         section на stdin."""
 
     @abstractmethod
-    def migration_of(self, launch: PluginLaunch, section: Mapping[str, Any]) -> str:
+    def migration_of(
+        self,
+        launch: PluginLaunch,
+        section: Mapping[str, Any],
+        version: str | None = None,
+    ) -> str:
         """План SQL без подключения к БД и без передачи учётных данных в ответе."""
 
     @abstractmethod
@@ -470,7 +475,12 @@ class NoLaunchers(SectionLaunchers):
     def manifest_of(self, plugin_id: str, section: Mapping[str, Any]) -> PluginManifest:
         raise RuntimeError(self._refusal(plugin_id))
 
-    def migration_of(self, launch: PluginLaunch, section: Mapping[str, Any]) -> str:
+    def migration_of(
+        self,
+        launch: PluginLaunch,
+        section: Mapping[str, Any],
+        version: str | None = None,
+    ) -> str:
         raise RuntimeError(self._refusal(launch.id))
 
     def launcher_of(
@@ -543,13 +553,22 @@ class ZygoteLaunchers(SectionLaunchers):
 
         return self._output.manifest(plugin_id, done, profile.rootfs)
 
-    def migration_of(self, launch: PluginLaunch, section: Mapping[str, Any]) -> str:
+    def migration_of(
+        self,
+        launch: PluginLaunch,
+        section: Mapping[str, Any],
+        version: str | None = None,
+    ) -> str:
         sandbox = self._plugin_sandbox(launch.id)
         profile = self.profile_of(launch)
+        arguments: tuple[str, ...] = ()
+        if version is not None:
+            arguments = ("--version", version)
+
         done = self._zygotes.run(
             profile,
             ZygotePolicy.model_validate(sandbox.zygote),
-            (PluginLayout.RUN, launch.id, PluginCommand.MIGRATION_PLAN),
+            (PluginLayout.RUN, launch.id, PluginCommand.MIGRATION_PLAN, *arguments),
             self._output.section_bytes(section),
         )
 
@@ -685,8 +704,17 @@ class ProcessLaunchers(SectionLaunchers):
 
         return self._output.manifest(plugin_id, done, self._where())
 
-    def migration_of(self, launch: PluginLaunch, section: Mapping[str, Any]) -> str:
-        done = self._run(launch.id, PluginCommand.MIGRATION_PLAN, section)
+    def migration_of(
+        self,
+        launch: PluginLaunch,
+        section: Mapping[str, Any],
+        version: str | None = None,
+    ) -> str:
+        arguments: tuple[str, ...] = ()
+        if version is not None:
+            arguments = ("--version", version)
+
+        done = self._run(launch.id, PluginCommand.MIGRATION_PLAN, section, arguments)
 
         self._output.finished(
             launch.id, PluginCommand.MIGRATION_PLAN, done, self._where()
@@ -716,9 +744,13 @@ class ProcessLaunchers(SectionLaunchers):
         return f"the host process environment {sys.prefix}"
 
     def _run(
-        self, plugin_id: str, command: PluginCommand, section: Mapping[str, Any]
+        self,
+        plugin_id: str,
+        command: PluginCommand,
+        section: Mapping[str, Any],
+        arguments: Sequence[str] = (),
     ) -> subprocess.CompletedProcess[bytes]:
-        argv = (*self._program(plugin_id), command.value)
+        argv = (*self._program(plugin_id), command.value, *arguments)
         try:
             return subprocess.run(  # noqa: S603 — argv: интерпретатор и модуль программы
                 argv,

@@ -44,3 +44,6 @@ dev = [
 where = ["src"]
 include = ["boba*"]
 namespaces = true
+
+[tool.setuptools.package-data]
+"boba.db.postgres" = ["sql/*.sql"]

@@ -14,7 +14,7 @@ import secrets
 import sys
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any, ClassVar, Literal, Self
@@ -89,11 +89,59 @@ class ProgramCommand(StrEnum):
 
 
 @dataclass(frozen=True)
+class MigrationOptions:
+    """Выбор SQL-версии приложения и места выполнения всех его планов."""
+
+    version: str | None = None
+    database: str | None = None
+    schema: str | None = None
+    data: Path | None = None
+
+    def __post_init__(self) -> None:
+        for value in (self.version, self.database, self.schema):
+            if value is not None:
+                if not value.strip():
+                    raise ValueError(
+                        "migration version, database and schema must not be empty"
+                    )
+
+
+class MigrationArguments:
+    """Одинаковые флаги команды migrate у AID, Boba и MCP."""
+
+    def add(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument(
+            "--migration-data",
+            type=Path,
+            help="JSON input available to the SQL scripts",
+        )
+        parser.add_argument(
+            "--migration-version", help="application SQL directory; latest by default"
+        )
+        parser.add_argument(
+            "--database",
+            help="override the database for the application and all plugins",
+        )
+        parser.add_argument(
+            "--schema", help="override the schema for the application and all plugins"
+        )
+
+    def read(self, arguments: argparse.Namespace) -> MigrationOptions:
+        return MigrationOptions(
+            arguments.migration_version,
+            arguments.database,
+            arguments.schema,
+            arguments.migration_data,
+        )
+
+
+@dataclass(frozen=True)
 class ProgramCall:
     """Разобранный запуск программы: подкоманда и файлы конфига."""
 
     command: ProgramCommand
     paths: tuple[Path, ...]
+    migration: MigrationOptions = field(default_factory=MigrationOptions)
 
 
 class ConfigArguments:
@@ -113,11 +161,15 @@ class ConfigArguments:
 
     def __init__(self, parser: argparse.ArgumentParser) -> None:
         self._parser = parser
+        self._migration = MigrationArguments()
 
     def call(self) -> ProgramCall:
         commands = self._parser.add_subparsers(dest="command", required=True)
         for command in ProgramCommand:
             sub = commands.add_parser(command.value, help=self.HELP[command])
+            if command is ProgramCommand.MIGRATE:
+                self._migration.add(sub)
+
             sub.add_argument(
                 self.CONFIG,
                 required=True,
@@ -130,9 +182,13 @@ class ConfigArguments:
             )
 
         arguments = self._parser.parse_args()
+        command = ProgramCommand(arguments.command)
+        migration = MigrationOptions()
+        if command is ProgramCommand.MIGRATE:
+            migration = self._migration.read(arguments)
 
         return ProgramCall(
-            command=ProgramCommand(arguments.command), paths=tuple(arguments.config)
+            command=command, paths=tuple(arguments.config), migration=migration
         )
 
 

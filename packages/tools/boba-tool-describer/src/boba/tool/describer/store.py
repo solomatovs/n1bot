@@ -131,10 +131,11 @@ class DescriberStore(PluginStorage):
     def __init__(self, cfg: DescriberToolConfig) -> None:
         self._connection = cfg.connection
         self._schema = PostgresSchema(cfg.db_schema)
+        self._scripts = MigrationScripts(cfg.db_schema)
 
-    def migration(self) -> str:
+    def migration(self, version: str | None = None) -> str:
         """План таблиц описаний для команды migrate, без обращения к БД."""
-        plan = MigrationScripts(self._schema.name).packages(("boba.tool.describer",))
+        plan = self._scripts.application("boba.tool.describer", version=version)
 
         return plan.model_dump_json(by_alias=True)
 

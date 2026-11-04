@@ -13,7 +13,7 @@ import signal
 import sys
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Self
@@ -57,6 +57,8 @@ from boba.oauth.server import (
 )
 from boba.runtime import providers
 from boba.runtime.config import (
+    MigrationArguments,
+    MigrationOptions,
     ProcessConfig,
     RawConfig,
     ServerConfig,
@@ -378,11 +380,14 @@ class McpCommand(StrEnum):
 class McpCall:
     command: McpCommand
     paths: tuple[Path, ...]
-    import_endpoints: Path | None
+    migration: MigrationOptions = field(default_factory=MigrationOptions)
 
 
 class McpEntry:
     """Консоль MCP: сервер, готовность, миграции и экспорт схем инструментов."""
+
+    def __init__(self) -> None:
+        self._migration = MigrationArguments()
 
     def call(self) -> McpCall:
         parser = argparse.ArgumentParser(
@@ -393,19 +398,17 @@ class McpEntry:
             sub = commands.add_parser(command.value)
             sub.add_argument("--config", required=True, action="append", type=Path)
             if command is McpCommand.MIGRATE:
-                sub.add_argument(
-                    "--import-endpoints",
-                    type=Path,
-                    help="JSON export of legacy endpoint definitions; applied once",
-                )
+                self._migration.add(sub)
 
-        parser.set_defaults(import_endpoints=None)
         arguments = parser.parse_args()
+        migration = MigrationOptions()
+        if arguments.command == McpCommand.MIGRATE:
+            migration = self._migration.read(arguments)
 
         return McpCall(
             command=McpCommand(arguments.command),
             paths=tuple(arguments.config),
-            import_endpoints=arguments.import_endpoints,
+            migration=migration,
         )
 
     async def run(self) -> None:
@@ -423,16 +426,16 @@ class McpEntry:
                     json.dumps(schemas, ensure_ascii=False, indent=2) + "\n"
                 )
             case McpCommand.MIGRATE:
-                from boba.mcp_server.migration import McpMigrationInput  # noqa: PLC0415
                 from boba.runtime.migrate import ApplicationMigrations  # noqa: PLC0415
                 from boba.runtime.plugins import PluginMigrations  # noqa: PLC0415
 
                 migration = ApplicationMigrations(
                     (PluginMigrations(),),
                     schema=ConfigSchema(McpAppConfig, values=("auth",)),
-                    preparation=McpMigrationInput(call.import_endpoints),
                 )
-                await migration.run(call.paths, "boba.mcp_server")
+                await migration.run(
+                    call.paths, "boba.mcp_server", options=call.migration
+                )
 
     async def serve(self, paths: Sequence[Path]) -> None:
         config = McpAppConfig.load(paths)

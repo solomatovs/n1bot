@@ -1,4 +1,4 @@
-"""Программа плагина инструментов: подкоманды manifest, setup, zygote и call.
+"""Программа плагина: manifest, migration-plan, zygote и call.
 
 `python -m boba.sandbox.program <id> <подкоманда> ...` находит объявление
 плагина <id> (ToolPlugin) entry point'ом группы boba.tools в своём процессе;
@@ -9,8 +9,8 @@
 
 - manifest: stdin — JSON секции [tool.<id>]; программа проверяет секцию
   моделями плагина и печатает манифест JSON в stdout.
-- setup: stdin — та же секция, профили соединений уже с билетами вызова;
-  программа готовит хранилище плагина.
+- migration-plan: stdin — секция плагина; stdout — собственная опись таблиц
+  и версионный план для общего исполнителя команды migrate.
 - zygote: аргументы ZygoteArgs; зигота плагина в песочнице.
 - call <tool>: один вызов тела без зиготы (ToolMain).
 - self-check: самопроверка бинарника Nuitka по описи сборки
@@ -25,6 +25,7 @@ ProgramExit и текстом в stderr.
 
 from __future__ import annotations
 
+import argparse
 import importlib
 import json
 import logging
@@ -112,15 +113,20 @@ class PluginProgram:
         if name == PluginCommand.ZYGOTE:
             return self._zygote(rest)
 
+        if name == PluginCommand.MIGRATION_PLAN:
+            parser = argparse.ArgumentParser(prog=f"{self._plugin.id} migration-plan")
+            parser.add_argument(
+                "--version", help="SQL directory version; latest by default"
+            )
+            arguments = parser.parse_args(rest)
+            return self._migration(arguments.version)
+
         return self._without_args(name)
 
     def _without_args(self, name: str) -> int:
         """Подкоманды без аргументов: вход у них — stdin или опись сборки."""
         if name == PluginCommand.MANIFEST:
             return self._manifest()
-
-        if name == PluginCommand.MIGRATION_PLAN:
-            return self._migration()
 
         if name == PluginCommand.SELF_CHECK:
             return self._self_check()
@@ -160,7 +166,7 @@ class PluginProgram:
 
         return ProgramExit.OK
 
-    def _migration(self) -> int:
+    def _migration(self, version: str | None = None) -> int:
         """План создания хранилища по секции со stdin, без подключения к БД."""
         self._log_to_stderr()
 
@@ -180,7 +186,7 @@ class PluginProgram:
             return ProgramExit.CONFIG
 
         try:
-            document = storage.migration()
+            document = storage.migration(version)
         except Exception as exc:
             self._fail(
                 f"plugin {self._plugin.id}: preparing its migration plan failed: {exc}"

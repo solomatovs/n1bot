@@ -84,7 +84,7 @@ websockets = "WebSocket backend uvicorn: выбирается по aid.ws_protoc
 
 
 [tool.setuptools.package-data]
-"boba.aid" = ["schema/*.sql", "upgrades/*.sql", "adoption/*.sql"]
+"boba.aid" = ["migrations/*/*.sql"]
 "boba.aid.mcp_servers" = ["schema/*.sql"]
 
 [tool.setuptools.packages.find]

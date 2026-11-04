@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [tool.setuptools.package-data]
-"boba.db.pgvector" = ["schema/*.sql"]
+"boba.db.pgvector" = ["migrations/*/*.sql"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

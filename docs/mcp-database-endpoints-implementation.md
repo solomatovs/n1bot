@@ -645,3 +645,81 @@ Optional follow-ups, after test adaptation:
   copying AID's presentation logic into MCP.
 
 These are opportunities, not requirements for this implementation.
+
+## 15. Migration ownership follow-up (2026-11-04)
+
+The MCP `migrate` command **must also migrate enabled plugins**. It coordinates
+their declared storage plans through the same executor as its own plan. Do not
+remove `PluginMigrations` from MCP or copy plugin SQL into the MCP package.
+AID and Boba keep their separate `migrate` entry points and application SQL.
+The common `ApplicationMigrations` runner is shared infrastructure, not a
+combined application schema.
+
+Each storage owner now ships `migrations.toml` next to its SQL. `tables` lists
+its final tables; `legacy_tables` lists the tables its upgrades retire. The
+declarations are located in `boba.aid`, `boba.cli`, `boba.mcp_server`,
+`boba.db.pgvector`, and `boba.tool.describer`. They are package resources,
+not additional deployment configuration. Package-data declarations include
+the manifest and adoption SQL.
+
+`MigrationScripts.application()` reads the owner's manifest and SQL into a
+`MigrationPlan.definition`. The same method is used by applications and plugin
+storage implementations. KB substitutes the configured table names and uses
+a version stream identifying that table set. KB and ingest share the same
+storage implementation and therefore provide identical plans when configured
+for the same storage. Conflicting plans abort before any migration SQL.
+
+The plugin process still exports its plan through `migration-plan`; MCP's
+`PluginMigrations` resolves only the connection reference and passes the plan
+to `PostgresMigrations`. It no longer manufactures version stream names or a
+no-op adoption script. Plugins must provide a versioned plan with ownership.
+`boba.db.pgvector/adoption/0001_legacy.sql` and
+`boba.tool.describer/adoption/0001_legacy.sql` validate their existing tables.
+Rebuild plugin binaries along with MCP before validating sandbox deployment.
+
+The executor checks declared table ownership against other supplied plans
+and the persisted baseline rows in `schema_migrations.tables`. With no version
+history, only existing tables belonging to that component trigger adoption;
+other components' tables may coexist in the schema. After SQL, the executor
+checks that all declared final tables exist, declared legacy tables are gone,
+and no undeclared table was created or removed in the target schema. Failure
+rolls back the current transaction. This is an ownership check for package SQL,
+not an isolation boundary for executing untrusted SQL.
+
+Execution preserves first-seen order: MCP's own stream precedes plugins.
+Plans share a transaction only when both schema and connection configuration
+match (pool sizing and application label do not change connection identity).
+Different credentials are not silently replaced by the first component's
+credentials. Completed transactions for other connections/schemas cannot be
+rolled back if a later component fails; rerunning the command skips completed
+versions. No claim of a cross-database transaction is made.
+
+This is a source-code phase. Tests and testing support were not edited or run,
+and no SQL was applied to `aid` or `aid_ss`. Before applying those databases,
+the next verification phase must additionally cover:
+
+- MCP plus plugin tables in one fresh schema; a newly enabled plugin in an
+  already versioned schema; separate schemas and separate DB credentials.
+- Shared KB/ingest plan deduplication, conflicting table owners and plans,
+  adoption of old KB/describer data, and repeat migrations.
+- A plan creating or removing an undeclared table, a missing final table,
+  a remaining retired table, and transactional rollback of each failure.
+- The new manifests and SQL in wheels, plugin images and Nuitka inventories.
+- The separate app commands against both `aid` and `aid_ss`, with the MCP
+  endpoint import artifact and enabled plugin plans, after those checks pass.
+
+Static-check logs for this phase are under `/tmp/boba-migrations-20261104-code/`.
+They are not evidence of a successful functional migration test.
+
+Completed static checks: Pyright on the changed Python modules (zero errors),
+Ruff over `packages`, `sec/sec.sh sast` (exit 0; Semgrep zero findings), and
+`git diff --check`. `make -C build version` reports `0.0.33.dev1`. The first
+SAST run found an existing overlong module docstring in MCP; its line wrapping
+was corrected before the successful rerun. Full builds remain in the next
+verification phase.
+
+Error boundaries: package-definition/SQL resource errors and executor failures
+are `PostgresError`; malformed plugin wire plans and missing ownership are
+`ConfigError`; plugin process failures retain the launcher's `RuntimeError`
+with plugin/command context. Application CLI entry points turn these failures
+into a nonzero exit. No fallback publishes a successful migration result.
