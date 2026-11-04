@@ -12,35 +12,48 @@ import logging.config
 import signal
 import sys
 from collections.abc import AsyncGenerator, Mapping, Sequence
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, ClassVar, Self
+from typing import Any, ClassVar
 from uuid import UUID
 
 import uvicorn
+from omegaconf import DictConfig
 from pydantic import BaseModel, ConfigDict, Field, SerializeAsAny, field_validator
 
-from boba.auth.assembly import AuthBackends
+from boba.auth import SessionService, SignIns
+from boba.auth.assembly import AuthBackends, AuthServices
 from boba.auth.config import AuthConfig, ProxyAuthConfig
-from boba.auth.proxy import ProxyAssertionVerifier
+from boba.auth.providers.backends import KerberosSessionTickets, StandardAuthBackends
+from boba.auth.settings import SignInSettings
 from boba.cancellation import ProcessStop, StopReason
-from boba.config import ConfigSchema, ConfigVariant, bind
-from boba.connection_broker.credentials import NoRefresh
-from boba.connection_broker.crypto import SecretCipher
-from boba.connection_broker.store import ConnectionStore
-from boba.connection_broker.tools import ConnectionTools
-from boba.connection_broker.user_connections import ArmedConnections
+from boba.config import ConfigVariant, bind
+from boba.config.application import ConfigFiles
+from boba.config.arguments import CommandSpec, ConfigArguments
+from boba.config.paths import PathsConfig, TlsConfig
 from boba.connections.manifest import ConnectionTypes
+from boba.crypto import SecretCipher
+from boba.crypto.config import ValueCipherConfig
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
+from boba.db.postgres.migration_options import MigrationArguments, MigrationOptions
+from boba.http_server import HealthProbe, ProcessLogging, ServerConfig, SignalledServer
 from boba.identity.context import CallContexts
 from boba.identity.run import Runs
 from boba.identity.service import ServiceAddress
 from boba.identity_postgres import UsersTable
+from boba.krb.connections import KerberosCredentialSource
+from boba.krb.layout import InstanceLayout
+from boba.ldap import Ldap3Directory
 from boba.mcp_server.auth import ServiceMark
 from boba.mcp_server.catalog import EndpointCatalog, McpEndpoint
+from boba.mcp_server.connections import NoRefresh
+from boba.mcp_server.connections.params import ConnectionParams
+from boba.mcp_server.connections.store import ConnectionStore
+from boba.mcp_server.connections.tools import ConnectionTools
+from boba.mcp_server.connections.user_connections import ArmedConnections
 from boba.mcp_server.endpoints import McpEndpointStore
 from boba.mcp_server.server import (
     FileUploadTool,
@@ -49,33 +62,26 @@ from boba.mcp_server.server import (
     RunLimitMiddleware,
     RunLimits,
 )
-from boba.oauth.server import (
-    AuthServer,
-    RegisteredClients,
-    SealedValues,
-    ServiceAuth,
-    ServiceTokens,
-    TrustedClient,
-)
-from boba.runtime import providers
-from boba.runtime.auth_backends import StandardAuthBackends
-from boba.runtime.config import (
-    MigrationArguments,
-    MigrationOptions,
-    ProcessConfig,
-    RawConfig,
-    ServerConfig,
-    ValueCipherConfig,
-)
-from boba.runtime.di import Container, Depends
-from boba.runtime.http import HealthProbe, SignalledServer
-from boba.runtime.launcher_backends import StandardToolLaunchers
-from boba.runtime.launchers import ToolLaunchers
-from boba.runtime.program import CommandSpec, ConfigArguments
-from boba.runtime.storage import StorageConfig, StorageFactory
-from boba.runtime.storage_backends import StandardStorageBackends
+from boba.mcp_server.storage import StandardStorageBackends
+from boba.oauth.server.assertions import ProxyAssertionVerifier
+from boba.oauth.server.clients import RegisteredClients, TrustedClient
+from boba.oauth.server.config import TokenConfig
+from boba.oauth.server.provider import AuthServer
+from boba.oauth.server.resources import ServiceAuth
+from boba.oauth.server.sealed import SealedValues
+from boba.oauth.server.tokens import ServiceTokens
+from boba.storage.client import StorageConfig, StorageFactory
+from boba.storage.journal import DirVault, StreamJournal
+from boba.storage.journal_config import StreamJournalConfig
+from boba.tool_io.chain import CallAmbient
 from boba.toolrun.hosted import DirectCalls
+from boba.toolrun.injected import InjectedConfig
+from boba.toolrun.launchers import ToolLaunchers
+from boba.toolrun.plugins import PluginKits, ToolExecution, ToolLoader
 from boba.toolrun.registry import ToolRegistry
+from boba.toolrun.sandbox import StandardToolLaunchers
+from boba.toolrun.streams import CallJournals
+from boba.toolrun.tickets import SectionTickets, ServiceTickets
 
 __all__ = ["McpAppConfig", "McpEntry", "McpHost", "McpSection"]
 
@@ -97,9 +103,15 @@ class McpServerConfig(ServerConfig, ServiceAddress):
     port: int = Field(default=8650, gt=0, lt=65536)
 
 
-class McpAppConfig(ProcessConfig):
+class McpAppConfig(SignInSettings):
     """Секции процесса сервиса: секции процесса, [mcp], хранилище workspace и
     каталоги соединений и пользователей."""
+
+    db_schema: str = Field(alias="schema", min_length=1)
+    paths: PathsConfig
+    tls: TlsConfig = Field(default_factory=TlsConfig)
+    session: TokenConfig
+    logger: dict[str, Any] = Field(default_factory=ProcessLogging().default)
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
@@ -125,45 +137,6 @@ class McpAppConfig(ProcessConfig):
     @classmethod
     def _storage_backend(cls, raw: object) -> StorageConfig:
         return cls.STORAGE_BACKENDS.parse(raw)
-
-    @classmethod
-    def load(cls, paths: Sequence[Path]) -> Self:
-        """Конфиг процесса и проверка предпосылок способа запуска инструментов
-        [tool_launcher]: отказ виден на старте сервиса."""
-        config = super().load(paths)
-        ToolLaunchers(RawConfig.get(), cls.LAUNCHER_BACKENDS).build().probe()
-
-        return config
-
-
-async def mcp_pool(
-    config: Annotated[McpAppConfig, Depends(providers.get_process_config)],
-) -> AsyncGenerator[AsyncPostgresPool, None]:
-    """Один пул MCP для пользователей, ролей, соединений и грантов."""
-    pool = await AsyncPostgresPool.get(config.postgres)
-    try:
-        yield pool
-    finally:
-        await pool.close()
-
-
-def mcp_users(
-    config: Annotated[McpAppConfig, Depends(providers.get_process_config)],
-    pool: Annotated[AsyncPostgresPool, Depends(mcp_pool)],
-) -> UsersTable:
-    """Общая UsersTable в схеме MCP, без таблиц чата."""
-    return UsersTable(config.postgres, config.db_schema, pool)
-
-
-async def mcp_connections(
-    config: Annotated[McpAppConfig, Depends(providers.get_process_config)],
-    pool: Annotated[AsyncPostgresPool, Depends(mcp_pool)],
-    types: Annotated[ConnectionTypes, Depends(providers.connection_types)],
-) -> ConnectionStore:
-    """Тот же брокер, что у AID, но с данными и ключом экземпляра MCP."""
-    cipher = SecretCipher(config.connection_store.cipher.get_secret_value())
-    store = ConnectionStore(pool, config.db_schema, cipher, types)
-    return store
 
 
 class StoppedRuns:
@@ -207,86 +180,107 @@ class EndedSubscriptions:
         logger.info("stop signal %s: listen streams are ended", received.name)
 
 
+@dataclass(frozen=True)
+class McpRuntime:
+    """Ресурсы запущенного MCP; срок жизни ограничен контекстом McpHost."""
+
+    catalog: EndpointCatalog
+    users: UsersTable
+    sign_ins: SignIns
+    runs: Runs
+    journals: CallJournals
+    params: ConnectionParams
+    tools: ToolRegistry
+
+
 class McpHost:
-    """Сборка процесса сервиса: контейнер общих сервисов и MCP-сервер над
-    реестром инструментов. Создаётся входом процесса из конфига."""
+    """Собирает MCP из его конфига и закрывает ресурсы в обратном порядке."""
 
-    def __init__(self, config: McpAppConfig) -> None:
+    def __init__(self, config: McpAppConfig, raw: DictConfig) -> None:
         self._config = config
-        self._container = Container(level="app")
-        self._container.provide(providers.get_process_config, config)
-        contexts = CallContexts()
-        self._container.provide(providers.call_contexts, contexts)
-        resolver = ArmedConnections(
-            self._connection_store, providers.credential_source_ref, contexts
-        )
-        self._container.provide(providers.stored_connections, resolver)
-        catalog_tools = ConnectionTools(self._connection_store, contexts).build()
-        self._container.provide(providers.own_tools, catalog_tools)
-        # сигнал «обнови билет входа» слушает страница чата: у сервиса её нет
-        self._container.provide(providers.refresh_signal, NoRefresh())
-        self._container.eager(providers.connection_types)
-        self._container.eager(providers.call_ambient)
-        self._container.eager(providers.runs)
-        self._container.eager(providers.call_journals)
-        self._container.eager(providers.credential_source)
-        self._container.eager(providers.user_directory)
-        self._container.eager(providers.sign_ins)
-        self._container.eager(mcp_users)
-        self._container.eager(mcp_connections)
-        self._container.eager(providers.tool_launchers)
-        self._container.eager(providers.plugin_kits)
-        self._container.eager(providers.tool_registry)
-
-    def _connection_store(self) -> ConnectionStore:
-        return self._container.resolved(mcp_connections)
+        self._raw = raw
+        self._types = ConnectionTypes.discover()
+        self._directory = Ldap3Directory()
+        self._contexts = CallContexts()
+        self._ambient = CallAmbient()
+        self._launchers = ToolLaunchers(raw, config.LAUNCHER_BACKENDS)
+        self._tickets = KerberosSessionTickets()
+        self._cipher = SecretCipher(config.connection_store.cipher.get_secret_value())
 
     @asynccontextmanager
-    async def _running(
-        self, *, read_catalog: bool
-    ) -> AsyncGenerator[EndpointCatalog, None]:
-        Container.set_root(self._container)
-        runs: Runs | None = None
-        try:
-            users = await self._container.get(mcp_users)
-            self._container.provide(providers.identity_users, users)
+    async def _running(self, *, read_catalog: bool) -> AsyncGenerator[McpRuntime, None]:
+        async with AsyncExitStack() as cleanup:
+            pool = await AsyncPostgresPool.get(self._config.postgres)
+            cleanup.push_async_callback(pool.close)
+            users = UsersTable(pool, self._config.db_schema)
+            store = ConnectionStore(
+                pool, self._config.db_schema, self._cipher, self._types
+            )
             records: Sequence[McpEndpoint] = ()
             if read_catalog:
-                store = McpEndpointStore(
-                    self._config.postgres,
-                    self._config.db_schema,
-                    self._container.resolved(mcp_pool),
-                )
-                records = await store.list()
+                endpoints = McpEndpointStore(pool, self._config.db_schema)
+                records = await endpoints.list()
 
             catalog = EndpointCatalog(records)
-            self._container.provide(providers.tool_policy, catalog)
-            self._container.provide(providers.profile_catalog, catalog)
-            runs = await self._container.get(providers.runs)
-            await self._container.start()
-            yield catalog
-        finally:
-            if runs is not None:
-                runs.stop_all(StopReason.SHUTDOWN)
+            auth_services = AuthServices(
+                self._directory, catalog, users, self._config.session.auth_secret
+            )
+            sign_ins = self._config.AUTH_BACKENDS.build(
+                self._config.auth, auth_services
+            )
+            runs = Runs(self._contexts)
+            journals = self._journals(runs)
+            credentials = KerberosCredentialSource(
+                self._tickets.build(
+                    self._config.auth, self._config.session.auth_secret
+                ),
+                NoRefresh(),
+            )
+            tickets = ServiceTickets(credentials)
+            resolver = ArmedConnections(store, credentials, self._contexts)
+            params = ConnectionParams(self._types, self._contexts, tickets, resolver)
+            own = ConnectionTools(store, self._contexts).build()
+            execution = ToolExecution(
+                self._contexts,
+                journals,
+                self._ambient,
+                (params, InjectedConfig(SectionTickets(tickets, self._types))),
+                (params,),
+            )
+            launchers = self._launchers.build()
+            cleanup.callback(launchers.stop)
+            cleanup.callback(runs.stop_all, StopReason.SHUTDOWN)
+            launchers.probe()
+            kits = await PluginKits(self._raw, launchers).load()
+            tools = ToolLoader(
+                self._raw, kits, execution, launchers, catalog, own
+            ).load()
 
-            try:
-                await self._container.aclose()
-            finally:
-                Container.set_root(None)
+            yield McpRuntime(catalog, users, sign_ins, runs, journals, params, tools)
+
+    def _journals(self, runs: Runs) -> CallJournals:
+        config = bind(self._raw, StreamJournalConfig.SECTION, StreamJournalConfig)
+        if not config.enable:
+            return CallJournals(None, runs)
+
+        vault = DirVault(str(self._config.paths.data("tool-logs")))
+
+        return CallJournals(StreamJournal(vault, config.reserve_bytes), runs)
 
     async def serve(self) -> None:
         """Собирает опубликованные endpoint'ы и слушает адрес до остановки процесса."""
         section = self._config.mcp
         server = self._config.server
-        async with self._running(read_catalog=True) as catalog:
-            auth = self._auth(section, catalog)
+        async with self._running(read_catalog=True) as runtime:
+            catalog = runtime.catalog
+            auth = self._auth(section, catalog, runtime)
             endpoints = McpEndpoints(
-                self._container.resolved(providers.tool_registry),
-                self._container.resolved(providers.runs),
-                self._container.resolved(providers.call_journals),
+                runtime.tools,
+                runtime.runs,
+                runtime.journals,
                 auth,
                 catalog.endpoints(),
-                self._container.resolved(providers.connection_params),
+                runtime.params,
                 section.limits,
                 self._config.storage,
                 StorageFactory(
@@ -294,7 +288,7 @@ class McpHost:
                 ).create(self._config.storage),
             )
             stop = ProcessStop()
-            stop.on_stop(StoppedRuns(self._container.resolved(providers.runs)))
+            stop.on_stop(StoppedRuns(runtime.runs))
             stop.on_stop(EndedSubscriptions(endpoints))
             listener = SignalledServer(
                 uvicorn.Config(
@@ -316,8 +310,8 @@ class McpHost:
 
     async def tool_schemas(self) -> Mapping[str, Mapping[str, object]]:
         """Схемы всех загруженных инструментов для администратора, без HTTP-сервера."""
-        async with self._running(read_catalog=False):
-            registry: ToolRegistry = self._container.resolved(providers.tool_registry)
+        async with self._running(read_catalog=False) as runtime:
+            registry: ToolRegistry = runtime.tools
             port = registry.server(registry.tools, DirectCalls())
             names = [card.name for card in port.tools()]
             names.append(FileUploadTool.NAME)
@@ -328,15 +322,15 @@ class McpHost:
                 tools=tuple(names),
             )
             catalog = EndpointCatalog((endpoint,))
-            auth = self._auth(self._config.mcp, catalog)
+            auth = self._auth(self._config.mcp, catalog, runtime)
             server = McpServer(
                 registry,
-                self._container.resolved(providers.runs),
-                self._container.resolved(providers.call_journals),
+                runtime.runs,
+                runtime.journals,
                 auth.resource(endpoint.prefix_url, [endpoint.prefix_url]),
                 endpoint.prefix_url,
                 endpoint,
-                self._container.resolved(providers.connection_params),
+                runtime.params,
                 RunLimitMiddleware(self._config.mcp.limits, McpEndpoints.OPERATIONS),
                 self._config.storage,
                 StorageFactory(
@@ -348,7 +342,9 @@ class McpHost:
             )
             return server.tool_schemas()
 
-    def _auth(self, section: McpSection, catalog: EndpointCatalog) -> ServiceAuth:
+    def _auth(
+        self, section: McpSection, catalog: EndpointCatalog, runtime: McpRuntime
+    ) -> ServiceAuth:
         """Вход сервиса: сервер авторизации над способами входа [auth] и
         проверяющие токена endpoint'ов."""
         session = self._config.session
@@ -358,8 +354,7 @@ class McpHost:
         tokens = ServiceTokens(
             public_url,
             session.auth_secret,
-            session.session_ttl_sec,
-            session.session_max_sec,
+            session.lifetime(),
             generation,
             ServiceMark.TOKEN_SALT,
         )
@@ -370,13 +365,13 @@ class McpHost:
 
         server = AuthServer(
             public_url,
-            self._container.resolved(providers.sign_ins),
+            runtime.sign_ins,
             tokens,
             assertions,
             self._clients(section, sealed),
             sealed,
             list(resources.values()),
-            users=self._container.resolved(mcp_users),
+            sessions=SessionService(runtime.users, catalog),
         )
 
         return ServiceAuth(
@@ -412,6 +407,7 @@ class McpEntry:
 
     def __init__(self) -> None:
         self._migration = MigrationArguments()
+        self._configs = ConfigFiles(McpAppConfig, values=("auth",))
 
     def call(self) -> McpCall:
         parser = argparse.ArgumentParser(
@@ -446,30 +442,29 @@ class McpEntry:
                 await self.migrate(call.paths, call.migration)
 
     async def tools(self, paths: Sequence[Path]) -> None:
-        config = McpAppConfig.load(paths)
+        loaded = self._configs.load(paths)
+        config = loaded.value
+        InstanceLayout(paths[0].resolve().parent, config.paths, config.tls).apply()
         logging.config.dictConfig(config.logger)
-        schemas = await McpHost(config).tool_schemas()
+        schemas = await McpHost(config, loaded.raw).tool_schemas()
         sys.stdout.write(json.dumps(schemas, ensure_ascii=False, indent=2) + "\n")
 
     async def migrate(self, paths: Sequence[Path], options: MigrationOptions) -> None:
-        from boba.runtime.migrate import ApplicationMigrations  # noqa: PLC0415
-        from boba.runtime.plugins import PluginMigrations  # noqa: PLC0415
+        from boba.mcp_server.migrations import configured_migrations  # noqa: PLC0415
 
-        migration = ApplicationMigrations(
-            (PluginMigrations(McpAppConfig.LAUNCHER_BACKENDS),),
-            schema=ConfigSchema(McpAppConfig, values=("auth",)),
-        )
-        await migration.run(paths, "boba.mcp_server", options=options)
+        await configured_migrations().run(paths, "boba.mcp_server", options=options)
 
     async def serve(self, paths: Sequence[Path]) -> None:
-        config = McpAppConfig.load(paths)
+        loaded = self._configs.load(paths)
+        config = loaded.value
+        InstanceLayout(paths[0].resolve().parent, config.paths, config.tls).apply()
         logging.config.dictConfig(config.logger)
 
-        await McpHost(config).serve()
+        await McpHost(config, loaded.raw).serve()
 
     def health(self, paths: Sequence[Path]) -> None:
         """Проба готовности по [mcp]: порт и префикс сервиса."""
-        section = bind(McpAppConfig.loader(paths).load(), "server", McpServerConfig)
+        section = bind(self._configs.read(paths), "server", McpServerConfig)
         probe = HealthProbe(section.port, section.url_prefix, McpEndpoints.HEALTH)
 
         sys.stdout.write(f"{probe.check()}\n")

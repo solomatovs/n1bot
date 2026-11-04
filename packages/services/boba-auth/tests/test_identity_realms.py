@@ -7,7 +7,7 @@ from pydantic import SecretStr
 
 from boba.auth import SignIns
 from boba.auth.config import LocalAuthConfig, ProxyAuthConfig
-from boba.auth.proxy import ProxySignature
+from boba.auth.providers.proxy import ProxySignature
 from boba.identity.errors import AuthenticationError, AuthorizationError
 from boba.identity.principal import IdentityRule
 from boba.identity.session import Login
@@ -28,7 +28,7 @@ def sign_ins(*realms: str) -> SignIns:
             )
         )
 
-    return SignIns(SignInStand.assembly().password(configs), {}, {})
+    return SignIns(SignInStand.backends().password(configs), {}, {})
 
 
 async def test_one_realm_does_not_require_an_extra_login_field() -> None:
@@ -68,11 +68,10 @@ async def test_backend_alias_is_resolved_before_the_identifier_is_issued() -> No
         users={"a.smith": "pass"},
         require_roles=False,
     )
-    auth = SignIns(SignInStand.assembly().password([config]), {}, {})
+    auth = SignIns(SignInStand.backends().password([config]), {}, {})
     signed = await auth.by_password("a.smith", "pass")
 
     assert signed.identifier == "office:alice"
-    assert signed.display_name == "a.smith"
 
 
 async def test_proxy_selects_the_configured_backend_before_verifying_credentials() -> (
@@ -87,7 +86,7 @@ async def test_proxy_selects_the_configured_backend_before_verifying_credentials
                 require_roles=False,
             )
         )
-    auth = SignInStand.assembly().build(configs, "session-key")
+    auth = SignInStand.backends().build(configs, "session-key")
 
     def request(secret: str) -> ProxyRequest:
         unsigned = ProxyRequest(login="alice", timestamp=str(int(time.time())))

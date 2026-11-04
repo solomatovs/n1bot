@@ -8,6 +8,10 @@ version = "0.0.33.dev1"
 description = "Boba toolrun: конвейер обёрток вызова инструмента (права, отмена, журнал, поток, ошибки), исполнитель вызова и реестр инструментов."
 requires-python = ">=3.11,<4"
 dependencies = [
+    "boba-config==0.0.33.dev1",
+    "boba-connections==0.0.33.dev1",
+    "boba-core==0.0.33.dev1",
+    "boba-kerberos==0.0.33.dev1",
     "boba-tool-io==0.0.33.dev1",
     "boba-toolkit==0.0.33.dev1",
     "boba-access==0.0.33.dev1",
@@ -15,17 +19,25 @@ dependencies = [
     "boba-identity==0.0.33.dev1",
     "boba-canvas==0.0.33.dev1",
     "pydantic>=2.12,<3",
+    "omegaconf>=2.3,<3",
 ]
 
 [project.optional-dependencies]
+sandbox = ["boba-sandbox[host]==0.0.33.dev1", "boba-krb==0.0.33.dev1"]
 dev = [
-    "boba-sandbox==0.0.33.dev1",
+    "boba-sandbox[host]==0.0.33.dev1",
     "boba-stand==0.0.33.dev1",
     "boba-stand-core==0.0.33.dev1",
     "pytest>=9.1,<10",
+    "boba-db-postgres==0.0.33.dev1",
+    "boba-krb[connections]==0.0.33.dev1",
 ]
 
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["boba*"]
 namespaces = true
+
+[tool.boba.extras]
+"boba.toolrun.sandbox" = "sandbox"
+"boba.toolrun.cli" = "sandbox"

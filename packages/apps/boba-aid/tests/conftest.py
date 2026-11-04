@@ -12,10 +12,11 @@ from acp_stand import standard as standard
 from aid_stand import *  # noqa: F403 — модуль стенда и есть набор фикстур
 from psycopg import sql
 
-from boba.db.postgres import AsyncPostgresPool, PostgresSchema
+from boba.db.postgres import AsyncPostgresPool
 from boba.stand.collection import SuiteItems
 from boba.stand.names import StandSuite
 from boba.stand.site import Stand
+from boba.stand.migrate import StandMigrations
 from boba.stand.ui.database import run_blocking
 
 
@@ -61,15 +62,14 @@ def agent_history_storage(stand: Stand) -> None:
 
 async def _prepare_agent_history(stand: Stand) -> None:
     history = AgentHistoryStand(stand)
-    async with await AsyncPostgresPool.dedicated(history.postgres()) as conn:
+    postgres = history.postgres()
+    async with await AsyncPostgresPool.dedicated(postgres) as conn:
         await conn.execute(
             sql.SQL("drop schema if exists {} cascade").format(
                 sql.Identifier(history.schema())
             )
         )
-        await PostgresSchema(history.schema()).apply_packages(
-            conn, ("boba.identity_postgres", "boba.history.postgres")
-        )
+    await StandMigrations().application(postgres, history.schema(), "boba.cli")
 
 
 @pytest.fixture(autouse=True)

@@ -13,7 +13,6 @@ dependencies = [
     "boba-stand==0.0.33.dev1",
     "boba-stand-core==0.0.33.dev1",
     "boba-identity==0.0.33.dev1",
-    "boba-connection-broker==0.0.33.dev1",
     "boba-connections==0.0.33.dev1",
     "boba-tool-io[arrow]==0.0.33.dev1",
     "psycopg>=3.3,<4",
@@ -25,6 +24,7 @@ dependencies = [
     "boba-tool-oracle==0.0.33.dev1",
     "boba-toolrun==0.0.33.dev1",
     "pydantic>=2.12,<3",
+    "boba-mcp==0.0.33.dev1",
 ]
 
 [project.optional-dependencies]

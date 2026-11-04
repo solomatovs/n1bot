@@ -5,7 +5,6 @@ from pydantic import ValidationError
 
 from boba.identity.principal import IdentityRule, UserIdentity
 from boba.identity.session import Login
-from boba.identity.signin import SignedIn, SignInMetadata
 
 
 def test_same_login_in_independent_realms_has_independent_identifiers() -> None:
@@ -32,31 +31,11 @@ def test_explicit_rules_link_different_backend_names_to_one_identifier() -> None
     assert directory.identity(Login("a.smith")).identifier == "corp:alice"
 
 
-def test_identity_and_session_fields_survive_token_metadata_serialization() -> None:
-    identity = UserIdentity(realm="corp", login=Login("alice"))
-    metadata = SignInMetadata(
-        identity=identity,
-        roles=frozenset({"read"}),
-        sealed_ticket="session-ticket",
-        generation="session-generation",
-    )
-    persisted = SignInMetadata.parse(metadata.render())
+def test_identity_is_a_small_serializable_domain_value() -> None:
+    identity = UserIdentity(realm="corp", login=Login(" Alice "))
 
-    assert persisted.identity_for("corp:alice") == identity
-    assert persisted.roles == {"read"}
-    assert persisted.sealed_ticket == "session-ticket"
-    assert persisted.generation == "session-generation"
-
-
-def test_a_sign_in_cannot_pair_an_identifier_with_another_identity() -> None:
-    metadata = SignInMetadata(
-        identity=UserIdentity(realm="corp-a", login=Login("alice"))
-    )
-
-    with pytest.raises(ValidationError, match="expected the same user"):
-        SignedIn(
-            identifier=Login("corp-b:alice"), display_name="Alice", sign_in=metadata
-        )
+    assert identity.model_dump(mode="json") == {"realm": "corp", "login": "alice"}
+    assert UserIdentity.model_validate(identity.model_dump()) == identity
 
 
 @pytest.mark.parametrize(
@@ -75,9 +54,9 @@ def test_aliases_cannot_depend_on_another_alias() -> None:
         )
 
 
-def test_malformed_identity_in_metadata_is_not_treated_as_an_old_session() -> None:
+def test_malformed_identity_is_rejected() -> None:
     with pytest.raises(ValidationError):
-        SignInMetadata.parse({"identity": {}})
+        UserIdentity.model_validate({"realm": "corp", "login": ""})
 
 
 def test_aliases_with_different_case_cannot_silently_replace_each_other() -> None:

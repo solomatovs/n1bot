@@ -39,6 +39,7 @@ from boba.confluence.models import (
 from boba.confluence.parsing import JsonNode
 from boba.confluence.rest import CflUrlBuilder
 from boba.core.secrets import SecretRevealing
+from boba.db.pgvector.store import KbPool
 from boba.doc.bridge import AsyncPipe
 from boba.doc.document import DocumentHint
 from boba.indexing import (
@@ -272,9 +273,7 @@ class IngestRun:
     ) -> None:
         self._cfg = cfg.with_ocr(ocr=ocr)
         self._progress = IngestProgress(logger, progress)
-        self._assembly = IngestAssembly(
-            self._cfg, connection, self._progress, self._routes()
-        )
+        self._connection = connection
 
     def _routes(self) -> dict[str, Reader[str]]:
         """HTML читает bs4-ридер, документы — boba-doc, txt/md/csv — decode.
@@ -305,7 +304,11 @@ class IngestRun:
         return routes
 
     async def run(self, scope: IngestScope, *, attachments: bool) -> IngestReport:
-        report = await self._assembly.build(scope, attachments=attachments).run()
+        pool = await KbPool(self._cfg.connection).open()
+        assembly = IngestAssembly(
+            self._cfg, self._connection, self._progress, self._routes(), pool
+        )
+        report = await assembly.build(scope, attachments=attachments).run()
         self._progress.say()
 
         return report

@@ -27,7 +27,6 @@ kb = "boba.tool.kb.plugin:KB"
 
 [project.optional-dependencies]
 dev = [
-    "boba-runtime==0.0.33.dev1",
     "boba-llm-fastembed==0.0.33.dev1",
     "boba-sandbox==0.0.33.dev1",
     "boba-config==0.0.33.dev1",
@@ -36,6 +35,7 @@ dev = [
     "numpy>=1.26,<3",
     "omegaconf>=2.3,<3",
     "pytest>=9.1,<10",
+    "boba-mcp==0.0.33.dev1",
 ]
 
 [tool.setuptools.packages.find]

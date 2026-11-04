@@ -26,6 +26,7 @@ __all__ = [
     "LauncherRead",
     "OpProgress",
     "OpenedStream",
+    "ReadWindow",
     "StorageAbsentError",
     "StorageError",
     "StorageFullError",
@@ -227,3 +228,42 @@ class LauncherRead:
 
         await asyncio.gather(self.stderr, return_exceptions=True)
         await self.proc.wait()
+
+
+class ReadWindow(BaseModel):
+    """Окно чтения файла: length None — до конца, 0 — только размер."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    UNBOUNDED_ARG: ClassVar[str] = "-1"
+    """Представление length=None в argv: между процессами едут только строки."""
+
+    offset: int = Field(ge=0)
+    length: int | None = Field(ge=0)
+
+    @classmethod
+    def entire(cls) -> ReadWindow:
+        return cls(offset=0, length=None)
+
+    def to_argv(self) -> list[str]:
+        length = self.UNBOUNDED_ARG
+        if self.length is not None:
+            length = str(self.length)
+
+        return [str(self.offset), length]
+
+    @classmethod
+    def from_argv(cls, offset: str, length: str) -> ReadWindow:
+        if length == cls.UNBOUNDED_ARG:
+            return cls(offset=int(offset), length=None)
+
+        return cls(offset=int(offset), length=int(length))
+
+    def resolve_length(self, size: int) -> int:
+        """Сколько байт реально отдать из файла известного размера."""
+        available = max(size - self.offset, 0)
+
+        if self.length is None:
+            return available
+
+        return min(self.length, available)

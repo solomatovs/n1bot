@@ -23,8 +23,8 @@ from typing import Any, ClassVar, Self
 import pytest
 
 from boba.canvas.storage import OpenedStream
-from boba.runtime.config import ProgramRoots
-from boba.runtime.storage import ImageStorageClient, ImageStorageConfig
+from boba.sandbox.paths import ProgramRoots
+from boba.sandbox.storage import ImageStorageClient, ImageStorageConfig
 from boba.sandbox import WorkspaceSpec
 from boba.stand.storage import StorageSeed
 from boba.stand.zygote import SandboxStand

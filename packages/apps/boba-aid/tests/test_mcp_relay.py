@@ -13,7 +13,7 @@ import secrets
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, ClassVar
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import mcp_types as mt
 import pytest
@@ -31,11 +31,11 @@ from mcp.shared.exceptions import MCPError
 from boba.aid.agent.relay import McpRegistration, McpRegistrations, McpRelay
 from boba.aid.canvas.tools import CanvasOpener
 from boba.aid.rendering.tool import AppResource, ToolSource
-from boba.connection_broker.crypto import SecretCipher
-from boba.connection_broker.store import ConnectionStore
+from boba.chat.messages import JournalOpened
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.stored import GrantTarget
-from boba.db.postgres import AsyncPostgresPool, PostgresSchema
+from boba.crypto import SecretCipher
+from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.context import DelegatedTicket, NoUserCredential, Scope
 from boba.identity.errors import AuthenticationError
@@ -49,8 +49,10 @@ from boba.mcp_client.client import (
     McpServers,
     StdioCommand,
 )
-from boba.messaging import Envelope, JournalOpened
+from boba.mcp_server.connections.store import ConnectionStore
+from boba.messaging import Envelope
 from boba.stand.apps_slot import AppServer, AppsSlot
+from boba.stand.migrate import StandMigrations
 from boba.stand.signin import SignInStand
 from boba.stand_core.context import CallStand
 from boba.toolrun.call_id import CallFields
@@ -1093,19 +1095,13 @@ class TestAppRequests:
 
 
 @pytest.fixture
-async def store(pool: AsyncPostgresPool) -> ConnectionStore:
+async def store(
+    pool: AsyncPostgresPool, test_postgres: PostgresConfig
+) -> ConnectionStore:
     """Хранилище соединений пользователей стенда ретранслятора."""
     schema = "relay_connections"
     cipher = SecretCipher(secrets.token_bytes(32))
-    async with pool.connection() as conn:
-        await PostgresSchema(schema).apply_packages(
-            conn,
-            (
-                "boba.identity_postgres",
-                "boba.access_postgres",
-                "boba.connection_broker",
-            ),
-        )
+    await StandMigrations().application(test_postgres, schema, "boba.mcp_server")
 
     return ConnectionStore(pool, schema, cipher, ConnectionTypes.discover())
 
@@ -1467,7 +1463,7 @@ class TestRegistrations:
         registrations = McpRegistrations()
         tab = TabSession()
         tab.password_sign_in(frozenset({"DEV"}))
-        user_id = uuid4()
+        user_id = UUID(tab.raw.user.id)
         server = registrations.register(tab.registration(user_id, "search"), ["chat"])[
             0
         ]

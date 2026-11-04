@@ -37,10 +37,11 @@ from pydantic import AnyUrl
 from websockets.exceptions import InvalidStatus
 
 from boba.cli.serve import ServeHistory, ServeMark
+from boba.aid.infra.config import AppConfig
 from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
-from boba.runtime.config import ProcessConfig
+
 from boba.stand.agent import FakeServer
 from boba.stand.agent_service import AgentServiceStand, ServeAddress, ServiceProfiles
 from boba.stand.database import TestDatabase
@@ -297,9 +298,7 @@ async def history(raw_config: DictConfig) -> AsyncIterator[HistoryStand]:
     pool = AsyncPostgresPool(postgres)
     await pool.open()
     try:
-        await StandMigrations().packages(
-            postgres, name, ("boba.identity_postgres", "boba.history.postgres")
-        )
+        await StandMigrations().application(postgres, name, "boba.cli")
         yield HistoryStand(postgres, name)
         async with pool.connection() as conn:
             await conn.execute(
@@ -314,7 +313,7 @@ class Stands:
 
     def __init__(
         self,
-        process: ProcessConfig,
+        process: AppConfig,
         history: HistoryStand,
         model: FakeServer,
     ) -> None:
@@ -347,7 +346,7 @@ class Stands:
 
 @pytest.fixture
 async def stands(
-    process_config: ProcessConfig,
+    process_config: AppConfig,
     history: HistoryStand,
     model: FakeServer,
     tmp_path: Path,
@@ -532,13 +531,13 @@ class TestOwners:
             await again.close()
 
         query = sql.SQL("""
-            select u.identifier, r.role, count(records.seq)
+            select u.realm || ':' || u.login as identifier, r.role, count(records.seq)
             from {schema}.session as s
             join {schema}.users as u on u.id = s.user_id
             join {schema}.user_roles as m on m.user_id = u.id
             join {schema}.roles as r on r.id = m.role_id
             join {schema}.session_records as records on records.session_id = s.id
-            where s.id = %s group by u.identifier, r.role
+            where s.id = %s group by u.realm, u.login, r.role
         """).format(schema=sql.Identifier(history.schema))
         async with pool.connection() as conn:
             rows = await (await conn.execute(query, (opened.session_id,))).fetchall()

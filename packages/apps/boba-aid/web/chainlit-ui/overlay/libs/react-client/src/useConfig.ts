@@ -5,6 +5,19 @@ import { useApi, useAuth } from './api';
 import { chatProfileState, configState } from './state';
 import { IChainlitConfig } from './types';
 
+// Подсказка входа влияет только на выбор по умолчанию; права приходят от сервера.
+const preferredProfile = (): string => {
+  const cookie = document.cookie
+    .split('; ')
+    .find((value) => value.startsWith('boba_chat_profile='));
+  if (!cookie) return '';
+  try {
+    return decodeURIComponent(cookie.slice('boba_chat_profile='.length));
+  } catch {
+    return '';
+  }
+};
+
 const useConfig = () => {
   const [config, setConfig] = useRecoilState(configState);
   const { isAuthenticated } = useAuth();
@@ -31,7 +44,20 @@ const useConfig = () => {
   useEffect(() => {
     if (!data) return;
     loadedFor.current = chatProfile;
-    setConfig(data);
+    const preferred = preferredProfile();
+    const profiles = data.chatProfiles ?? [];
+    const granted = profiles.some((profile) => profile.name === preferred);
+    setConfig(
+      granted
+        ? {
+            ...data,
+            chatProfiles: profiles.map((profile) => ({
+              ...profile,
+              default: profile.name === preferred
+            }))
+          }
+        : data
+    );
   }, [data, setConfig]);
 
   return { config, error, isLoading, language };

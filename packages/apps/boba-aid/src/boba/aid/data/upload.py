@@ -48,12 +48,12 @@ from boba.canvas.transfer import (
     UploadPolicy,
 )
 from boba.core.validation import ValidationText
-from boba.identity.api import AuthenticatedUser
+from boba.identity.authentication import AuthenticatedPrincipal
 from boba.identity.errors import AuthenticationError
 from boba.identity.session import Login
 from boba.mcp_client.client import McpCaller, McpClientError, McpServers, RelayedFile
-from boba.runtime.served import StreamedFile
-from boba.runtime.storage import StorageClient
+from boba.storage.client import StorageClient
+from boba.storage.http import StreamedFile
 from boba.toolkit.channels import JournalChannels, ToolChannel
 from boba.toolkit.result import ContentMime
 from boba.toolkit.wire import JournalRead
@@ -281,7 +281,7 @@ class UploadRoute:
         request: Request,
         session_id: str,
         ask_parent_id: str | None = None,
-        current_user: AuthenticatedUser = CURRENT_USER,
+        current_user: AuthenticatedPrincipal = CURRENT_USER,
     ) -> JSONResponse:
         """Принимает файл и отдаёт ссылку в том же виде, что и chainlit."""
         started = time.monotonic()
@@ -340,7 +340,7 @@ class UploadRoute:
         request: Request,
         file_id: str,
         session_id: str,
-        current_user: AuthenticatedUser = CURRENT_USER,
+        current_user: AuthenticatedPrincipal = CURRENT_USER,
     ) -> Response:
         """Отдаёт ранее загруженный файл потоком прямо из хранилища."""
         session = self._session(session_id, current_user)
@@ -461,7 +461,7 @@ class UploadRoute:
 
     @staticmethod
     def _session(
-        session_id: str, current_user: AuthenticatedUser
+        session_id: str, current_user: AuthenticatedPrincipal
     ) -> ChainlitSession:
         session = session_source_ref().by_id(session_id)
         if not session.present:
@@ -516,7 +516,7 @@ class CanvasServing:
         thread_id: str,
         dir: ScopeDir,  # noqa: A002
         name: str,
-        current_user: Annotated[AuthenticatedUser, Depends(authenticated_user)],
+        current_user: Annotated[AuthenticatedPrincipal, Depends(authenticated_user)],
         mime: Annotated[str, Query(min_length=1)],
     ) -> Response:
         """Файл панели вида mime — каким его назвала ссылка."""
@@ -571,7 +571,7 @@ class StreamServing:
         request: Request,
         thread_id: str,
         call_id: str,
-        current_user: Annotated[AuthenticatedUser, Depends(authenticated_user)],
+        current_user: Annotated[AuthenticatedPrincipal, Depends(authenticated_user)],
         channel: str = ToolChannel.STDOUT.value,
     ) -> Response:
         # служебные каналы вызова наружу не отдаются: скачать можно то же,

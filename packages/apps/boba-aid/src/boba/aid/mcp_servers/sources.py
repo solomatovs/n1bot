@@ -31,8 +31,7 @@ from boba.aid.mcp_servers.store import (
     StoredServer,
 )
 from boba.identity.api import UserRows
-from boba.identity.errors import AuthenticationError
-from boba.identity.session import Login
+from boba.identity.principal import UserIdentity
 from boba.mcp_client.client import (
     BrowserOAuthAuth,
     McpCaller,
@@ -346,7 +345,7 @@ class StoredServers(ServerSource):
         McpClientError — строки нет или она не прочитана.
         """
         try:
-            stored = await self._users.stored(Login(caller.login))
+            stored = await self._users.stored(UserIdentity.model_validate(caller.login))
         except Exception as exc:
             msg = (
                 f"mcp servers of {caller.login!r}: reading the users row failed: {exc}"
@@ -360,13 +359,7 @@ class StoredServers(ServerSource):
             )
             raise McpClientError(msg)
 
-        try:
-            user = stored.authenticated()
-        except AuthenticationError as exc:
-            msg = f"mcp servers of {caller.login!r}: the user is not identified: {exc}"
-            raise McpClientError(msg) from exc
-
-        return user.id
+        return stored.id
 
     def _record(self, stored: StoredMcpServer) -> ServerRecord:
         origin = McpOrigin.ROLE

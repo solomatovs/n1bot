@@ -2,7 +2,6 @@
 
 from collections.abc import Iterator
 from dataclasses import dataclass
-from importlib.resources import files
 from typing import Literal
 from uuid import UUID
 
@@ -13,6 +12,7 @@ from psycopg import sql
 from pydantic import SecretStr
 
 from boba.aid.data.data_layer import PostgresDataLayer
+from boba.aid.data.users import UsersTable
 from boba.aid.infra.config import AppConfig
 from boba.aid.mcp_servers import McpAppError, McpAuthChoice, McpOrigin
 from boba.aid.mcp_servers.config import McpDefaultsConfig
@@ -25,8 +25,9 @@ from boba.aid.mcp_servers.store import (
     McpServerStoreError,
     StoredServer,
 )
-from boba.connection_broker.crypto import SecretCipher
-from boba.db.postgres import AsyncPostgresPool, PostgresSchema
+from boba.crypto import SecretCipher
+from boba.db.postgres import AsyncPostgresPool
+from boba.identity.principal import UserIdentity
 from boba.mcp_client.client import (
     BearerAuth,
     HttpEndpoint,
@@ -36,7 +37,6 @@ from boba.mcp_client.client import (
     ProxyAuth,
     SseEndpoint,
 )
-from boba.runtime.users import UsersTable
 
 pytestmark = pytest.mark.anyio
 
@@ -60,14 +60,9 @@ async def stored(
     app_config: AppConfig,
 ) -> StoreStand:
     schema = app_config.db_schema
-    async with pool.connection() as conn:
-        for package in (
-            "boba.access_postgres",
-            "boba.aid.mcp_servers",
-        ):
-            await PostgresSchema(schema).apply_files(
-                conn, files(package) / "schema", {}
-            )
+    users = UsersTable(pool, schema)
+    await users.upsert(UserIdentity.model_validate("corporate:mcp-owner"))
+    await users.upsert(UserIdentity.model_validate("corporate:mcp-other"))
 
     owner = await layer.create_user(StandTokens.user(identifier="corporate:mcp-owner"))
     other = await layer.create_user(StandTokens.user(identifier="corporate:mcp-other"))
@@ -75,8 +70,6 @@ async def stored(
     assert other is not None
     cipher = SecretCipher(app_config.mcp_servers.cipher.get_secret_value())
     store = McpServerStore(pool, schema, cipher)
-    users = UsersTable(app_config.postgres, schema, pool)
-
     return StoreStand(
         store,
         StoredServers(store, users),

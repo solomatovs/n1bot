@@ -30,8 +30,8 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 from boba.cancellation import RunCancellation, ToolStopped, run_cancellation
-from boba.runtime.config import ProgramRoots
-from boba.runtime.storage import ImageStorageClient, ImageStorageConfig
+from boba.sandbox.paths import ProgramRoots
+from boba.sandbox.storage import ImageStorageClient, ImageStorageConfig
 from boba.sandbox import SandboxProfile, WorkspaceSpec
 from boba.sandbox.cgroup import CgroupManager
 from boba.sandbox.profile import SandboxMount

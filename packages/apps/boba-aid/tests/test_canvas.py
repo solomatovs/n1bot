@@ -43,7 +43,7 @@ from boba.canvas.canvas import (
     OpenedCanvas,
 )
 from boba.canvas.keys import WorkspaceKey
-from boba.runtime.storage import LocalStorageClient, LocalStorageConfig
+from boba.storage.client import LocalStorageClient, LocalStorageConfig
 from boba.stand_core.context import CallStand
 from boba.toolkit.result import ContentMime, VisualResult
 

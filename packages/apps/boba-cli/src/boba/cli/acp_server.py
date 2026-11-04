@@ -91,7 +91,6 @@ import time
 from abc import abstractmethod
 from collections.abc import (
     AsyncGenerator,
-    AsyncIterator,
     Awaitable,
     Callable,
     Iterator,
@@ -3924,7 +3923,7 @@ class SessionRelay(EventSink, ToolHintSource):
         return response
 
     @asynccontextmanager
-    async def _action(self) -> AsyncIterator[None]:
+    async def _action(self) -> AsyncGenerator[None, None]:
         self._waiting_actions += 1
         try:
             if self._waiting_actions == 1:

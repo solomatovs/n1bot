@@ -15,7 +15,7 @@ from boba.db.postgres.connection import PostgresConfig
 from boba.identity.context import CallContexts
 from boba.kerberos import KeytabAuth
 from boba.krb import KeytabCredentials, ServiceTicketIssuer
-from boba.runtime.launchers import ZygoteLaunchers
+from boba.toolrun.sandbox import SandboxCgroupConfig, ZygoteLaunchers
 from boba.sandbox.program import PluginEntry
 from boba.sandbox.zygote import ZygotePolicy, ZygoteToolCaller
 from boba.stand.refs import StandRefs
@@ -97,7 +97,9 @@ class ToolSetup:
         приложении, тело — объявление плагина рядом с bash-тулом стенда. raw —
         конфиг в режиме песочницы (фикстура sandbox_raw_config)."""
         launch = plugin_launch(raw, section)
-        profile = ZygoteLaunchers(raw).profile_of(launch)
+        profile = ZygoteLaunchers(
+            raw, bind(raw, "tool_launcher", SandboxCgroupConfig)
+        ).profile_of(launch)
         refs = [PluginEntry().ref(section)]
 
         return zygote_stand.caller(

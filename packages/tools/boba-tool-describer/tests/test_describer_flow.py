@@ -24,8 +24,8 @@ from omegaconf import DictConfig
 from psycopg import sql
 
 from boba.config import bind
-from boba.connection_broker.crypto import SecretCipher
-from boba.connection_broker.store import ConnectionStore
+from boba.crypto import SecretCipher
+from boba.mcp_server.connections.store import ConnectionStore
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.stored import GrantTarget
 from boba.db.clickhouse.address import ChAddresses, ChTableColumnAddress
@@ -235,7 +235,7 @@ async def session_service(
 ) -> ToolServer:
     """Порт инструментов профиля: боевой загрузчик над хранилищем стенда,
     исполнитель и серверное разрешение имён соединений."""
-    refs = runtime_stand.of(StoreHolder.current, lambda: None)
+    refs = runtime_stand.execution(StoreHolder.current())
     grants = StandRefs.granted(PROFILE, ["*"])
     registry = await runtime_stand.registry(flow_raw, refs, grants)
     tools = registry.for_session(frozenset(ROLES), PROFILE)
@@ -285,7 +285,7 @@ async def store(pool: AsyncPostgresPool) -> AsyncIterator[ConnectionStore]:
             (
                 "boba.identity_postgres",
                 "boba.access_postgres",
-                "boba.connection_broker",
+                "boba.mcp_server",
             ),
         )
 

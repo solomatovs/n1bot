@@ -15,7 +15,7 @@ import pytest
 from chat_ui import BOOT_TIMEOUT_SEC
 from playwright.sync_api import Browser, BrowserContext, Page, expect
 
-from boba.identity.sso import SsoErrorCode
+from boba.auth.transport.http import SsoErrorCode
 from boba.stand.site import Stand
 from boba.stand.ui.config import StandOverlay
 from boba.stand.ui.stand import (

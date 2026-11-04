@@ -13,7 +13,7 @@ from boba.chat.profiles import (
     ProfileRefusal,
 )
 from boba.identity.errors import RefusalError
-from boba.identity.signin import SignInMetadata
+from boba.identity.authentication import AccessGrant
 
 BACKEND: dict[str, Any] = {
     "kind": "openai",
@@ -96,58 +96,47 @@ class TestResolve:
     )
 
     @staticmethod
-    def _sign_in(*granted: str, profile: str = "") -> SignInMetadata:
-        return SignInMetadata(profiles=frozenset(granted), profile=profile)
+    def _access(*granted: str) -> AccessGrant:
+        return AccessGrant(roles=frozenset({"ADM"}), profiles=frozenset(granted))
 
     def test_selected_profile_resolves(self) -> None:
-        selected = self.REGISTRY.resolve("admin", self._sign_in("general", "admin"))
+        selected = self.REGISTRY.resolve("admin", self._access("general", "admin"))
         if selected.name != "admin":
             raise AssertionError('selected.name == "admin"')
 
     def test_foreign_profile_is_refused(self) -> None:
         with pytest.raises(RefusalError, match="not granted"):
-            self.REGISTRY.resolve("admin", self._sign_in("general"))
+            self.REGISTRY.resolve("admin", self._access("general"))
 
     def test_unselected_with_single_visible_is_auto_assigned(self) -> None:
-        selected = self.REGISTRY.resolve(None, self._sign_in("admin"))
+        selected = self.REGISTRY.resolve(None, self._access("admin"))
         if selected.name != "admin":
             raise AssertionError('selected.name == "admin"')
 
-    def test_sign_in_choice_beats_the_default(self) -> None:
-        signed = self._sign_in("general", "admin", profile="admin")
-        selected = self.REGISTRY.resolve(None, signed)
-        if selected.name != "admin":
-            raise AssertionError('selected.name == "admin"')
-
-    def test_user_choice_beats_the_sign_in_choice(self) -> None:
-        signed = self._sign_in("general", "admin", profile="admin")
-        selected = self.REGISTRY.resolve("general", signed)
+    def test_user_choice_beats_the_configured_default(self) -> None:
+        selected = self.REGISTRY.resolve("general", self._access("general", "admin"))
         if selected.name != "general":
             raise AssertionError('selected.name == "general"')
 
-    def test_sign_in_choice_outside_the_grant_is_refused(self) -> None:
-        with pytest.raises(RefusalError, match="not granted"):
-            self.REGISTRY.resolve(None, self._sign_in("general", profile="admin"))
-
     def test_unselected_with_many_visible_falls_back_to_default(self) -> None:
-        selected = self.REGISTRY.resolve(None, self._sign_in("general", "admin"))
+        selected = self.REGISTRY.resolve(None, self._access("general", "admin"))
         if selected.name != "general":
             raise AssertionError('selected.name == "general"')
 
     def test_unselected_without_a_granted_default_is_refused(self) -> None:
         with pytest.raises(RefusalError, match="select a chat profile"):
-            self.REGISTRY.resolve(None, self._sign_in("admin", "search"))
+            self.REGISTRY.resolve(None, self._access("admin", "search"))
 
     def test_or_default_takes_the_first_granted_when_there_is_no_default(self) -> None:
         selected = self.REGISTRY.resolve_or_default(
-            None, self._sign_in("admin", "search")
+            None, self._access("admin", "search")
         )
         if selected.name != "admin":
             raise AssertionError('selected.name == "admin"')
 
     def test_no_roles_no_profiles_is_refused(self) -> None:
         with pytest.raises(RefusalError) as info:
-            self.REGISTRY.resolve(None, self._sign_in())
+            self.REGISTRY.resolve(None, self._access())
 
         if info.value.kind != ProfileRefusal.NO_PROFILE_ACCESS:
             raise AssertionError("info.value.kind == NO_PROFILE_ACCESS")

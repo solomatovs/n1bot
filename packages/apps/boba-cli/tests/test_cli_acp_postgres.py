@@ -32,13 +32,12 @@ from test_cli_acp import (
 )
 
 from boba.agent.history import SessionId, StoredLine
-from boba.db.postgres import AsyncPostgresPool, PostgresSchema
+from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import LibpqConnection, PostgresConfig
 from boba.db.postgres.connection.auth import KeytabAuth
 from boba.history.postgres import PostgresHistoryStore, SessionLocks
 from boba.identity.principal import UserIdentity
 from boba.identity.session import Login
-from boba.identity.signin import SignedIn, SignInMetadata
 from boba.identity_postgres import UsersTable
 from boba.krb import KerberosEnv, KerberosWorkspace
 from boba.stand.ui.fake_llm import ScenarioName
@@ -63,19 +62,10 @@ class PostgresStand:
         self._users: dict[str, UUID] = {}
 
     async def prepare(self, pool: AsyncPostgresPool) -> None:
-        async with pool.connection() as conn:
-            await PostgresSchema(self._schema).apply_packages(
-                conn, ("boba.identity_postgres", "boba.history.postgres")
-            )
-        users = UsersTable(self._postgres, self._schema, pool)
+        users = UsersTable(pool, self._schema)
         for login in ("alice", "bob"):
             identity = UserIdentity(realm="stand", login=Login(login))
-            signed = SignedIn(
-                identifier=identity.identifier,
-                display_name=login,
-                sign_in=SignInMetadata(identity=identity),
-            )
-            user = await users.ensure_user(signed)
+            user = await users.upsert(identity)
             self._users[login] = user.id
 
     def environment(self) -> dict[str, str]:
@@ -117,7 +107,7 @@ class PostgresStand:
     def store(self, pool: AsyncPostgresPool) -> PostgresHistoryStore:
         """Хранилище без владельца: видит сессии всех процессов."""
         return PostgresHistoryStore(
-            self._postgres, self._schema, None, SessionLocks(self._postgres), pool
+            pool, self._schema, None, SessionLocks(self._postgres)
         )
 
     async def human_prompts(

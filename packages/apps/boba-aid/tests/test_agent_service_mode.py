@@ -39,11 +39,11 @@ from boba.aid.agent.config import AgentServiceConfig, AgentSettings, ServiceAgen
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles, SelectedProfile
 from boba.chat.threads import StoredThread, ThreadUpsert
 from boba.cli.serve import ServeHistory
-from boba.db.postgres import AsyncPostgresPool, PostgresSchema
+from boba.aid.infra.config import AppConfig
+from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.principal import UserIdentity
 from boba.identity.session import Login
-from boba.identity.signin import SignedIn, SignInMetadata
 from boba.mcp_client.client import (
     FixedServerConfigs,
     HttpLocation,
@@ -51,9 +51,9 @@ from boba.mcp_client.client import (
     McpServers,
     ProxyAuth,
 )
-from boba.runtime.config import ProcessConfig
-from boba.runtime.threads import ThreadsTable
-from boba.runtime.users import UsersTable
+
+from boba.aid.data.threads import ThreadsTable
+from boba.aid.data.users import UsersTable
 from boba.stand.agent_service import (
     AgentServiceStand,
     ServeAddress,
@@ -61,6 +61,7 @@ from boba.stand.agent_service import (
     ServiceProfiles,
 )
 from boba.stand.names import StandNames
+from boba.stand.migrate import StandMigrations
 from boba.stand.roles import RoleSeed
 from boba.stand.signin import SignInStand
 from boba.stand.site import Stand
@@ -83,21 +84,24 @@ def chainlit_context(auth_token: str) -> None:
 
 
 @pytest.fixture
-async def runtime_schema(pool: AsyncPostgresPool) -> None:
+async def runtime_schema(
+    pool: AsyncPostgresPool, test_postgres: PostgresConfig
+) -> None:
     """Таблицы чата в схеме набора: threads и users."""
     async with pool.connection() as conn:
         await conn.execute(
             sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
         )
-        await PostgresSchema(SCHEMA).apply_packages(
-            conn, ("boba.identity_postgres", "boba.runtime")
-        )
+    await StandMigrations().application(test_postgres, SCHEMA, "boba.aid")
 
 
 @pytest.fixture
-async def threads(test_postgres: PostgresConfig, runtime_schema: None) -> ThreadsTable:
+async def threads(
+    pool: AsyncPostgresPool,
+    runtime_schema: None,
+) -> ThreadsTable:
     """Таблица тредов: в threads.meta агент вкладки помнит сессию и профиль."""
-    return ThreadsTable(test_postgres, SCHEMA)
+    return ThreadsTable(pool, SCHEMA)
 
 
 @pytest.fixture
@@ -105,12 +109,12 @@ async def users(
     test_postgres: PostgresConfig, pool: AsyncPostgresPool, runtime_schema: None
 ) -> UsersTable:
     """Строки users: по ним удаление треда входит в службу от имени владельца."""
-    return UsersTable(test_postgres, SCHEMA, pool)
+    return UsersTable(pool, SCHEMA)
 
 
 @pytest.fixture
 async def service(
-    stand: Stand, model: FakeModel, process_config: ProcessConfig, tmp_path: Path
+    stand: Stand, model: FakeModel, process_config: AppConfig, tmp_path: Path
 ) -> AsyncIterator[AgentServiceStand]:
     """Служба агента с историей в Postgres стенда (роль с паролем) и
     профилем агента, названным как профиль чата стенда."""
@@ -209,14 +213,9 @@ class ServiceModeStand:
     async def identity(self, profile: str) -> ThreadIdentity:
         """Вкладка alice в новом треде: строка users с ролями входа и строка
         треда с владельцем, как их оставляет вход и слой данных."""
-        sign_in = SignInMetadata(
-            roles=frozenset({"dev"}), identity=UserIdentity.model_validate(self.LOGIN)
-        )
         await RoleSeed(self._users).add(["dev"])
-        owner = await self._users.ensure_user(
-            SignedIn(
-                identifier=Login(self.LOGIN), display_name="Alice", sign_in=sign_in
-            )
+        owner = await self._users.upsert(
+            UserIdentity.model_validate(self.LOGIN), frozenset({"dev"})
         )
         thread_id = str(uuid4())
         await self._threads.upsert(ThreadUpsert(id=UUID(thread_id), user_id=owner.id))

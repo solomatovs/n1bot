@@ -58,7 +58,7 @@ from boba.db.clickhouse.connection import ClickHouseConfig
 from boba.db.postgres.connection import PostgresConfig
 from boba.doc.config import DocConfig
 from boba.doc.document import DisabledOcr, DocumentHint, PageWindow
-from boba.doc.router import DocumentRouter
+from boba.doc.formats import StandardDocuments
 from boba.stand.edm import Asset, EdmSources
 from boba.stand.site import Stand
 from boba.stand.stream_sinks import SinkSources, StreamSinks
@@ -219,7 +219,7 @@ class OcrArgs:
     def text_of(cls, content: bytes, filename: str) -> str:
         """Текст документа теми же ридерами boba-doc, что и у инструментов."""
         config = DocConfig(text_encodings=("utf-8",))
-        router = DocumentRouter(config, DisabledOcr())
+        router = StandardDocuments(config, DisabledOcr()).router
         hint = DocumentHint(filename=filename)
         with router.open(io.BytesIO(content), hint) as document:
             texts: list[str] = []

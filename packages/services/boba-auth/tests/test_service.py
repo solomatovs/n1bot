@@ -1,285 +1,114 @@
-"""AuthService: пользователь по токену, чужой токен не заводит users, вход паролем."""
+"""SessionService persists provider results and reconciles current access."""
 
 from __future__ import annotations
 
-import time
 from datetime import UTC, datetime
 from uuid import UUID
 
-import jwt
 import pytest
 
-from boba.auth import AuthService, JwtTokens, SignIns
-from boba.auth.config import LocalAuthConfig, LocalRoleProviders, LocalRolesConfig
-from boba.identity.admission import RoleMappingConfig
-from boba.identity.api import AuthenticatedUser, PersistedUsers, UsersUpsert
-from boba.identity.errors import AuthenticationError, ExternalServiceError
-from boba.identity.principal import IdentityRule, UserIdentity
-from boba.identity.session import Login
-from boba.identity.signin import SignedIn, SignInMetadata
-from boba.identity.token import CookieSpec, SessionRenewal
-from boba.stand.signin import SignInStand
+from boba.auth.service import SessionService
+from boba.identity.api import StoredUser, UserRows
+from boba.identity.authentication import AccessGrant, RenewalKind
+from boba.identity.context import CredentialAbsence, NoUserCredential
+from boba.identity.errors import AuthenticationError
+from boba.identity.principal import UserIdentity
+from boba.identity.signin import ProfileCatalog, SignInResult
 
 pytestmark = pytest.mark.anyio
 
-SECRET = "stand-secret"
-GENERATION = "stand-generation"
 CREATED_AT = datetime(2026, 1, 1, tzinfo=UTC)
+IDENTITY = UserIdentity(realm="corporate", login="alice")
 
 
-class Users(PersistedUsers, UsersUpsert):
-    """Строки users стенда в памяти: считает обращения."""
+class Profiles(ProfileCatalog):
+    def granted_by_roles(self, user_roles: frozenset[str]) -> frozenset[str]:
+        if "admin" in user_roles:
+            return frozenset({"general", "admin"})
+        if "read" in user_roles:
+            return frozenset({"general"})
+        return frozenset()
 
+    def known(self, name: str) -> bool:
+        return name in {"general", "admin"}
+
+
+class Users(UserRows):
     def __init__(self) -> None:
-        self.asked: list[str] = []
-        self.rows = {
-            "corporate:reader": AuthenticatedUser(
-                id=UUID(int=7),
-                identifier=Login("corporate:reader"),
-                created_at=CREATED_AT,
-                sign_in=SignInMetadata(roles=frozenset({"read"})),
-            )
-        }
+        self.rows: dict[UserIdentity, StoredUser] = {}
+        self.managed: dict[UserIdentity, frozenset[str]] = {}
 
-    async def get_user(self, identifier: str) -> AuthenticatedUser | None:
-        self.asked.append(identifier)
-        return self.rows.get(identifier)
+    async def stored(self, identity: UserIdentity) -> StoredUser | None:
+        return self.rows.get(identity)
 
-    async def ensure_user(self, signed: SignedIn) -> AuthenticatedUser:
-        created = AuthenticatedUser(
-            id=UUID(int=100 + len(self.rows)),
-            identifier=signed.identifier,
-            created_at=CREATED_AT,
-            sign_in=signed.sign_in,
+    async def stored_by_id(self, user_id: UUID) -> StoredUser | None:
+        return next((row for row in self.rows.values() if row.id == user_id), None)
+
+    async def upsert(
+        self, identity: UserIdentity, roles: frozenset[str] | None = None
+    ) -> StoredUser:
+        old = self.rows.get(identity)
+        if roles is not None:
+            self.managed[identity] = roles
+        current_roles = self.managed.get(identity, frozenset())
+        stored = StoredUser(
+            id=old.id if old is not None else UUID(int=7),
+            created_at=old.created_at if old is not None else CREATED_AT,
+            identity=identity,
+            roles=current_roles,
         )
-        self.rows[signed.identifier] = created
-        return created
+        self.rows[identity] = stored
+        return stored
 
 
-def _service(users: Users, password: bool = False) -> AuthService:
-    provider = None
-    if password:
-        config = LocalAuthConfig(
-            identity=IdentityRule(realm="local-stand"),
-            users={"alice": "pw"},
-            roles=LocalRoleProviders(
-                local=LocalRolesConfig(
-                    mapping=RoleMappingConfig(root={"alice": ["DEV"]})
-                )
-            ),
-        )
-        provider = SignInStand.assembly().password([config])
-
-    return AuthService(
-        tokens=JwtTokens(SECRET, 60, GENERATION),
-        cookie=CookieSpec(name="access_token", samesite="lax", ttl_sec=60),
-        sign_ins=SignIns(provider, {}, {}),
-        users=users,
-        renewal=SessionRenewal.of(60, 60 * 24),
+def _result() -> SignInResult:
+    return SignInResult(
+        identity=IDENTITY,
+        access=AccessGrant(
+            roles=frozenset({"read", "admin"}),
+            profiles=frozenset({"general", "admin"}),
+        ),
+        credential=NoUserCredential(code=CredentialAbsence.NOT_DELEGATED),
+        renewal=RenewalKind.JWT,
+        provider="local",
+        managed_roles=frozenset({"read"}),
+        preferred_profile="general",
     )
 
 
-def _token(secret: str, **claims: object) -> str:
-    """Токен стенда: metadata из claims дополняет роли и поколение по умолчанию."""
-    metadata: dict[str, object] = {
-        "roles": ["read"],
-        "generation": GENERATION,
-        "identity": {"realm": "corporate", "login": "reader"},
-    }
-    given = claims.pop("metadata", None)
-    if isinstance(given, dict):
-        metadata.update(given)
-
-    payload: dict[str, object] = {
-        "identifier": "corporate:reader",
-        "user_id": str(UUID(int=7)),
-        "created_at": CREATED_AT.isoformat(),
-        "metadata": metadata,
-        "exp": int(time.time()) + 60,
-        "iat": int(time.time()),
-    }
-    payload.update(claims)
-    identifier = payload["identifier"]
-    if isinstance(identifier, str) and identifier:
-        metadata["identity"] = UserIdentity.model_validate(identifier).model_dump(
-            mode="json"
-        )
-    return jwt.encode(payload, secret, algorithm="HS256")
-
-
-async def test_valid_token_yields_the_users_row_with_token_metadata() -> None:
+async def test_accept_persists_identity_and_limits_session_to_stored_roles() -> None:
     users = Users()
-    user = await _service(users).user_of_token(_token(SECRET))
+    service = SessionService(users, Profiles())
 
-    assert (user.id, user.identifier) == (UUID(int=7), "corporate:reader")
-    assert user.roles == frozenset({"read"})
-    assert not users.asked
+    session = await service.accept(_result())
+
+    assert session.principal.id == UUID(int=7)
+    assert session.principal.identity == IDENTITY
+    assert session.principal.roles == {"read"}
+    assert session.principal.profiles == {"general"}
+    assert users.rows[IDENTITY].roles == {"read"}
 
 
-@pytest.mark.parametrize(
-    "token",
-    [
-        "",
-        "not-a-jwt",
-        _token("another-secret"),
-        _token(SECRET, exp=int(time.time()) - 5),
-        _token(SECRET, identifier=""),
-    ],
-    ids=["empty", "garbage", "foreign-secret", "expired", "no-identifier"],
-)
-async def test_bad_tokens_are_refused_before_users(token: str) -> None:
+async def test_current_loads_updated_roles_and_preserves_only_granted_profiles() -> None:
     users = Users()
-    with pytest.raises(AuthenticationError):
-        await _service(users).user_of_token(token)
-
-    assert not users.asked
-
-
-async def test_unknown_identifier_is_refused_and_not_created() -> None:
-    """Проверка подписанного токена не читает БД и не заводит строку users."""
-    users = Users()
-    token = _token(SECRET, identifier="corporate:stranger", metadata={"roles": ["DEV"]})
-
-    user = await _service(users).user_of_token(token)
-
-    assert user.identifier == "corporate:stranger"
-    assert user.roles == frozenset({"DEV"})
-    assert not users.asked
-    assert "corporate:stranger" not in users.rows
-
-
-async def test_password_sign_in_issues_session_and_users_row() -> None:
-    users = Users()
-    session = await _service(users, password=True).by_password("alice", "pw")
-
-    assert session.user.identifier == "local-stand:alice"
-    assert "local-stand:alice" in users.rows
-    assert (await _service(users).user_of_token(session.token)).roles == {"DEV"}
-
-
-async def test_password_sign_in_alone_touches_no_users_row() -> None:
-    users = Users()
-    signed = await _service(users, password=True).sign_in("alice", "pw")
-
-    assert signed.identifier == "local-stand:alice"
-    assert "local-stand:alice" not in users.rows
-
-
-async def test_wrong_password_is_authentication_error() -> None:
-    with pytest.raises(AuthenticationError):
-        await _service(Users(), password=True).by_password("alice", "nope")
-
-
-async def test_password_not_configured_is_external_error() -> None:
-    with pytest.raises(ExternalServiceError):
-        await _service(Users()).by_password("alice", "pw")
-
-
-class TestRenew:
-    """Перевыпуск JWT без нового входа: потолок, grace, kerberos-вход и строка users."""
-
-    @staticmethod
-    def _service(users: Users, ttl: int = 60, max_sec: int = 3600) -> AuthService:
-        return AuthService(
-            tokens=JwtTokens(SECRET, ttl, GENERATION),
-            cookie=CookieSpec(name="access_token", samesite="lax", ttl_sec=ttl),
-            sign_ins=SignIns(None, {}, {}),
-            users=users,
-            renewal=SessionRenewal.of(ttl, max_sec),
-        )
-
-    async def test_live_token_is_renewed_with_a_later_expiry(self) -> None:
-        users = Users()
-        service = self._service(users)
-        first = _token(
-            SECRET, identifier="corporate:reader", metadata={"roles": ["read"]}
-        )
-
-        renewed = await service.renew(first)
-
-        before = JwtTokens(SECRET, 60, GENERATION).read(first)
-        after = JwtTokens(SECRET, 60, GENERATION).read(renewed.token)
-        assert after.exp >= before.exp
-        assert after.started_at() == before.started_at()
-        assert renewed.user.identifier == "corporate:reader"
-        assert renewed.user.roles == frozenset({"read"})
-
-    async def test_token_within_grace_is_still_renewed(self) -> None:
-        service = self._service(Users())
-        stale = _token(SECRET, identifier="corporate:reader", exp=int(time.time()) - 30)
-
-        renewed = await service.renew(stale)
-
-        assert (
-            JwtTokens(SECRET, 60, GENERATION).read(renewed.token).identifier
-            == "corporate:reader"
-        )
-
-    async def test_token_beyond_grace_is_refused(self) -> None:
-        service = self._service(Users())
-        dead = _token(
-            SECRET, identifier="corporate:reader", exp=int(time.time()) - 3600
-        )
-
-        with pytest.raises(AuthenticationError, match="expired"):
-            await service.renew(dead)
-
-    async def test_session_older_than_the_cap_is_refused(self) -> None:
-        service = self._service(Users(), ttl=60, max_sec=120)
-        # nosemgrep: jwt-python-hardcoded-secret — секрет теста
-        old = jwt.encode(
-            {
-                "identifier": "corporate:reader",
-                "user_id": str(UUID(int=7)),
-                "created_at": CREATED_AT.isoformat(),
-                "metadata": {
-                    "generation": GENERATION,
-                    "identity": {"realm": "corporate", "login": "reader"},
-                },
-                "exp": int(time.time()) + 30,
-                "iat": int(time.time()) - 30,
-                "since": int(time.time()) - 600,
-            },
-            SECRET,
-            algorithm="HS256",
-        )
-
-        with pytest.raises(AuthenticationError, match="exhausted"):
-            await service.renew(old)
-
-    async def test_kerberos_sign_in_renews_only_by_sso(self) -> None:
-        service = self._service(Users())
-        sso = _token(
-            SECRET,
-            identifier="corporate:reader",
-            metadata={"provider": "KerberosAuth", "principal": "reader@X"},
-        )
-
-        with pytest.raises(AuthenticationError, match="SPNEGO"):
-            await service.renew(sso)
-
-    async def test_unknown_identifier_is_refused(self) -> None:
-        service = self._service(Users())
-        stranger = _token(SECRET, identifier="corporate:stranger")
-
-        with pytest.raises(AuthenticationError, match="not persisted"):
-            await service.renew(stranger)
-
-
-async def test_token_validation_is_local_and_renewal_reads_current_roles() -> None:
-    users = Users()
-    service = _service(users)
-    token = _token(SECRET, metadata={"roles": ["read"], "profiles": ["general"]})
-    users.rows["corporate:reader"] = users.rows["corporate:reader"].model_copy(
-        update={"sign_in": SignInMetadata()}
+    service = SessionService(users, Profiles())
+    initial = await service.accept(_result())
+    users.managed[IDENTITY] = frozenset({"admin"})
+    users.rows[IDENTITY] = users.rows[IDENTITY].model_copy(
+        update={"roles": frozenset({"admin"})}
     )
-    current = await service.user_of_token(token)
-    assert current.roles == frozenset({"read"})
-    assert current.profiles == frozenset({"general"})
-    assert not users.asked
 
-    renewed = await service.renew(token)
-    assert not renewed.user.roles
-    assert not renewed.signed.sign_in.roles
-    assert not service.tokens.read(renewed.token).sign_in().roles
-    assert users.asked == ["corporate:reader"]
+    current = await service.current(initial.principal)
+
+    assert current.roles == {"admin"}
+    assert current.profiles == {"general"}
+
+
+async def test_stored_refuses_missing_or_reassigned_user() -> None:
+    users = Users()
+    service = SessionService(users, Profiles())
+    session = await service.accept(_result())
+    users.rows.clear()
+
+    with pytest.raises(AuthenticationError, match="no longer matches"):
+        await service.stored(session.principal)

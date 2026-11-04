@@ -41,7 +41,8 @@ from aid_look import (
 from playwright.sync_api import Error, Locator, Page, Response, WebSocket, expect
 
 from boba.cli.serve import ServeHistory
-from boba.runtime.config import InstanceData, ProcessConfig
+from boba.aid.infra.config import AppConfig
+from boba.aid.infra.paths import InstanceData
 from boba.stand.agent_service import (
     AgentServiceStand,
     ServeAddress,
@@ -588,7 +589,7 @@ class ServiceStand:
     ROLES: ClassVar[tuple[str, ...]] = ("ADM", "DEV")
 
     def __init__(
-        self, process_config: ProcessConfig, stand: Stand, llm_port: int
+        self, process_config: AppConfig, stand: Stand, llm_port: int
     ) -> None:
         listen = StandPorts().free()
         self.proxy = FaultProxy(listen)
@@ -668,7 +669,7 @@ def process_stand(look_stands: LookStand, faulty: FaultyServer) -> StandProcess:
 
 @pytest.fixture(scope="module")
 def service(
-    process_config: ProcessConfig, stand: Stand, look_llm_port: int
+    process_config: AppConfig, stand: Stand, look_llm_port: int
 ) -> Iterator[ServiceStand]:
     served = ServiceStand(process_config, stand, look_llm_port)
     served.serve.start()

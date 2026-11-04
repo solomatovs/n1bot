@@ -2121,9 +2121,7 @@ class TestTypeRules:
 class TestRegistryHint:
     def test_missing_pair_is_a_clear_error(self) -> None:
         from boba.db.postgres.transfer import PgTransfers
-        from boba.toolkit.transfer import Engine
-
         with pytest.raises(
-            TransferError, match="no transfer from oracle into postgres"
+            TransferError, match="no adapter for source 'oracle'"
         ):
-            PgTransfers({}).pair(Engine.ORACLE)
+            PgTransfers({}).pair("oracle")

@@ -43,30 +43,31 @@ from service_stand import (
     NARROW,
     PROFILE,
     PROXY_SECRET,
+    MemoryUserRows,
     ServiceStand,
 )
 
-from boba.auth import SignIns
+from boba.auth import SessionService, SignIns
 from boba.auth.config import ProxyAuthConfig
-from boba.auth.proxy import ProxyAssertions, ProxyAssertionVerifier
 from boba.canvas.journal import StreamSlice
 from boba.config import ConfigError, ConfigLoader, bind
+from boba.identity.lifetime import SessionLifetime
 from boba.identity.principal import IdentityRule
-from boba.mcp_adapter import JournalUris
 from boba.mcp_server.auth import ServiceMark
+from boba.mcp_server.catalog import EndpointCatalog
 from boba.mcp_server.files import JournalRoutes
 from boba.mcp_server.server import (
     FileUploadTool,
     McpEndpoint,
     RunLimits,
 )
-from boba.oauth.server import (
-    AuthServer,
-    RegisteredClients,
-    SealedValues,
-    ServiceTokens,
-    TrustedClient,
-)
+from boba.mcp_server.tool_adapter import JournalUris
+from boba.oauth.assertions import ProxyAssertions
+from boba.oauth.server.assertions import ProxyAssertionVerifier
+from boba.oauth.server.clients import RegisteredClients, TrustedClient
+from boba.oauth.server.provider import AuthServer
+from boba.oauth.server.sealed import SealedValues
+from boba.oauth.server.tokens import ServiceTokens
 from boba.stand.site import StandConfigEnv
 from boba.stand.ui.stand import StandApp
 from boba.toolkit.calls import CallViews, SchemaMark
@@ -1554,6 +1555,7 @@ class TestProxySignIn:
         внутренней ошибкой без тела."""
         public = "http://127.0.0.1:1"
         resource = f"{public}/{PROFILE}"
+        catalog = EndpointCatalog(())
         sealed = SealedValues("stand-session-secret", ServiceMark.SEALED_SALT)
         proxy = ProxyAuthConfig(
             identity=IdentityRule(realm="corporate"), secret=SecretStr(PROXY_SECRET)
@@ -1567,8 +1569,7 @@ class TestProxySignIn:
             ServiceTokens(
                 public,
                 "stand-session-secret",
-                300,
-                3600,
+                SessionLifetime(ttl_sec=300, max_sec=3600),
                 "stand",
                 ServiceMark.TOKEN_SALT,
             ),
@@ -1576,6 +1577,7 @@ class TestProxySignIn:
             RegisteredClients(sealed, {CLIENT_ID: declared}),
             sealed,
             [resource],
+            SessionService(MemoryUserRows(), catalog),
         )
         assertion = ProxyAssertions(PROXY_SECRET, 0).issue(
             CLIENT_ID, "corporate:ivanov", "dev", public, resource

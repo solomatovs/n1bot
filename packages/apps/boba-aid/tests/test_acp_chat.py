@@ -37,12 +37,13 @@ from psycopg import sql
 from boba.aid.agent.settings import WorkdirFile
 from boba.aid.chat.ui_text import UiText
 from boba.aid.domain.fields import ThreadMetaField
+from boba.aid.infra.config import AppConfig
+from boba.aid.infra.paths import InstanceData
 from boba.aid.rendering.chat_view import StepMeta, StepText
 from boba.aid.rendering.renderer import SignalType
 from boba.canvas.canvas import CanvasAction, CanvasElement, CanvasKind
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
-from boba.runtime.config import InstanceData, RuntimeConfig
 from boba.stand.database import TestDatabase
 from boba.stand.names import StandNames
 from boba.stand.site import Stand
@@ -166,6 +167,7 @@ def second(
         workdir=workdir,
         app=StandApp.AID,
         app_port=StandPorts().free(),
+        public_url=app.config.public_url or app.config.base_url,
         llm_port=llm_port,
         db_name=stand_database,
         generation=GENERATION,
@@ -195,6 +197,7 @@ def foreign_app(
         workdir=workdir,
         app=StandApp.AID,
         app_port=StandPorts().free(),
+        public_url=app.config.public_url or app.config.base_url,
         llm_port=llm_port,
         db_name=stand_database,
         generation=GENERATION,
@@ -911,7 +914,7 @@ class ChatRows:
 @pytest.fixture
 def rows(
     stand_postgres: PostgresConfig,
-    runtime_config: RuntimeConfig,
+    runtime_config: AppConfig,
     stand_database: str,
     app: StandProcess[StandConfig],
 ) -> ChatRows:

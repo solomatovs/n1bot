@@ -28,9 +28,8 @@ from boba.canvas.canvas import (
 )
 from boba.canvas.diagram import DiagramEntry, DiagramMarker
 from boba.canvas.keys import WorkspaceKey
-from boba.canvas.storage import StorageError, StorageNotFoundError
+from boba.canvas.storage import ReadWindow, StorageError, StorageNotFoundError
 from boba.toolkit.result import ContentMime, VisualResult
-from boba.workspace.launcher import ReadWindow
 
 __all__ = [
     "DiagramCard",

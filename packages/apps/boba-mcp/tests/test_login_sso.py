@@ -15,6 +15,7 @@ import os
 import re
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
+from uuid import uuid4
 
 import httpx
 import krb5
@@ -24,26 +25,25 @@ from mcp.server.auth.provider import AuthorizationParams
 from mcp.shared.auth import OAuthClientInformationFull
 from omegaconf import DictConfig
 from pydantic import AnyUrl
+from service_stand import MemoryUserRows
 from starlette.applications import Starlette
 
-from boba.access import ProfileGrant
-from boba.auth import SignIns
+from boba.auth import SessionService
+from boba.auth.assembly import AuthServices
 from boba.auth.config import KerberosAuthConfig
-from boba.auth.proxy import ProxyAssertionVerifier
+from boba.auth.providers.backends import StandardAuthBackends
 from boba.config import bind
+from boba.identity.lifetime import SessionLifetime
 from boba.krb import KerberosEnv
 from boba.ldap import Ldap3Directory
 from boba.mcp_server.auth import ServiceMark
-from boba.mcp_server.server import EndpointCatalog
-from boba.oauth.server import (
-    AuthServer,
-    LoginPages,
-    RegisteredClients,
-    SealedValues,
-    ServiceTokens,
-)
-from boba.runtime.signin import SignInAssembly
-from boba.runtime.signin_kerberos import SpnegoGate
+from boba.mcp_server.catalog import EndpointCatalog, McpEndpoint
+from boba.oauth.server.assertions import ProxyAssertionVerifier
+from boba.oauth.server.clients import RegisteredClients
+from boba.oauth.server.pages import LoginPages
+from boba.oauth.server.provider import AuthServer
+from boba.oauth.server.sealed import SealedValues
+from boba.oauth.server.tokens import ServiceTokens
 from boba.stand.roles import MemoryRoles
 from boba.stand.site import Stand
 from boba.stand.ui.stand import StandApp
@@ -85,24 +85,44 @@ def chat_config() -> DictConfig:
 def server(chat_config: DictConfig, krb5_env: None) -> AuthServer:
     """Сервер авторизации сервиса с одним способом входа — kerberos."""
     config = bind(chat_config, path="auth.kerberos", model=KerberosAuthConfig)
-    catalog = EndpointCatalog({ENDPOINT: ProfileGrant(tools=["*"], roles=["*"])})
-    assembly = SignInAssembly(
-        Ldap3Directory(),
-        catalog,
-        MemoryRoles({"dev", "ADM", "DEV", "read", "wrt", "weak", "analyst"}),
+    catalog = EndpointCatalog(
+        (
+            McpEndpoint(
+                id=uuid4(),
+                prefix_url=f"/{ENDPOINT}",
+                title=ENDPOINT,
+                tools=("fake_echo",),
+                roles=frozenset(
+                    {"dev", "ADM", "DEV", "read", "wrt", "weak", "analyst"}
+                ),
+            ),
+        )
     )
-    sign_ins = SignIns(
-        None, {"corporate": SpnegoGate(assembly.sso(config), SECRET)}, {}
+    sign_ins = StandardAuthBackends().registry.build(
+        [config],
+        AuthServices(
+            Ldap3Directory(),
+            catalog,
+            MemoryRoles({"dev", "ADM", "DEV", "read", "wrt", "weak", "analyst"}),
+            SECRET,
+        ),
     )
 
     return AuthServer(
         PUBLIC,
         sign_ins,
-        ServiceTokens(PUBLIC, SECRET, 300, 3600, "stand", ServiceMark.TOKEN_SALT),
+        ServiceTokens(
+            PUBLIC,
+            SECRET,
+            SessionLifetime(ttl_sec=300, max_sec=3600),
+            "stand",
+            ServiceMark.TOKEN_SALT,
+        ),
         ProxyAssertionVerifier(()),
         RegisteredClients(SealedValues(SECRET, ServiceMark.SEALED_SALT), {}),
         SealedValues(SECRET, ServiceMark.SEALED_SALT),
         [f"{PUBLIC}/mcp/{ENDPOINT}"],
+        SessionService(MemoryUserRows(), catalog),
     )
 
 

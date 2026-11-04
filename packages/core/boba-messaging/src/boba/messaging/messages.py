@@ -48,7 +48,9 @@ class MessageCodec:
     """Разбирает сообщения моделями зарегистрированных типов для шины."""
 
     def __init__(
-        self, events: Iterable[MessageSpec], commands: Iterable[type[Command]]
+        self,
+        events: Iterable[MessageSpec],
+        commands: Iterable[type[Command]],
     ) -> None:
         self._events: dict[str, type[Message]] = {}
         self._commands: dict[str, type[Command]] = {}

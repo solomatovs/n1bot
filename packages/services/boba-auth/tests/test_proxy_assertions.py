@@ -7,11 +7,8 @@ import pytest
 from pydantic import SecretStr
 
 from boba.auth.config import ProxyAuthConfig
-from boba.auth.proxy import (
-    AssertionRejectedError,
-    ProxyAssertions,
-    ProxyAssertionVerifier,
-)
+from boba.oauth.assertions import AssertionRejectedError, ProxyAssertions
+from boba.oauth.server.assertions import ProxyAssertionVerifier
 from boba.identity.principal import IdentityRule
 
 

@@ -44,13 +44,17 @@ from boba.aid.agent.client import AcpClientError
 from boba.aid.agent.commands import CommandError
 from boba.aid.agent.relay import AppAction, AppRequest, McpRelay
 from boba.aid.agent.settings import AgentSettingsError
-from boba.aid.auth.chainlit_user import ChainlitPrincipal
+from boba.aid.auth.chainlit_user import SessionUser
+from boba.aid.auth.cookies import CookieSpec
+from boba.aid.auth.http import SessionCookie
 from boba.aid.canvas.panel import PanelStorage, StreamActions
 from boba.aid.canvas.remote import RemoteJournals, RemoteStreams
 from boba.aid.canvas.tools import CanvasOpener
 from boba.aid.chat.ui_text import UiText
 from boba.aid.domain.fields import ThreadField, ThreadMetaField
+from boba.aid.infra import services
 from boba.aid.infra.config import AppConfig
+from boba.aid.infra.di import Depends, di_inject
 from boba.aid.infra.notices import FailureText, TabAction, TabEvent, TabNotices
 from boba.aid.infra.providers import (
     McpUpdates,
@@ -109,13 +113,12 @@ from boba.chat.messages import (
 )
 from boba.chat.profiles import ChatProfiles, SelectedProfile
 from boba.chat.threads import DataLayerError
-from boba.identity.api import AuthenticatedUser
+from boba.identity.authentication import AuthenticatedPrincipal
 from boba.identity.context import Scope
 from boba.identity.errors import RefusalError
 from boba.identity.locks import LockBusyError
 from boba.identity.run import Runs
 from boba.identity.session import Login
-from boba.identity.token import CookieSpec
 from boba.mcp_client.client import (
     BrowserOAuthAuth,
     FilesHost,
@@ -127,10 +130,6 @@ from boba.mcp_client.client import (
 from boba.messaging import (
     MessageBus,
 )
-from boba.runtime import providers as runtime
-from boba.runtime.config import RuntimeConfig
-from boba.runtime.di import Depends, di_inject
-from boba.runtime.http import SessionCookie
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +186,7 @@ class TabAgent:
         """Процесс агента под тред вкладки; без выбранного профиля ждём первого
         хода; None — агент не поднялся, причина — на полосе вкладки."""
         try:
-            selected = self._registry.resolve(session.chat_profile, session.sign_in)
+            selected = self._registry.resolve(session.chat_profile, session.access)
         except RefusalError as exc:
             logger.info(
                 "thread %s: agent waits for a profile: %s", session.thread_id, exc
@@ -416,7 +415,7 @@ async def set_chat_profiles(
     """Профили, выданные входу пользователя; выбор профиля обязателен.
     Загрузка файлов включена, если среди выданных пользователю серверов
     есть объявивший хранилище файлов: своего хранилища у чата нет."""
-    principal = ChainlitPrincipal.restore(user)
+    principal = user.principal if isinstance(user, SessionUser) else None
     if principal is None:
         try:
             principal = current_session().authenticated_user()
@@ -461,7 +460,7 @@ class ProfileUploads:
         self,
         servers: McpServers,
         source: ServerSource,
-        principal: AuthenticatedUser | None,
+        principal: AuthenticatedPrincipal | None,
     ) -> None:
         self._servers = servers
         self._source = source
@@ -511,7 +510,7 @@ class ProfileUploads:
 
         return await self._servers.files_host(names, viewer.caller())
 
-    def _viewer(self, principal: AuthenticatedUser) -> McpViewer:
+    def _viewer(self, principal: AuthenticatedPrincipal) -> McpViewer:
         """Ошибки:
         McpAppError — у входа нет строки users: серверы ему не выданы.
         """
@@ -563,7 +562,7 @@ async def on_chat_start(
 
     # профиль, недоступный ролям входа, вкладке не открылся: про загрузку молчим
     try:
-        registry.resolve(session.chat_profile, session.sign_in)
+        registry.resolve(session.chat_profile, session.access)
     except RefusalError:
         return
 
@@ -588,7 +587,7 @@ async def on_chat_end(
 def on_logout(
     request: Request,
     response: Response,
-    config: Annotated[RuntimeConfig, Depends(runtime.get_runtime_config)],
+    config: Annotated[AppConfig, Depends(services.application_config)],
 ):
     # только свои: на домене живут и чужие приложения, а среди присланных
     # кук попадаются имена, которых http.cookies не принимает ('Path')
@@ -605,9 +604,9 @@ def on_logout(
 @chainlit_error_ctx_handler
 @di_inject
 async def on_stop(
-    bus: Annotated[MessageBus, Depends(runtime.message_bus)],
-    instance: Annotated[str, Depends(runtime.instance_name)],
-    runs: Annotated[Runs, Depends(runtime.runs)],
+    bus: Annotated[MessageBus, Depends(services.message_bus)],
+    instance: Annotated[str, Depends(services.instance_name)],
+    runs: Annotated[Runs, Depends(services.runs)],
     index: Annotated[ThreadAgentsIndex, Depends(thread_agents_index)],
 ):
     """Кнопка Stop: ход агента любой вкладки этого инстанса получает
@@ -1164,7 +1163,7 @@ async def on_chat_resume(
     app_config: Annotated[AppConfig, Depends(get_app_config)],
     registry: Annotated[ChatProfiles, Depends(chat_profiles_registry)],
     agents: Annotated[ThreadAgents, Depends(thread_agents, scope="session")],
-    bus: Annotated[MessageBus, Depends(runtime.message_bus)],
+    bus: Annotated[MessageBus, Depends(services.message_bus)],
 ):
     """Вкладка вернулась к треду.
 
@@ -1175,7 +1174,7 @@ async def on_chat_resume(
     disconnect.
     """
     session = current_session()
-    sign_in = session.sign_in
+    sign_in = session.access
 
     retired = False
     if stored := session.chat_profile:

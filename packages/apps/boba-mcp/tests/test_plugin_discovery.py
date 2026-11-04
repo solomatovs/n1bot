@@ -9,12 +9,13 @@ from collections.abc import Iterable
 import pytest
 from omegaconf import DictConfig
 
-from boba.runtime.plugins import PluginKits
+from boba.config import ConfigError
 from boba.stand.overlay import ConfigOverlay
 from boba.stand.refs import StandRefs
 from boba.stand.toolsetup import ToolSetup
 from boba.stand_core.context import CallStand
 from boba.toolkit.manifest import InjectedRole
+from boba.toolrun.plugins import PluginKits
 
 pytestmark = pytest.mark.anyio
 
@@ -66,7 +67,6 @@ async def test_plugin_without_its_root_is_left_out(
     call_stand: CallStand,
     raw_config: DictConfig,
     config_overlay: ConfigOverlay,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Корень называет конфиг плагина: нет файла — не поднимается только этот
     плагин, и журнал старта называет путь."""
@@ -75,11 +75,10 @@ async def test_plugin_without_its_root_is_left_out(
     changes["tool.pg.sandbox.rootfs"] = "rootfs/nope.ext4"
     raw = config_overlay.tree(changes)
 
-    kits = await PluginKits(raw, runtime_stand.launchers(raw)).load()
+    with pytest.raises(ConfigError, match="loading plugin 'pg' failed") as caught:
+        await PluginKits(raw, runtime_stand.launchers(raw)).load()
 
-    assert set(kits) == {"bash"}
-    assert "plugin pg is not started" in caplog.text
-    assert "nope.ext4" in caplog.text
+    assert "nope.ext4" in str(caught.value)
 
 
 async def test_tool_the_plugin_does_not_declare_refuses_start(
@@ -94,7 +93,7 @@ async def test_tool_the_plugin_does_not_declare_refuses_start(
 
     with pytest.raises(RuntimeError, match=r"\[tool\.pg\] tools names \['pg_nope'\]"):
         await runtime_stand.registry(
-            raw, runtime_stand.none(), StandRefs.granted("all", ["*"])
+            raw, runtime_stand.execution(), StandRefs.granted("all", ["*"])
         )
 
 
@@ -103,7 +102,6 @@ async def test_plugin_section_is_checked_by_the_plugin(
     call_stand: CallStand,
     raw_config: DictConfig,
     config_overlay: ConfigOverlay,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Ключи секции сверх ключей фреймворка проверяет сам плагин: сервер их
     не знает, а непригодную секцию отвергает программа плагина, и этот плагин
@@ -113,7 +111,7 @@ async def test_plugin_section_is_checked_by_the_plugin(
     changes["tool.pg.max_rows"] = 0
     raw = config_overlay.tree(changes)
 
-    kits = await PluginKits(raw, runtime_stand.launchers(raw)).load()
+    with pytest.raises(ConfigError, match="loading plugin 'pg' failed") as caught:
+        await PluginKits(raw, runtime_stand.launchers(raw)).load()
 
-    assert "pg" not in kits
-    assert "does not fit PgToolConfig" in caplog.text
+    assert "does not fit PgToolConfig" in str(caught.value)

@@ -20,12 +20,11 @@ from boba.auth.config import (
     ProxyProfileProviders,
     ProxyRoleProviders,
 )
-from boba.auth.proxy import ProxySignature
+from boba.auth.providers.proxy import ProxySignature
 from boba.config import bind
 from boba.identity.admission import RoleExcludeConfig, RoleMappingConfig
 from boba.identity.errors import AuthenticationError, AuthorizationError
 from boba.identity.principal import IdentityRule
-from boba.identity.session import SignInProvider
 from boba.identity.signin import ProxyRequest, ProxySignIn
 from boba.stand.signin import SignInStand
 from boba.stand.site import Stand
@@ -61,7 +60,7 @@ def _config(**update: object) -> ProxyAuthConfig:
 
 def _sign_in(config: ProxyAuthConfig) -> ProxySignIn:
     """Вход по конфигу через сборку стенда: тест — точка bootstrap."""
-    return SignInStand.assembly().proxy(config)
+    return SignInStand.backends().proxy(config)
 
 
 def _request(
@@ -103,22 +102,21 @@ async def test_signed_login_is_canonical_with_table_roles() -> None:
     signed = await _sign_in(_config()).sign_in(_request())
 
     assert signed.identifier == "corporate:maksimov.ma"
-    assert signed.display_name == "Maksimov.MA"
-    assert signed.sign_in.provider == SignInProvider.PROXY.value
-    assert signed.sign_in.roles == frozenset({"read"})
+    assert signed.provider == ProxyAuthConfig.PROVIDER
+    assert signed.access.roles == frozenset({"read"})
 
 
 async def test_header_roles_join_table_roles() -> None:
     signed = await _sign_in(_config()).sign_in(_request(roles="wrt, admin"))
 
-    assert signed.sign_in.roles == frozenset({"read", "wrt", "admin"})
+    assert signed.access.roles == frozenset({"read", "wrt", "admin"})
 
 
 async def test_header_roles_are_ignored_when_the_provider_is_not_configured() -> None:
     config = _config(roles=_providers(header=None))
     signed = await _sign_in(config).sign_in(_request(roles="wrt"))
 
-    assert signed.sign_in.roles == frozenset({"read"})
+    assert signed.access.roles == frozenset({"read"})
 
 
 async def test_tampered_roles_break_the_signature() -> None:
@@ -182,7 +180,7 @@ async def test_require_roles_off_admits_without_roles() -> None:
     config = _config(require_roles=False)
     signed = await _sign_in(config).sign_in(_request(login="stranger"))
 
-    assert signed.sign_in.roles == frozenset()
+    assert signed.access.roles == frozenset()
 
 
 def test_config_rejects_bad_network() -> None:
@@ -212,7 +210,7 @@ async def test_directory_roles_by_sam_account_name(raw_config: Any) -> None:
     signed = await _sign_in(config).sign_in(_request(login=reader))
 
     assert signed.identifier == f"corporate:{reader.lower()}"
-    assert isinstance(signed.sign_in.roles, frozenset)
+    assert isinstance(signed.access.roles, frozenset)
 
 
 @pytest.mark.integration
@@ -227,7 +225,7 @@ async def test_login_unknown_to_the_directory_keeps_other_roles(
     provider = _sign_in(config)
 
     signed = await provider.sign_in(_request(login="maksimov.ma", roles="ops"))
-    assert signed.sign_in.roles == frozenset({"read", "ops"})
+    assert signed.access.roles == frozenset({"read", "ops"})
 
     with pytest.raises(AuthorizationError, match="no role came"):
         await provider.sign_in(_request(login="nobody-here"))
@@ -251,13 +249,13 @@ async def test_selected_profile_from_the_header_lands_in_the_sign_in() -> None:
         )
     )
 
-    assert signed.sign_in.profiles == frozenset({SignInStand.PROFILE})
-    assert signed.sign_in.profile == SignInStand.PROFILE
+    assert signed.access.profiles == frozenset({SignInStand.PROFILE})
+    assert signed.preferred_profile == SignInStand.PROFILE
 
 
 async def test_selected_profile_outside_the_grant_is_refused() -> None:
     config = _with_profile_headers()
-    stand = SignInStand.assembly(SignInStand.profiles(roles=["nobody"])).proxy(config)
+    stand = SignInStand.backends(SignInStand.profiles(roles=["nobody"])).proxy(config)
 
     with pytest.raises(AuthorizationError, match="not among the granted"):
         await stand.sign_in(_with_profiles(_request(), profile=SignInStand.PROFILE))
@@ -282,4 +280,4 @@ async def test_tampered_selected_profile_breaks_the_signature() -> None:
 async def test_sign_in_without_the_selected_header_keeps_no_choice() -> None:
     signed = await _sign_in(_with_profile_headers()).sign_in(_request())
 
-    assert signed.sign_in.profile == ""
+    assert signed.preferred_profile == ""

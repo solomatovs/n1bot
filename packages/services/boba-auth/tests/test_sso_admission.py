@@ -42,7 +42,7 @@ async def test_unparsed_pac_is_refused_when_sid_exclusions_are_configured(
 ) -> None:
     roles = PrincipalRolesConfig(sid_ex=RoleExcludeConfig(root=["S-1-5-21-1"]))
     config = _config(raw_config, roles)
-    sign_in = SignInStand.assembly().sso(config)
+    sign_in = SignInStand.backends().sso(config)
 
     facts = PrincipalFacts(principal=_principal(config), pac_parsed=False)
 
@@ -54,7 +54,7 @@ async def test_unparsed_pac_passes_without_sid_exclusions(raw_config: Any) -> No
     config = _config(raw_config, PrincipalRolesConfig())
     principal = _principal(config)
     roles = PrincipalRolesConfig(principal=RoleMappingConfig(root={principal: ["DEV"]}))
-    sign_in = SignInStand.assembly().sso(_config(raw_config, roles))
+    sign_in = SignInStand.backends().sso(_config(raw_config, roles))
 
     facts = PrincipalFacts(principal=principal, pac_parsed=False)
 

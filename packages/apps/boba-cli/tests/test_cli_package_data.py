@@ -100,6 +100,8 @@ class TestPackageData:
         assert surveyed.stdout.splitlines() == [
             "--include-module=boba.agent",
             "--include-package-data=boba.agent",
+            "--include-module=boba.cli",
+            "--include-package-data=boba.cli",
             "--include-module=boba.history.postgres",
             "--include-package-data=boba.history.postgres",
             f"--include-data-files={manifest}=boba/core/package_data.json",
@@ -114,7 +116,7 @@ class TestPackageData:
         assert checked.returncode == 0, checked.stderr[-2000:]
         assert checked.stdout == (
             f"self-check: {len(named)} package data files present "
-            "(boba.agent, boba.history.postgres)\n"
+            "(boba.agent, boba.cli, boba.history.postgres)\n"
         )
 
         (site / "boba" / "history" / "postgres" / self.SCHEMA).unlink()

@@ -14,14 +14,17 @@ from boba.messaging import (
     Envelope,
     ListenerFailedError,
     LockToken,
-    MemoryMessageBus,
     MessageTooLargeError,
+)
+from boba.chat.messages import (
+    ChatMessages,
     Notice,
     NoticeLevel,
     RunFinished,
     StopRequested,
     ThreadRewound,
 )
+from boba.stand.messaging import memory_message_bus
 
 pytestmark = pytest.mark.anyio
 
@@ -35,7 +38,7 @@ def _token(text: str) -> Notice:
 
 
 async def test_messages_arrive_in_seq_order_to_every_subscriber() -> None:
-    bus = MemoryMessageBus("node1-aid")
+    bus = memory_message_bus("node1-aid")
     scope = _scope()
     first: list[Envelope] = []
     second: list[Envelope] = []
@@ -66,7 +69,7 @@ async def test_messages_arrive_in_seq_order_to_every_subscriber() -> None:
 
 
 async def test_identical_messages_are_delivered_both_times() -> None:
-    bus = MemoryMessageBus("n")
+    bus = memory_message_bus("n")
     scope = _scope()
     seen: list[int] = []
 
@@ -82,7 +85,7 @@ async def test_identical_messages_are_delivered_both_times() -> None:
 
 
 async def test_replay_returns_only_messages_after_the_given_seq() -> None:
-    bus = MemoryMessageBus("n")
+    bus = memory_message_bus("n")
     scope = _scope()
     token = LockToken.local()
     for text in ("a", "b", "c", "d"):
@@ -95,7 +98,7 @@ async def test_replay_returns_only_messages_after_the_given_seq() -> None:
 
 
 async def test_oversized_body_is_rejected_before_delivery() -> None:
-    bus = MemoryMessageBus("n")
+    bus = memory_message_bus("n")
     scope = _scope()
     seen: list[Envelope] = []
 
@@ -113,7 +116,7 @@ async def test_oversized_body_is_rejected_before_delivery() -> None:
 
 
 async def test_failing_listener_is_reported_after_the_others_got_the_message() -> None:
-    bus = MemoryMessageBus("n")
+    bus = memory_message_bus("n")
     scope = _scope()
     seen: list[int] = []
 
@@ -135,7 +138,7 @@ async def test_failing_listener_is_reported_after_the_others_got_the_message() -
 
 
 async def test_commands_reach_every_process_but_are_taken_once() -> None:
-    bus = MemoryMessageBus("n")
+    bus = memory_message_bus("n")
     scope = Scope.workflow(uuid4())
     seen: list[CommandEnvelope] = []
 
@@ -159,7 +162,7 @@ async def test_commands_reach_every_process_but_are_taken_once() -> None:
 
 
 async def test_purge_drops_stored_messages_and_restarts_seq() -> None:
-    bus = MemoryMessageBus("n")
+    bus = memory_message_bus("n")
     scope = Scope.workflow(uuid4())
     token = LockToken.local()
     await bus.publish(scope, RunFinished(run_id=uuid4(), status="done"), token)
@@ -173,4 +176,4 @@ def test_a_rewound_thread_is_published_only_by_the_turn_holder() -> None:
     """Срез истории правкой публикует держатель хода под замком области."""
     rewound = ThreadRewound(turn_id="turn-1", session_id="branch-1")
 
-    assert rewound.kind.requires_lock
+    assert ChatMessages().codec.requires_lock(rewound)

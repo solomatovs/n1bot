@@ -431,8 +431,8 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
     """Реализация HistoryStore над таблицами `session` и `session_records`
     схемы Postgres.
 
-    Создаёт вход процесса по настройке `history` вида `postgres`; пул берётся
-    по конфигу подключения при первом обращении, как у остальных таблиц.
+    Создаёт вход процесса по настройке `history` вида `postgres`, передавая
+    общий пул, открытый в цикле событий хранилища.
     Раскладку записи по колонкам и сборку обратно ведёт RecordFrames.
     user_id — UUID строки users (ключ `history.userId`); None —
     процесс без владельца, ему видны все сессии. Замки сессий (locks) общие
@@ -448,13 +448,12 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
 
     def __init__(
         self,
-        postgres: PostgresConfig,
+        pool: PostgresPool,
         db_schema: str,
         user_id: UUID | None,
         locks: SessionLocks,
-        pool: PostgresPool | None = None,
     ) -> None:
-        super().__init__(postgres, db_schema, pool)
+        super().__init__(pool, db_schema)
         self._user_id = user_id
         self._frames = RecordFrames()
         self._locks = locks
@@ -554,16 +553,15 @@ class PostgresHistoryStore(PostgresTable, HistoryStore):
             .build()
         )
         action = f"reading session '{session.value}'"
-        async with self._guarded(action):
-            pool = await self._pool()
-            async with (
-                pool.connection() as conn,
-                conn.transaction(),
-                conn.cursor(row_factory=dict_row) as cur,
-            ):
-                rows = cur.stream(query.text, query.params, size=self.READ_CHUNK)
-                async for row in rows:
-                    yield self._frames.join(row)
+        async with (
+            self._guarded(action),
+            self._pool.connection() as conn,
+            conn.transaction(),
+            conn.cursor(row_factory=dict_row) as cur,
+        ):
+            rows = cur.stream(query.text, query.params, size=self.READ_CHUNK)
+            async for row in rows:
+                yield self._frames.join(row)
 
     async def release(self, lease: SessionLease) -> None:
         held = self._held.pop(lease.key, None)

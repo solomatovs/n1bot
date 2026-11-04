@@ -21,7 +21,7 @@ from boba.canvas.canvas import (
 )
 from boba.canvas.diagram import DiagramEntry, DiagramSpecError, MermaidSpec
 from boba.canvas.keys import ScopeDir, WorkspaceKey
-from boba.runtime.storage import LocalStorageClient, LocalStorageConfig
+from boba.storage.client import LocalStorageClient, LocalStorageConfig
 from boba.toolkit.result import ContentMime
 
 THREAD = "11111111-1111-1111-1111-111111111111"

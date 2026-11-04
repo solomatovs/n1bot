@@ -24,7 +24,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from boba.aid.infra.config import AidSection, AppConfig
 from boba.config import ConfigError
-from boba.runtime.http import ServerStartError
+from boba.http_server import ServerStartError
 
 logger = logging.getLogger(__name__)
 

@@ -87,19 +87,16 @@ class KbPool:
 
 
 class KbTable(PostgresTable):
-    """База хранилищ KB: пул с адаптером vector, имена таблиц конфига стоящими
+    """База хранилищ KB: переданный пул с адаптером vector, имена таблиц стоящими
     именами {chunks}, {collections}, {sources}; наследуют PostgresChunkStore,
-    PostgresSourceLedger и PostgresCollectionsStore."""
+    PostgresSourceLedger и PostgresCollectionsStore. Сборка открывает пул через
+    KbPool до первого запроса."""
 
     LABEL: ClassVar[str] = "kb"
 
-    def __init__(self, cfg: PostgresStoreConfig) -> None:
-        super().__init__(cfg.connection, cfg.tables.pg_schema)
-        self._cfg = cfg
-        self._tables = cfg.tables
-
-    async def _open_pool(self) -> PostgresPool:
-        return await KbPool(self._cfg.connection).open()
+    def __init__(self, pool: PostgresPool, tables: PostgresStoreSchema) -> None:
+        super().__init__(pool, tables.pg_schema)
+        self._tables = tables
 
     def _query(self) -> PgQueryBuilder:
         schema = self._tables.pg_schema
@@ -246,9 +243,6 @@ class FilterSql:
 
 class PostgresChunkStore(KbTable, ChunkStore[str]):
     """Реализация ChunkStore[str] на таблице чанков postgres."""
-
-    def __init__(self, *, cfg: PostgresStoreConfig) -> None:
-        super().__init__(cfg)
 
     async def get_by_ids(
         self,
@@ -684,8 +678,14 @@ class PostgresSourceLedger(KbTable, SourceLedger):
     PAGE: ClassVar[int] = 200
     """Сколько записей реестра берётся одним запросом при обходе."""
 
-    def __init__(self, *, cfg: PostgresStoreConfig, collection: CollectionId) -> None:
-        super().__init__(cfg)
+    def __init__(
+        self,
+        pool: PostgresPool,
+        tables: PostgresStoreSchema,
+        *,
+        collection: CollectionId,
+    ) -> None:
+        super().__init__(pool, tables)
         self._collection = str(collection)
 
     def _failure(self, action: str, exc: Exception) -> Exception:
@@ -984,9 +984,6 @@ class PostgresSourceLedger(KbTable, SourceLedger):
 
 class PostgresCollectionsStore(KbTable, CollectionsStore):
     """Реализация CollectionsStore на таблице коллекций postgres."""
-
-    def __init__(self, *, cfg: PostgresStoreConfig) -> None:
-        super().__init__(cfg)
 
     async def list_collections(self) -> Sequence[CollectionInfo]:
         query = (

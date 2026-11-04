@@ -257,7 +257,7 @@ class PluginEntry:
     """Вход программы по id плагина: объявление ищется entry point'ом группы
     ToolPlugin.GROUP в окружении программы, версия — у его дистрибутива.
     program() отдаёт программу плагина; ею же пользуется отладочный запуск
-    тела на хосте (boba.runtime.toolcli)."""
+    тела на хосте (boba.toolrun.cli)."""
 
     MODULE: ClassVar[str] = "boba.sandbox.program"
     """Модуль входа: `python -m <MODULE> <id> ...` из окружения с плагином."""

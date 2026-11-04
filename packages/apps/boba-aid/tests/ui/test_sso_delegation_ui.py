@@ -30,7 +30,8 @@ from chat_ui import BOOT_TIMEOUT_SEC
 from playwright.sync_api import Browser, BrowserContext, Page, Playwright, expect
 from playwright.sync_api import Error as PlaywrightError
 
-from boba.identity.token import CookieJar, SessionClaims
+from boba.aid.auth.claims import SessionClaims
+from boba.aid.auth.cookies import CookieJar
 from boba.kerberos import KerberosPasswordAuth
 from boba.stand.site import Stand
 from boba.stand.ui.database import run_blocking
@@ -536,10 +537,13 @@ def test_signed_in_session_carries_the_sealed_ticket(
     payload = token.split(".")[1]
     payload += "=" * (-len(payload) % 4)
     claims = SessionClaims.parse(json.loads(base64.urlsafe_b64decode(payload)))
-    sign_in = claims.sign_in()
+    ticket = claims.ticket()
 
-    if sign_in.principal != STAND.reader_principal:
-        raise AssertionError(f"в сессии не тот принципал: {sign_in.principal!r}")
+    if ticket is None:
+        raise AssertionError("the session does not carry a delegated ticket")
 
-    if not sign_in.sealed_ticket:
-        raise AssertionError(f"в сессии нет билета входа: {sorted(claims.metadata)}")
+    if ticket.principal != STAND.reader_principal:
+        raise AssertionError(f"в сессии не тот принципал: {ticket.principal!r}")
+
+    if not ticket.sealed:
+        raise AssertionError("the session carries an empty sealed ticket")

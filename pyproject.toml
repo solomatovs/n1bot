@@ -2,6 +2,9 @@
 testpaths = ["packages"]
 python_files = ["test_*.py"]
 pythonpath = [
+    "packages/infra/transport/boba-http-server/src",
+    "packages/infra/security/boba-crypto/src",
+    "packages/infra/storage/boba-storage/src",
     "packages/infra/format/boba-confluence/src",
     "packages/infra/format/boba-kbdoc/src",
     "packages/infra/format/boba-text/src",
@@ -40,10 +43,7 @@ pythonpath = [
     "packages/core/boba-canvas/src",
     "packages/core/boba-messaging/src",
     "packages/services/boba-toolrun/src",
-    "packages/services/boba-connection-broker/src",
     "packages/services/boba-mcp-client/src",
-    "packages/services/boba-mcp-adapter/src",
-    "packages/services/boba-runtime/src",
     "packages/services/boba-auth/src",
     "packages/services/boba-oauth/src",
     "packages/core/boba-indexing/src",
@@ -102,6 +102,9 @@ exclude = [
     "packages/*/*/*/build",
 ]
 extraPaths = [
+    "packages/infra/transport/boba-http-server/src",
+    "packages/infra/security/boba-crypto/src",
+    "packages/infra/storage/boba-storage/src",
     "packages/infra/format/boba-confluence/src",
     "packages/infra/format/boba-kbdoc/src",
     "packages/infra/format/boba-text/src",
@@ -140,10 +143,7 @@ extraPaths = [
     "packages/core/boba-canvas/src",
     "packages/core/boba-messaging/src",
     "packages/services/boba-toolrun/src",
-    "packages/services/boba-connection-broker/src",
     "packages/services/boba-mcp-client/src",
-    "packages/services/boba-mcp-adapter/src",
-    "packages/services/boba-runtime/src",
     "packages/services/boba-auth/src",
     "packages/services/boba-oauth/src",
     "packages/core/boba-indexing/src",
@@ -257,6 +257,9 @@ members = [
 ]
 
 [tool.uv.sources]
+boba-http-server = { workspace = true }
+boba-crypto = { workspace = true }
+boba-storage = { workspace = true }
 boba-identity-postgres = { workspace = true }
 boba-access-postgres = { workspace = true }
 boba-config         = { workspace = true }
@@ -273,12 +276,9 @@ boba-stand-core     = { workspace = true }
 boba-canvas         = { workspace = true }
 boba-messaging      = { workspace = true }
 boba-toolrun        = { workspace = true }
-boba-connection-broker = { workspace = true }
 boba-mcp-client = { workspace = true }
-boba-mcp-adapter = { workspace = true }
 boba-mcp = { workspace = true }
 boba-tool-describer = { workspace = true }
-boba-runtime = { workspace = true }
 boba-auth = { workspace = true }
 boba-oauth = { workspace = true }
 boba-indexing       = { workspace = true }

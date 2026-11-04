@@ -14,15 +14,16 @@ from typing import Any
 import pytest
 
 from boba.canvas.storage import StorageError, StorageNotFoundError
-from boba.runtime.config import PathsConfig, ProgramRoots
-from boba.runtime.storage import (
-    ImageStorageClient,
-    ImageStorageConfig,
+from boba.config.paths import PathsConfig
+from boba.sandbox.paths import ProgramRoots
+from boba.sandbox.storage import ImageStorageClient, ImageStorageConfig
+from boba.storage.client import (
     LocalStorageClient,
     LocalStorageConfig,
     StorageClient,
     StorageFactory,
 )
+from boba.mcp_server.storage import StandardStorageBackends
 from boba.sandbox.profile import SandboxProfile, WorkspaceSpec
 from boba.sandbox.runner import SandboxMountError
 from boba.stand.shell import ShellRun
@@ -296,7 +297,9 @@ class TestConfig:
     def test_factory_picks_image_client(self, tmp_path: Path) -> None:
         """Образы пользователей — workspace/ каталога данных экземпляра,
         шаблон — каталога программы."""
-        factory = StorageFactory(_instance(tmp_path))
+        factory = StorageFactory(
+            _instance(tmp_path), StandardStorageBackends().registry
+        )
         client = factory.create(_image_cfg())
         if not (isinstance(client, ImageStorageClient)):
             raise AssertionError(f"image storage expected, got {type(client)}")
@@ -307,7 +310,9 @@ class TestConfig:
 
     def test_factory_picks_local_client(self, tmp_path: Path) -> None:
         cfg = LocalStorageConfig(files_dir="/srv/files")
-        client = StorageFactory(_instance(tmp_path)).create(cfg)
+        client = StorageFactory(
+            _instance(tmp_path), StandardStorageBackends().registry
+        ).create(cfg)
         if type(client) is not LocalStorageClient:
             raise AssertionError(f"local storage expected, got {type(client)}")
 

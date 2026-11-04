@@ -13,16 +13,20 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import ClassVar
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import uvicorn
 from pydantic import BaseModel, ConfigDict, SecretStr
 
-from boba.access import RoleConfig, ToolAccess
+from boba.access import ProfileGrant, RoleConfig, ToolAccess
+from boba.auth import SessionService, SignIns
+from boba.auth.assembly import AuthServices
 from boba.auth.config import (
     HeaderRolesConfig,
     LocalAuthConfig,
@@ -31,45 +35,40 @@ from boba.auth.config import (
     ProxyAuthConfig,
     ProxyRoleProviders,
 )
-from boba.auth.proxy import ProxyAssertionVerifier
 from boba.canvas.keys import WorkspaceMount
 from boba.config import ConfigLoader, bind
-from boba.connection_broker.credentials import KerberosCredentialSource, NoRefresh
-from boba.connection_broker.params import ConnectionParams
-from boba.connection_broker.store import ConnectionStore
-from boba.connection_broker.tools import ConnectionTools
-from boba.connection_broker.user_connections import ArmedConnections
 from boba.connections.manifest import ConnectionTypes
-from boba.connections.offers import OfferedSource
 from boba.identity.admission import RoleMappingConfig
+from boba.identity.api import StoredUser, UserRows
 from boba.identity.context import CallContexts
-from boba.identity.principal import IdentityRule
+from boba.identity.lifetime import SessionLifetime
+from boba.identity.principal import IdentityRule, UserIdentity
 from boba.identity.run import Runs
+from boba.krb.connections import KerberosCredentialSource
 from boba.ldap import Ldap3Directory
+from boba.mcp_server.app import McpAppConfig
 from boba.mcp_server.auth import ServiceMark
+from boba.mcp_server.catalog import EndpointCatalog, McpEndpoint
+from boba.mcp_server.connections import NoRefresh
+from boba.mcp_server.connections.params import ConnectionParams
+from boba.mcp_server.connections.store import ConnectionStore
+from boba.mcp_server.connections.tools import ConnectionTools
+from boba.mcp_server.connections.user_connections import ArmedConnections
 from boba.mcp_server.prompts import PromptFile
-from boba.mcp_server.server import (
-    ConnectionOfferRule,
-    EndpointCatalog,
-    McpEndpoint,
-    McpEndpoints,
-    RunLimits,
-)
-from boba.oauth.server import (
-    AuthServer,
-    RegisteredClients,
-    SealedValues,
-    ServiceAuth,
-    ServiceTokens,
-    TrustedClient,
-)
-from boba.runtime.journal import DirVault, StreamJournal
-from boba.runtime.signin import SignInAssembly
-from boba.runtime.storage import LocalStorageClient, LocalStorageConfig
+from boba.mcp_server.server import FileUploadTool, McpEndpoints, RunLimits
+from boba.oauth.server.assertions import ProxyAssertionVerifier
+from boba.oauth.server.clients import RegisteredClients, TrustedClient
+from boba.oauth.server.provider import AuthServer
+from boba.oauth.server.resources import ServiceAuth
+from boba.oauth.server.sealed import SealedValues
+from boba.oauth.server.tokens import ServiceTokens
 from boba.stand import fake_caller, fake_connection, fake_toolmod
+from boba.stand.connections import DisabledConnectionRepository
 from boba.stand.roles import MemoryRoles
 from boba.stand.service_signin import ServiceSignIn
 from boba.stand.toolstand import ToolStand
+from boba.storage.client import LocalStorageClient, LocalStorageConfig
+from boba.storage.journal import DirVault, StreamJournal
 from boba.tool_io.chain import CallAmbient
 from boba.toolrun.callvalues import CallContextValues
 from boba.toolrun.hosted import PluginSection
@@ -100,6 +99,46 @@ ROLELESS_PASSWORD = "ghost-pw"
 
 TOKEN_TTL_SEC = 300
 """Срок токена доступа стенда, пока тест не назвал свой."""
+
+
+class MemoryUserRows(UserRows):
+    """Хранилище identity для OAuth стенда; production использует PostgreSQL."""
+
+    def __init__(self) -> None:
+        self._by_identity: dict[UserIdentity, StoredUser] = {}
+        self._by_id: dict[UUID, StoredUser] = {}
+
+    async def stored(self, identity: UserIdentity) -> StoredUser | None:
+        return self._by_identity.get(identity)
+
+    async def stored_by_id(self, user_id: UUID) -> StoredUser | None:
+        return self._by_id.get(user_id)
+
+    async def upsert(
+        self,
+        identity: UserIdentity,
+        roles: frozenset[str] | None = None,
+    ) -> StoredUser:
+        current = self._by_identity.get(identity)
+        stored = StoredUser(
+            id=(
+                current.id
+                if current is not None
+                else uuid5(NAMESPACE_URL, f"boba-user:{identity.identifier}")
+            ),
+            created_at=(
+                current.created_at if current is not None else datetime.now(UTC)
+            ),
+            identity=identity,
+            roles=(
+                current.roles
+                if roles is None and current is not None
+                else roles or frozenset()
+            ),
+        )
+        self._by_identity[identity] = stored
+        self._by_id[stored.id] = stored
+        return stored
 
 
 class EndpointPrompts(BaseModel):
@@ -156,11 +195,6 @@ class ServiceStand:
     )
     """Объявления фейковых модулей: тела идут их программой плагина."""
 
-    STORAGE: ClassVar[ConnectionOfferRule] = ConnectionOfferRule(
-        roles=["*"], offer=[OfferedSource.STORED]
-    )
-    """Правило по умолчанию: имена соединений из каталога MCP."""
-
     STREAM: StreamGroupsConfig = StreamGroupsConfig(
         open_sec=20.0,
         stall_sec=10.0,
@@ -184,14 +218,16 @@ class ServiceStand:
         runs = Runs(contexts)
         self._connections = connections
         self._credentials = KerberosCredentialSource(None, NoRefresh())
-        resolver = None
-        if connections is not None:
-            resolver = ArmedConnections(self._store, self._credential_source, contexts)
+        repository = connections
+        if repository is None:
+            repository = DisabledConnectionRepository()
+
+        resolver = ArmedConnections(repository, self._credentials, contexts)
         params = ConnectionParams(
-            ConnectionTypes.discover,
+            ConnectionTypes.discover(),
             contexts,
             StaticConfig(),
-            stored=resolver,
+            resolver,
         )
         journals = CallJournals(
             StreamJournal(DirVault(str(workdir / "journal")), 0), runs
@@ -225,7 +261,7 @@ class ServiceStand:
 
         own: set[str] = set()
         if connections is not None:
-            catalog_tools = ConnectionTools(self._store, contexts).build()
+            catalog_tools = ConnectionTools(repository, contexts).build()
             stand.adopt(catalog_tools)
             tools.extend(catalog_tools)
             for entry in catalog_tools:
@@ -235,42 +271,31 @@ class ServiceStand:
         for tool in tools:
             names.append(tool.name)
 
-        both = ConnectionOfferRule(roles=[self.ANALYST], offer=[OfferedSource.STORED])
-        granted = {
-            PROFILE: McpEndpoint(
-                tools=["*"],
-                roles=["*"],
-                connections=[self.STORAGE],
-                prompts=self._prompts(workdir),
+        tools_for_all = list(names)
+        tools_for_all.append(FileUploadTool.NAME)
+        roles = frozenset({"dev", "ADM", self.ANALYST, "weak"})
+        all_tools = tuple(tools_for_all)
+        endpoints = (
+            self._endpoint(PROFILE, all_tools, roles, self._prompts(workdir)),
+            self._endpoint(
+                NARROW,
+                ("fake_echo", FileUploadTool.NAME),
+                frozenset({"dev"}),
+                {},
             ),
-            NARROW: McpEndpoint(
-                tools=["fake_echo"],
-                roles=["dev"],
-                connections=[self.STORAGE],
-                prompts={},
-            ),
-            self.OFFERS: McpEndpoint(
-                tools=["*"],
-                roles=["*"],
-                connections=[both],
-                prompts={},
-            ),
-        }
-        if connections is not None:
-            stored_rule = ConnectionOfferRule(roles=["*"], offer=[OfferedSource.STORED])
-            granted[self.STORED] = McpEndpoint(
-                tools=["*"], roles=["*"], connections=[stored_rule], prompts={}
-            )
-        catalog = EndpointCatalog(granted)
-        grants = catalog.grants(
-            {
-                "dev": RoleConfig(tools=["*"]),
-                "ADM": RoleConfig(tools=["*"]),
-                self.ANALYST: RoleConfig(tools=["*"]),
-                "weak": RoleConfig(tools=["fake_echo"]),
-            }
+            self._endpoint(self.OFFERS, all_tools, roles, {}),
+            self._endpoint(self.STORED, all_tools, roles, {}),
         )
-        access = ToolAccess(names, grants.roles, grants.profiles, grants.check)
+        catalog = EndpointCatalog(endpoints)
+        role_access = {}
+        for role in roles:
+            role_access[role] = RoleConfig(tools=["*"])
+
+        profile_access = {}
+        for endpoint in endpoints:
+            profile_access[endpoint.prefix_url] = ProfileGrant(tools=["*"], roles=["*"])
+
+        access = ToolAccess(names, role_access, profile_access)
         self.registry = replace(stand.registry(access, (params,)), own=frozenset(own))
         proxy = ProxyAuthConfig(
             identity=IdentityRule(realm="corporate"),
@@ -299,46 +324,24 @@ class ServiceStand:
                 )
             )
 
-        sign_ins = SignInAssembly(
+        auth_services = AuthServices(
             Ldap3Directory(),
             catalog,
             MemoryRoles({"dev", "ADM", "DEV", "read", "wrt", "weak", "analyst"}),
-        ).build([local, *proxies], "stand-session-secret")
+            "stand-session-secret",
+        )
+        sign_ins = McpAppConfig.AUTH_BACKENDS.build([local, *proxies], auth_services)
         # в сервисе точку workspace ставит загрузчик плагинов из профиля песочницы
         WorkspaceMount.configure("/workspace")
         public_url = self.public_url
         tokens = ServiceTokens(
             public_url,
             "stand-session-secret",
-            token_ttl_sec,
-            3600,
+            SessionLifetime(ttl_sec=token_ttl_sec, max_sec=3600),
             "stand",
             ServiceMark.TOKEN_SALT,
         )
-        sealed = SealedValues("stand-session-secret", ServiceMark.SEALED_SALT)
-        declared = TrustedClient(
-            secret=SecretStr(CLIENT_SECRET),
-            realms=frozenset({"corporate", "local-stand", "aid-local"}),
-        )
-        resources: dict[str, str] = {}
-        for name in granted:
-            resources[name] = f"{public_url}/{name}"
-        server = AuthServer(
-            public_url,
-            sign_ins,
-            tokens,
-            ProxyAssertionVerifier(proxies),
-            RegisteredClients(sealed, {CLIENT_ID: declared}),
-            sealed,
-            list(resources.values()),
-        )
-        auth = ServiceAuth(
-            public_url,
-            server,
-            tokens,
-            ServiceMark.NAME,
-            resources,
-        )
+        auth = self._service_auth(public_url, catalog, sign_ins, tokens, proxies)
         self._sign_in = ServiceSignIn(
             public_url, CLIENT_ID, CLIENT_SECRET, PROXY_SECRET
         )
@@ -350,20 +353,54 @@ class ServiceStand:
             runs,
             journals,
             auth,
-            granted,
+            endpoints,
             params,
             limits,
             storage,
             LocalStorageClient(storage),
         )
 
-    def _store(self) -> ConnectionStore:
-        if self._connections is None:
-            raise RuntimeError("the HTTP stand has no connection store")
-        return self._connections
+    @staticmethod
+    def _service_auth(
+        public_url: str,
+        catalog: EndpointCatalog,
+        sign_ins: SignIns,
+        tokens: ServiceTokens,
+        proxies: Sequence[ProxyAuthConfig],
+    ) -> ServiceAuth:
+        sealed = SealedValues("stand-session-secret", ServiceMark.SEALED_SALT)
+        declared = TrustedClient(
+            secret=SecretStr(CLIENT_SECRET),
+            realms=frozenset({"corporate", "local-stand", "aid-local"}),
+        )
+        resources = catalog.resources(public_url)
+        server = AuthServer(
+            public_url,
+            sign_ins,
+            tokens,
+            ProxyAssertionVerifier(proxies),
+            RegisteredClients(sealed, {CLIENT_ID: declared}),
+            sealed,
+            list(resources.values()),
+            SessionService(MemoryUserRows(), catalog),
+        )
+        return ServiceAuth(public_url, server, tokens, ServiceMark.NAME, resources)
 
-    def _credential_source(self) -> KerberosCredentialSource:
-        return self._credentials
+    @staticmethod
+    def _endpoint(
+        name: str,
+        tools: tuple[str, ...],
+        roles: frozenset[str],
+        prompts: dict[str, PromptFile],
+    ) -> McpEndpoint:
+        return McpEndpoint(
+            id=uuid4(),
+            prefix_url=f"/{name}",
+            title=name,
+            tools=tools,
+            roles=roles,
+            prompts=prompts,
+        )
 
     def _prompts(self, workdir: Path) -> dict[str, PromptFile]:
         """Промпты endpoint'а PROFILE тем же путём, что у сервиса: файл PROMPT

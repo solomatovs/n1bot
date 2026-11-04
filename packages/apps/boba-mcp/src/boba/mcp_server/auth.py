@@ -24,8 +24,7 @@ from fastmcp.server.dependencies import get_access_token
 from pydantic import ValidationError
 
 from boba.identity.context import Credential, Scope, Subject
-from boba.identity.signin import SignInMetadata
-from boba.oauth.server import TokenClaims, TokenClaimsError
+from boba.oauth.claims import TokenClaims, TokenClaimsError
 from boba.toolrun.call_id import CallFields
 
 __all__ = [
@@ -81,14 +80,14 @@ class TokenSubjects:
 
         claims = self._claims(token)
 
-        return SignInMetadata.parse(claims.metadata).credential()
+        return claims.credential
 
     def of(self, token: AccessToken) -> Subject:
         claims = self._claims(token)
 
         return Subject(
             user_id=claims.user_id,
-            login=claims.login,
+            identity=claims.identity,
             roles=claims.roles,
             profile=self._profile,
         )

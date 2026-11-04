@@ -20,11 +20,11 @@ from chainlit.config import config as cl_config
 from fastapi import FastAPI, Request, Response
 from pydantic import BaseModel, ConfigDict
 
+from boba.aid.auth.http import RequestTokens, SessionCookie
+from boba.aid.auth.session import BrowserSessions, IssuedSession
 from boba.aid.infra.session import ChainlitSessions
-from boba.auth import AuthService, IssuedSession
-from boba.auth.http import SsoRequests, SsoResponses
-from boba.identity.sso import OwnRequest, SsoChallenge, SsoRefused
-from boba.runtime.http import RequestTokens, SessionCookie
+from boba.auth.transport.http import OwnRequest, SsoRequests, SsoResponses
+from boba.identity.sso import SsoChallenge, SsoRefused
 
 __all__ = ["PageJsVar", "PageUrls", "SessionRefresh"]
 
@@ -82,7 +82,7 @@ class SessionRefresh:
     def __init__(
         self,
         urls: PageUrls,
-        auth: AuthService,
+        auth: BrowserSessions,
         sessions: ChainlitSessions,
         app_root: Path,
     ) -> None:
@@ -128,7 +128,7 @@ class SessionRefresh:
     def _adopted(self, request: Request, session: IssuedSession) -> Response:
         response = Response(status_code=204)
         SessionCookie(self._auth.cookie()).put(response, request.cookies, session.token)
-        identifier = session.signed.identifier
+        identifier = session.user.identifier
         adopted = self._sessions.adopt_token(identifier, session.token)
         self._logger.info(
             "sessions adopted the refreshed token [user=%s] [sessions=%d]",

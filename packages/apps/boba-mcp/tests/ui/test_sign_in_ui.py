@@ -36,8 +36,9 @@ from fastmcp.client.transports import StreamableHttpTransport
 from key_value.aio.stores.memory import MemoryStore
 from playwright.sync_api import Browser, Page, expect
 
-from boba.auth.service import SignInProviders
+from boba.auth.signin import SignInProviders
 from boba.db.postgres.connection import PostgresConfig
+from boba.mcp_server.migrations import configured_migrations
 from boba.stand.database import TestDatabase
 from boba.stand.migrate import StandSchema
 from boba.stand.service_signin import ServiceSignIn
@@ -290,11 +291,8 @@ def _service(
     config.write()
     schema = StandSchema(
         config.files.paths(config.app),
-        (
-            "boba.identity_postgres",
-            "boba.access_postgres",
-            "boba.connection_broker",
-        ),
+        "boba.mcp_server",
+        configured_migrations(),
     )
     run_blocking(schema.create())
     process = StandProcess[ServiceStand](config=config, log_path=workdir / "mcp.log")

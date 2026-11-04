@@ -18,6 +18,7 @@ from collections.abc import (
 )
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar
@@ -34,16 +35,22 @@ from chainlit.user import User as ChainlitUser
 from psycopg import sql
 from pydantic import SecretStr
 
+from boba.access.grants import GrantSubject, GrantTarget
 from boba.aid.agent.commands import CommandMenus
 from boba.aid.agent.relay import (
     McpRegistration,
     McpRegistrations,
     McpRelay,
 )
+from boba.aid.auth.claims import SessionClaims, TokenReader
+from boba.aid.auth.tokens import JwtTokens
 from boba.aid.canvas.remote import RemoteJournals, RemoteStreams
 from boba.aid.canvas.tools import CanvasOpener
 from boba.aid.chat.ui_text import UiText
 from boba.aid.data.data_layer import PostgresDataLayer
+from boba.aid.data.feedbacks import FeedbacksTable
+from boba.aid.data.threads import ThreadsTable
+from boba.aid.data.users import UsersTable
 from boba.aid.domain.keys import AppPrefix
 from boba.aid.infra.config import AppConfig
 from boba.aid.infra.session import (
@@ -60,31 +67,38 @@ from boba.aid.mcp_servers.store import StoredServer
 from boba.aid.rendering.chat_view import ChatSink, ChatView, StepRole
 from boba.aid.rendering.renderer import NoSurface, RenderSurface, TabSurfaces
 from boba.aid.rendering.tool import AppMeta, AppSource, AppUnread, ToolSource
-from boba.auth import JwtTokens
+from boba.auth.providers.backends import KerberosSessionTickets
 from boba.cancellation import RunCancellation
 from boba.canvas.canvas import CanvasSignal, SignalTransport
 from boba.canvas.journal import StreamSlice
 from boba.canvas.keys import WorkspaceMount
 from boba.config import bind
-from boba.connection_broker.crypto import SecretCipher
-from boba.connection_broker.store import ConnectionStore
-from boba.connection_broker.tools import ConnectionTools
 from boba.connections.manifest import ConnectionTypes
 from boba.core.mcp_names import McpToolNames
-from boba.db.postgres import AsyncPostgresPool, PostgresSchema
+from boba.crypto import SecretCipher
+from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres.connection import PostgresConfig
 from boba.identity.api import StoredUser, UserRows
+from boba.identity.authentication import (
+    AccessGrant,
+    AuthenticatedPrincipal,
+    AuthenticatedSession,
+    RenewalKind,
+)
 from boba.identity.context import (
     CallContext,
     ChatInitiator,
+    CredentialAbsence,
+    DelegatedTicket,
+    NoUserCredential,
     Scope,
     Subject,
 )
 from boba.identity.errors import InternalServiceError
+from boba.identity.lifetime import SessionLifetime
 from boba.identity.locks import MemoryLiveLocks
 from boba.identity.principal import UserIdentity
-from boba.identity.session import Login, SignInProvider, UserMetadataField
-from boba.identity.signin import SignedIn, SignInMetadata
-from boba.identity.token import SessionClaims, TokenReader
+from boba.identity.session import Login
 from boba.kerberos import DelegationMode, SignInTicket
 from boba.krb.seal import SsoTickets, TicketSealer
 from boba.mcp_client.client import (
@@ -98,17 +112,13 @@ from boba.mcp_client.client import (
 )
 from boba.mcp_server.app import McpAppConfig
 from boba.mcp_server.auth import ServiceMark
+from boba.mcp_server.connections.store import ConnectionStore
+from boba.mcp_server.connections.tools import ConnectionTools
+from boba.mcp_server.migrations import configured_migrations
 from boba.messaging import MemoryMessageBus, MemoryPayloadStore
-from boba.oauth.server import ServiceTokens
-from boba.runtime.elements import FeedbacksTable
-from boba.runtime.storage import (
-    LocalStorageClient,
-    LocalStorageConfig,
-    StorageClient,
-)
-from boba.runtime.threads import ThreadsTable
-from boba.runtime.users import UsersTable
-from boba.stand.migrate import StandSchema
+from boba.oauth.server.tokens import ServiceTokens, TokenHolder
+from boba.stand.messaging import memory_message_bus
+from boba.stand.migrate import StandMigrations, StandSchema
 from boba.stand.refs import StandRefs
 from boba.stand.roles import RoleSeed
 from boba.stand.service_signin import ServiceSignIn
@@ -122,6 +132,7 @@ from boba.stand_core.context import CallStand, StandIdentity
 from boba.stand_core.context import FakeTurn as FakeTurn
 from boba.stand_core.fakes import FakeSecret as FakeSecret
 from boba.stand_core.fakes import FakeUrl as FakeUrl
+from boba.storage.client import LocalStorageClient, LocalStorageConfig, StorageClient
 from boba.toolkit.channels import JournalChannel
 from boba.toolkit.dag import (
     JournalAddress,
@@ -134,9 +145,62 @@ from boba.transport.acp.protocol import (
     McpVersion,
     ToolSourceContent,
 )
+
+
+class AuthTestClaim(StrEnum):
+    """Names accepted by test helpers when they deliberately mint signed claims."""
+
+    ROLES = "roles"
+    PROFILES = "profiles"
+    PROFILE = "profile"
+    PROVIDER = "provider"
+    PRINCIPAL = "principal"
+    TICKET = "sso_ticket"
+    CREDENTIAL_REASON = "credential_reason"
+    GENERATION = "generation"
+    IDENTITY = "identity"
+    USER_ID = "user_id"
+    CREATED_AT = "created_at"
+
+
 from boba.workspace.launcher import ReadWindow
 
 AUTH_USER = "corporate:test-user"
+
+
+class MirroredUserConnectionStore(ConnectionStore):
+    """MCP store for tests with AID identities copied before a user grant.
+
+    Real MCP sign-in creates its local users row. Direct store tests model that
+    boundary by copying the same UUID and confirmed identity from AID first.
+    """
+
+    def __init__(
+        self,
+        pool: AsyncPostgresPool,
+        schema: str,
+        cipher: SecretCipher,
+        source_users: UserRows,
+    ) -> None:
+        super().__init__(pool, schema, cipher, ConnectionTypes.discover())
+        self._stand_pool = pool
+        self._source_users = source_users
+
+    async def grant(self, connection_id: UUID, target: GrantTarget) -> UUID:
+        if target.kind is GrantSubject.USERS:
+            user = await self._source_users.stored_by_id(target.id)
+            if user is not None:
+                statement = sql.SQL(
+                    "insert into {}.users (id, realm, login) "
+                    "values (%s, %s, %s) on conflict (id) do nothing"
+                ).format(sql.Identifier(self.schema))
+                async with self._stand_pool.connection() as conn:
+                    await conn.execute(
+                        statement,
+                        (user.id, user.identity.realm, user.identity.login),
+                    )
+
+        return await super().grant(connection_id, target)
 
 
 class TabSession:
@@ -154,39 +218,34 @@ class TabSession:
     def sign_in(self, roles: frozenset[str], sealed_ticket: str) -> None:
         """Кладёт в сессию токен входа kerberos с ролями и билетом — так же
         токен заменяет обновление сессии."""
-        from chainlit.auth.jwt import create_jwt
-
-        metadata = SignInMetadata(
-            provider=SignInProvider.KERBEROS.value,
-            identity=UserIdentity.model_validate(self.LOGIN),
-            roles=roles,
-            principal=self.PRINCIPAL,
-            sealed_ticket=sealed_ticket,
-        )
-        user = self._set_user(metadata)
-        self.raw.token = create_jwt(user)
+        self._set_user(roles, self.PRINCIPAL, sealed_ticket)
 
     def password_sign_in(self, roles: frozenset[str]) -> None:
-        from chainlit.auth.jwt import create_jwt
+        self._set_user(roles)
 
-        metadata = SignInMetadata(
-            provider=SignInProvider.LOCAL.value,
-            identity=UserIdentity.model_validate(self.LOGIN),
-            roles=roles,
-        )
-        user = self._set_user(metadata)
-        self.raw.token = create_jwt(user)
-
-    def _set_user(self, sign_in: SignInMetadata) -> ChainlitUser:
-        user = StandTokens.user(self.LOGIN, sign_in.render())
+    def _set_user(
+        self,
+        roles: frozenset[str],
+        principal: str = "",
+        sealed_ticket: str = "",
+    ) -> None:
+        identity = UserIdentity.model_validate(self.LOGIN)
+        user_id = uuid5(NAMESPACE_URL, f"boba-aid-stand:{identity.identifier}")
         self.raw.user = PersistedUser(
-            id=str(user.metadata[UserMetadataField.USER_ID]),
-            identifier=user.identifier,
-            createdAt=str(user.metadata[UserMetadataField.CREATED_AT]),
-            metadata=user.metadata,
+            id=str(user_id),
+            identifier=identity.identifier,
+            createdAt=StandTokens.CREATED_AT.isoformat(),
+            metadata={},
         )
-
-        return user
+        session = StandTokens.session(
+            identity.identifier,
+            user_id,
+            roles=roles,
+            profiles={self.SERVER},
+            principal=principal,
+            sealed_ticket=sealed_ticket,
+        )
+        self.raw.token = StandTokens.issue(session)
 
     def registration(self, user_id: UUID, profile: str) -> McpRegistration:
         return McpRegistration(
@@ -316,7 +375,6 @@ class ToolService(ServerConfigs):
             sandbox=True,
             plugins=self.PLUGINS,
             db_schema=f"mcp_tools_{uuid4().hex[:12]}",
-            role_tools={"*": ("*",)},
             generation="connection-tools",
         )
         self._process = StandProcess[ServiceStand](
@@ -324,11 +382,8 @@ class ToolService(ServerConfigs):
         )
         self._storage = StandSchema(
             self._config.files.paths(self._config.app),
-            (
-                "boba.identity_postgres",
-                "boba.access_postgres",
-                "boba.connection_broker",
-            ),
+            "boba.mcp_server",
+            configured_migrations(),
         )
 
     @classmethod
@@ -355,7 +410,9 @@ class ToolService(ServerConfigs):
         run_blocking(self._storage.create())
         self._process.start(self.BOOT_TIMEOUT_SEC)
         self._app = bind(
-            McpAppConfig.loader(self._config.files.paths(self._config.app)).load(),
+            self._config.app.config_files()
+            .loader(self._config.files.paths(self._config.app))
+            .load(),
             "app",
             McpAppConfig,
         )
@@ -363,8 +420,7 @@ class ToolService(ServerConfigs):
         self._tokens = ServiceTokens(
             self._app.server.public_url,
             session.auth_secret,
-            session.session_ttl_sec,
-            session.session_max_sec,
+            session.lifetime(),
             session.session_generation(),
             ServiceMark.TOKEN_SALT,
         )
@@ -399,7 +455,9 @@ class ToolService(ServerConfigs):
         return ConnectionStore(pool, schema, cipher, ConnectionTypes.discover())
 
     def tickets(self) -> SsoTickets:
-        tickets = self._app.sso_tickets()
+        tickets = KerberosSessionTickets().build(
+            self._app.auth, self._app.session.auth_secret
+        )
         assert tickets is not None, "the MCP test service must open SSO tickets"
         return tickets
 
@@ -412,28 +470,35 @@ class ToolService(ServerConfigs):
         if cached is not None:
             return cached
 
-        sign_in = session.sign_in.model_copy(
-            update={"profiles": frozenset({self.ENDPOINT})}
+        authenticated = session.authenticated_session()
+        principal = authenticated.principal.model_copy(
+            update={
+                "access": authenticated.principal.access.model_copy(
+                    update={"profiles": frozenset({self.ENDPOINT})}
+                )
+            }
         )
-        signed = SignedIn(
-            identifier=Login(session.identifier),
-            display_name=session.label,
-            sign_in=sign_in,
-        )
+        authenticated = authenticated.model_copy(update={"principal": principal})
         assert session.user_id is not None
         resource = f"{self._app.server.public_url}/{self.ENDPOINT}"
         pool = AsyncPostgresPool(self._app.postgres)
         await pool.open()
         try:
-            users = UsersTable(None, self._app.db_schema, pool)
+            users = UsersTable(pool, self._app.db_schema)
             await RoleSeed(users).user(
                 UUID(session.user_id),
-                sign_in.identity_for(signed.identifier),
-                sign_in.roles,
+                principal.identity,
+                principal.roles,
             )
         finally:
             await pool.close()
-        holder = self._tokens.holder(signed, resource, UUID(session.user_id))
+        claims = session.signed_in()
+        holder = TokenHolder(
+            principal=principal,
+            credential=authenticated.credential,
+            started=claims.auth_time,
+            resource=resource,
+        )
         token = self._tokens.access(holder, self._config.CLIENT_ID).access_token
         configured = self.servers().servers[name]
         endpoint = configured.endpoint.model_copy(
@@ -457,7 +522,7 @@ class RelayStand:
     def __init__(self) -> None:
         self.registrations = McpRegistrations()
         self.canvas = CanvasOpener(ThreadSurfaces())
-        self.bus = MemoryMessageBus("relay-stand")
+        self.bus = memory_message_bus("relay-stand")
 
     def relay(self, servers: McpServers) -> McpRelay:
         return self.relay_with(servers, self.canvas)
@@ -1012,13 +1077,14 @@ def storage(files_dir: Path) -> LocalStorageClient:
 @pytest.fixture
 def data_bus() -> MemoryMessageBus:
     """Шина слоя данных в тестах: изменения тредов уходят в область пользователя."""
-    return MemoryMessageBus("test-aid")
+    return memory_message_bus("test-aid")
 
 
 @pytest.fixture
-async def layer(
+async def layer(  # noqa: PLR0913 — тестовая фикстура собирает слой с его зависимостями
     app_config: AppConfig,
     pool: AsyncPostgresPool,
+    test_postgres: PostgresConfig,
     storage: LocalStorageClient,
     data_bus: MemoryMessageBus,
     runtime_stand: StandRefs,
@@ -1028,24 +1094,15 @@ async def layer(
         await conn.execute(
             sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(schema))
         )
-    async with pool.connection() as conn:
-        await PostgresSchema(schema).apply_packages(
-            conn,
-            (
-                "boba.identity_postgres",
-                "boba.runtime",
-                "boba.access_postgres",
-                "boba.aid.mcp_servers",
-            ),
-        )
+    await StandMigrations().application(test_postgres, schema, "boba.aid")
 
-    await RoleSeed(UsersTable(None, schema, pool)).add(
+    await RoleSeed(UsersTable(pool, schema)).add(
         ("read", "wrt", "dev", "analyst", "ADM", "DEV", "GST")
     )
     data_layer = PostgresDataLayer(
-        users=UsersTable(app_config.postgres, schema, pool),
-        threads=ThreadsTable(app_config.postgres, schema, pool),
-        feedbacks=FeedbacksTable(app_config.postgres, schema, pool),
+        users=UsersTable(pool, schema),
+        threads=ThreadsTable(pool, schema),
+        feedbacks=FeedbacksTable(pool, schema),
         storage=storage,
         bus=data_bus,
     )
@@ -1056,10 +1113,7 @@ async def layer(
 def auth_token(app_config: AppConfig) -> str:
     secret = app_config.session.auth_secret
     os.environ["CHAINLIT_AUTH_SECRET"] = secret
-
-    from chainlit.auth.jwt import create_jwt
-
-    return create_jwt(StandTokens.user(AUTH_USER))
+    return StandTokens.issue(StandTokens.session(AUTH_USER))
 
 
 @pytest.fixture(autouse=True)
@@ -1078,10 +1132,14 @@ async def chainlit_context(auth_token: str) -> AsyncIterator[None]:
 
 
 @pytest.fixture
-async def seeded(layer: PostgresDataLayer) -> Seed:
-    user = await layer.create_user(
-        StandTokens.user("corporate:user-1", {"role": "tester"})
-    )
+async def seeded(
+    layer: PostgresDataLayer,
+    pool: AsyncPostgresPool,
+    app_config: AppConfig,
+) -> Seed:
+    identity = UserIdentity.model_validate("corporate:user-1")
+    await UsersTable(pool, app_config.db_schema).upsert(identity)
+    user = await layer.create_user(StandTokens.user(identity.identifier))
     if user is None:
         raise AssertionError("user is not None")
 
@@ -1107,7 +1165,7 @@ async def seeded(layer: PostgresDataLayer) -> Seed:
 
 
 class StandTokens(TokenReader):
-    """JWT стенда: секрет chainlit из окружения, а без него — секрет самого стенда.
+    """JWT стенда: тот же versioned session contract, что использует AID.
 
     Секрет читается в момент обращения: фикстуры ставят CHAINLIT_AUTH_SECRET
     позже импорта модуля, а тесты без фикстуры входа живут на своём секрете.
@@ -1116,6 +1174,8 @@ class StandTokens(TokenReader):
     TTL_SEC: ClassVar[int] = 3600
     FALLBACK_SECRET: ClassVar[str] = "aid-stand-secret"
     GENERATION: ClassVar[str] = "stand-generation"
+    ISSUER: ClassVar[str] = "https://aid.stand.invalid"
+    CREATED_AT: ClassVar[datetime] = datetime(2026, 1, 1, tzinfo=UTC)
 
     @classmethod
     def secret(cls) -> str:
@@ -1129,32 +1189,86 @@ class StandTokens(TokenReader):
 
     @classmethod
     def tokens(cls) -> JwtTokens:
-        return JwtTokens(cls.secret(), cls.TTL_SEC, cls.GENERATION)
+        return JwtTokens(
+            cls.secret(),
+            SessionLifetime(ttl_sec=cls.TTL_SEC, max_sec=cls.TTL_SEC * 24),
+            cls.GENERATION,
+            issuer=cls.ISSUER,
+            audience=cls.ISSUER,
+        )
 
     @classmethod
-    def issue(cls, signed: SignedIn) -> str:
-        issued_at = int(time.time())
-        user_id = uuid5(NAMESPACE_URL, f"boba-aid-stand:{signed.identifier}")
-        created_at = datetime(2026, 1, 1, tzinfo=UTC)
+    def session(  # noqa: PLR0913 — фабрика явных claims для auth-тестов
+        cls,
+        identifier: str,
+        user_id: UUID | None = None,
+        *,
+        roles: Collection[str] = (),
+        profiles: Collection[str] = ("general",),
+        principal: str = "",
+        sealed_ticket: str = "",
+    ) -> AuthenticatedSession:
+        identity = UserIdentity.model_validate(identifier)
+        resolved_id = user_id or uuid5(
+            NAMESPACE_URL, f"boba-aid-stand:{identity.identifier}"
+        )
+        credential = (
+            DelegatedTicket(principal=principal, sealed=sealed_ticket)
+            if principal and sealed_ticket
+            else NoUserCredential(code=CredentialAbsence.NOT_DELEGATED)
+        )
+        renewal = (
+            RenewalKind.KERBEROS
+            if isinstance(credential, DelegatedTicket)
+            else RenewalKind.JWT
+        )
+        return AuthenticatedSession(
+            principal=AuthenticatedPrincipal(
+                id=resolved_id,
+                identity=identity,
+                access=AccessGrant(
+                    roles=frozenset(roles), profiles=frozenset(profiles)
+                ),
+            ),
+            credential=credential,
+            renewal=renewal,
+        )
 
-        return cls.tokens().issue(signed, user_id, created_at, issued_at)
+    @classmethod
+    def issue(cls, session: AuthenticatedSession) -> str:
+        return cls.tokens().issue(session, int(time.time()))
+
+    @classmethod
+    def session_from_metadata(
+        cls,
+        identifier: str,
+        user_id: UUID,
+        metadata: Mapping[str, Any],
+        *,
+        profiles: Collection[str] = ("general",),
+    ) -> AuthenticatedSession:
+        """Mint a signed test session from explicit inputs, never from a user row."""
+        roles = metadata.get(AuthTestClaim.ROLES, ())
+        if not isinstance(roles, (list, tuple, set, frozenset)):
+            roles = ()
+        declared_profiles = metadata.get(AuthTestClaim.PROFILES, profiles)
+        if not isinstance(declared_profiles, (list, tuple, set, frozenset)):
+            declared_profiles = profiles
+        principal = metadata.get(AuthTestClaim.PRINCIPAL, "")
+        sealed_ticket = metadata.get(AuthTestClaim.TICKET, "")
+        return cls.session(
+            identifier,
+            user_id,
+            roles=roles,
+            profiles=declared_profiles,
+            principal=principal if isinstance(principal, str) else "",
+            sealed_ticket=sealed_ticket if isinstance(sealed_ticket, str) else "",
+        )
 
     @classmethod
     def issue_for(cls, identifier: str, user_id: UUID) -> str:
         """Выпустить JWT для тестовой Chainlit-сессии с заданной строкой users."""
-        identity = UserIdentity.model_validate(identifier)
-        signed = SignedIn(
-            identifier=Login(identity.identifier),
-            display_name=identity.login,
-            sign_in=SignInMetadata(identity=identity),
-        )
-
-        return cls.tokens().issue(
-            signed,
-            user_id,
-            datetime(2026, 1, 1, tzinfo=UTC),
-            int(time.time()),
-        )
+        return cls.issue(cls.session(identifier, user_id))
 
     @classmethod
     def user(
@@ -1164,28 +1278,19 @@ class StandTokens(TokenReader):
         user_id: str | None = None,
         created_at: str = "2026-01-01T00:00:00+00:00",
     ) -> ChainlitUser:
-        """cl.User стенда с поколением сессий в metadata, как его помечает вход."""
-        if ":" not in identifier:
-            identity = UserIdentity(realm="corporate", login=Login(identifier))
-        else:
-            identity = UserIdentity.model_validate(identifier)
-
+        """Chainlit-проекция без полномочий: они берутся только из подписанного JWT."""
+        identity = UserIdentity.model_validate(identifier)
         resolved_user_id = user_id
         if resolved_user_id is None:
             resolved_user_id = str(
                 uuid5(NAMESPACE_URL, f"boba-aid-stand:{identity.identifier}")
             )
 
-        marked: dict[str, Any] = {
-            UserMetadataField.GENERATION: cls.GENERATION,
-            UserMetadataField.IDENTITY: identity.model_dump(mode="json"),
-            UserMetadataField.USER_ID: resolved_user_id,
-            UserMetadataField.CREATED_AT: created_at,
-        }
-        if metadata is not None:
-            marked.update(metadata)
-
-        return ChainlitUser(identifier=identity.identifier, metadata=marked)
+        return ChainlitUser(
+            identifier=identity.identifier,
+            display_name=identity.login,
+            metadata=dict(metadata or {}),
+        )
 
     def read(self, token: str) -> SessionClaims:
         return self.tokens().read(token)
@@ -1223,21 +1328,18 @@ class SessionStub:
         if ":" not in name:
             name = f"corporate:{name}"
 
-        identity = UserIdentity.model_validate(name)
-        sign_in = SignInMetadata(identity=identity)
         self.user = PersistedUser(
             id=user_id or str(UUID(int=0)),
             identifier=name,
             createdAt="2026-01-01T00:00:00Z",
-            metadata=sign_in.render(),
+            metadata={},
         )
-        # токен входа как у живой сессии: без него ход отказывает
-        signed = SignedIn(identifier=Login(name), display_name="", sign_in=sign_in)
-        self.token = StandTokens.tokens().issue(
-            signed,
-            UUID(self.user.id),
-            datetime.fromisoformat(self.user.createdAt),
-            int(time.time()),
+        self.token = StandTokens.issue(
+            StandTokens.session(
+                name,
+                UUID(self.user.id),
+                profiles={chat_profile or "general"},
+            )
         )
 
 
@@ -1306,8 +1408,11 @@ class ChatSessionStand:
         if not user_id:
             raise AssertionError(f"stand session {session.id!r} has no users row")
 
-        subject = Subject.of_user(UUID(user_id), session.label, session.roles, profile)
-        credential = session.signed_in().sign_in().credential()
+        principal = session.authenticated_user()
+        subject = Subject.of_user(
+            UUID(user_id), principal.identity, principal.roles, profile
+        )
+        credential = session.signed_in().credential
 
         return CallContext(
             subject=subject,
@@ -1327,21 +1432,18 @@ class ChatSessionStand:
     ) -> str:
         """Сессия пользователя с JWT данного входа и контекст вызова из неё;
         итог — сам токен."""
-        from chainlit.auth.jwt import create_jwt
         from chainlit.context import init_http_context
 
-        token_user = StandTokens.user(
-            user.identifier,
-            dict(login_metadata),
-            user_id=user.id,
-            created_at=user.createdAt,
+        token = StandTokens.issue(
+            StandTokens.session_from_metadata(
+                user.identifier, UUID(user.id), login_metadata, profiles={profile}
+            )
         )
-        token = create_jwt(token_user)
         session_user = PersistedUser(
             id=user.id,
             identifier=user.identifier,
             createdAt=user.createdAt,
-            metadata=token_user.metadata,
+            metadata={},
         )
         context = init_http_context(
             user=session_user, auth_token=token, thread_id=thread_id
@@ -1365,10 +1467,7 @@ def catalog(store: ConnectionStore, call_stand: CallStand) -> Any:
     """connection_list чата над теми же таблицами, что и инструменты: тело
     исполняется в процессе и читает хранилище соединений."""
 
-    def stored() -> ConnectionStore:
-        return store
-
-    return ConnectionTools(stored, call_stand.contexts).build()[0]
+    return ConnectionTools(store, call_stand.contexts).build()[0]
 
 
 @pytest.fixture(autouse=True)
@@ -1381,6 +1480,8 @@ def di_root(
     не режим работы.
     """
     from boba.aid.agent.chat import ThreadAgentsIndex
+    from boba.aid.infra import services as runtime
+    from boba.aid.infra.di import Container
     from boba.aid.infra.providers import (
         feed_text,
         mcp_servers,
@@ -1390,21 +1491,18 @@ def di_root(
         storage_provider,
         thread_agents_index,
     )
-    from boba.runtime import providers as runtime
-    from boba.runtime.di import Container
 
     previous = Container.root
     root = Container(level="app")
     sessions = ChainlitSessions(StandTokens())
     ChainlitSessions.install(sessions)
     root.provide(session_source, sessions)
-    root.provide(runtime.get_runtime_config, app_config)
+    root.provide(runtime.application_config, app_config)
     root.provide(runtime.live_locks, MemoryLiveLocks("test-aid", 20))
-    root.provide(runtime.message_bus, MemoryMessageBus("test-aid"))
+    root.provide(runtime.message_bus, memory_message_bus("test-aid"))
     root.provide(runtime.payload_store, MemoryPayloadStore())
     root.provide(runtime.call_contexts, runtime_stand.contexts)
     root.provide(runtime.runs, runtime_stand.runs)
-    root.provide(runtime.call_journals, runtime_stand.journals)
     root.provide(remote_journals, RemoteJournals())
     root.provide(sandbox_links, sandbox_links(app_config))
     root.provide(mcp_servers, McpServers(FixedServerConfigs(servers={})))

@@ -3,20 +3,20 @@
 from fastapi import HTTPException, Request
 from fastapi.security import HTTPBearer
 
-from boba.auth import AuthService
-from boba.identity.api import AuthenticatedUser
+from boba.aid.auth.http import SessionCookie
+from boba.aid.auth.session import BrowserSessions
+from boba.aid.infra import services
+from boba.aid.infra.di import Container
+from boba.identity.authentication import AuthenticatedPrincipal
 from boba.identity.errors import AuthenticationError
-from boba.runtime import providers as runtime
-from boba.runtime.di import Container
-from boba.runtime.http import SessionCookie
 
 _BEARER = HTTPBearer(auto_error=False)
 
 
-async def authenticated_user(request: Request) -> AuthenticatedUser:
+async def authenticated_user(request: Request) -> AuthenticatedPrincipal:
     """Проверяет cookie по подписанному токену без чтения БД."""
     container = Container.require_root("AID HTTP authentication")
-    auth: AuthService = container.resolved(runtime.auth_service)
+    auth: BrowserSessions = container.resolved(services.auth_service)
     cookie = SessionCookie(auth.cookie())
     token = cookie.token_of(request.cookies)
 

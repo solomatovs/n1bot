@@ -17,10 +17,9 @@ from aid_stand import AppLanguage
 from fastapi import HTTPException
 
 from boba.aid.auth.composite import PasswordCallback, SignInCode
+from boba.aid.auth.session import BrowserSessions
 from boba.aid.chat.ui_text import TranslationFiles, UiText
 from boba.aid.infra.session import SessionSignIn
-from boba.auth import AuthService
-from boba.auth.signin import SignedIn
 from boba.identity.errors import (
     AuthenticationError,
     AuthorizationError,
@@ -32,14 +31,14 @@ from boba.identity.errors import (
 LANGUAGES = ("ru-RU", "en-US")
 
 
-class RefusingAuth(AuthService):
-    """Сервис входа, который отказывает одной и той же ошибкой."""
+class RefusingAuth(BrowserSessions):
+    """Сессия входа, которая отказывает одной и той же ошибкой."""
 
     def __init__(self, error: BaseError) -> None:
         # от сервиса входа колбэку нужен только sign_in
         self._error = error
 
-    async def sign_in(self, username: str, password: str, realm: str = "") -> SignedIn:
+    async def by_password(self, username: str, password: str, realm: str = ""):
         raise self._error
 
 
@@ -78,7 +77,7 @@ async def test_refusal_goes_out_as_a_code(
     callback = PasswordCallback(RefusingAuth(error))
 
     with pytest.raises(HTTPException) as refused:
-        await callback.password_auth("alice", "secret")
+        await callback._session("alice", "secret")
 
     if refused.value.status_code != status:
         raise AssertionError(f"status: {refused.value.status_code}")

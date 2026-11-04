@@ -21,25 +21,26 @@ from boba.aid.infra.config import AppConfig
 from boba.aid.rendering.acp_view import ToolMedia, UpdateView
 from boba.aid.rendering.chat_view import ChatView, StepRole
 from boba.aid.rendering.renderer import ChatRenderer, NoSurface, ThreadRewinds
-from boba.db.postgres import AsyncPostgresPool, PostgresSchema
+from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import Scope
 from boba.identity.locks import LockMode, LockPurpose
-from boba.messaging import (
-    Envelope,
+from boba.messaging import Envelope, LockToken
+from boba.chat.messages import (
+    ChatMessages,
     FeedbackChanged,
-    LockToken,
     Notice,
     NoticeLevel,
     TurnFinished,
     TurnOutcome,
 )
-from boba.runtime.bus import PgMessageBus
-from boba.runtime.config import AppName
-from boba.runtime.locks import PgLiveLocks
-from boba.runtime.payloads import PgPayloadStore
-from boba.runtime.storage import LocalStorageClient
-from boba.runtime.turns import StaleTurnCloser
+from boba.db.postgres.messaging.bus import PgMessageBus
+from boba.messaging.config import AppName
+from boba.identity_postgres.locks import PgLiveLocks
+from boba.db.postgres.messaging.payloads import PgPayloadStore
+from boba.storage.client import LocalStorageClient
+from boba.aid.infra.turns import StaleTurnCloser
 from boba.stand.refs import StandRefs
+from boba.stand.migrate import StandMigrations
 from boba.toolkit.result import MarkdownResult
 
 SANDBOX_URL = "http://127.0.0.1:8123/"
@@ -71,19 +72,20 @@ async def _node(
 ) -> Node:
     cfg = app_config.postgres.model_copy(update={"dbname": test_database})
     schema = app_config.db_schema
-    bus = PgMessageBus(cfg, schema, name, AppName.AID, app_config.cluster)
-    bus._pool_ref = pool
-    async with pool.connection() as conn:
-        await PostgresSchema(schema).apply_packages(
-            conn, ("boba.identity_postgres", "boba.runtime")
-        )
+    bus = PgMessageBus(
+        pool,
+        schema,
+        name,
+        app_config.cluster,
+        ChatMessages().codec,
+        listener_connect=lambda: AsyncPostgresPool.dedicated(cfg),
+    )
+    await StandMigrations().application(cfg, schema, "boba.aid")
 
     await bus.start()
-    locks = PgLiveLocks(cfg, schema, name, AppName.AID, app_config.cluster)
-    locks._pool_ref = pool
+    locks = PgLiveLocks(pool, schema, name, AppName("aid"), app_config.cluster)
     await locks.register_instance()
-    payloads = PgPayloadStore(cfg, schema)
-    payloads._pool_ref = pool
+    payloads = PgPayloadStore(pool, schema)
     return Node(bus, locks, payloads)
 
 

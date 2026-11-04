@@ -25,13 +25,16 @@ from fastapi.responses import JSONResponse
 from omegaconf import DictConfig
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from boba.aid.auth.http import DomainErrorMiddleware, StaleSessionMiddleware
 from boba.aid.auth.installer import ChainlitAuthInstaller
+from boba.aid.auth.session import BrowserSessions
 from boba.aid.domain.keys import AppPrefix
-from boba.aid.infra import providers
+from boba.aid.infra import providers, services
 from boba.aid.infra.config import (
     AidSection,
     AppConfig,
 )
+from boba.aid.infra.di import Container
 from boba.aid.infra.log_context import RequestUserMiddleware, UserLogContext
 from boba.aid.infra.sandbox import AidListeners
 from boba.aid.infra.session import (
@@ -41,28 +44,23 @@ from boba.aid.infra.session import (
 )
 from boba.aid.infra.socket_events import SocketEvents
 from boba.aid.infra.stale_action import StaleActionMiddleware
-from boba.auth import AuthService
+from boba.aid.infra.turns import StaleTurnCloser
 from boba.auth.config import KerberosAuthConfig, ProxyAuthConfig
 from boba.cancellation import ProcessStop, StopReason
 from boba.chat.messages import ChatMessages
-from boba.config import ConfigError
+from boba.config import ConfigError, bind
+from boba.http_server import SignalledServer
 from boba.identity.context import CallContexts
-from boba.runtime import providers as runtime
-from boba.runtime.config import AppName
-from boba.runtime.di import Container
-from boba.runtime.http import (
-    DomainErrorMiddleware,
-    SignalledServer,
-    StaleSessionMiddleware,
-)
-from boba.runtime.storage import StorageClient
-from boba.runtime.turns import StaleTurnCloser
+from boba.krb.layout import InstanceLayout
+from boba.messaging.config import AppName
+from boba.storage.client import StorageClient
 
 
 def run_app(raw: DictConfig, conf_dir: Path):
     """Запуск приложения по загруженному дереву конфига; env chainlit к этому
     моменту выставлен AppEntry. conf_dir — каталог главного файла конфига."""
-    c = AppConfig.of(raw, conf_dir)
+    c = bind(raw, "app", AppConfig)
+    InstanceLayout(conf_dir, c.paths, c.tls).apply()
     SandboxCors(chainlit_config.project.allow_origins).check(c)
 
     UserLogContext.install()
@@ -78,6 +76,7 @@ def run_app(raw: DictConfig, conf_dir: Path):
     _use_file_serving(c, storage)
 
     container = _use_di_container(app, c)
+    container.provide(services.get_raw_config, raw)
     container.provide(providers.storage_provider, storage)
     # токен песочницы один на процесс: его получают и страница-прокси, и лента
     sandbox = providers.sandbox_links(c)
@@ -93,7 +92,7 @@ def run_app(raw: DictConfig, conf_dir: Path):
     # добавлен последним — выполняется первым, покрывает access-лог всех запросов
     app.add_middleware(
         RequestUserMiddleware,
-        tokens=runtime.session_tokens(c),
+        tokens=services.session_tokens(c),
         cookie=c.session.cookie,
     )
 
@@ -186,7 +185,7 @@ async def _run_container(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         yield
     finally:
-        container.resolved(runtime.runs).stop_all(StopReason.SHUTDOWN)
+        container.resolved(services.runs).stop_all(StopReason.SHUTDOWN)
         Container.set_session_hook(None)
         await SessionContainers.close_all()
         Container.set_root(None)
@@ -314,7 +313,7 @@ def _use_mcp_oauth_callback(container: Container) -> None:
 
     config = container.resolved(providers.get_app_config)
     oauth = container.resolved(providers.mcp_browser_oauth)
-    tokens = container.resolved(runtime.session_tokens)
+    tokens = container.resolved(services.session_tokens)
     callback = McpOAuthCallback(
         oauth, tokens, config.session.cookie, str(config.server.public_url)
     )
@@ -353,10 +352,10 @@ def _use_auth(container: Container) -> None:
         )
         raise RuntimeError(msg)
 
-    auth = container.resolved(runtime.auth_service)
-    if not isinstance(auth, AuthService):
+    auth = container.resolved(services.auth_service)
+    if not isinstance(auth, BrowserSessions):
         msg = (
-            "auth setup expects AuthService from the auth service provider, "
+            "auth setup expects BrowserSessions from the auth service provider, "
             f"got {type(auth).__name__}"
         )
         raise RuntimeError(msg)
@@ -393,28 +392,28 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container = Container(level="app")
     container.provide(providers.get_app_config, c)
     container.provide(providers.thread_surfaces, ThreadSurfaces())
-    container.provide(runtime.get_runtime_config, c)
+    container.provide(services.application_config, c)
     contexts = CallContexts()
-    container.provide(runtime.call_contexts, contexts)
-    container.provide(runtime.app_name, AppName("aid"))
-    container.provide(runtime.message_codec, ChatMessages().codec)
-    container.provide(runtime.messaging_backends, c.MESSAGING_BACKENDS)
-    container.provide(runtime.stale_observer, StaleTurnCloser)
-    tokens = runtime.session_tokens(c)
-    container.provide(runtime.session_tokens, tokens)
+    container.provide(services.call_contexts, contexts)
+    container.provide(services.app_name, AppName("aid"))
+    container.provide(services.message_codec, ChatMessages().codec)
+    container.provide(services.messaging_backends, c.MESSAGING_BACKENDS)
+    container.provide(services.stale_observer, StaleTurnCloser)
+    tokens = services.session_tokens(c)
+    container.provide(services.session_tokens, tokens)
     sessions = ChainlitSessions(tokens)
     ChainlitSessions.install(sessions)
     container.provide(providers.session_source, sessions)
-    container.provide(runtime.live_sessions, sessions)
+    container.provide(services.live_sessions, sessions)
     container.eager(providers.get_app_config)
-    container.eager(runtime.postgres_pool)
-    container.eager(runtime.users_table)
-    container.eager(runtime.auth_service)
-    container.eager(runtime.messaging_runtime)
-    container.eager(runtime.session_keeper)
+    container.eager(services.postgres_pool)
+    container.eager(services.users_table)
+    container.eager(services.auth_service)
+    container.eager(services.messaging_runtime)
+    container.eager(services.session_keeper)
     container.eager(providers.chat_profiles_registry)
     container.eager(providers.chainlit_data_layer)
-    container.eager(runtime.call_ambient)
+    container.eager(services.call_ambient)
     container.eager(
         providers.agent_launcher,
         providers.thread_deleter,
@@ -425,7 +424,7 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container.eager(providers.mcp_servers)
     container.eager(providers.mcp_updates)
     container.eager(providers.agent_feeds)
-    container.eager(runtime.command_runner)
+    container.eager(services.command_runner)
     Container.set_root(container)
     Container.set_session_hook(_session_container)
     return container

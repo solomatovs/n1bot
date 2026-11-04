@@ -75,7 +75,7 @@ from boba.chat.profiles import (
     SelectedProfile,
 )
 from boba.core.mcp_names import McpToolNames
-from boba.db.postgres import AsyncPostgresPool, PostgresSchema
+from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import (
     LibpqConnection,
     PostgresAuthError,
@@ -86,9 +86,10 @@ from boba.kerberos import KeytabAuth
 from boba.krb.credentials import KerberosEnv
 from boba.llm.onnx import OnnxProvider
 from boba.mcp_client.client import FixedServerConfigs, McpServerConfig, McpServers
-from boba.runtime.threads import ThreadsTable
-from boba.runtime.users import UsersTable
+from boba.aid.data.threads import ThreadsTable
+from boba.aid.data.users import UsersTable
 from boba.stand.names import StandNames
+from boba.stand.migrate import StandMigrations
 from boba.stand.signin import SignInStand
 from boba.stand.site import Stand
 from boba.stand.ui.fake_llm import FailureName, ScenarioName
@@ -115,7 +116,7 @@ def chainlit_context() -> None:
 async def users(test_postgres: PostgresConfig, pool: AsyncPostgresPool) -> UsersTable:
     """Строки users набора: запуск агента читает их только при удалении
     треда в режиме службы."""
-    return UsersTable(test_postgres, SCHEMA, pool)
+    return UsersTable(pool, SCHEMA)
 
 
 @pytest.fixture
@@ -458,12 +459,9 @@ class TestForkCut:
                 name=SignInStand.PROFILE, config=SignInStand.profile()
             ),
         )
-        async with pool.connection() as conn:
-            await PostgresSchema(SCHEMA).apply_packages(
-                conn, ("boba.identity_postgres", "boba.runtime")
-            )
+        await StandMigrations().application(test_postgres, SCHEMA, "boba.aid")
 
-        threads = ThreadsTable(test_postgres, SCHEMA)
+        threads = ThreadsTable(pool, SCHEMA)
         updates = RecordingUpdates()
         agent = ThreadAgent(
             identity,
@@ -566,12 +564,9 @@ async def threads(
     pool: AsyncPostgresPool, test_postgres: PostgresConfig
 ) -> ThreadsTable:
     """Таблица тредов в схеме теста: в threads.meta агент вкладки помнит сессию."""
-    async with pool.connection() as conn:
-        await PostgresSchema(SCHEMA).apply_packages(
-            conn, ("boba.identity_postgres", "boba.runtime")
-        )
+    await StandMigrations().application(test_postgres, SCHEMA, "boba.aid")
 
-    return ThreadsTable(test_postgres, SCHEMA)
+    return ThreadsTable(pool, SCHEMA)
 
 
 @pytest.fixture

@@ -29,7 +29,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import ClassVar
 
-from boba.runtime.config import ProgramRoots
+from boba.sandbox.paths import ProgramRoots
 from boba.sandbox.argv import ZygoteArgv
 from boba.stand.shell import ShellRun
 from boba.stand.zygote import ProcTree, SandboxStand, ZygoteStand

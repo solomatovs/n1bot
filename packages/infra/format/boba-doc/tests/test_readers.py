@@ -13,11 +13,11 @@ from boba.doc.document import (
     DisabledOcr,
     DocumentError,
     DocumentHint,
-    DocumentKind,
     PageWindow,
     Sha256Stream,
     SizedPageInfo,
 )
+from boba.doc.formats import StandardDocuments
 from boba.doc.router import DocumentRouter
 
 PDF_HINT = DocumentHint(media_type="application/pdf")
@@ -27,7 +27,7 @@ def test_pdf_pages_window_outline_and_boxed_search(router: DocumentRouter) -> No
     data = Samples.pdf(["first page", "second page", "third page"])
 
     with router.open(NoSeek(data), PDF_HINT) as document:
-        assert document.kind is DocumentKind.PDF
+        assert document.kind == "pdf"
         assert document.page_count() == 3
 
         pages = list(document.pages(PageWindow(start=2, count=5)))
@@ -84,7 +84,7 @@ def test_docx_paragraphs_table_and_block_pages(router: DocumentRouter) -> None:
     hint = DocumentHint(filename="report.docx")
 
     with router.open(NoSeek(data), hint) as document:
-        assert document.kind is DocumentKind.DOCX
+        assert document.kind == "docx"
         assert document.page_count() == 3
 
         pages = list(document.pages(PageWindow.whole()))
@@ -125,7 +125,7 @@ def test_xls_sheets_as_pages(router: DocumentRouter) -> None:
     hint = DocumentHint(media_type="application/vnd.ms-excel")
 
     with router.open(NoSeek(data), hint) as document:
-        assert document.kind is DocumentKind.XLS
+        assert document.kind == "xls"
         assert document.page_count() == 2
 
         pages = list(document.pages(PageWindow.whole()))
@@ -167,7 +167,9 @@ def test_text_encodings_in_order(router: DocumentRouter) -> None:
     with router.open(NoSeek("привет".encode("cp1251")), hint) as document:
         assert next(iter(document.pages(PageWindow.whole()))).text == "привет"
 
-    strict = DocumentRouter(DocConfig(text_encodings=("utf-8",)), DisabledOcr())
+    strict = StandardDocuments(
+        DocConfig(text_encodings=("utf-8",)), DisabledOcr()
+    ).router
     broken = NoSeek("привет".encode("cp1251"))
     with pytest.raises(DocumentError, match="cannot decode"), strict.open(broken, hint):
         pass
@@ -187,7 +189,7 @@ def test_html_becomes_markdown_with_declared_charset(router: DocumentRouter) -> 
     hint = DocumentHint(media_type="text/html; charset=windows-1251")
 
     with router.open(NoSeek(HTML_PAGE), hint) as document:
-        assert document.kind is DocumentKind.HTML
+        assert document.kind == "html"
         assert document.page_count() == 1
         text = next(iter(document.pages(PageWindow.whole()))).text
 
@@ -203,9 +205,9 @@ def test_html_read_as_text_keeps_the_markup(router: DocumentRouter) -> None:
     page = b"<html><body><p>plain</p></body></html>"
 
     kind, stream = router.detect(NoSeek(page), DocumentHint())
-    assert kind is DocumentKind.HTML
+    assert kind == "html"
 
-    assert router.read_text_as(DocumentKind.TEXT, stream) == page.decode()
+    assert router.read_text_as("text", stream) == page.decode()
 
 
 def test_read_text_joins_non_empty_pages(router: DocumentRouter) -> None:
@@ -246,7 +248,7 @@ def test_unknown_and_broken_documents_fail_with_context(router: DocumentRouter) 
     not_zip = NoSeek(b"PK\x03\x04 not a zip")
     with (
         pytest.raises(DocumentError, match="docx document: opening failed"),
-        router.open_as(DocumentKind.DOCX, not_zip),
+        router.open_as("docx", not_zip),
     ):
         pass
 

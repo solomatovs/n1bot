@@ -14,7 +14,6 @@ import threading
 import time
 from collections.abc import Iterator
 from contextlib import ExitStack
-from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, ClassVar, cast
 from uuid import UUID
@@ -34,6 +33,7 @@ from pydantic import ValidationError
 
 from boba.aid.canvas.panel import CanvasNote, CanvasPanel, StreamActions
 from boba.aid.chat.ui_text import UiText
+from boba.aid.infra.di import Container
 from boba.aid.rendering.chat_view import (
     ChatSink,
     ChatView,
@@ -54,12 +54,10 @@ from boba.canvas.journal import JournalWindow, StreamKey
 from boba.identity.context import CallContext
 from boba.identity.run import Runs
 from boba.mcp_client.client import McpServers
-from boba.runtime import providers as runtime
-from boba.runtime.di import Container
-from boba.runtime.journal import DirVault, StreamJournal
-from boba.runtime.storage import LocalStorageClient
 from boba.stand.refs import StandRefs
 from boba.stand_core.context import CallStand
+from boba.storage.client import LocalStorageClient
+from boba.storage.journal import DirVault, StreamJournal
 from boba.tool_io.chain import CallAmbient
 from boba.toolkit.channels import CallOutcome, ToolChannel, WrapChannel
 from boba.toolkit.dag import DagNode
@@ -150,7 +148,6 @@ def journals(
     if root is None:
         raise AssertionError("di_root installs the root container")
 
-    root.provide(runtime.call_journals, built)
     REMOTE.forget()
     REMOTE.serve(journal_service)
     REMOTE.recorded(THREAD, CALL_ID)
@@ -1334,19 +1331,18 @@ class TestStreamDownload:
         from boba.aid.auth.request import authenticated_user
         from boba.aid.data.upload import StreamServing
         from boba.aid.domain.keys import StreamUrl
-        from boba.identity.api import AuthenticatedUser
+        from boba.identity.authentication import AccessGrant, AuthenticatedPrincipal
+        from boba.identity.principal import UserIdentity
         from boba.identity.session import Login
-        from boba.identity.signin import SignInMetadata
 
         serving = StreamServing(lambda: REMOTE.journals, lambda: servers)
 
         app = FastAPI()
         app.add_api_route(StreamUrl.ROUTE, serving.serve, methods=["GET"])
-        user = AuthenticatedUser(
+        user = AuthenticatedPrincipal(
             id=UUID(USER),
-            identifier=Login("corporate:tester"),
-            created_at=datetime(2024, 1, 1, tzinfo=UTC),
-            sign_in=SignInMetadata(roles=frozenset({"read"})),
+            identity=UserIdentity(realm="corporate", login=Login("tester")),
+            access=AccessGrant(roles=frozenset({"read"}), profiles=frozenset()),
         )
         app.dependency_overrides[authenticated_user] = lambda: user
         return app

@@ -1,0 +1,536 @@
+"""Шина на Postgres: два инстанса одного процесса общаются через таблицы и NOTIFY."""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import AsyncIterator
+from uuid import UUID, uuid4
+
+import pytest
+from psycopg import sql
+
+from boba.aid.infra.config import AppConfig
+from boba.chat.messages import (
+    ChatMessages,
+    MessageKind,
+    Notice,
+    NoticeLevel,
+    RunListChanged,
+    StopRequested,
+)
+from boba.db.postgres import AsyncPostgresPool, PgQueryBuilder
+from boba.db.postgres.connection import PostgresConfig
+from boba.db.postgres.messaging.bus import LiveListener, PgMessageBus, Pointer
+from boba.db.postgres.messaging.schema import LiveTable
+from boba.identity.context import Scope
+from boba.messaging import (
+    BusLimit,
+    CommandEnvelope,
+    Envelope,
+    LockToken,
+    MessageBusError,
+    MessageTooLargeError,
+)
+from boba.messaging.bus import ListenerState
+from boba.stand.database import PostgresSessions
+from boba.stand.migrate import StandMigrations
+
+pytestmark = [pytest.mark.integration, pytest.mark.anyio]
+
+WAIT_SEC = 5.0
+
+
+class Inbox:
+    """Накопитель конвертов с ожиданием нужного количества."""
+
+    def __init__(self) -> None:
+        self.envelopes: list[Envelope] = []
+        self.commands: list[CommandEnvelope] = []
+
+    async def take(self, envelope: Envelope) -> None:
+        self.envelopes.append(envelope)
+
+    async def take_command(self, envelope: CommandEnvelope) -> None:
+        self.commands.append(envelope)
+
+    async def wait(self, count: int) -> None:
+        deadline = asyncio.get_running_loop().time() + WAIT_SEC
+        while len(self.envelopes) < count:
+            if asyncio.get_running_loop().time() > deadline:
+                msg = f"expected {count} envelopes, got {len(self.envelopes)}"
+                raise AssertionError(msg)
+
+            await asyncio.sleep(0.02)
+
+    async def wait_commands(self, count: int) -> None:
+        deadline = asyncio.get_running_loop().time() + WAIT_SEC
+        while len(self.commands) < count:
+            if asyncio.get_running_loop().time() > deadline:
+                msg = f"expected {count} commands, got {len(self.commands)}"
+                raise AssertionError(msg)
+
+            await asyncio.sleep(0.02)
+
+    def tokens(self) -> list[str]:
+        out: list[str] = []
+        for envelope in self.envelopes:
+            body = envelope.message.model_dump()
+            out.append(str(body["text"]))
+
+        return out
+
+
+async def _bus(
+    bus_config: AppConfig,
+    test_database: str,
+    pool: AsyncPostgresPool,
+    name: str,
+) -> PgMessageBus:
+    cfg = bus_config.postgres.model_copy(update={"dbname": test_database})
+    bus = PgMessageBus(
+        pool,
+        bus_config.db_schema,
+        name,
+        bus_config.cluster,
+        ChatMessages().codec,
+        listener_connect=lambda: AsyncPostgresPool.dedicated(cfg),
+    )
+    await StandMigrations().application(cfg, bus_config.db_schema, "boba.aid")
+
+    await bus.start()
+    return bus
+
+
+@pytest.fixture
+async def buses(
+    bus_config: AppConfig, test_database: str, pool: AsyncPostgresPool
+) -> AsyncIterator[tuple[PgMessageBus, PgMessageBus]]:
+    first = await _bus(bus_config, test_database, pool, "node1-aid")
+    second = await _bus(bus_config, test_database, pool, "node2-aid")
+    try:
+        yield first, second
+    finally:
+        await first.stop()
+        await second.stop()
+
+
+def _token(text: str) -> Notice:
+    """Сообщение без держателя: тесты шины не про блокировки."""
+    return Notice(level=NoticeLevel.INFO, text=text)
+
+
+async def test_messages_cross_instances_in_seq_order(
+    buses: tuple[PgMessageBus, PgMessageBus],
+) -> None:
+    first, second = buses
+    scope = Scope.chat(str(uuid4()))
+    local = Inbox()
+    remote = Inbox()
+    first.subscribe(scope, local.take)
+    second.subscribe(scope, remote.take)
+    token = LockToken.local()
+
+    seqs = [await first.publish(scope, _token(str(i)), token) for i in range(30)]
+
+    assert seqs == sorted(seqs)
+    assert len(set(seqs)) == 30
+    await local.wait(30)
+    await remote.wait(30)
+    assert local.tokens() == [str(i) for i in range(30)]
+    assert remote.tokens() == [str(i) for i in range(30)]
+    assert remote.envelopes[0].origin == "node1-aid"
+    assert remote.envelopes[0].scope == scope
+
+
+async def test_identical_messages_are_delivered_both_times(
+    buses: tuple[PgMessageBus, PgMessageBus],
+) -> None:
+    first, second = buses
+    scope = Scope.workflow(uuid4())
+    remote = Inbox()
+    second.subscribe(scope, remote.take)
+    token = LockToken.local()
+
+    await first.publish(scope, _token("same"), token)
+    await first.publish(scope, _token("same"), token)
+
+    await remote.wait(2)
+    assert remote.envelopes[0].seq < remote.envelopes[1].seq
+
+
+async def test_replay_and_purge(buses: tuple[PgMessageBus, PgMessageBus]) -> None:
+    first, second = buses
+    scope = Scope.workflow(uuid4())
+    token = LockToken.local()
+    seqs = [await first.publish(scope, _token(text), token) for text in ("a", "b", "c")]
+
+    tail = await second.replay(scope, after_seq=seqs[0])
+
+    assert [e.seq for e in tail] == seqs[1:]
+    assert tail[0].origin == "node1-aid"
+
+    assert await second.purge(scope) == 3
+    assert await first.replay(scope, after_seq=0) == []
+    assert await first.publish(scope, _token("d"), token) > seqs[-1]
+
+
+async def test_subscribers_survive_the_idle_purge(
+    buses: tuple[PgMessageBus, PgMessageBus],
+) -> None:
+    """Уборка простоявшей области не сбрасывает нумерацию: подписчики с запомненным
+    последним номером видят следующий ход.
+    """
+    first, second = buses
+    scope = Scope.chat(str(uuid4()))
+    local = Inbox()
+    remote = Inbox()
+    first.subscribe(scope, local.take)
+    second.subscribe(scope, remote.take)
+    token = LockToken.local()
+
+    for i in range(3):
+        await first.publish(scope, _token(f"turn1-{i}"), token)
+
+    await local.wait(3)
+    await remote.wait(3)
+
+    assert await first.purge_idle(0) >= 3
+    assert await first.replay(scope, after_seq=0) == []
+
+    # последний номер берётся до публикации: свой подписчик может получить
+    # новый конверт раньше проверки
+    before = local.envelopes[-1].seq
+    seq = await first.publish(scope, _token("turn2-0"), token)
+
+    assert seq > before
+    await local.wait(4)
+    await remote.wait(4)
+    assert local.tokens()[-1] == "turn2-0"
+    assert remote.tokens()[-1] == "turn2-0"
+
+
+async def test_oversized_message_is_rejected(
+    buses: tuple[PgMessageBus, PgMessageBus],
+) -> None:
+    first, _ = buses
+    scope = Scope.chat(str(uuid4()))
+    huge = Notice(level=NoticeLevel.INFO, text="x" * (BusLimit.BODY_MAX_BYTES + 1))
+
+    with pytest.raises(MessageTooLargeError):
+        await first.publish(scope, huge, LockToken.local())
+
+    assert await first.replay(scope, after_seq=0) == []
+
+
+async def test_command_reaches_both_instances_and_is_taken_once(
+    buses: tuple[PgMessageBus, PgMessageBus],
+) -> None:
+    first, second = buses
+    scope = Scope.workflow(uuid4())
+    left = Inbox()
+    right = Inbox()
+    first.subscribe_commands(left.take_command)
+    second.subscribe_commands(right.take_command)
+
+    command_id = await second.command(
+        scope, StopRequested(by_user=UUID(int=1), by_instance=second.instance)
+    )
+
+    await left.wait_commands(1)
+    await right.wait_commands(1)
+    assert left.commands[0].command_id == command_id
+    assert left.commands[0].scope == scope
+    assert isinstance(left.commands[0].command, StopRequested)
+
+    taken = await asyncio.gather(
+        first.take(scope, command_id, first.instance),
+        second.take(scope, command_id, second.instance),
+    )
+
+    assert sorted(taken) == [False, True]
+
+
+async def test_listener_reconnects_and_catches_up(
+    buses: tuple[PgMessageBus, PgMessageBus], pool: AsyncPostgresPool
+) -> None:
+    first, second = buses
+    scope = Scope.chat(str(uuid4()))
+    remote = Inbox()
+    second.subscribe(scope, remote.take)
+    token = LockToken.local()
+    await first.publish(scope, _token("before"), token)
+    await remote.wait(1)
+
+    async with pool.cursor() as cur:
+        await cur.execute(
+            "select pg_terminate_backend(%s)", (second.listener.backend_pid,)
+        )
+
+    deadline = asyncio.get_running_loop().time() + WAIT_SEC
+    while second.listener.state is ListenerState.LISTENING:
+        assert asyncio.get_running_loop().time() < deadline
+        await asyncio.sleep(0.02)
+
+    await first.publish(scope, _token("while-down"), token)
+    await second.listener.wait_listening(WAIT_SEC)
+    await first.publish(scope, _token("after"), token)
+
+    await remote.wait(3)
+    assert remote.tokens() == ["before", "while-down", "after"]
+
+
+async def test_failing_subscriber_stops_the_listener_and_the_bus_refuses(
+    bus_config: AppConfig, test_database: str, pool: AsyncPostgresPool
+) -> None:
+    bus = await _bus(bus_config, test_database, pool, "node3-aid")
+    try:
+        scope = Scope.chat(str(uuid4()))
+        seen: list[int] = []
+
+        async def broken(envelope: Envelope) -> None:
+            raise RuntimeError("renderer is broken")
+
+        async def take(envelope: Envelope) -> None:
+            seen.append(envelope.seq)
+
+        bus.subscribe(scope, broken)
+        bus.subscribe(scope, take)
+        await bus.publish(scope, _token("a"), LockToken.local())
+
+        deadline = asyncio.get_running_loop().time() + WAIT_SEC
+        while bus.listener.state is not ListenerState.FAILED:
+            assert asyncio.get_running_loop().time() < deadline
+            await asyncio.sleep(0.02)
+
+        assert len(seen) == 1
+
+        with pytest.raises(MessageBusError, match="unusable"):
+            await bus.publish(scope, _token("b"), LockToken.local())
+    finally:
+        await bus.stop()
+
+
+async def test_user_scope_events_cross_instances(
+    buses: tuple[PgMessageBus, PgMessageBus],
+) -> None:
+    first, second = buses
+    scope = Scope.user(UUID(int=7))
+    inbox = Inbox()
+    second.subscribe(scope, inbox.take)
+
+    await first.publish(
+        scope,
+        RunListChanged(
+            run_id=uuid4(), workflow_id=UUID(int=1), workflow_name="w", status="pending"
+        ),
+        LockToken.local(),
+    )
+
+    await inbox.wait(1)
+    assert inbox.envelopes[0].message.kind is MessageKind.RUN_LIST_CHANGED
+
+
+async def test_listener_retries_when_the_catch_up_fails(
+    bus_config: AppConfig,
+    test_database: str,
+    pool: AsyncPostgresPool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ошибка базы при догоне после реконнекта — повтор, а не остановка слушателя."""
+    cfg = bus_config.postgres.model_copy(update={"dbname": test_database})
+    calls: list[int] = []
+
+    async def handler(pointer: Pointer) -> None:
+        return None
+
+    async def on_reconnect() -> None:
+        calls.append(len(calls))
+        if len(calls) == 1:
+            msg = "message bus: read failed while the pool was still dead"
+            raise MessageBusError(msg)
+
+    monkeypatch.setattr(LiveListener, "RETRY_SEC", 0.1)
+    listener = LiveListener(
+        lambda: AsyncPostgresPool.dedicated(cfg), handler, on_reconnect
+    )
+    await listener.start()
+    try:
+        async with pool.cursor() as cur:
+            await cur.execute(
+                "select pg_terminate_backend(%s)", (listener.backend_pid,)
+            )
+
+        deadline = asyncio.get_running_loop().time() + WAIT_SEC
+        while len(calls) < 2:
+            assert asyncio.get_running_loop().time() < deadline, calls
+            await asyncio.sleep(0.05)
+
+        await listener.wait_listening(WAIT_SEC)
+        assert listener.state is ListenerState.LISTENING
+        listener.ensure_alive()
+    finally:
+        await listener.stop()
+
+
+async def test_user_scopes_of_two_users_do_not_cross(
+    bus_config: AppConfig, test_database: str, pool: AsyncPostgresPool
+) -> None:
+    """Одна шина на два узла: область пользователя — его users.id, поэтому
+    события одного пользователя не приходят в область другого.
+    """
+    chat = await _bus(bus_config, test_database, pool, "node1-aid")
+    other = await _bus(bus_config, test_database, pool, "node2-aid")
+    try:
+        chat_user = Scope.user(UUID(int=1))
+        other_user = Scope.user(UUID(int=2))
+        foreign = Inbox()
+        own = Inbox()
+        other.subscribe(other_user, foreign.take)
+        other.subscribe(chat_user, own.take)
+        token = LockToken.local()
+
+        await chat.publish(chat_user, _token("thread-changed"), token)
+
+        await own.wait(1)
+        await asyncio.sleep(0.3)
+        assert own.tokens() == ["thread-changed"]
+        assert foreign.tokens() == []
+    finally:
+        await other.stop()
+        await chat.stop()
+
+
+async def test_neighbour_setup_does_not_deadlock_with_purge(
+    bus_config: AppConfig, test_database: str, pool: AsyncPostgresPool
+) -> None:
+    """Старт узла (setup с ALTER'ами) во время чистки соседа.
+
+    Чистка держит замок live_events и добирает live_commands; setup обязан
+    захватывать таблицы в том же порядке — при инверсии одна из сторон
+    падала с DeadlockDetected.
+    """
+    first = await _bus(bus_config, test_database, pool, "node1-aid")
+    schema = bus_config.db_schema
+    scope = Scope.chat(str(uuid4()))
+    token = LockToken.local()
+
+    try:
+        await first.publish(scope, _token("hold"), token)
+        await first.command(
+            scope, StopRequested(by_user=UUID(int=1), by_instance=first.instance)
+        )
+
+        async with pool.connection() as sweeper, sweeper.transaction():
+            clear_events = (
+                PgQueryBuilder(events=sql.Identifier(schema, LiveTable.EVENTS.value))
+                .add("delete from {events}")
+                .build()
+            )
+            await sweeper.execute(clear_events.text, clear_events.params)
+
+            second_task = asyncio.create_task(
+                _bus(bus_config, test_database, pool, "node2-aid")
+            )
+
+            deadline = asyncio.get_running_loop().time() + WAIT_SEC
+            blocked = 0
+            while blocked == 0:
+                assert asyncio.get_running_loop().time() < deadline
+
+                async with pool.cursor() as cur:
+                    await cur.execute(
+                        "select count(*) from pg_stat_activity"
+                        " where wait_event_type = 'Lock'"
+                        "   and query ilike '%alter table%'"
+                    )
+                    row = await cur.fetchone()
+
+                assert row is not None
+                blocked = int(row[0])
+                await asyncio.sleep(0.05)
+
+            clear_commands = (
+                PgQueryBuilder(
+                    commands=sql.Identifier(schema, LiveTable.COMMANDS.value)
+                )
+                .add("delete from {commands}")
+                .build()
+            )
+            await sweeper.execute(clear_commands.text, clear_commands.params)
+
+        second = await asyncio.wait_for(second_task, timeout=WAIT_SEC)
+        await second.stop()
+    finally:
+        await first.stop()
+
+
+async def test_start_drops_events_of_retired_kinds(
+    buses: tuple[PgMessageBus, PgMessageBus],
+    bus_config: AppConfig,
+    test_database: str,
+    pool: AsyncPostgresPool,
+) -> None:
+    """Строка вида, которого шина больше не знает (element_shown выкатом
+    убран), удаляется при старте узла: догон области её не встречает."""
+    first, _ = buses
+    scope = Scope.chat(str(uuid4()))
+    token = LockToken.local()
+    kept = await first.publish(scope, _token("kept"), token)
+    schema = bus_config.db_schema
+    async with pool.connection() as conn:
+        await conn.execute(
+            sql.SQL(
+                "insert into {}.live_events (scope_kind, scope_id, seq, kind, "
+                "origin, body) values ('chat', %s, %s, 'element_shown', 'old', "
+                "'{{}}'::jsonb)"
+            ).format(sql.Identifier(schema)),
+            (scope.uuid(), kept + 1),
+        )
+
+    third = await _bus(bus_config, test_database, pool, "node3-aid")
+    await third.stop()
+
+    replayed = await first.replay(scope, after_seq=0)
+    assert [envelope.seq for envelope in replayed] == [kept]
+
+
+async def test_bus_survives_all_its_connections_terminated_on_the_server(
+    bus_config: AppConfig, test_database: str, test_postgres: PostgresConfig
+) -> None:
+    """Обрыв на сервере и соединений пула, и соединения LISTEN (как
+    перезапуск Postgres): публикация сразу идёт на новом соединении пула,
+    слушатель переподключается и добирает пропущенное."""
+    sessions = PostgresSessions(test_postgres)
+    name = f"bus-{uuid4().hex[:8]}"
+    cfg = sessions.signed(name)
+    pool = AsyncPostgresPool(cfg)
+    await pool.open()
+    bus = PgMessageBus(
+        pool,
+        bus_config.db_schema,
+        "node1-aid",
+        bus_config.cluster,
+        ChatMessages().codec,
+        listener_connect=lambda: AsyncPostgresPool.dedicated(cfg),
+    )
+    await StandMigrations().application(cfg, bus_config.db_schema, "boba.aid")
+
+    await bus.start()
+    try:
+        scope = Scope.chat(str(uuid4()))
+        inbox = Inbox()
+        bus.subscribe(scope, inbox.take)
+        token = LockToken.local()
+        await bus.publish(scope, _token("before"), token)
+        await inbox.wait(1)
+
+        assert await sessions.terminate(name) >= 2
+
+        await bus.publish(scope, _token("after"), token)
+        await bus.listener.wait_listening(WAIT_SEC)
+        await inbox.wait(2)
+    finally:
+        await bus.stop()
+        await pool.close()
+
+    assert inbox.tokens() == ["before", "after"]

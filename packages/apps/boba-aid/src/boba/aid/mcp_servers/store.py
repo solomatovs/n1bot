@@ -24,8 +24,8 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from boba.access.grants import GrantResource, GrantSubject
-from boba.connection_broker.crypto import SecretCipher, SecretCryptoError
-from boba.connection_broker.grants import GrantedIds
+from boba.access_postgres.grants import GrantedIds
+from boba.crypto import SecretCipher, SecretCryptoError
 from boba.db.postgres import PgQuery, PostgresPool, PostgresTable
 from boba.mcp_client.client import HttpEndpoint, McpServerLimits, SseEndpoint
 
@@ -110,7 +110,7 @@ class McpServerStore(PostgresTable):
     def __init__(
         self, pool: PostgresPool, db_schema: str, cipher: SecretCipher
     ) -> None:
-        super().__init__(None, db_schema, pool)
+        super().__init__(pool, db_schema)
         self._cipher = cipher
         self._grants = GrantedIds()
 

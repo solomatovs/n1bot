@@ -25,8 +25,9 @@ import pytest
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 
-from boba.auth.proxy import ProxyAssertions
+from boba.oauth.assertions import ProxyAssertions
 from boba.db.postgres.connection import PostgresConfig
+from boba.mcp_server.migrations import configured_migrations
 from boba.stand.database import TestDatabase
 from boba.stand.migrate import StandSchema
 from boba.stand.ui.database import run_blocking
@@ -106,11 +107,8 @@ def service(
     config.write()
     storage = StandSchema(
         config.files.paths(config.app),
-        (
-            "boba.identity_postgres",
-            "boba.access_postgres",
-            "boba.connection_broker",
-        ),
+        "boba.mcp_server",
+        configured_migrations(),
     )
     run_blocking(storage.create())
     process = StandProcess[ServiceStand](config=config, log_path=tmp_path / "mcp.log")

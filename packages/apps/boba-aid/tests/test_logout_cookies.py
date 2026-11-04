@@ -9,6 +9,11 @@ from boba.aid.infra.config import AppConfig
 pytestmark = pytest.mark.anyio
 
 
+@pytest.fixture(autouse=True)
+def chainlit_context() -> None:
+    """Logout cookie parsing does not use the ambient Chainlit context."""
+
+
 class TestLogoutCookies:
     """Выход чистит только свою куку; чужие имена не валят обработчик."""
 

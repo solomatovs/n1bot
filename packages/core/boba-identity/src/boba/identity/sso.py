@@ -1,4 +1,4 @@
-"""SSO-вход: запрос обмена без транспорта, исходы, коды отказа и порты.
+"""SSO-вход: запрос обмена без транспорта, исходы и порты.
 
 Ошибки: своих не выпускает; AuthorizationError — отказ в допуске у реализации.
 """
@@ -6,61 +6,25 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from enum import StrEnum
 from typing import ClassVar, Protocol
 
 from pydantic import BaseModel, ConfigDict
 
 from boba.identity.admission import PrincipalFacts
+from boba.identity.authentication import AuthenticatedSession
 from boba.identity.context import DelegatedTicket
-from boba.identity.signin import SignedIn
+from boba.identity.signin import SignInResult
 
 __all__ = [
-    "OwnRequest",
     "RefreshSignal",
-    "RequestHeader",
     "SessionRefresh",
     "SpnegoExchange",
     "SsoAdmission",
     "SsoChallenge",
-    "SsoErrorCode",
     "SsoRefused",
     "SsoRequest",
     "SsoSigned",
 ]
-
-
-class RequestHeader(StrEnum):
-    """Заголовки, которыми живёт обмен: токен, клиент за прокси, вызов браузеру."""
-
-    AUTHORIZATION = "authorization"
-    FORWARDED_FOR = "x-forwarded-for"
-    REAL_IP = "x-real-ip"
-    WWW_AUTHENTICATE = "WWW-Authenticate"
-
-
-class OwnRequest(StrEnum):
-    """Метка запроса своей страницы: заголовок ставит только свой fetch, кросс-сайтовая
-    форма или навигация его не несут — им закрыты вход, выход и повторный обмен.
-    """
-
-    HEADER = "x-boba-request"
-    VALUE = "1"
-
-    @classmethod
-    def asked(cls, value: str) -> bool:
-        return value == cls.VALUE
-
-
-class SsoErrorCode(StrEnum):
-    """Коды исхода SSO для страницы логина: ?error=<code>."""
-
-    TICKET = "sso_ticket"
-    DENIED = "sso_denied"
-    FAILED = "sso_failed"
-
-    def login_url(self, login: str) -> str:
-        return f"{login}?error={self.value}"
 
 
 class SsoRequest(BaseModel):
@@ -89,12 +53,11 @@ class SsoChallenge(BaseModel):
 
 
 class SsoSigned(BaseModel):
-    """SPNEGO принят, принципал допущен: пользователь входа с билетом в metadata."""
+    """SPNEGO принят: типизированный результат входа с credentials."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    signed: SignedIn
-    principal: str
+    signed: SignInResult
 
 
 class SsoRefused(BaseModel):
@@ -138,5 +101,5 @@ class SessionRefresh(Protocol):
 
     @abstractmethod
     async def renew(
-        self, request: SsoRequest, signed: SignedIn
+        self, request: SsoRequest, session: AuthenticatedSession
     ) -> SsoChallenge | SsoRefused | SsoSigned: ...

@@ -30,7 +30,7 @@ from fx_zygote import FxZygote
 from pydantic import SecretStr
 
 from boba.cancellation import ToolStopped, run_cancellation
-from boba.runtime.config import ProgramRoots
+from boba.sandbox.paths import ProgramRoots
 from boba.sandbox import SandboxProfile
 from boba.sandbox.program import PluginCommand, ProgramExit
 from boba.sandbox.zygote import (

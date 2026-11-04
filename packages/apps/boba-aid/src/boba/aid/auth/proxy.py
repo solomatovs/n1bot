@@ -12,11 +12,12 @@ from fastapi import FastAPI
 from starlette.requests import Request
 from starlette.responses import Response
 
+from boba.aid.auth.http import ProxyRequests, SessionCookie
 from boba.aid.auth.kerberos import KerberosAuth
+from boba.aid.auth.preferences import SessionPreferences
 from boba.aid.auth.refresh import SessionRefresh
-from boba.auth import AuthService
+from boba.aid.auth.session import BrowserSessions
 from boba.auth.config import ProxyAuthConfig
-from boba.runtime.http import ProxyRequests, SessionCookie
 
 __all__ = ["ProxyAuth"]
 
@@ -28,7 +29,7 @@ class ProxyAuth:
     заголовки читает по именам из того же конфига.
     """
 
-    def __init__(self, config: ProxyAuthConfig, auth: AuthService) -> None:
+    def __init__(self, config: ProxyAuthConfig, auth: BrowserSessions) -> None:
         self._config = config
         self._auth = auth
         self._requests = ProxyRequests()
@@ -49,12 +50,13 @@ class ProxyAuth:
 
         self._logger.info(
             "proxy sign-in [user=%s] [client=%s] [roles=%s]",
-            session.signed.identifier,
+            session.user.identifier,
             proxy_request.client,
-            ",".join(sorted(session.signed.sign_in.roles)),
+            ",".join(sorted(session.user.roles)),
         )
 
         response = Response(status_code=204)
         SessionCookie(self._auth.cookie()).put(response, request.cookies, session.token)
+        SessionPreferences(self._auth.cookie()).put(response, session.preferred_profile)
 
         return response

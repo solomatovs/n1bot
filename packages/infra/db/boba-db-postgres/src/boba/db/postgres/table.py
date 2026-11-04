@@ -1,4 +1,4 @@
-"""Общее для хранилищ одной схемы postgres: ленивый пул, сборщик запросов со
+"""Общее для хранилищ одной схемы postgres: переданный пул, сборщик запросов со
 схемой стоящим именем, граница ошибок слоя и транзакция с курсором словарей.
 Работа транзакцией, у которой соединение
 оборвалось до commit, повторяется один раз на новом соединении пула.
@@ -22,9 +22,12 @@ from psycopg import sql
 from psycopg.rows import DictRow, dict_row
 from pydantic import BaseModel, ValidationError
 
-from boba.db.postgres.async_pool import AsyncPostgresPool, PostgresPool
-from boba.db.postgres.connection import PostgresConfig
-from boba.db.postgres.errors import PostgresConnectionLostError, PostgresError
+from boba.db.postgres.async_pool import PostgresPool
+from boba.db.postgres.errors import (
+    PostgresConcurrentChangeError,
+    PostgresConnectionLostError,
+    PostgresError,
+)
 from boba.db.postgres.query import PgQuery, PgQueryBuilder
 from boba.db.postgres.schema import AdvisoryLock, PostgresSchema
 
@@ -41,10 +44,11 @@ logger = logging.getLogger(__name__)
 
 class PostgresTable:
     """Базовый класс хранилищ схемы postgres; его наследуют таблицы чата и
-    шины (boba-runtime), workflow, connections, каталог и kb-store.
+    шины сообщений, workflow, connections, каталог и kb-store.
 
-    Пул берётся при первом обращении, потому что __init__ не может await;
-    готовый пул приходит параметром. SQL наследник пишет в _query(): схема
+    Пул создаёт, открывает до первого запроса и закрывает сборка приложения.
+    Хранилище получает пул и имя схемы: один пул может обслуживать несколько
+    схем. SQL наследник пишет в _query(): схема
     подставляется именем {schema}, значения уезжают параметрами. Отказ базы
     ловит _guarded и переводит в ошибку слоя тем, что вернёт _failure: здесь
     это PostgresError, наследник подменяет её своей и подписывает LABEL.
@@ -53,51 +57,13 @@ class PostgresTable:
     LABEL: ClassVar[str] = "postgres"
     """Подпись слоя в текстах ошибок."""
 
-    def __init__(
-        self,
-        postgres: PostgresConfig | None,
-        db_schema: str,
-        pool: PostgresPool | None = None,
-    ) -> None:
-        """Без готового пула нужен конфиг подключения: пул возьмётся по нему.
-
-        Ошибки:
-        PostgresError — ни пула, ни конфига подключения.
-        """
-        if postgres is None and pool is None:
-            msg = (
-                f"table in schema {db_schema}: expected a pool or a postgres "
-                "connection config, got neither"
-            )
-            raise PostgresError(msg)
-
-        self._postgres = postgres
+    def __init__(self, pool: PostgresPool, db_schema: str) -> None:
+        self._pool = pool
         self._schema = PostgresSchema(db_schema)
-        self._pool_ref = pool
 
     @property
     def schema(self) -> str:
         return self._schema.name
-
-    async def _pool(self) -> PostgresPool:
-        if self._pool_ref is not None:
-            return self._pool_ref
-
-        self._pool_ref = await self._open_pool()
-
-        return self._pool_ref
-
-    async def _open_pool(self) -> PostgresPool:
-        """Пул процесса по конфигу подключения; наследник со своим хуком
-        соединения (register_vector) подменяет."""
-        if self._postgres is None:
-            msg = (
-                f"table in schema {self._schema.name}: no pool given and no postgres "
-                "connection config to build one"
-            )
-            raise PostgresError(msg)
-
-        return await AsyncPostgresPool.get(self._postgres)
 
     def _query(self) -> PgQueryBuilder:
         """Сборщик запроса со схемой стоящим именем {schema}."""
@@ -129,14 +95,13 @@ class PostgresTable:
     @asynccontextmanager
     async def _transaction(self, action: str) -> AsyncGenerator[Cursor, None]:
         """Курсор словарей внутри одной транзакции на соединении из пула."""
-        async with self._guarded(action):
-            pool = await self._pool()
-            async with (
-                pool.connection() as conn,
-                conn.transaction(),
-                conn.cursor(row_factory=dict_row) as cur,
-            ):
-                yield cur
+        async with (
+            self._guarded(action),
+            self._pool.connection() as conn,
+            conn.transaction(),
+            conn.cursor(row_factory=dict_row) as cur,
+        ):
+            yield cur
 
     async def _transacted(
         self, action: str, work: Callable[[Cursor], Awaitable[ResultT]]
@@ -145,13 +110,19 @@ class PostgresTable:
         посреди работы, до commit, повторяет её один раз на новом соединении:
         незафиксированная транзакция ушла вместе с соединением. Работа поэтому
         не делает ничего вне базы; отказ на самом commit не повторяется —
-        исход транзакции неизвестен."""
+        исход транзакции неизвестен. Deadlock/serialization failure и исчезновение
+        строки также допускают один повтор целой откатившейся транзакции."""
         async with self._guarded(action):
             try:
                 return await self._attempt(work)
-            except PostgresConnectionLostError as exc:
+            except (
+                PostgresConnectionLostError,
+                PostgresConcurrentChangeError,
+                psycopg.errors.DeadlockDetected,
+                psycopg.errors.SerializationFailure,
+            ) as exc:
                 logger.warning(
-                    "%s: %s in schema %s, retrying once on a new connection: %s",
+                    "%s: %s in schema %s, retrying the transaction once: %s",
                     self.LABEL,
                     action,
                     self._schema.name,
@@ -161,9 +132,8 @@ class PostgresTable:
             return await self._attempt(work)
 
     async def _attempt(self, work: Callable[[Cursor], Awaitable[ResultT]]) -> ResultT:
-        pool = await self._pool()
         async with (
-            pool.connection() as conn,
+            self._pool.connection() as conn,
             conn.transaction(),
             conn.cursor(row_factory=dict_row) as cur,
         ):

@@ -27,10 +27,10 @@ from boba.aid.data.upload import SessionFiles, UploadRoute
 from boba.aid.infra.session import ChainlitSession
 from boba.canvas.keys import ObjectKey
 from boba.canvas.transfer import UploadPolicy
-from boba.identity.api import AuthenticatedUser
+from boba.identity.authentication import AccessGrant, AuthenticatedPrincipal
+from boba.identity.principal import UserIdentity
 from boba.identity.session import Login
-from boba.identity.signin import SignInMetadata
-from boba.runtime.storage import LocalStorageClient
+from boba.storage.client import LocalStorageClient
 
 pytestmark = pytest.mark.anyio
 
@@ -188,11 +188,10 @@ async def served(
 
     app = FastAPI()
     UploadRoute(storage, UploadPolicy()).install(app)
-    app.dependency_overrides[authenticated_user] = lambda: AuthenticatedUser(
+    app.dependency_overrides[authenticated_user] = lambda: AuthenticatedPrincipal(
         id=UUID(session.user.id),
-        identifier=Login(session.user.identifier),
-        created_at=datetime(2024, 1, 1, tzinfo=UTC),
-        sign_in=SignInMetadata(provider="local"),
+        identity=UserIdentity.model_validate(session.user.identifier),
+        access=AccessGrant(roles=frozenset(), profiles=frozenset({"general"})),
     )
 
     return app, session, file_id

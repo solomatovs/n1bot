@@ -67,7 +67,7 @@ from boba.stand.collection import StandServers
 from boba.stand.names import StandNames
 from boba.tool_io.arrow import ArrowColumns
 from boba.toolkit.contract import ArrowContract, StreamContract
-from boba.toolkit.transfer import Engine, SchemaHead, StreamWire
+from boba.toolkit.transfer import SchemaHead, StreamWire
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -1132,7 +1132,7 @@ class TestTraps:
         )
         head = SchemaHead(
             kind="schema",
-            source_engine=Engine.POSTGRES,
+            source_engine="postgres",
             wire=StreamWire.ARROW,
             contract=contract.model_dump(mode="json"),
         )

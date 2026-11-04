@@ -1,8 +1,8 @@
-"""Полный путь SSO-входа: SPNEGO-токен браузера -> заголовки -> JWT -> тикет.
+"""Полный путь SSO-входа: SPNEGO-токен браузера -> подписанная сессия -> тикет.
 
 Стенд: живой KDC и LDAP домена. Браузер моделируется initiate-контекстом
-пользователя readonly; middleware, сборка cl.User, JWT и реестр тикетов —
-боевые. Тест держит связку «вход выдал метки -> обвязка нашла по ним креды».
+пользователя readonly; маршруты, запись users, JWT и реестр тикетов — боевые.
+Тест проверяет, что билет лежит в подписанной сессии и открывается через MCP.
 """
 
 from __future__ import annotations
@@ -13,35 +13,40 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-import chainlit as cl
 import krb5
 import pytest
 from aid_stand import StandTokens
-from chainlit.auth.jwt import create_jwt
 from gssapi import Credentials, Name, NameType, SecurityContext
 from starlette.requests import Request
 
+from boba.aid.auth.cookies import CookieSpec
 from boba.aid.auth.kerberos import KerberosAuth
+from boba.aid.auth.policy import SessionRenewal
 from boba.aid.auth.refresh import PageUrls, SessionRefresh
+from boba.aid.auth.session import BrowserSessions, IssuedSession
+from boba.aid.auth.tokens import JwtTokens
+from boba.aid.data.users import UsersTable
+from boba.aid.infra.config import AppConfig
 from boba.aid.infra.session import ChainlitSessions
-from boba.auth import AuthService, IssuedSession, JwtTokens, SignIns
+from boba.auth import SessionService
 from boba.auth.config import (
     KerberosAuthConfig,
     KerberosRoleProviders,
     PrincipalRolesConfig,
 )
+from boba.auth.transport.http import OwnRequest
+from boba.chat.profiles import ChatProfiles
 from boba.config import bind
-from boba.db.postgres import AsyncPostgresPool, PostgresSchema
+from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres.connection import PostgresConfig
 from boba.identity.admission import RoleExcludeConfig
+from boba.identity.context import DelegatedTicket
 from boba.identity.errors import AuthorizationError
 from boba.identity.principal import IdentityRule
-from boba.identity.session import Login, SignInProvider, UserMetadataField
-from boba.identity.sso import OwnRequest, SsoChallenge, SsoRequest, SsoSigned
-from boba.identity.token import CookieSpec, SessionRenewal
+from boba.identity.sso import SsoChallenge, SsoRequest, SsoSigned
 from boba.krb import KerberosEnv, ServiceTicketIssuer
-from boba.runtime.config import RuntimeConfig
-from boba.runtime.signin_kerberos import SpnegoGate
-from boba.runtime.users import UsersTable
+from boba.krb.seal import SsoTickets, TicketSealer
+from boba.stand.migrate import StandMigrations
 from boba.stand.signin import SignInStand
 from boba.stand.site import Stand
 
@@ -77,40 +82,43 @@ def krb5_env() -> Iterator[None]:
 
 
 @pytest.fixture
-async def users(runtime_config: RuntimeConfig, pool: AsyncPostgresPool) -> UsersTable:
+async def users(
+    runtime_config: AppConfig,
+    pool: AsyncPostgresPool,
+    test_postgres: PostgresConfig,
+) -> UsersTable:
     """Таблица users в базе набора: тест создаёт её сам, не полагаясь на соседей."""
-    async with pool.connection() as conn:
-        await PostgresSchema(runtime_config.db_schema).apply_packages(
-            conn, ("boba.identity_postgres", "boba.runtime")
-        )
+    await StandMigrations().application(
+        test_postgres, runtime_config.db_schema, "boba.aid"
+    )
 
-    return UsersTable(runtime_config.postgres, runtime_config.db_schema, pool)
+    return UsersTable(pool, runtime_config.db_schema)
 
 
 def _kerberos_auth(
-    config: KerberosAuthConfig, runtime_config: RuntimeConfig, users: UsersTable
+    config: KerberosAuthConfig, runtime_config: AppConfig, users: UsersTable
 ) -> KerberosAuth:
     """SSO chainlit над сервисом входа: секрет и cookie из [session], users — база."""
     session = runtime_config.session
-    auth = AuthService(
+    profiles = ChatProfiles(runtime_config.profiles)
+    sign_ins = SignInStand.backends(profiles=profiles).build(
+        [config], session.auth_secret
+    )
+    auth = BrowserSessions(
+        sign_ins=sign_ins,
         tokens=JwtTokens(
-            session.auth_secret, session.session_ttl_sec, StandTokens.GENERATION
+            session.auth_secret,
+            session.lifetime(),
+            session.session_generation(),
+            issuer=StandTokens.ISSUER,
+            audience=StandTokens.ISSUER,
         ),
         cookie=CookieSpec(
             name=session.cookie,
             samesite=session.cookie_samesite,
             ttl_sec=session.session_ttl_sec,
         ),
-        sign_ins=SignIns(
-            None,
-            {
-                "corporate": SpnegoGate(
-                    SignInStand.assembly().sso(config), session.auth_secret
-                )
-            },
-            {},
-        ),
-        users=users,
+        sessions=SessionService(users, profiles),
         renewal=SessionRenewal.of(
             session.session_ttl_sec, session.session_ttl_sec * 24
         ),
@@ -122,7 +130,7 @@ def _kerberos_auth(
 @pytest.fixture
 def kerberos_auth(
     raw_config: Any,
-    runtime_config: RuntimeConfig,
+    runtime_config: AppConfig,
     users: UsersTable,
     auth_token: str,
 ) -> KerberosAuth:
@@ -134,7 +142,7 @@ def kerberos_auth(
 @pytest.fixture
 def excluding_auth(
     raw_config: Any,
-    runtime_config: RuntimeConfig,
+    runtime_config: AppConfig,
     users: UsersTable,
     auth_token: str,
 ) -> KerberosAuth:
@@ -285,27 +293,21 @@ async def _signed_in(auth: KerberosAuth, tmp_path: Path) -> IssuedSession:
 
 async def test_sign_in_puts_principal_and_ticket_into_the_jwt(
     kerberos_auth: KerberosAuth,
-    runtime_config: RuntimeConfig,
+    runtime_config: AppConfig,
     tmp_path: Path,
     krb5_env: None,
 ) -> None:
     session = await _signed_in(kerberos_auth, tmp_path)
-    metadata = session.signed.sign_in.render()
-    if metadata.get(UserMetadataField.PRINCIPAL) != USER_PRINCIPAL:
-        raise AssertionError(f"principal must be in metadata: {metadata}")
-    if not metadata.get(UserMetadataField.TICKET):
-        raise AssertionError(f"sealed ticket must be in metadata: {metadata}")
-    if not metadata.get(UserMetadataField.ROLES):
-        raise AssertionError(f"roles must be mapped: {metadata}")
-
-    sso = ChainlitSessions(StandTokens()).ticket_of_token(session.token)
+    claims = StandTokens().read(session.token)
+    sso = claims.ticket()
     if sso is None:
         raise AssertionError("JWT of the sign-in must carry the ticket")
     if sso.principal != USER_PRINCIPAL:
         raise AssertionError(sso.principal)
+    if not claims.principal().roles:
+        raise AssertionError("JWT must carry roles resolved for the sign-in")
 
-    tickets = runtime_config.sso_tickets()
-    assert tickets is not None
+    tickets = _tickets(runtime_config)
     credentials = tickets.credentials_of(tickets.open(sso.sealed))
     ticket = ServiceTicketIssuer(min_lifetime=60).issue(credentials, TARGET)
     if ticket.principal != USER_PRINCIPAL:
@@ -320,34 +322,25 @@ async def test_users_row_keeps_identity_while_ticket_stays_in_jwt(
 ) -> None:
     """В БД остаётся identity и роли, а principal и билет только в JWT."""
     session = await _signed_in(kerberos_auth, tmp_path)
-    stored = await users.get_user(Login(session.user.identifier))
+    stored = await users.stored(session.user.identity)
     assert stored is not None, "sign-in must persist the users row"
-    assert stored.sign_in.identity is not None
-    assert not stored.sign_in.sealed_ticket
-    assert not stored.sign_in.principal
+    assert stored.identity == session.user.identity
     claims = StandTokens().read(session.token)
-    assert claims.sign_in().principal == USER_PRINCIPAL
-    assert claims.sign_in().ticket() is not None
+    assert claims.ticket() is not None
 
 
 async def test_stale_jwt_without_ticket_is_refused(
     kerberos_auth: KerberosAuth,
 ) -> None:
     """JWT прошлой версии приложения: провайдер есть, билета нет."""
-    stale = cl.User(
-        identifier="readonly",
-        metadata={
-            UserMetadataField.PROVIDER: SignInProvider.KERBEROS,
-            UserMetadataField.ROLES: ["read"],
-        },
-    )
-    if ChainlitSessions(StandTokens()).ticket_of_token(create_jwt(stale)) is not None:
+    stale = StandTokens.issue(StandTokens.session("corporate:readonly"))
+    if ChainlitSessions(StandTokens()).ticket_of_token(stale) is not None:
         raise AssertionError("a sign-in without a ticket must not resolve")
 
 
 async def test_refresh_issues_a_new_jwt_with_a_fresh_ticket(
     kerberos_auth: KerberosAuth,
-    runtime_config: RuntimeConfig,
+    runtime_config: AppConfig,
     tmp_path: Path,
     krb5_env: None,
 ) -> None:
@@ -374,12 +367,16 @@ async def test_refresh_issues_a_new_jwt_with_a_fresh_ticket(
     if after.principal != USER_PRINCIPAL:
         raise AssertionError(f"the ticket must stay the user's: {after.principal}")
 
-    tickets = runtime_config.sso_tickets()
-    assert tickets is not None
+    tickets = _tickets(runtime_config)
     credentials = tickets.credentials_of(tickets.open(after.sealed))
     ticket = ServiceTicketIssuer(min_lifetime=60).issue(credentials, TARGET)
     if ticket.principal != USER_PRINCIPAL:
         raise AssertionError(f"ticket must belong to the user: {ticket.principal}")
+
+
+def _tickets(config: AppConfig) -> SsoTickets:
+    """Читатель билета с тем же секретом сессии и конфигурацией Kerberos."""
+    return SsoTickets(TicketSealer(config.session.auth_secret), str(KRB5_CONF))
 
 
 async def test_refresh_without_a_session_is_refused(
@@ -396,17 +393,16 @@ async def test_refresh_of_another_principal_is_refused(
 ) -> None:
     """Чужой SPNEGO-токен под чужой сессией: сессия остаётся при своём."""
     session = await _signed_in(kerberos_auth, tmp_path)
-    sign_in = session.signed.sign_in.model_copy(
+    credential = session.session.ticket()
+    assert credential is not None
+    mismatched = session.session.model_copy(
         update={
-            "identity": IdentityRule(realm="corporate").identity(Login("stranger")),
-            "principal": f"stranger@{STAND.krb_realm}",
-            "sealed_ticket": "sealed-of-a-stranger",
+            "credential": DelegatedTicket(
+                principal=f"stranger@{STAND.krb_realm}", sealed=credential.sealed
+            )
         }
     )
-    stranger = session.signed.model_copy(
-        update={"identifier": Login("corporate:stranger"), "sign_in": sign_in}
-    )
-    stranger_token = StandTokens.issue(stranger)
+    stranger_token = StandTokens.issue(mismatched)
     status, renewed = await Refresh.exchange(
         kerberos_auth, Browser.token(tmp_path), stranger_token
     )
@@ -465,14 +461,14 @@ async def test_refresh_of_an_excluded_principal_is_refused(
 
 async def test_multiple_spnego_realms_use_the_selected_identity_rule(
     raw_config: Any,
-    runtime_config: RuntimeConfig,
+    runtime_config: AppConfig,
     krb5_env: None,
     tmp_path: Path,
 ) -> None:
     configured = bind(raw_config, path="auth.kerberos", model=KerberosAuthConfig)
     office = configured.model_copy(update={"identity": IdentityRule(realm="office")})
     partner = configured.model_copy(update={"identity": IdentityRule(realm="partner")})
-    providers = SignInStand.assembly().build(
+    providers = SignInStand.backends().build(
         [office, partner],
         runtime_config.session.auth_secret,
     )

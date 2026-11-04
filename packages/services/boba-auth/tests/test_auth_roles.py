@@ -18,7 +18,7 @@ from boba.auth.config import (
     LocalRolesConfig,
     PrincipalRolesConfig,
 )
-from boba.auth.roles import PrincipalRoles, RoleProviders
+from boba.auth.providers.roles import PrincipalRoles, RoleProviders
 from boba.identity.admission import (
     PrincipalFacts,
     RoleExcludeConfig,
@@ -39,7 +39,7 @@ pytestmark = pytest.mark.anyio
 
 def _local_sign_in(config: LocalAuthConfig) -> PasswordSignIn:
     """Вход по конфигу через сборку стенда: тест — точка bootstrap."""
-    signed = SignInStand.assembly().password([config])
+    signed = SignInStand.backends().password([config])
     if signed is None:
         raise AssertionError("a local config yields a password sign-in")
 
@@ -99,8 +99,8 @@ async def test_local_auth_allows_user_with_roles() -> None:
         raise AssertionError("user is not None")
     if user.identifier != "local-stand:alice":
         raise AssertionError('user.identifier == "local-stand:alice"')
-    if user.sign_in.roles != frozenset({"admin"}):
-        raise AssertionError('user.sign_in.roles == {"admin"}')
+    if user.access.roles != frozenset({"admin"}):
+        raise AssertionError('user.access.roles == {"admin"}')
 
 
 async def test_local_auth_rejects_wrong_password() -> None:
@@ -139,7 +139,7 @@ async def test_local_auth_allows_no_roles_when_not_required() -> None:
     user = await _local_sign_in(config).sign_in("alice", "pw")
     if user is None:
         raise AssertionError("user is not None")
-    if user.sign_in.roles:
+    if user.access.roles:
         raise AssertionError("no roles expected")
 
 
@@ -242,7 +242,7 @@ class TestUserLoginCanon:
 
 
 class TestLocalSignInIdentifier:
-    """LocalSignIn: в базу уходит канон логина, в интерфейс — как в конфиге."""
+    """LocalSignIn выдаёт каноническую identity независимо от регистра."""
 
     async def test_identifier_is_the_canonical_login(self) -> None:
         config = LocalAuthConfig(
@@ -259,5 +259,7 @@ class TestLocalSignInIdentifier:
         if user.identifier != "local-stand:maksimov.ma":
             raise AssertionError(f"identifier канонизирован, дано {user.identifier!r}")
 
-        if user.display_name != "Maksimov.MA":
-            raise AssertionError(f"display как в конфиге, дано {user.display_name!r}")
+        if user.identity.login != "maksimov.ma":
+            raise AssertionError(
+                f"canonical login is preserved: {user.identity.login!r}"
+            )

@@ -17,7 +17,8 @@ from chainlit.session import WebsocketSession
 from chainlit.types import ThreadDict
 
 from boba.aid.domain.fields import StepField, ThreadField
-from boba.aid.infra import providers
+from boba.aid.infra import providers, services
+from boba.aid.infra.di import Container
 from boba.aid.infra.session import (
     SocketSend,
     current_session,
@@ -48,8 +49,6 @@ from boba.messaging import (
     LockToken,
     Unsubscribe,
 )
-from boba.runtime import providers as runtime
-from boba.runtime.di import Container
 
 __all__ = [
     "CanvasRoomTransport",
@@ -286,9 +285,9 @@ class ChatRoomSurface(RenderSurface):
 
         return ChatRenderers.ensure(
             thread_id,
-            root.resolved(runtime.message_bus),
+            root.resolved(services.message_bus),
             UpdateView(view, thread_id, journals, media),
-            root.resolved(runtime.payload_store),
+            root.resolved(services.payload_store),
             cls(anchor, thread_id),
             root.resolved(providers.thread_agents_index),
         )
@@ -322,7 +321,7 @@ class UserRoom:
                 user_detail=None,
             )
 
-        bus = root.resolved(runtime.message_bus)
+        bus = root.resolved(services.message_bus)
 
         async def deliver(envelope: Envelope) -> None:
             await cls.deliver(user_id, envelope)
@@ -471,10 +470,10 @@ class ThreadLive:
         if root is None:
             return False
 
-        if root.resolved(runtime.runs).active(thread_id) is not None:
+        if root.resolved(services.runs).active(thread_id) is not None:
             return True
 
-        locks = root.resolved(runtime.live_locks)
+        locks = root.resolved(services.live_locks)
         holders = await locks.holders_of(Scope.chat(thread_id))
         exclusive = [holder for holder in holders if holder.mode is LockMode.EXCLUSIVE]
 
@@ -500,7 +499,7 @@ class CanvasRoomTransport(SignalTransport):
         if root is None:
             return
 
-        bus = root.resolved(runtime.message_bus)
+        bus = root.resolved(services.message_bus)
         message = CanvasChanged(
             path=signal.path,
             nonce=signal.nonce,

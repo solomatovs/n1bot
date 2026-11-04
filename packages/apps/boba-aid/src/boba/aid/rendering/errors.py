@@ -10,9 +10,9 @@ from typing import Any
 
 from chainlit.context import context
 
+from boba.aid.rendering.failures import FailureReports
 from boba.identity.errors import BaseError
 from boba.identity.session import LogLine
-from boba.runtime.errors import FailureReports
 
 __all__ = ["ToastLevel", "chainlit_error_ctx_handler", "show_error"]
 

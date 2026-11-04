@@ -1,0 +1,838 @@
+"""Шина сообщений на Postgres: сообщения в live_events, команды в live_commands,
+указатель через pg_notify; LiveListener процесса читает канал на выделенном
+соединении и раздаёт конверты подписчикам в порядке seq.
+
+Ошибки:
+MessageBusError — база недоступна, строка не сохранена или не прочитана; слушатель
+    процесса остановлен сбоем подписчика.
+MessageTooLargeError — тело сообщения больше лимита.
+LockLostError — сообщение держателя публикуется без живой блокировки с этим token.
+ListenerFailedError — подписчик не справился с конвертом; слушатель процесса
+    останавливается, и до перезапуска шина отказывает.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import logging
+from collections.abc import Awaitable, Callable, Sequence
+from datetime import datetime
+from enum import StrEnum
+from typing import Any, ClassVar
+from uuid import UUID
+
+import psycopg
+from psycopg import sql
+from psycopg.rows import DictRow
+from psycopg.types.json import Jsonb
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from boba.db.postgres import (
+    Cursor,
+    PgQuery,
+    PgQueryBuilder,
+    PostgresError,
+    PostgresPool,
+    PostgresTable,
+)
+from boba.db.postgres.messaging.schema import (
+    LiveChannel,
+    LiveCommandsColumn,
+    LiveEventsColumn,
+    LiveSequence,
+)
+from boba.identity.context import Scope, ScopeKind
+from boba.messaging import (
+    BusLimit,
+    CommandEnvelope,
+    CommandListener,
+    Envelope,
+    Listener,
+    ListenerFailedError,
+    LockLostError,
+    LockToken,
+    MessageBus,
+    MessageBusError,
+    MessageTooLargeError,
+    Unsubscribe,
+)
+from boba.messaging.bus import (
+    ListenerState,
+)
+from boba.messaging.config import ClusterConfig
+from boba.messaging.messages import (
+    Command,
+    Message,
+    MessageCodec,
+)
+
+__all__ = [
+    "ListenerConnect",
+    "LiveListener",
+    "PgMessageBus",
+    "Pointer",
+    "PointerKind",
+]
+
+logger = logging.getLogger(__name__)
+
+
+class PointerKind(StrEnum):
+    """Что означает уведомление: в области появилось событие или команда."""
+
+    EVENT = "event"
+    COMMAND = "command"
+
+
+class Pointer(BaseModel):
+    """Тело уведомления pg_notify: указатель на строку таблицы, по которому подписчик
+    читает сами данные.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    kind: PointerKind
+    scope_kind: ScopeKind
+    scope_id: UUID
+    seq: int = Field(ge=1)
+
+    @property
+    def scope(self) -> Scope:
+        return Scope(kind=self.scope_kind, id=str(self.scope_id))
+
+    def render(self) -> str:
+        return self.model_dump_json()
+
+    @classmethod
+    def parse(cls, raw: str) -> Pointer:
+        return cls.model_validate_json(raw)
+
+
+PointerHandler = Callable[[Pointer], Awaitable[None]]
+ReconnectHandler = Callable[[], Awaitable[None]]
+ListenerConnect = Callable[[], Awaitable[psycopg.AsyncConnection[Any]]]
+"""Открывает новое выделенное autocommit-соединение; закрывает его LiveListener."""
+
+
+class LiveListener:
+    """Слушает канал boba_live на выделенном autocommit-соединении, переподключается
+    после обрыва и добирает пропущенное через обработчик реконнекта.
+    """
+
+    RETRY_SEC: ClassVar[float] = 1.0
+    RETRY_MAX_SEC: ClassVar[float] = 10.0
+
+    def __init__(
+        self,
+        connect: ListenerConnect,
+        handler: PointerHandler,
+        on_reconnect: ReconnectHandler,
+    ) -> None:
+        self._connect = connect
+        self._handler = handler
+        self._on_reconnect = on_reconnect
+        self._task: asyncio.Task[None] | None = None
+        self._conn: psycopg.AsyncConnection[Any] | None = None
+        self._state = ListenerState.STOPPED
+        self._ready = asyncio.Event()
+        self._connections = 0
+        self._failure: MessageBusError | None = None
+        self._stopping = False
+
+    @property
+    def state(self) -> ListenerState:
+        return self._state
+
+    async def reconnect(self) -> None:
+        """Рвёт соединение слушателя, чтобы освободить его долю очереди уведомлений;
+        цикл переподключится и доберёт пропущенное.
+        """
+        conn = self._conn
+        if conn is None:
+            return
+
+        await conn.close()
+
+    def ensure_alive(self) -> None:
+        """Отвергает обращение MessageBusError, если слушатель остановлен сбоем: без
+        него шина процесса непригодна до перезапуска.
+        """
+        if self._failure is None:
+            return
+
+        msg = (
+            "message bus is unusable: the live listener has stopped with "
+            f"{self._failure}"
+        )
+        raise MessageBusError(msg) from self._failure
+
+    @property
+    def backend_pid(self) -> int:
+        if self._conn is None:
+            msg = (
+                "live listener backend_pid asked while the listener is not "
+                f"connected (state {self._state.value})"
+            )
+            raise MessageBusError(msg)
+
+        return self._conn.info.backend_pid
+
+    async def start(self) -> None:
+        if self._task is not None:
+            return
+
+        self._stopping = False
+        self._state = ListenerState.CONNECTING
+        self._task = asyncio.create_task(self._run(), name="live-listener")
+        await self._ready.wait()
+
+    async def stop(self) -> None:
+        task = self._task
+        if task is None:
+            return
+
+        self._task = None
+        # сначала рвётся соединение: ожидание notifies() внутри psycopg не всегда
+        # отзывается на отмену задачи, а закрытый сокет выводит его ошибкой
+        self._stopping = True
+        await self._close()
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except MessageBusError:
+            # сбой уже учтён: он в журнале и поднимается ensure_alive при обращении
+            pass
+
+        self._state = ListenerState.STOPPED
+
+    async def wait_listening(self, timeout_sec: float) -> None:
+        """Ждёт повторного подключения слушателя не дольше timeout_sec; нужен тестам
+        обрыва связи.
+        """
+        deadline = asyncio.get_running_loop().time() + timeout_sec
+        while self._state is not ListenerState.LISTENING:
+            if asyncio.get_running_loop().time() > deadline:
+                msg = (
+                    f"live listener did not reach the listening state within "
+                    f"{timeout_sec}s, still {self._state.value}"
+                )
+                raise MessageBusError(msg)
+
+            await asyncio.sleep(0.05)
+
+    async def _run(self) -> None:
+        delay = self.RETRY_SEC
+        while True:
+            try:
+                await self._listen_once()
+                delay = self.RETRY_SEC
+            except asyncio.CancelledError:
+                await self._close()
+                raise
+            except (psycopg.Error, PostgresError, OSError) as exc:
+                if self._stopping:
+                    return
+
+                self._state = ListenerState.CONNECTING
+                await self._close()
+                logger.warning(
+                    "live listener lost the connection, reconnecting in %.1fs: %s",
+                    delay,
+                    exc,
+                )
+                self._ready.set()
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, self.RETRY_MAX_SEC)
+            except ListenerFailedError as exc:
+                # сбой подписчика: слушатель встаёт, шина отказывает при следующем
+                # обращении, а не молчит
+                self._state = ListenerState.FAILED
+                self._failure = exc
+                await self._close()
+                logger.exception("live listener stopped: %s", exc)
+                self._ready.set()
+                raise
+            except MessageBusError as exc:
+                # база ответила ошибкой при догоне или уведомление негодно: связь
+                # переустанавливается, как после обрыва
+                if self._stopping:
+                    return
+
+                self._state = ListenerState.CONNECTING
+                await self._close()
+                logger.warning(
+                    "live listener retries in %.1fs after a bus error: %s", delay, exc
+                )
+                self._ready.set()
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, self.RETRY_MAX_SEC)
+            except Exception as exc:
+                # неожиданная ошибка разбора или доставки: тот же исход, что у сбоя
+                # подписчика — иначе задача умерла бы молча, а шина считалась бы живой
+                failure = MessageBusError(f"live listener crashed: {exc}")
+                failure.__cause__ = exc
+                self._state = ListenerState.FAILED
+                self._failure = failure
+                await self._close()
+                logger.exception("live listener crashed: %s", exc)
+                self._ready.set()
+                raise failure from exc
+
+    async def _listen_once(self) -> None:
+        conn = await self._connect()
+        self._conn = conn
+        listen = (
+            PgQueryBuilder(channel=sql.Identifier(LiveChannel.LIVE.value))
+            .add("listen {channel}")
+            .build()
+        )
+        await conn.execute(listen.text, listen.params)
+        self._state = ListenerState.LISTENING
+        self._connections += 1
+        self._ready.set()
+        logger.info("live listener connected (pid %d)", conn.info.backend_pid)
+
+        if self._connections > 1:
+            await self._on_reconnect()
+
+        async for notification in conn.notifies():
+            try:
+                pointer = Pointer.parse(notification.payload)
+            except ValidationError as exc:
+                msg = (
+                    f"live listener: notification on {notification.channel} "
+                    f"is not a pointer, got {notification.payload!r}: {exc}"
+                )
+                raise MessageBusError(msg) from exc
+
+            await self._handler(pointer)
+
+    async def _close(self) -> None:
+        conn = self._conn
+        self._conn = None
+        if conn is None:
+            return
+
+        # соединение закрывается после обрыва: отказ закрытия уже ничего не значит
+        with contextlib.suppress(psycopg.Error, OSError):
+            await conn.close()
+
+
+class PgMessageBus(PostgresTable, MessageBus):
+    """Шина процесса на таблицах своей схемы: публикует через пул соединений,
+    принимает через LiveListener; один экземпляр на процесс.
+    """
+
+    LABEL: ClassVar[str] = "message bus"
+
+    def __init__(  # noqa: PLR0913 — ресурсы PostgreSQL и кодек сообщений
+        self,
+        pool: PostgresPool,
+        db_schema: str,
+        instance: str,
+        cluster: ClusterConfig,
+        codec: MessageCodec,
+        *,
+        listener_connect: ListenerConnect,
+    ) -> None:
+        super().__init__(pool, db_schema)
+        self._instance = instance
+        self._cluster = cluster
+        self._listener = LiveListener(
+            listener_connect, self._on_pointer, self._catch_up_all
+        )
+        self._listeners: dict[Scope, list[Listener]] = {}
+        self._command_listeners: list[CommandListener] = []
+        self._last_seen: dict[Scope, int] = {}
+        self._scope_locks: dict[Scope, asyncio.Lock] = {}
+        self._codec = codec
+
+    @property
+    def instance(self) -> str:
+        return self._instance
+
+    @property
+    def listener(self) -> LiveListener:
+        return self._listener
+
+    def _failure(self, action: str, exc: Exception) -> Exception:
+        return MessageBusError(self._detail(action, exc))
+
+    def _sequence_name(self, sequence: LiveSequence) -> sql.Literal:
+        """Имя последовательности литералом regclass для nextval/setval."""
+        return sql.Literal(sql.Identifier(self.schema, sequence.value).as_string())
+
+    async def start(self) -> None:
+        await self._listener.start()
+
+    async def stop(self) -> None:
+        await self._listener.stop()
+
+    def _scope_id(self, scope: Scope) -> UUID:
+        try:
+            return scope.uuid()
+        except ValueError as exc:
+            raise MessageBusError(f"message bus: {exc}") from exc
+
+    async def publish(self, scope: Scope, message: Message, token: LockToken) -> int:
+        self._listener.ensure_alive()
+        message = self._codec.checked_event(message)
+        size = Envelope.body_size(message)
+        if size > BusLimit.BODY_MAX_BYTES:
+            msg = (
+                f"message {message.kind} to {scope.render()} is {size} bytes, "
+                f"the bus limit is {BusLimit.BODY_MAX_BYTES} bytes"
+            )
+            raise MessageTooLargeError(msg)
+
+        scope_id = self._scope_id(scope)
+        insert = (
+            self._query()
+            .add(
+                """
+                insert into {schema}.live_events
+                    (scope_kind, scope_id, seq, kind, origin, body)
+                values (
+                    %(scope_kind)s,
+                    %(scope_id)s,
+                    nextval({events_seq_name}),
+                    %(kind)s,
+                    %(origin)s,
+                    %(body)s
+                )
+                returning seq
+                """,
+                events_seq_name=self._sequence_name(LiveSequence.EVENTS),
+                scope_kind=scope.kind.value,
+                scope_id=scope_id,
+                kind=message.kind,
+                origin=self._instance,
+                body=Jsonb(message.model_dump(mode="json")),
+            )
+            .build()
+        )
+
+        async def work(cur: Cursor) -> int:
+            await self._advisory_lock(cur, scope.render())
+            if self._codec.requires_lock(message):
+                await self._fence(cur, scope, scope_id, token)
+
+            await cur.execute(insert.text, insert.params)
+            row = self._returning(
+                await cur.fetchone(),
+                f"insert of {message.kind} into live_events for {scope.render()}",
+            )
+            seq = int(row[LiveEventsColumn.SEQ.value])
+            pointer = Pointer(
+                kind=PointerKind.EVENT,
+                scope_kind=scope.kind,
+                scope_id=scope_id,
+                seq=seq,
+            )
+            await self._notify(cur, pointer)
+
+            return seq
+
+        return await self._transacted(
+            f"publish of {message.kind} to {scope.render()}", work
+        )
+
+    async def _notify(self, cur: Cursor, pointer: Pointer) -> None:
+        notify = (
+            self._query()
+            .add(
+                "select pg_notify(%(channel)s, %(payload)s)",
+                channel=LiveChannel.LIVE.value,
+                payload=pointer.render(),
+            )
+            .build()
+        )
+        await cur.execute(notify.text, notify.params)
+
+    async def _fence(
+        self, cur: Cursor, scope: Scope, scope_id: UUID, token: LockToken
+    ) -> None:
+        """Проверяет, что блокировка держателя жива и token совпадает; иначе
+        публикация отвергается LockLostError.
+        """
+        query = (
+            self._query()
+            .add(
+                """
+                select
+                    1
+                from {schema}.live_locks
+                where 1=1
+                    and scope_kind = %(scope_kind)s
+                    and scope_id = %(scope_id)s
+                    and token = %(token)s
+                    and heartbeat_at + make_interval(secs => ttl_sec) >= now()
+                """,
+                scope_kind=scope.kind.value,
+                scope_id=scope_id,
+                token=token.value,
+            )
+            .build()
+        )
+        await cur.execute(query.text, query.params)
+        row = await cur.fetchone()
+        if row is None:
+            msg = (
+                f"lock of {scope.render()} is not held by token {token.value} "
+                "any more: publish refused"
+            )
+            raise LockLostError(msg)
+
+    async def command(self, scope: Scope, command: Command) -> int:
+        self._listener.ensure_alive()
+        command = self._codec.checked_command(command)
+        scope_id = self._scope_id(scope)
+        insert = (
+            self._query()
+            .add(
+                """
+                insert into {schema}.live_commands (
+                    scope_kind,
+                    scope_id,
+                    action,
+                    body,
+                    by_instance
+                )
+                values (
+                    %(scope_kind)s,
+                    %(scope_id)s,
+                    %(action)s,
+                    %(body)s,
+                    %(by_instance)s
+                )
+                returning id
+                """,
+                scope_kind=scope.kind.value,
+                scope_id=scope_id,
+                action=command.kind,
+                body=Jsonb(command.model_dump(mode="json")),
+                by_instance=self._instance,
+            )
+            .build()
+        )
+
+        async def work(cur: Cursor) -> int:
+            await cur.execute(insert.text, insert.params)
+            row = self._returning(
+                await cur.fetchone(),
+                f"insert of command {command.kind} into live_commands for "
+                f"{scope.render()}",
+            )
+            command_id = int(row[LiveCommandsColumn.ID.value])
+            pointer = Pointer(
+                kind=PointerKind.COMMAND,
+                scope_kind=scope.kind,
+                scope_id=scope_id,
+                seq=command_id,
+            )
+            await self._notify(cur, pointer)
+
+            return command_id
+
+        return await self._transacted(
+            f"command {command.kind} to {scope.render()}", work
+        )
+
+    def subscribe(self, scope: Scope, listener: Listener) -> Unsubscribe:
+        self._listener.ensure_alive()
+        listeners = self._listeners.setdefault(scope, [])
+        listeners.append(listener)
+        logger.info(
+            "subscribed %s on bus %x (%d listeners)",
+            scope.render(),
+            id(self),
+            len(listeners),
+        )
+
+        def leave() -> None:
+            current = self._listeners.get(scope)
+            if current is None:
+                return
+
+            if listener in current:
+                current.remove(listener)
+
+            if not current:
+                del self._listeners[scope]
+                self._last_seen.pop(scope, None)
+                self._scope_locks.pop(scope, None)
+
+        return leave
+
+    def subscribe_commands(self, listener: CommandListener) -> Unsubscribe:
+        self._command_listeners.append(listener)
+
+        def leave() -> None:
+            if listener in self._command_listeners:
+                self._command_listeners.remove(listener)
+
+        return leave
+
+    async def replay(self, scope: Scope, after_seq: int) -> Sequence[Envelope]:
+        rows = await self._rows_after(scope, after_seq)
+
+        envelopes: list[Envelope] = []
+        for row in rows:
+            envelopes.append(self._to_envelope(scope, row))
+
+        return envelopes
+
+    async def take(self, scope: Scope, command_id: int, instance: str) -> bool:
+        query = (
+            self._query()
+            .add(
+                """
+                update {schema}.live_commands
+                set taken_by = %(instance)s,
+                    taken_at = now()
+                where 1=1
+                    and id = %(id)s
+                    and taken_by is null
+                """,
+                instance=instance,
+                id=command_id,
+            )
+            .build()
+        )
+        taken = await self._execute(
+            query, f"take of command {command_id} by {instance}"
+        )
+
+        return taken == 1
+
+    async def purge(self, scope: Scope) -> int:
+        scope_id = self._scope_id(scope)
+        events = (
+            self._query()
+            .add(
+                """
+                delete from {schema}.live_events
+                where 1=1
+                    and scope_kind = %(scope_kind)s
+                    and scope_id = %(scope_id)s
+                """,
+                scope_kind=scope.kind.value,
+                scope_id=scope_id,
+            )
+            .build()
+        )
+        commands = (
+            self._query()
+            .add(
+                """
+                delete from {schema}.live_commands
+                where 1=1
+                    and scope_kind = %(scope_kind)s
+                    and scope_id = %(scope_id)s
+                """,
+                scope_kind=scope.kind.value,
+                scope_id=scope_id,
+            )
+            .build()
+        )
+
+        removed = await self._transacted(
+            f"purge of {scope.render()}", self._purged(events, commands)
+        )
+
+        self._last_seen.pop(scope, None)
+        return removed
+
+    async def queue_usage(self) -> float:
+        """Возвращает долю занятой очереди уведомлений Postgres: 0 — пусто, 1 —
+        полна.
+        """
+        query = (
+            self._query().add("select pg_notification_queue_usage() as usage").build()
+        )
+        row = await self._row(query, "select pg_notification_queue_usage()")
+        if row is None:
+            return 0.0
+
+        return float(row["usage"])
+
+    async def purge_idle(self, max_age_sec: int) -> int:
+        """Удаляет события и команды областей, в которых ничего не происходило дольше
+        max_age_sec; возвращает число удалённых событий.
+        """
+        events = (
+            self._query()
+            .add(
+                """
+                delete from {schema}.live_events e
+                where not exists (
+                    select 1 from {schema}.live_events f
+                    where 1=1
+                      and f.scope_kind = e.scope_kind
+                      and f.scope_id = e.scope_id
+                      and f.at + make_interval(secs => %(age)s) >= now()
+                 )
+                """,
+                age=max_age_sec,
+            )
+            .build()
+        )
+        commands = (
+            self._query()
+            .add(
+                """
+                delete from {schema}.live_commands
+                where 1=1
+                and at + make_interval(secs => %(age)s) < now()
+                """,
+                age=max_age_sec,
+            )
+            .build()
+        )
+
+        return await self._transacted(
+            f"purge of scopes idle for {max_age_sec}s", self._purged(events, commands)
+        )
+
+    def _purged(
+        self, events: PgQuery, commands: PgQuery
+    ) -> Callable[[Cursor], Awaitable[int]]:
+        """Работа очистки: удаление событий, затем команд; число удалённых событий."""
+
+        async def work(cur: Cursor) -> int:
+            await cur.execute(events.text, events.params)
+            removed = cur.rowcount
+            await cur.execute(commands.text, commands.params)
+
+            return removed
+
+        return work
+
+    async def _rows_after(self, scope: Scope, after_seq: int) -> Sequence[DictRow]:
+        scope_id = self._scope_id(scope)
+        query = (
+            self._query()
+            .add(
+                """
+                select
+                    seq,
+                    origin,
+                    body,
+                    at
+                from {schema}.live_events
+                where 1=1
+                    and scope_kind = %(scope_kind)s
+                    and scope_id = %(scope_id)s
+                    and seq > %(after)s
+                order by seq
+                """,
+                scope_kind=scope.kind.value,
+                scope_id=scope_id,
+                after=after_seq,
+            )
+            .build()
+        )
+
+        return await self._rows(
+            query, f"read of {scope.render()} after seq {after_seq}"
+        )
+
+    def _to_envelope(self, scope: Scope, row: DictRow) -> Envelope:
+        message = self._codec.event(row[LiveEventsColumn.BODY.value])
+        at: datetime = row[LiveEventsColumn.AT.value]
+        return Envelope(
+            scope=scope,
+            seq=int(row[LiveEventsColumn.SEQ.value]),
+            at=at,
+            origin=str(row[LiveEventsColumn.ORIGIN.value]),
+            message=message,
+        )
+
+    async def _on_pointer(self, pointer: Pointer) -> None:
+        if pointer.kind is PointerKind.COMMAND:
+            await self._deliver_command(pointer)
+            return
+
+        scope = pointer.scope
+        if scope not in self._listeners:
+            logger.debug(
+                "pointer %s seq %d: no listeners here", scope.render(), pointer.seq
+            )
+            return
+
+        lock = self._scope_locks.setdefault(scope, asyncio.Lock())
+        async with lock:
+            await self._deliver_events(scope, pointer.seq)
+
+    async def _deliver_events(self, scope: Scope, seen_seq: int) -> None:
+        after = self._last_seen.get(scope)
+        if after is None:
+            after = seen_seq - 1
+
+        rows = await self._rows_after(scope, after)
+        for row in rows:
+            envelope = self._to_envelope(scope, row)
+            self._last_seen[scope] = envelope.seq
+
+            failures: list[BaseException] = []
+            for listener in list(self._listeners.get(scope, ())):
+                try:
+                    await listener(envelope)
+                except Exception as exc:
+                    failures.append(exc)
+
+            if failures:
+                what = (
+                    f"{scope.render()}: {len(failures)} listener(s) failed on "
+                    f"{envelope.message.kind} seq {envelope.seq}"
+                )
+                raise ListenerFailedError(what, failures)
+
+    async def _catch_up_all(self) -> None:
+        for scope, after in list(self._last_seen.items()):
+            if scope not in self._listeners:
+                continue
+
+            lock = self._scope_locks.setdefault(scope, asyncio.Lock())
+            async with lock:
+                await self._deliver_events(scope, after + 1)
+
+    async def _deliver_command(self, pointer: Pointer) -> None:
+        if not self._command_listeners:
+            return
+
+        query = (
+            self._query()
+            .add(
+                "select body, at from {schema}.live_commands where id = %(id)s",
+                id=pointer.seq,
+            )
+            .build()
+        )
+        row = await self._row(
+            query, f"read of command {pointer.seq} for {pointer.scope.render()}"
+        )
+        if row is None:
+            return
+
+        command = self._codec.command(row[LiveCommandsColumn.BODY.value])
+        at: datetime = row[LiveCommandsColumn.AT.value]
+        envelope = CommandEnvelope(
+            scope=pointer.scope, command_id=pointer.seq, at=at, command=command
+        )
+        failures: list[BaseException] = []
+        for listener in list(self._command_listeners):
+            try:
+                await listener(envelope)
+            except Exception as exc:
+                failures.append(exc)
+
+        if failures:
+            what = (
+                f"{pointer.scope.render()}: {len(failures)} command listener(s) "
+                f"failed on {command.kind} {pointer.seq}"
+            )
+            raise ListenerFailedError(what, failures)

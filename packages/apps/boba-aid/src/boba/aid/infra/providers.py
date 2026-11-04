@@ -2,7 +2,7 @@
 (файлы, журналы, карточки инструментов), процессы агента ACP и приёмники
 его потока.
 
-Общие для процессов провайдеры (реестр, сторы) — boba.runtime.providers.
+Хранилища и ресурсы процесса собираются в boba.aid.infra.services.
 """
 
 import logging
@@ -25,12 +25,19 @@ from boba.aid.agent.commands import CommandMenus
 from boba.aid.agent.config import AgentConfig, AgentSettings
 from boba.aid.agent.feed import AgentFeeds, BusParts
 from boba.aid.agent.relay import McpRegistrations, McpRelay
+from boba.aid.auth.tokens import JwtTokens
 from boba.aid.canvas.remote import RemoteJournals
 from boba.aid.canvas.tools import CanvasOpener
 from boba.aid.chat.ui_text import UiText
 from boba.aid.data import PostgresDataLayer
+from boba.aid.data.feedbacks import FeedbacksTable
 from boba.aid.data.remote_storage import FileOwners, RemoteStorageClient
+from boba.aid.data.threads import ThreadsTable
+from boba.aid.data.users import UsersTable
+from boba.aid.infra import services
 from boba.aid.infra.config import AppConfig
+from boba.aid.infra.di import Container, Depends
+from boba.aid.infra.paths import InstanceData
 from boba.aid.infra.sandbox import SandboxLinks
 from boba.aid.infra.session import (
     ChainlitSessions,
@@ -46,12 +53,11 @@ from boba.aid.mcp_servers.oauth_store import McpOAuthStore
 from boba.aid.mcp_servers.sources import ServerSource, StoredServers
 from boba.aid.mcp_servers.store import McpServerStore
 from boba.aid.rendering.renderer import TabSurfaces
-from boba.auth import JwtTokens
 from boba.chat.messages import (
     McpServersChanged,
 )
 from boba.chat.profiles import ChatProfiles, SelectedProfile
-from boba.connection_broker.crypto import SecretCipher
+from boba.crypto import SecretCipher
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.api import UserRows
 from boba.identity.context import Scope
@@ -65,17 +71,11 @@ from boba.messaging import (
     MessageBusError,
     PayloadStore,
 )
-from boba.runtime import providers as runtime
-from boba.runtime.config import InstanceData, RuntimeConfig
-from boba.runtime.di import Container, Depends
-from boba.runtime.elements import FeedbacksTable
-from boba.runtime.storage import StorageClient
-from boba.runtime.threads import ThreadsTable
-from boba.runtime.users import UsersTable
+from boba.storage.client import StorageClient
 
 
 def get_app_config() -> AppConfig:
-    """Конфиг процесса aid; значение кладёт bootstrap после AppConfig.load."""
+    """Конфиг AID, переданный bootstrap после чтения файлов настроек."""
     msg = (
         "get_app_config: the app config is set by bootstrap as a container "
         "override, the provider itself produces nothing"
@@ -110,7 +110,7 @@ def remote_journals_ref() -> RemoteJournals:
 
 def user_rows_ref() -> UserRows:
     """Строки users из корневого контейнера; зовётся на каждую операцию."""
-    return Container.require_root("chat providers").resolved(runtime.users_table)
+    return Container.require_root("chat providers").resolved(services.users_table)
 
 
 def server_source_ref() -> ServerSource:
@@ -144,11 +144,11 @@ def session_profile(
     """
     session = current_session()
 
-    return registry.resolve(session.chat_profile, session.sign_in)
+    return registry.resolve(session.chat_profile, session.access)
 
 
 def session_source(
-    tokens: Annotated[JwtTokens, Depends(runtime.session_tokens)],
+    tokens: Annotated[JwtTokens, Depends(services.session_tokens)],
 ) -> SessionSource:
     """Источник сессий приложения; реализация знает про chainlit."""
     return ChainlitSessions(tokens)
@@ -186,13 +186,13 @@ def remote_journals() -> RemoteJournals:
 async def chainlit_data_layer(  # noqa: PLR0913 — слой данных собирается таблицами процесса
     app_config: Annotated[AppConfig, Depends(get_app_config)],
     storage: Annotated[StorageClient, Depends(storage_provider)],
-    bus: Annotated[MessageBus, Depends(runtime.message_bus)],
-    users: Annotated[UsersTable, Depends(runtime.users_table)],
-    threads: Annotated[ThreadsTable, Depends(runtime.threads_table)],
-    pool: Annotated[AsyncPostgresPool, Depends(runtime.postgres_pool)],
+    bus: Annotated[MessageBus, Depends(services.message_bus)],
+    users: Annotated[UsersTable, Depends(services.users_table)],
+    threads: Annotated[ThreadsTable, Depends(services.threads_table)],
+    pool: Annotated[AsyncPostgresPool, Depends(services.postgres_pool)],
 ) -> PostgresDataLayer:
     """Слой данных чата на пуле процесса: схему таблицы ставят в запрос."""
-    feedbacks = FeedbacksTable(app_config.postgres, app_config.db_schema, pool)
+    feedbacks = FeedbacksTable(pool, app_config.db_schema)
 
     return PostgresDataLayer(
         users=users,
@@ -212,7 +212,7 @@ def mcp_server_cipher(
 
 def mcp_server_store(
     app_config: Annotated[AppConfig, Depends(get_app_config)],
-    pool: Annotated[AsyncPostgresPool, Depends(runtime.postgres_pool)],
+    pool: Annotated[AsyncPostgresPool, Depends(services.postgres_pool)],
     cipher: Annotated[SecretCipher, Depends(mcp_server_cipher)],
 ) -> McpServerStore:
     """Хранилище MCP-серверов процесса: таблица mcp_servers и выдачи grants."""
@@ -221,7 +221,7 @@ def mcp_server_store(
 
 def mcp_oauth_store(
     app_config: Annotated[AppConfig, Depends(get_app_config)],
-    pool: Annotated[AsyncPostgresPool, Depends(runtime.postgres_pool)],
+    pool: Annotated[AsyncPostgresPool, Depends(services.postgres_pool)],
     cipher: Annotated[SecretCipher, Depends(mcp_server_cipher)],
 ) -> McpOAuthStore:
     return McpOAuthStore(pool, app_config.db_schema, cipher)
@@ -239,7 +239,7 @@ def mcp_browser_oauth(
 
 def server_source(
     store: Annotated[McpServerStore, Depends(mcp_server_store)],
-    users: Annotated[UsersTable, Depends(runtime.users_table)],
+    users: Annotated[UsersTable, Depends(services.users_table)],
     oauth: Annotated[McpBrowserOAuth, Depends(mcp_browser_oauth)],
 ) -> ServerSource:
     """Источник серверов зрителя: набор по выдаче и конфиги для клиента."""
@@ -281,7 +281,7 @@ def mcp_relay(
     registrations: Annotated[McpRegistrations, Depends(mcp_registrations)],
     servers: Annotated[McpServers, Depends(mcp_servers)],
     canvas: Annotated[CanvasOpener, Depends(canvas_opener)],
-    bus: Annotated[MessageBus, Depends(runtime.message_bus)],
+    bus: Annotated[MessageBus, Depends(services.message_bus)],
 ) -> McpRelay:
     """Ретранслятор mcp/message процессов агента: один на инстанс; сервер
     chat — собственные инструменты чата из реестра; файлы ответа, которые
@@ -362,10 +362,10 @@ class McpUpdates:
 
 
 def mcp_updates(
-    bus: Annotated[MessageBus, Depends(runtime.message_bus)],
+    bus: Annotated[MessageBus, Depends(services.message_bus)],
     index: Annotated[ThreadAgentsIndex, Depends(thread_agents_index)],
     servers: Annotated[McpServers, Depends(mcp_servers)],
-    instance: Annotated[str, Depends(runtime.instance_name)],
+    instance: Annotated[str, Depends(services.instance_name)],
 ) -> McpUpdates:
     """Изменения MCP-серверов между агентами пользователя на узлах чата."""
     return McpUpdates(bus, index, servers, instance)
@@ -392,7 +392,7 @@ def agent_launcher(  # noqa: PLR0913 — запуск собирается вс�
     config: Annotated[AgentSettings, Depends(agent_config)],
     source: Annotated[ServerSource, Depends(server_source)],
     profiles: Annotated[ChatProfiles, Depends(chat_profiles_registry)],
-    users: Annotated[UsersTable, Depends(runtime.users_table)],
+    users: Annotated[UsersTable, Depends(services.users_table)],
     registrations: Annotated[McpRegistrations, Depends(mcp_registrations)],
     relay: Annotated[McpRelay, Depends(mcp_relay)],
 ) -> AgentLauncher:
@@ -414,7 +414,7 @@ def agent_launcher(  # noqa: PLR0913 — запуск собирается вс�
 
 
 def agent_session_meta(
-    threads: Annotated[ThreadsTable, Depends(runtime.threads_table)],
+    threads: Annotated[ThreadsTable, Depends(services.threads_table)],
 ) -> AgentSessionMeta:
     return AgentSessionMeta(threads)
 
@@ -427,10 +427,10 @@ def thread_deleter(
 
 
 def agent_feeds(  # noqa: PLR0913 — фабрика собирается всеми входами процесса
-    config: Annotated[RuntimeConfig, Depends(runtime.get_runtime_config)],
-    bus: Annotated[MessageBus, Depends(runtime.message_bus)],
-    payloads: Annotated[PayloadStore, Depends(runtime.payload_store)],
-    locks: Annotated[LiveLocks, Depends(runtime.live_locks)],
+    config: Annotated[AppConfig, Depends(services.application_config)],
+    bus: Annotated[MessageBus, Depends(services.message_bus)],
+    payloads: Annotated[PayloadStore, Depends(services.payload_store)],
+    locks: Annotated[LiveLocks, Depends(services.live_locks)],
     journals: Annotated[RemoteJournals, Depends(remote_journals)],
     sandbox: Annotated[SandboxLinks, Depends(sandbox_links)],
     data_layer: Annotated[PostgresDataLayer, Depends(chainlit_data_layer)],

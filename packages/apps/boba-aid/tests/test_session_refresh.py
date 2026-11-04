@@ -1,5 +1,4 @@
-"""POST /auth/refresh для входа по паролю: перевыпуск JWT без нового входа, cookie в
-ответ и отказ без метки своего запроса."""
+"""HTTP refresh route for a password session and its page script."""
 
 from __future__ import annotations
 
@@ -8,22 +7,21 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-import jwt
 import pytest
 from aid_stand import StandTokens
 from fastapi import Request
 
+from boba.aid.auth.cookies import CookieSpec
+from boba.aid.auth.policy import SessionRenewal
 from boba.aid.auth.refresh import PageUrls, SessionRefresh
+from boba.aid.auth.session import BrowserSessions
 from boba.aid.infra.session import ChainlitSessions
-from boba.auth import AuthService, JwtTokens, SignIns
+from boba.auth import SessionService, SignIns
 from boba.auth.config import LocalAuthConfig, LocalRoleProviders, LocalRolesConfig
+from boba.auth.transport.http import OwnRequest
 from boba.identity.admission import RoleMappingConfig
-from boba.identity.api import AuthenticatedUser, PersistedUsers, UsersUpsert
-from boba.identity.principal import IdentityRule
-from boba.identity.session import Login
-from boba.identity.signin import SignedIn, SignInMetadata
-from boba.identity.sso import OwnRequest
-from boba.identity.token import CookieSpec, SessionRenewal
+from boba.identity.api import StoredUser, UserRows
+from boba.identity.principal import IdentityRule, UserIdentity
 from boba.stand.signin import SignInStand
 
 pytestmark = pytest.mark.anyio
@@ -33,46 +31,63 @@ COOKIE = "access_token"
 CREATED_AT = datetime(2026, 1, 1, tzinfo=UTC)
 
 
-class Users(PersistedUsers, UsersUpsert):
-    """Строки users стенда: один известный пользователь."""
+class Users(UserRows):
+    """In-memory user table for the refresh scenario."""
 
     def __init__(self) -> None:
-        self.row = AuthenticatedUser(
-            id=UUID(int=7),
-            identifier=Login("local-stand:alice"),
+        self.rows: dict[UserIdentity, StoredUser] = {}
+
+    async def stored(self, identity: UserIdentity) -> StoredUser | None:
+        return self.rows.get(identity)
+
+    async def stored_by_id(self, user_id: UUID) -> StoredUser | None:
+        for row in self.rows.values():
+            if row.id == user_id:
+                return row
+        return None
+
+    async def upsert(
+        self,
+        identity: UserIdentity,
+        roles: frozenset[str] | None = None,
+    ) -> StoredUser:
+        previous = self.rows.get(identity)
+        assigned = frozenset() if previous is None else previous.roles
+        if roles is not None:
+            assigned = roles
+        user_id = UUID(int=7) if previous is None else previous.id
+        row = StoredUser(
+            id=user_id,
             created_at=CREATED_AT,
-            sign_in=SignInMetadata(roles=frozenset({"DEV"})),
+            identity=identity,
+            roles=assigned,
         )
-
-    async def get_user(self, identifier: str) -> AuthenticatedUser | None:
-        if identifier != self.row.identifier:
-            return None
-
-        return self.row
-
-    async def ensure_user(self, signed: SignedIn) -> AuthenticatedUser:
-        return self.row
-
-
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    """Маршрут зовётся напрямую: сессия chainlit не нужна."""
+        self.rows[identity] = row
+        return row
 
 
 def _refresh() -> SessionRefresh:
-    secret = StandTokens.secret()
+    profiles = SignInStand.profiles()
+    backends = SignInStand.backends(profiles=profiles)
     config = LocalAuthConfig(
         identity=IdentityRule(realm="local-stand"),
         users={"alice": "pw"},
         roles=LocalRoleProviders(
-            local=LocalRolesConfig(mapping=RoleMappingConfig(root={"alice": ["DEV"]}))
+            local=LocalRolesConfig(
+                mapping=RoleMappingConfig(root={"alice": ["DEV"]})
+            )
         ),
     )
-    auth = AuthService(
-        tokens=JwtTokens(secret, 60, StandTokens.GENERATION),
+    sign_ins = SignIns(
+        password=backends.password([config]),
+        sso={},
+        proxy={},
+    )
+    auth = BrowserSessions(
+        sign_ins=sign_ins,
+        tokens=StandTokens.tokens(),
         cookie=CookieSpec(name=COOKIE, samesite="lax", ttl_sec=60),
-        sign_ins=SignIns(SignInStand.assembly().password([config]), {}, {}),
-        users=Users(),
+        sessions=SessionService(Users(), profiles),
         renewal=SessionRenewal.of(60, 3600),
     )
 
@@ -108,8 +123,8 @@ async def test_password_session_is_renewed_with_a_new_cookie() -> None:
     set_cookie = response.headers.get("set-cookie", "")
     assert COOKIE in set_cookie
     renewed = set_cookie.split(f"{COOKIE}=", 1)[1].split(";", 1)[0]
-    claims = jwt.decode(renewed, StandTokens.secret(), algorithms=["HS256"])
-    assert claims["identifier"] == "local-stand:alice"
+    claims = StandTokens.tokens().read(renewed)
+    assert claims.identifier == "local-stand:alice"
 
 
 async def test_refresh_without_its_own_mark_is_refused() -> None:

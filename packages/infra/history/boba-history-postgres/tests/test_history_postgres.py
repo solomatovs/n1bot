@@ -63,7 +63,6 @@ from boba.history.jsonl import JsonlHistoryStore
 from boba.history.postgres import PostgresHistoryStore, SessionLocks
 from boba.identity.principal import UserIdentity
 from boba.identity.session import Login
-from boba.identity.signin import SignedIn, SignInMetadata
 from boba.identity_postgres import UsersTable
 from boba.stand.agent import (
     Collected,
@@ -237,18 +236,15 @@ class Stores:
     def new(self) -> PostgresHistoryStore:
         """Хранилище процесса без владельца: видит все сессии."""
         locks = SessionLocks(self._postgres)
-        return PostgresHistoryStore(
-            self._postgres, self._schema, None, locks, self._pool
-        )
+        return PostgresHistoryStore(self._pool, self._schema, None, locks)
 
     def owned(self, owner: str) -> PostgresHistoryStore:
         """Хранилище процесса, запущенного службой от имени owner."""
         return PostgresHistoryStore(
-            self._postgres,
+            self._pool,
             self._schema,
             self.user_id(owner),
             SessionLocks(self._postgres),
-            self._pool,
         )
 
     def user_id(self, owner: str) -> uuid.UUID:
@@ -263,16 +259,11 @@ async def stores(
         await PostgresSchema(schema).apply_packages(
             conn, ("boba.identity_postgres", "boba.history.postgres")
         )
-    users = UsersTable(postgres, schema, pool)
+    users = UsersTable(pool, schema)
     owners: dict[str, uuid.UUID] = {}
     for login in ("alice", "bob"):
         identity = UserIdentity(realm="stand", login=Login(login))
-        signed = SignedIn(
-            identifier=identity.identifier,
-            display_name=login,
-            sign_in=SignInMetadata(identity=identity),
-        )
-        user = await users.ensure_user(signed)
+        user = await users.upsert(identity)
         owners[login] = user.id
     return Stores(postgres, schema, pool, owners)
 
@@ -646,7 +637,7 @@ class TestConnectionLoss:
         signed = sessions.signed(name)
         pool = AsyncPostgresPool(signed)
         await pool.open()
-        store = PostgresHistoryStore(signed, schema, None, SessionLocks(signed), pool)
+        store = PostgresHistoryStore(pool, schema, None, SessionLocks(signed))
         journal = Journal(SESSION)
         journal.user("one")
         journal.assistant("two")
@@ -995,7 +986,7 @@ class TestCutoverTable:
 
                 previous = await self._layout(conn, cutover)
                 store = PostgresHistoryStore(
-                    postgres, cutover, uuid.UUID(int=777), SessionLocks(postgres), pool
+                    pool, cutover, uuid.UUID(int=777), SessionLocks(postgres)
                 )
                 with pytest.raises(HistoryError):
                     await store.list(None, 1)
@@ -1025,7 +1016,7 @@ async def test_history_links_records_to_the_users_uuid(
 ) -> None:
     await written(stores.owned("alice"), SESSION, "owned history")
     query = sql.SQL("""
-        select s.user_id, u.identifier
+        select s.user_id, u.realm || ':' || u.login
         from {}.session_records as r
         join {}.session as s on s.id = r.session_id
         join {}.users as u on u.id = s.user_id
@@ -1042,9 +1033,7 @@ async def test_history_refuses_a_uuid_without_a_users_row(
     schema: str,
     pool: AsyncPostgresPool,
 ) -> None:
-    unknown = PostgresHistoryStore(
-        postgres, schema, uuid.uuid4(), SessionLocks(postgres), pool
-    )
+    unknown = PostgresHistoryStore(pool, schema, uuid.uuid4(), SessionLocks(postgres))
     with pytest.raises(HistoryError, match="foreign key"):
         await written(unknown, SESSION, "orphan")
     assert await read_all(stores.new(), SESSION) == []

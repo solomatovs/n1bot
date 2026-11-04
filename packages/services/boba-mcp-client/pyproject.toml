@@ -11,9 +11,8 @@ dependencies = [
     "boba-core==0.0.33.dev1",
     "boba-toolkit==0.0.33.dev1",
     "boba-canvas==0.0.33.dev1",
-    "boba-auth==0.0.33.dev1",
+    "boba-oauth==0.0.33.dev1",
     "boba-identity==0.0.33.dev1",
-    "boba-sandbox==0.0.33.dev1",
     "mcp>=2.3,<3",
     "anyio>=4,<5",
     "httpx2>=2.10,<3",
@@ -22,16 +21,18 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "boba-oauth==0.0.33.dev1",
+    "boba-oauth[server]==0.0.33.dev1",
     "boba-stand==0.0.33.dev1",
     "boba-db-postgres==0.0.33.dev1",
-    "boba-runtime==0.0.33.dev1",
     "boba-config==0.0.33.dev1",
     "httpx>=0.28,<1",
     "pytest>=9.1,<10",
     "pytest-xdist>=3.6,<4",
     "starlette>=1.0,<2",
     "uvicorn>=0.35,<1",
+    "boba-auth==0.0.33.dev1",
+    "boba-mcp==0.0.33.dev1",
+    "boba-sandbox[host]==0.0.33.dev1",
 ]
 
 [tool.setuptools.packages.find]

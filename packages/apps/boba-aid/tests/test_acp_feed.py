@@ -11,7 +11,7 @@ import json
 from collections.abc import AsyncIterator, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar, cast
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import chainlit.data as chainlit_data
 import mcp_types as mt
@@ -49,18 +49,13 @@ from boba.aid.rendering.renderer import ChatRenderer, NoSurface
 from boba.aid.rendering.tool import AppResource, AppSource
 from boba.canvas.canvas import CanvasAction, CanvasElement, CanvasRegistry
 from boba.canvas.keys import ObjectKey, ScopeDir, WorkspaceKey
+from boba.chat.messages import JournalOpened, TurnOutcome
 from boba.identity.context import Scope
-from boba.mcp_adapter import JournalUris
-from boba.messaging import (
-    JournalOpened,
-    LockToken,
-    MemoryMessageBus,
-    MemoryPayloadStore,
-    TurnOutcome,
-)
-from boba.runtime.storage import LocalStorageClient
+from boba.messaging import LockToken, MemoryPayloadStore
+from boba.stand.messaging import memory_message_bus
 from boba.stand.refs import StandRefs
 from boba.stand.storage import StorageSeed
+from boba.storage.client import LocalStorageClient
 from boba.toolkit.chain import GroupCall, GroupFailureResult
 from boba.toolkit.channels import ToolChannel
 from boba.toolkit.dag import (
@@ -89,7 +84,7 @@ from boba.toolkit.result import (
     ToolResultBase,
     VisualResult,
 )
-from boba.toolkit.wire import JournalFeature, JournalRead, McpContent, ResultWire
+from boba.toolkit.wire import JournalFeature, McpContent, ResultWire
 from boba.transport.acp.protocol import (
     CommandApp,
     CommandFailure,
@@ -290,12 +285,13 @@ def _result(artifact: ToolResultBase, journaled: Sequence[str] = ()) -> dict[str
     call = DagNode(key="srv-call", tool="pg_query")
     outcome = NodeOutcomes().of(call, artifact, False)
     wire = ResultWire().packed(outcome)
-    uris = JournalUris(JOURNAL.resource)
     links = McpContent(RUN)
     for node in journaled:
-        address = JournalRead(run=RUN, node=node, channel=ToolChannel.STDOUT)
         links.link(
-            uris.uri(address), ToolChannel.STDOUT.value, ContentMime.PLAIN, False
+            f"boba-journal://{RUN}/{quote(node, safe='')}/{ToolChannel.STDOUT.value}",
+            ToolChannel.STDOUT.value,
+            ContentMime.PLAIN,
+            False,
         )
 
     content = [*wire.content, *links.blocks()]
@@ -1644,7 +1640,7 @@ class TestLiveEqualsReplay:
         live_context = FakeContext(THREAD)
         token = context_var.set(cast("ChainlitContext", live_context))
         try:
-            bus = MemoryMessageBus("test-aid")
+            bus = memory_message_bus("test-aid")
             payloads = MemoryPayloadStore()
             scope = Scope.chat(THREAD)
             renderer = ChatRenderer(
@@ -1701,7 +1697,7 @@ class TestLiveEqualsReplay:
         live_context = FakeContext(THREAD)
         token = context_var.set(cast("ChainlitContext", live_context))
         try:
-            bus = MemoryMessageBus("test-aid")
+            bus = memory_message_bus("test-aid")
             payloads = MemoryPayloadStore()
             scope = Scope.chat(THREAD)
             renderer = ChatRenderer(
@@ -1765,7 +1761,7 @@ class TestLiveEqualsReplay:
         """Итог вызова больше предела сообщения шины уходит телом в
         PayloadStore: вкладки получают его целиком."""
         rows = "row " * 5000
-        bus = MemoryMessageBus("test-aid")
+        bus = memory_message_bus("test-aid")
         payloads = MemoryPayloadStore()
         scope = Scope.chat(THREAD)
         renderer = ChatRenderer(
@@ -1844,7 +1840,7 @@ class TestResultsFromRawOutput:
         live_context = FakeContext(thread_id)
         token = context_var.set(cast("ChainlitContext", live_context))
         try:
-            bus = MemoryMessageBus("test-aid")
+            bus = memory_message_bus("test-aid")
             payloads = MemoryPayloadStore()
             scope = Scope.chat(thread_id)
             view = ChatView(thread_id, LiveSink(), seeded.user.id, storage, TEXTS)

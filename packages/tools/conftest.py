@@ -4,7 +4,7 @@
 import pytest
 from omegaconf import DictConfig
 
-from boba.runtime.config import ProcessConfig
+from boba.mcp_server.app import McpAppConfig
 from boba.stand.overlay import ConfigOverlay
 
 
@@ -21,6 +21,6 @@ def config_overlay(service_overlay: ConfigOverlay) -> ConfigOverlay:
 
 
 @pytest.fixture(scope="session")
-def process_config(service_runtime: ProcessConfig) -> ProcessConfig:
+def process_config(service_config: McpAppConfig) -> McpAppConfig:
     """Секции процесса набора — сервиса: профилей и ролей чата у него нет."""
-    return service_runtime
+    return service_config

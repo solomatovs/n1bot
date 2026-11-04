@@ -20,9 +20,9 @@ from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 from service_stand import PROFILE, ServiceStand
 
-from boba.mcp_adapter import JournalUris
 from boba.mcp_server.files import JournalRoutes
 from boba.mcp_server.server import OwnProgress, RunLimits
+from boba.mcp_server.tool_adapter import JournalUris
 from boba.toolkit.calls import SchemaMark
 from boba.toolkit.channels import ToolChannel
 from boba.toolkit.mcp import McpResults

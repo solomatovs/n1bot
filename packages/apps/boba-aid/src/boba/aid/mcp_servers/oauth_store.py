@@ -16,7 +16,7 @@ from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from psycopg import sql
 from pydantic import SecretStr, ValidationError
 
-from boba.connection_broker.crypto import SecretCipher, SecretCryptoError
+from boba.crypto import SecretCipher, SecretCryptoError
 from boba.db.postgres import PostgresPool, PostgresTable
 
 
@@ -43,7 +43,7 @@ class McpOAuthStore(PostgresTable):
     LABEL = "mcp_tokens"
 
     def __init__(self, pool: PostgresPool, schema: str, cipher: SecretCipher) -> None:
-        super().__init__(None, schema, pool)
+        super().__init__(pool, schema)
         self._cipher = cipher
 
     def _failure(self, action: str, exc: Exception) -> Exception:

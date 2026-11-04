@@ -17,8 +17,9 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
-from boba.access.grants import GrantTarget
+from boba.access.grants import ConnectionFilter, GrantTarget
 from boba.connections.base import ConnectionBase
+from boba.connections.catalog import CatalogEntry
 from boba.identity.context import Subject
 
 __all__ = [
@@ -116,3 +117,8 @@ class ConnectionRepository(Protocol):
     async def for_subject(
         self, subject: Subject, kind: str, *, name: str | None = None
     ) -> Sequence[GrantedConnection]: ...
+
+    @abstractmethod
+    async def catalog(
+        self, subject: Subject, flt: ConnectionFilter
+    ) -> Sequence[CatalogEntry]: ...

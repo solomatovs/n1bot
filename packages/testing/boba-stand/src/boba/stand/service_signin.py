@@ -17,7 +17,7 @@ from typing import ClassVar
 
 import httpx
 
-from boba.auth.proxy import ProxyAssertions
+from boba.oauth.assertions import ProxyAssertions
 from boba.identity.principal import UserIdentity
 from boba.identity.session import Login
 

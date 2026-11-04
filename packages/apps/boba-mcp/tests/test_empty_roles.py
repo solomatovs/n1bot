@@ -8,6 +8,7 @@ from psycopg import sql
 
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
+from boba.mcp_server.migrations import configured_migrations
 from boba.stand.migrate import StandSchema
 from boba.stand.ui.config import ServiceStand, StandPorts
 from boba.stand.ui.stand import StandProcess
@@ -25,17 +26,14 @@ async def test_service_starts_without_roles(
         app_port=StandPorts().free(),
         db_name=test_database,
         sandbox=False,
+        seed_roles=False,
         db_schema=f"no_roles_{uuid4().hex[:12]}",
-        role_tools={},
     )
     config.write()
     schema = StandSchema(
         config.files.paths(config.app),
-        (
-            "boba.identity_postgres",
-            "boba.access_postgres",
-            "boba.connection_broker",
-        ),
+        "boba.mcp_server",
+        configured_migrations(),
     )
     await schema.create()
     process = StandProcess(config=config, log_path=tmp_path / "mcp.log")

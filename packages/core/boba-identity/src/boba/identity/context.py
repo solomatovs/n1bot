@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from boba.cancellation import RunCancellation
 from boba.identity.errors import RefusalError
+from boba.identity.principal import UserIdentity
 from boba.identity.session import LogUserMark
 from boba.toolkit.manifest import ContextValue, InjectedRole
 
@@ -33,6 +34,7 @@ __all__ = [
     "ChatInitiator",
     "ContextKind",
     "Credential",
+    "CredentialAbsence",
     "DelegatedTicket",
     "HumanInitiator",
     "Initiator",
@@ -173,10 +175,14 @@ class Subject(ContextValue):
 
     user_id: UUID
     """Строка users."""
-    login: str = Field(min_length=1)
+    identity: UserIdentity
     roles: frozenset[str]
     profile: str = Field(min_length=1)
     """Именованный набор грантов инструментов."""
+
+    @property
+    def login(self) -> str:
+        return self.identity.identifier
 
     @property
     def user_key(self) -> str:
@@ -185,11 +191,11 @@ class Subject(ContextValue):
 
     @classmethod
     def of_user(
-        cls, user_id: UUID, login: str, roles: Iterable[str], profile: str
+        cls, user_id: UUID, identity: UserIdentity, roles: Iterable[str], profile: str
     ) -> Subject:
         """Субъект по строке users под выбранным профилем."""
         return cls(
-            user_id=user_id, login=login, roles=frozenset(roles), profile=profile
+            user_id=user_id, identity=identity, roles=frozenset(roles), profile=profile
         )
 
 
@@ -238,28 +244,46 @@ Initiator = Annotated[
 ]
 
 
+class CredentialAbsence(StrEnum):
+    """Причина отсутствия делегированных credentials; в токен уходит код."""
+
+    NOT_DELEGATED = "not_delegated"
+    KERBEROS_NOT_DELEGATED = "kerberos_not_delegated"
+    SERVICE_ONLY = "service_only"
+
+    def message(self) -> str:
+        if self is CredentialAbsence.KERBEROS_NOT_DELEGATED:
+            return "The Kerberos sign-in carried no delegated ticket."
+        if self is CredentialAbsence.SERVICE_ONLY:
+            return "Service configurations require service credentials."
+        return "This sign-in supplied no delegated credentials."
+
+
 class NoUserCredential(BaseModel):
-    """Секретов пользователя у вызова нет; reason — почему, для отказа."""
+    """Credentials отсутствуют по явно указанной причине."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     kind: Literal["none"] = "none"
-    reason: str
+    code: CredentialAbsence
+
+    @property
+    def reason(self) -> str:
+        return self.code.message()
 
 
 class DelegatedTicket(BaseModel):
     """Делегированный kerberos-билет SSO-входа: чей он и сам билет под шифром.
 
-    principal — чей билет, sealed — запечатанные креды входа (открывает
-    TicketSealer с секретом приложения). Из metadata входа его достаёт
-    SignInMetadata.ticket().
+    principal — Kerberos-принципал, sealed — зашифрованный билет.
+    TicketSealer открывает его ключом приложения при делегированном вызове.
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
 
     kind: Literal["delegated"] = "delegated"
-    principal: str
-    sealed: str
+    principal: str = Field(min_length=1)
+    sealed: str = Field(min_length=1, repr=False)
 
 
 Credential = Annotated[DelegatedTicket | NoUserCredential, Field(discriminator="kind")]
@@ -298,7 +322,8 @@ class CallContext(BaseModel):
             return self
 
         llm = LlmInitiator(
-            thread_id=self.initiator.thread_id, tool_call_id=tool_call_id
+            thread_id=self.initiator.thread_id,
+            tool_call_id=tool_call_id,
         )
         return self.model_copy(update={"initiator": llm})
 

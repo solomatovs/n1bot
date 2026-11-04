@@ -66,12 +66,11 @@ from boba.canvas.journal import (
     WindowAlign,
 )
 from boba.canvas.keys import WorkspaceKey
-from boba.canvas.storage import StorageError, StorageNotFoundError
+from boba.canvas.storage import ReadWindow, StorageError, StorageNotFoundError
 from boba.identity.errors import RefusalError
-from boba.runtime.storage import StorageClient
+from boba.storage.client import StorageClient
 from boba.toolkit.channels import JournalChannel
 from boba.toolkit.result import ContentMime, VisualResult
-from boba.workspace.launcher import ReadWindow
 
 __all__ = [
     "AudioViewer",

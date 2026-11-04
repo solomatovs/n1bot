@@ -258,11 +258,9 @@ and drop supposedly obsolete tables; do not infer a previous version from them.
 This explicit requirement supersedes earlier cleanup proposals. Current clean
 installs do not create those tables, and runtime does not use them.
 
-Migration input for endpoints is an explicit JSON document, passed with
-`--migration-data`; tools contain exact exported names and `prefix_url` is
-relative to the service prefix. No permission data is read from undeclared
-legacy tables. The existing local TOML export needs conversion to this format
-before the separate deployment phase.
+Migration changes storage structure only. It does not import endpoints,
+users or grants, map old identities, or derive new values from stored rows.
+Endpoint catalog administration is separate from the migrate command.
 
 Each component plan runs in its own transaction and schema advisory lock.
 Identical targets are deduplicated for shared plugin storage. Earlier committed
@@ -388,11 +386,11 @@ application still uses.
   `RolePermissions` / `role_permissions` bridge and its async per-role tool
   lookup path if repository-wide search confirms no remaining consumer.
   Retain shared access abstractions still used by unrelated applications.
-- `packages/services/boba-runtime/src/boba/runtime/plugins.py` and
-  `packages/services/boba-runtime/src/boba/runtime/providers.py`: remove
+- `packages/services/boba-toolrun/src/boba/toolrun/plugins.py` and
+  `packages/apps/boba-mcp/src/boba/mcp_server/app.py`: remove
   plumbing for dynamic role-to-tool permissions from registry assembly where
   it exists solely for MCP; preserve plugin loading and tool construction.
-- `packages/services/boba-connection-broker/src/boba/connection_broker/store.py`,
+- `packages/apps/boba-mcp/src/boba/mcp_server/connections/store.py`,
   `grants.py`, `tools.py`, `params.py`, and `user_connections.py`: keep the
   per-connection grant check, listing/search, secret decryption, and
   credential preparation in MCP. Remove endpoint-source filtering only after
@@ -429,7 +427,7 @@ application still uses.
 
 ### Migration implementation
 
-- `packages/services/boba-runtime/src/boba/runtime/migrate.py`:
+- `packages/infra/db/boba-db-postgres/src/boba/db/postgres/migration_cli.py`:
   load a selected complete SQL version directory and coordinate component
   plans through the common transactional executor.
 - `packages/apps/boba-aid/src/boba/aid/infra/entry.py`,
@@ -543,11 +541,10 @@ verification in the next phase. No Docker rollout or migration of the live
 | Composition and CLI | `packages/apps/boba-mcp/src/boba/mcp_server/app.py`: `McpHost`, `McpEntry`; commands `serve`, `health`, `migrate`, `tools` |
 | Stateless resource authorization | `packages/services/boba-oauth/src/boba/oauth/server.py`: optional `ProfileCatalog` in `ServiceAuth` / `ResourceTokens`; applies to the complete resource, including files/prompts |
 | Common execution policy port | `packages/core/boba-access/src/boba/access/__init__.py`: `ToolPolicy`; applied by `ToolAccessGuard`, injected by runtime |
-| Connection parameter publication | `packages/services/boba-connection-broker/src/boba/connection_broker/params.py`: `published()`; no source-offer filtering |
+| Connection parameter publication | `packages/apps/boba-mcp/src/boba/mcp_server/connections/params.py`: `published()`; no source-offer filtering |
 | Shared migration execution | `packages/infra/db/boba-db-postgres/src/boba/db/postgres/migrate.py`: versioned `MigrationPlan`, `MigrationScripts.application()`, `PostgresMigrations` |
-| Migration composition | `packages/services/boba-runtime/src/boba/runtime/migrate.py`: `ApplicationMigrations`, generic JSON input and target overrides |
+| Migration composition | `packages/infra/db/boba-db-postgres/src/boba/db/postgres/migration_cli.py`: `ApplicationMigrations` and target overrides |
 | SQL reconciliation | `packages/infra/db/boba-db-postgres/src/boba/db/postgres/sql/10_reconcile.sql`: temporary model comparison; declared tables only |
-| Endpoint input | `packages/apps/boba-mcp/src/boba/mcp_server/migrations/0001/50_import_endpoints.sql`: optional `boba.migration.data` JSON |
 
 Application SQL is in `migrations/0001/` under `boba.aid`, `boba.cli`,
 `boba.mcp_server`. Plugin storage has the same layout in `boba.db.pgvector`
@@ -583,18 +580,9 @@ has no role/tool ACL, so its audience/scope adaptation was retained.
 - `boba-mcp tools --config ...` writes a JSON mapping by exported tool name:
   `mcp` is the MCP descriptor, `override` is the editable model schema.
   It loads plugins but does not listen on HTTP or require endpoint rows.
-- `boba-mcp migrate --config ... --migration-data <json>` accepts normalized
-  `{"endpoints": [...]}` input with exact exported tool names. SQL validates
-  role references; existing endpoint tools/prompts must agree on retry.
-  No undeclared legacy permission table is read.
-- The current local compose endpoint definitions and prompts were exported
-  to `compose/mcp/conf/migrations/endpoints.json` before removing those TOML
-  sections. This local deployment-data file is ignored by Git. Compose mounts
-  its directory for the migration command. It is a legacy TOML export and
-  must be converted to the new input shape before use. The `.vscode/boba/mcp.toml` overlay
-  inherits the process-only config and selects database `aid_ss`; it has no
-  endpoint policy to remove. Transfer the import artifact when deploying to
-  a different machine. Do not recreate defaults on each service startup.
+- `boba-mcp migrate --config ...` applies the selected structure to configured
+  or explicitly overridden targets. It accepts no data-import document and
+  does not populate endpoints or role membership.
 - Package-data declarations include app SQL directories. The existing Make /
   `boba.core.package_data` inventory consumes them; no separate SQL-copy build
   step was added. Binary builds and package-resource checks are pending.
@@ -670,8 +658,8 @@ The host resolves the plan's connection reference from config. It does not
 import plugin storage code or manufacture a separate plugin migration engine.
 KB and ingest return identical plans for identical shared storage settings.
 
-Common CLI flags: `--migration-version`, `--database`, `--schema`,
-`--migration-data`. The version flag selects the application's directory;
+Common CLI flags: `--migration-version`, `--database`, `--schema`.
+The version flag selects the application's directory;
 plugins select their latest directory or `[tool.<id>].migration_version`.
 Database/schema overrides apply to every target in that invocation. The
 selected database must already exist. SQL helpers live in `pg_temp` only.
@@ -687,12 +675,10 @@ instead of silently destroying data. Foreign keys/triggers on declared tables
 can be recreated on repeated runs; idempotence concerns the resulting schema
 and data, not the absence of DDL statements.
 
-The generic JSON input is available as
-`current_setting('boba.migration.data', true)::jsonb`. Only the component's SQL
-knows its payload. Endpoint tools must already be exported names; Python does
-not expand old application configuration. The ignored deployment artifact
-`compose/mcp/conf/migrations/endpoints.json` still needs normalization in the
-next data migration phase. Preserve it as source input.
+Every version is a target definition. Scripts do not assume a particular
+source layout, import JSON data, reconstruct users from history, or rewrite
+business rows before DDL. Sequence definitions are reconciled without scanning
+table values or advancing counters from their maximum IDs.
 
 Tests and testing support were not edited or run in this source phase. No SQL
 was applied to `aid` or `aid_ss`. Next verification phase must cover:
@@ -706,15 +692,15 @@ was applied to `aid` or `aid_ss`. Next verification phase must cover:
 - Incompatible data and incoming foreign dependencies fail transactionally.
 - MCP plus enabled plugins, shared KB/ingest deduplication, different schemas
   and credentials, and both DB/schema overrides for unrendered plugin SQL.
-- Version selection, missing/empty folders, normalized endpoint input,
-  malformed input and conflicting repeat input.
+- Version selection, missing/empty folders, and absence of data-import inputs
+  or prerequisite data-mapping steps.
 - SQL package resources in wheels/plugin binaries/Nuitka; adapt testing support
   still using removed `MigrationScripts.packages/package/statement` APIs.
 - Full functional/security/build checks, then app-specific migrations against
   `aid` and `aid_ss` and the separate deployment/manual-review phase.
 
 Error boundary: package loading and SQL execution failures are `PostgresError`;
-config, JSON file and malformed plugin plans are `ConfigError`; plugin process
+config and malformed plugin plans are `ConfigError`; plugin process
 failures retain the launcher's `RuntimeError`. CLI returns nonzero on failure.
 Static-check logs for this source phase: `/tmp/boba-sql-migrate-20261104-code/`.
 Static analysis is not evidence that migration SQL has passed execution tests.

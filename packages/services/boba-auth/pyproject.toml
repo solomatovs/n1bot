@@ -5,18 +5,19 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "boba-auth"
 version = "0.0.33.dev1"
-description = "Boba auth: вход пользователя приложений — токены, пароли, SPNEGO, креды."
+description = "Boba auth: общие сценарии входа, подтверждения пользователя и обновления прав."
 requires-python = ">=3.11,<4"
 dependencies = [
+    "boba-config==0.0.33.dev1",
     "boba-core==0.0.33.dev1",
     "boba-identity==0.0.33.dev1",
     "boba-kerberos==0.0.33.dev1",
     "boba-toolkit==0.0.33.dev1",
     "pydantic>=2.12,<3",
-    "pyjwt>=2.8,<3",
 ]
 
 [project.optional-dependencies]
+kerberos = ["boba-krb[seal]==0.0.33.dev1"]
 http = ["starlette>=1.0,<2"]
 dev = [
     "boba-ldap==0.0.33.dev1",
@@ -25,6 +26,8 @@ dev = [
     "boba-stand-core==0.0.33.dev1",
     "omegaconf>=2.3,<3",
     "pytest>=9.1,<10",
+    "boba-oauth[server]==0.0.33.dev1",
+    "PyJWT>=2.10,<3",
 ]
 
 [tool.setuptools.packages.find]
@@ -33,4 +36,7 @@ include = ["boba*"]
 namespaces = true
 
 [tool.boba.extras]
-"boba.auth.http" = "http"
+"boba.auth.transport.http" = "http"
+
+"boba.auth.providers.backends" = "kerberos"
+"boba.auth.providers.kerberos" = "kerberos"

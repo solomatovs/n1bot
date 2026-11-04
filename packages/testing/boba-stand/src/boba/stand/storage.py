@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import ClassVar
 
-from boba.runtime.storage import StorageClient
+from boba.storage.client import StorageClient
 
 __all__ = ["StorageSeed"]
 

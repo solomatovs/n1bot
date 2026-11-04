@@ -282,15 +282,18 @@ class McpRegistration:
         Ошибки:
         AuthenticationError — сессия больше не несёт годного входа.
         """
-        sign_in = self.session.signed_in().sign_in()
-        subject = Subject.of_user(self.user_id, self.login, sign_in.roles, self.profile)
+        session = self.session.authenticated_session()
+        principal = session.principal
+        subject = Subject.of_user(
+            principal.id, principal.identity, principal.roles, self.profile
+        )
 
         return CallContext(
             subject=subject,
             scope=Scope.user(self.user_id),
             run_id=uuid4().hex,
             initiator=HumanInitiator(via="api"),
-            credential=sign_in.credential(),
+            credential=session.credential,
             cancellation=RunCancellation(),
         )
 

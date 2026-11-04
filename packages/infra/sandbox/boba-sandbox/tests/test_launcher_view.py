@@ -23,8 +23,8 @@ from uuid import uuid4
 import pytest
 from launcher_layer import ResolvedLayout, ResolvedProbe
 
-from boba.runtime.config import ProgramRoots
-from boba.runtime.storage import ImageStorageClient, ImageStorageConfig
+from boba.sandbox.paths import ProgramRoots
+from boba.sandbox.storage import ImageStorageClient, ImageStorageConfig
 from boba.sandbox import WorkspaceSpec
 from boba.sandbox.argv import ZygoteArgv
 from boba.sandbox.profile import SandboxMount, SandboxProfile

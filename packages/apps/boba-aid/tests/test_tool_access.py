@@ -8,7 +8,7 @@ import pytest
 from pydantic import BaseModel
 
 from boba.access import ProfileGrant, RoleConfig, ToolAccess
-from boba.runtime.plugins import PluginMeta
+from boba.toolrun.plugins import PluginMeta
 from boba.stand.refs import StandRefs
 from boba.stand.toolstand import ProbeTools
 from boba.tool_io.chain import CallAmbient

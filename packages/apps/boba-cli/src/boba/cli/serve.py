@@ -72,10 +72,11 @@ from boba.agent.settings import (
     PostgresHistorySettings,
     SettingsLayer,
 )
-from boba.auth import SignIns
+from boba.auth import SessionService, SignIns
 from boba.auth.assembly import AuthBackends, AuthServices
 from boba.auth.config import AuthConfig, ProxyAuthConfig
-from boba.auth.proxy import ProxyAssertionVerifier
+from boba.auth.providers.backends import StandardAuthBackends
+from boba.auth.settings import SignInSettings
 from boba.cancellation import ProcessStop
 from boba.cli.acp_server import AcpAgent
 from boba.cli.app import (
@@ -88,33 +89,37 @@ from boba.cli.app import (
 from boba.cli.settings import Arguments, EffectiveSettings, Settings, SettingsError
 from boba.cli.threads import LoopThread, SessionThreads, ThreadedHistoryStore
 from boba.config import ConfigError, ConfigVariant, bind
+from boba.config.application import ConfigFiles
+from boba.config.paths import PathsConfig, TlsConfig
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import LibpqConnection, PostgresConfig
 from boba.history.postgres import PostgresHistoryStore, SessionLocks
-from boba.identity.api import AuthenticatedUser as DomainUser
-from boba.identity.api import PersistedUsers, RoleCatalog, UsersUpsert
+from boba.http_server import (
+    HealthCheckError,
+    HealthProbe,
+    ProcessLogging,
+    ServerConfig,
+    SignalledServer,
+)
+from boba.identity.api import RoleCatalog, StoredUser, UserRows
 from boba.identity.principal import UserIdentity
 from boba.identity.service import ServiceAddress
-from boba.identity.session import Login
-from boba.identity.signin import ProfileCatalog, SignedIn
+from boba.identity.signin import ProfileCatalog
 from boba.identity_postgres import UsersTable
+from boba.krb.layout import InstanceLayout
 from boba.ldap import Ldap3Directory
 from boba.llm.http.ollama import MANIFEST as OLLAMA
 from boba.llm.http.openai import MANIFEST as OPENAI
 from boba.llm.onnx.chat import MANIFEST as ONNX
 from boba.llm.providers import LlmProviders, LlmProviderTypes
-from boba.oauth.server import (
-    AuthServer,
-    RegisteredClients,
-    SealedValues,
-    ServiceAuth,
-    ServiceTokens,
-    TokenClaims,
-    TrustedClient,
-)
-from boba.runtime.auth_backends import StandardAuthBackends
-from boba.runtime.config import ProcessConfig, ServerConfig
-from boba.runtime.http import HealthCheckError, HealthProbe, SignalledServer
+from boba.oauth.claims import TokenClaims
+from boba.oauth.server.assertions import ProxyAssertionVerifier
+from boba.oauth.server.clients import RegisteredClients, TrustedClient
+from boba.oauth.server.config import TokenConfig
+from boba.oauth.server.provider import AuthServer
+from boba.oauth.server.resources import ServiceAuth
+from boba.oauth.server.sealed import SealedValues
+from boba.oauth.server.tokens import ServiceTokens
 from boba.transport.acp.protocol import AgentSide
 
 __all__ = [
@@ -228,8 +233,16 @@ class AgentServerConfig(ServerConfig, ServiceAddress):
     port: int = Field(default=8660, gt=0, lt=65536)
 
 
-class ServeConfig(ProcessConfig):
-    """Секции процесса службы: секции процесса и [agent]."""
+class ServeConfig(SignInSettings):
+    """Секции службы агента и подключения её инфраструктуры."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    db_schema: str = Field(alias="schema", min_length=1)
+    paths: PathsConfig
+    tls: TlsConfig = Field(default_factory=TlsConfig)
+    session: TokenConfig
+    logger: dict[str, Any] = Field(default_factory=ProcessLogging().default)
 
     AUTH_BACKENDS: ClassVar[AuthBackends] = StandardAuthBackends().registry
     CONFIG_VARIANTS: ClassVar = {
@@ -265,7 +278,7 @@ class AgentProfiles(ProfileCatalog):
         return name in self._profiles
 
 
-class ServeAgents(PersistedUsers, UsersUpsert, RoleCatalog):
+class ServeAgents(UserRows, RoleCatalog):
     """Общая сборка процесса службы и вход ACP на подключение.
 
     Создаёт ServeHost: настройки агента из [agent] (все профили, история
@@ -300,7 +313,7 @@ class ServeAgents(PersistedUsers, UsersUpsert, RoleCatalog):
         self._cwd = cwd
         self._locks = SessionLocks(history.postgres)
         self._pool = AsyncPostgresPool(history.postgres)
-        self._users = UsersTable(history.postgres, history.db_schema, self._pool)
+        self._users = UsersTable(self._pool, history.db_schema)
         self._store_thread = LoopThread(ServeMark.STORE_THREAD.value)
         self._threads = SessionThreads(self._settings.sessions.max_open)
 
@@ -319,11 +332,16 @@ class ServeAgents(PersistedUsers, UsersUpsert, RoleCatalog):
             self._users.resolve_roles(identity, candidates)
         )
 
-    async def get_user(self, identifier: Login) -> DomainUser | None:
-        return await self._store_thread.run(self._users.get_user(identifier))
+    async def stored(self, identity: UserIdentity) -> StoredUser | None:
+        return await self._store_thread.run(self._users.stored(identity))
 
-    async def ensure_user(self, signed: SignedIn) -> DomainUser:
-        return await self._store_thread.run(self._users.ensure_user(signed))
+    async def stored_by_id(self, user_id: UUID) -> StoredUser | None:
+        return await self._store_thread.run(self._users.stored_by_id(user_id))
+
+    async def upsert(
+        self, identity: UserIdentity, roles: frozenset[str] | None = None
+    ) -> StoredUser:
+        return await self._store_thread.run(self._users.upsert(identity, roles))
 
     async def stop(self) -> None:
         await self._store_thread.run(self._locks.close())
@@ -344,7 +362,7 @@ class ServeAgents(PersistedUsers, UsersUpsert, RoleCatalog):
         settings = self._granted(caller)
         history = self._history
         store = PostgresHistoryStore(
-            history.postgres, history.db_schema, caller.user_id, self._locks, self._pool
+            self._pool, history.db_schema, caller.user_id, self._locks
         )
         threaded = ThreadedHistoryStore(store, self._store_thread)
         assembly = AgentAssembly(
@@ -877,8 +895,7 @@ class ServeHost:
         tokens = ServiceTokens(
             public_url,
             session.auth_secret,
-            session.session_ttl_sec,
-            session.session_max_sec,
+            session.lifetime(),
             session.session_generation(),
             ServeMark.TOKEN_SALT,
         )
@@ -893,7 +910,7 @@ class ServeHost:
             RegisteredClients(sealed, section.clients),
             sealed,
             [self.resource()],
-            users=self._agents,
+            sessions=SessionService(self._agents, self._profiles),
         )
 
         return ServiceAuth(
@@ -936,13 +953,17 @@ class ServeEntry:
 
     def __init__(self, paths: Sequence[Path]) -> None:
         self._paths = tuple(paths)
+        self._configs = ConfigFiles(ServeConfig, values=("auth",))
 
     async def run(self) -> None:
         """Ошибки:
         SystemExit — конфиг не прочитан или служба не поднялась.
         """
         try:
-            config = ServeConfig.load(self._paths)
+            config = self._configs.load(self._paths).value
+            InstanceLayout(
+                self._paths[0].resolve().parent, config.paths, config.tls
+            ).apply()
         except (ConfigError, ValueError, OSError) as exc:
             msg = f"boba serve: the config {self._paths[0]} is not usable: {exc}"
             raise SystemExit(msg) from exc
@@ -963,9 +984,7 @@ class ServeEntry:
         SystemExit — конфиг не прочитан или служба не ответила успехом.
         """
         try:
-            section = bind(
-                ServeConfig.loader(self._paths).load(), "server", AgentServerConfig
-            )
+            section = bind(self._configs.read(self._paths), "server", AgentServerConfig)
             probe = HealthProbe(section.port, section.url_prefix, ServeMark.HEALTH)
             checked = probe.check()
         except (ConfigError, HealthCheckError) as exc:

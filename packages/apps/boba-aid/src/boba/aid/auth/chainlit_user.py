@@ -1,55 +1,32 @@
-"""Адаптер личности между AuthService и моделями пользователя Chainlit."""
-
-from datetime import datetime
-from uuid import UUID
+"""UI-проекция Chainlit; metadata не участвует в авторизации."""
 
 import chainlit as cl
 
-from boba.identity.api import AuthenticatedUser
+from boba.identity.api import StoredUser
+from boba.identity.authentication import AuthenticatedPrincipal
 from boba.identity.errors import AuthenticationError
-from boba.identity.session import Login, UserMetadataField
-from boba.identity.signin import SignInMetadata
 
 
-class ChainlitPrincipal:
-    """Единственная граница преобразования principal в формат Chainlit."""
+class SessionUser(cl.PersistedUser):
+    """Пользователь, созданный только после проверки JWT нашим auth callback.
 
-    @staticmethod
-    def project(
-        principal: AuthenticatedUser,
-        display_name: str = "",
-    ) -> cl.PersistedUser:
-        metadata = principal.sign_in.render()
-        metadata[UserMetadataField.ROLES] = sorted(principal.roles)
-        if not principal.roles:
-            metadata[UserMetadataField.PROFILES] = []
-            metadata[UserMetadataField.PROFILE] = ""
+    principal — атрибут адаптера, не поле dataclass Chainlit: он не попадает
+    в to_dict/asdict и не восстанавливается из metadata клиента или БД.
+    Credentials остаются в токене.
+    """
 
-        return cl.PersistedUser(
-            id=str(principal.id),
-            identifier=principal.identifier,
-            display_name=display_name,
-            metadata=metadata,
-            createdAt=principal.created_at.isoformat(),
-        )
+    principal: AuthenticatedPrincipal
 
-    @staticmethod
-    def restore(user: cl.User | cl.PersistedUser | None) -> AuthenticatedUser | None:
-        """Восстанавливает principal из projection, выданной нашим auth callback."""
-        if user is None or not isinstance(user, cl.PersistedUser):
-            return None
-
-        try:
-            identifier = Login(user.identifier)
-            sign_in = SignInMetadata.parse(user.metadata or {})
-            sign_in.identity_for(identifier)
-            return AuthenticatedUser(
-                id=UUID(user.id),
-                identifier=identifier,
-                created_at=datetime.fromisoformat(user.createdAt),
-                sign_in=sign_in,
-            )
-        except (TypeError, ValueError) as exc:
+    def __init__(self, principal: AuthenticatedPrincipal, stored: StoredUser) -> None:
+        if principal.id != stored.id or principal.identity != stored.identity:
             raise AuthenticationError(
-                "Chainlit user projection is not a valid authenticated principal"
-            ) from exc
+                "Chainlit projection differs from the authenticated user"
+            )
+        super().__init__(
+            id=str(stored.id),
+            identifier=principal.identifier,
+            display_name=principal.identity.login,
+            createdAt=stored.created_at.isoformat(),
+            metadata={},
+        )
+        self.principal = principal

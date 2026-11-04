@@ -1,5 +1,4 @@
-"""POST [auth.proxy].path в chainlit: подписанные заголовки бэкенда → cookie
-сессии; отказы уходят ошибками сервиса входа (их переводит middleware)."""
+"""HTTP adapter for signed proxy headers and its issued browser session."""
 
 from __future__ import annotations
 
@@ -8,27 +7,28 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-import jwt
 import pytest
 from aid_stand import StandTokens
 from fastapi import FastAPI, Request
 from pydantic import SecretStr
 
+from boba.aid.auth.cookies import CookieSpec
+from boba.aid.auth.policy import SessionRenewal
 from boba.aid.auth.proxy import ProxyAuth
-from boba.auth import AuthService, JwtTokens, SignIns
+from boba.aid.auth.session import BrowserSessions
+from boba.auth import SessionService, SignIns
 from boba.auth.config import (
     HeaderRolesConfig,
     LocalRolesConfig,
     ProxyAuthConfig,
     ProxyRoleProviders,
 )
-from boba.auth.proxy import ProxySignature
+from boba.auth.providers.proxy import ProxySignature
 from boba.identity.admission import RoleMappingConfig
-from boba.identity.api import AuthenticatedUser, PersistedUsers, UsersUpsert
+from boba.identity.api import StoredUser, UserRows
 from boba.identity.errors import AuthenticationError, AuthorizationError
-from boba.identity.principal import IdentityRule
-from boba.identity.signin import ProxyRequest, SignedIn
-from boba.identity.token import CookieSpec, SessionRenewal
+from boba.identity.principal import IdentityRule, UserIdentity
+from boba.identity.signin import ProxyRequest
 from boba.stand.signin import SignInStand
 
 pytestmark = pytest.mark.anyio
@@ -38,30 +38,39 @@ SECRET = "proxy-route-secret"
 CREATED_AT = datetime(2026, 1, 1, tzinfo=UTC)
 
 
-class Users(PersistedUsers, UsersUpsert):
-    """Строки users стенда: заводит любого вошедшего."""
+class Users(UserRows):
+    """In-memory user rows for this route test."""
 
     def __init__(self) -> None:
-        self.rows: dict[str, AuthenticatedUser] = {}
+        self.rows: dict[UserIdentity, StoredUser] = {}
 
-    async def get_user(self, identifier: str) -> AuthenticatedUser | None:
-        return self.rows.get(identifier)
+    async def stored(self, identity: UserIdentity) -> StoredUser | None:
+        return self.rows.get(identity)
 
-    async def ensure_user(self, signed: SignedIn) -> AuthenticatedUser:
-        created = AuthenticatedUser(
-            id=UUID(int=100 + len(self.rows)),
-            identifier=signed.identifier,
+    async def stored_by_id(self, user_id: UUID) -> StoredUser | None:
+        for row in self.rows.values():
+            if row.id == user_id:
+                return row
+        return None
+
+    async def upsert(
+        self,
+        identity: UserIdentity,
+        roles: frozenset[str] | None = None,
+    ) -> StoredUser:
+        previous = self.rows.get(identity)
+        assigned = frozenset() if previous is None else previous.roles
+        if roles is not None:
+            assigned = roles
+        user_id = UUID(int=100 + len(self.rows)) if previous is None else previous.id
+        stored = StoredUser(
+            id=user_id,
+            identity=identity,
             created_at=CREATED_AT,
-            sign_in=signed.sign_in,
+            roles=assigned,
         )
-        self.rows[signed.identifier] = created
-
-        return created
-
-
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    """Маршрут зовётся напрямую: сессия chainlit не нужна."""
+        self.rows[identity] = stored
+        return stored
 
 
 def _config() -> ProxyAuthConfig:
@@ -79,19 +88,28 @@ def _config() -> ProxyAuthConfig:
 
 
 def _route(config: ProxyAuthConfig) -> ProxyAuth:
-    auth = AuthService(
-        tokens=JwtTokens(StandTokens.secret(), 60, StandTokens.GENERATION),
+    profiles = SignInStand.profiles()
+    backends = SignInStand.backends(profiles=profiles)
+    sign_ins = SignIns(
+        password=None,
+        sso={},
+        proxy={config.identity.realm: backends.proxy(config)},
+    )
+    auth = BrowserSessions(
+        sign_ins=sign_ins,
+        tokens=StandTokens.tokens(),
         cookie=CookieSpec(name=COOKIE, samesite="lax", ttl_sec=60),
-        sign_ins=SignIns(None, {}, {"corporate": SignInStand.assembly().proxy(config)}),
-        users=Users(),
+        sessions=SessionService(Users(), profiles),
         renewal=SessionRenewal.of(60, 3600),
     )
-
     return ProxyAuth(config, auth)
 
 
 def _request(
-    login: str, roles: str = "", client: str = "172.18.0.20", secret: str = SECRET
+    login: str,
+    roles: str = "",
+    client: str = "172.18.0.20",
+    secret: str = SECRET,
 ) -> Request:
     stamp = str(int(time.time()))
     unsigned = ProxyRequest(login=login, timestamp=stamp, roles=roles, client=client)
@@ -113,26 +131,20 @@ def _request(
         "headers": headers,
         "client": ("127.0.0.1", 1234),
     }
-
     return Request(scope)
 
 
 async def test_signed_headers_yield_a_session_cookie() -> None:
-    response = await _route(_config()).auth_proxy(_request("Maksimov.MA", roles="wrt"))
+    route = _route(_config())
+    response = await route.auth_proxy(_request("Maksimov.MA", roles="wrt"))
 
     assert response.status_code == 204
     set_cookie = response.headers.get("set-cookie", "")
     token = set_cookie.split(f"{COOKIE}=", 1)[1].split(";", 1)[0]
-    claims = jwt.decode(token, StandTokens.secret(), algorithms=["HS256"])
-    assert claims["identifier"] == "corporate:maksimov.ma"
-    assert claims["display_name"] == "Maksimov.MA"
-    assert claims["metadata"] == {
-        "provider": "ProxyAuth",
-        "identity": {"realm": "corporate", "login": "maksimov.ma"},
-        "roles": ["read", "wrt"],
-        "profiles": [SignInStand.PROFILE],
-        "generation": StandTokens.GENERATION,
-    }
+    claims = StandTokens.tokens().read(token)
+    assert claims.identifier == "corporate:maksimov.ma"
+    assert claims.principal().roles == {"read", "wrt"}
+    assert claims.principal().profiles == {SignInStand.PROFILE}
 
 
 async def test_wrong_signature_is_refused() -> None:

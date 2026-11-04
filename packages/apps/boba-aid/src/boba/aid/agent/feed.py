@@ -92,7 +92,7 @@ from boba.messaging import (
     MessageBus,
     PayloadStore,
 )
-from boba.runtime.storage import StorageClient
+from boba.storage.client import StorageClient
 from boba.transport.acp.protocol import ErrorDataKey
 
 __all__ = [

@@ -35,10 +35,10 @@ async def test_repeated_load_builds_the_same_tools(
     runtime_stand: StandRefs, call_stand: CallStand, reload_config: DictConfig
 ) -> None:
     first = await runtime_stand.registry(
-        reload_config, runtime_stand.none(), StandRefs.granted("all", ["*"])
+        reload_config, runtime_stand.execution(), StandRefs.granted("all", ["*"])
     )
     second = await runtime_stand.registry(
-        reload_config, runtime_stand.none(), StandRefs.granted("all", ["*"])
+        reload_config, runtime_stand.execution(), StandRefs.granted("all", ["*"])
     )
 
     if [t.name for t in first.tools] != [t.name for t in second.tools]:

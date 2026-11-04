@@ -9,12 +9,15 @@
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 import pytest
 from omegaconf import DictConfig, OmegaConf
 
 from boba.config import ConfigError, bind
 from boba.mcp_server.app import McpAppConfig
-from boba.runtime.plugins import PluginMeta
+from boba.mcp_server.catalog import McpEndpoint
+from boba.toolrun.plugins import PluginMeta
 from boba.stand.overlay import ConfigOverlay
 from boba.stand.sandbox import section_profile
 
@@ -62,55 +65,37 @@ class TestHeavyToolsGetTheirCpu:
             )
 
 
-class TestStaticConnectionConfigIsRemoved:
-    """Сервис принимает профили connections только из своего каталога БД."""
+class TestDatabaseEndpointCatalog:
+    """Опубликованные адреса и grants MCP читаются только из БД."""
 
-    def test_profiles_cannot_be_configured_in_toml(
+    def test_endpoints_cannot_be_configured_in_toml(
         self, config_overlay: ConfigOverlay
     ) -> None:
         raw = config_overlay.tree(
-            {"app.connections": {"confluence": {"host": "example.org"}}}
+            {"app.mcp.endpoints": {"all": {"tools": ["tool_name"]}}}
         )
 
-        with pytest.raises(ConfigError, match="connections"):
+        with pytest.raises(ConfigError, match="endpoints"):
             bind(raw, path="app", model=McpAppConfig)
 
-    @pytest.mark.parametrize("source", ["server", "sealed"])
-    def test_obsolete_connection_sources_are_refused(
-        self, config_overlay: ConfigOverlay, source: str
-    ) -> None:
-        path = "mcp.endpoints.all.connections"
-        rules = [{"roles": ["*"], "offer": [source]}]
-        raw = config_overlay.tree({path: rules})
-
-        with pytest.raises(ConfigError, match="offer"):
-            bind(raw, path="app", model=McpAppConfig)
-
-    @pytest.mark.parametrize(
-        ("key", "value"),
-        [
-            ("offer", ["shared"]),
-            ("client", "any"),
-            ("offer", ["stored", "sealed"]),
-        ],
-        ids=["unknown-source", "removed-client-selector", "removed-profile-source"],
-    )
-    def test_unknown_source_or_client_of_a_rule_is_refused(
-        self,
-        raw_config: DictConfig,
-        config_overlay: ConfigOverlay,
-        key: str,
-        value: object,
-    ) -> None:
-        path = "mcp.endpoints.all.connections"
-        rules = OmegaConf.to_container(
-            OmegaConf.select(raw_config, path), resolve=False
+    def test_endpoint_names_exported_tools_and_allows_schema_override(self) -> None:
+        endpoint = McpEndpoint(
+            id=uuid4(),
+            prefix_url="/dq/all",
+            title="Data quality",
+            tools=("pg_query",),
+            overrides={
+                "pg_query": {
+                    "type": "object",
+                    "properties": {"sql": {"type": "string"}},
+                }
+            },
+            roles=frozenset({"analyst"}),
         )
-        assert isinstance(rules, list)
-        rule = rules[0]
-        assert isinstance(rule, dict)
-        rule[key] = value
-        raw = config_overlay.tree({path: rules})
 
-        with pytest.raises(ConfigError, match=key):
-            bind(raw, path="app", model=McpAppConfig)
+        assert endpoint.path_under("/mcp") == "/mcp/dq/all"
+        assert endpoint.tools == ("pg_query",)
+
+    def test_endpoint_rejects_wildcard_tools(self) -> None:
+        with pytest.raises(ValueError, match="exact exported tools"):
+            McpEndpoint(id=uuid4(), prefix_url="/all", title="All", tools=("*",))

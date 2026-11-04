@@ -16,8 +16,9 @@ from pydantic import BaseModel, ConfigDict, Field, RootModel
 
 from boba.access import RoleVisibility
 from boba.core.types import StringList
+from boba.identity.authentication import AccessGrant
 from boba.identity.errors import RefusalError
-from boba.identity.signin import ProfileCatalog, SignInMetadata
+from boba.identity.signin import ProfileCatalog
 from boba.llm.providers import ChatModelConfig
 
 __all__ = [
@@ -135,7 +136,7 @@ class ChatProfiles(ProfileCatalog):
     Реализация ProfileCatalog для провайдеров профилей входа.
 
     Какие профили доступны, решают провайдеры входа: по ролям через
-    granted_by_roles и, у proxy, по заголовку; итог лежит в metadata входа и
+    granted_by_roles и, у proxy, по заголовку; итог лежит в AccessGrant и
     в токене. Здесь набор из токена сверяется с конфигом и из него выбирается
     профиль сессии. Работа без профиля невозможна: не выбранный пользователем
     профиль назначается автоматически только когда доступный единственный.
@@ -185,11 +186,11 @@ class ChatProfiles(ProfileCatalog):
 
         return visible
 
-    def resolve(self, name: str | None, sign_in: SignInMetadata) -> SelectedProfile:
-        """Профиль сессии: выбор пользователя, затем выбор входа из токена, затем
+    def resolve(self, name: str | None, access: AccessGrant) -> SelectedProfile:
+        """Профиль сессии: выбор пользователя, затем
         единственный выданный, затем default конфига, если он выдан; иначе отказ.
         """
-        visible = self.visible_for(sign_in.profiles)
+        visible = self.visible_for(access.profiles)
 
         if not visible:
             msg = "no chat profile is granted to your sign-in"
@@ -197,9 +198,6 @@ class ChatProfiles(ProfileCatalog):
 
         if name is not None:
             return self._chosen(name, visible)
-
-        if sign_in.profile:
-            return self._chosen(sign_in.profile, visible)
 
         if len(visible) == 1:
             only_name = next(iter(visible))
@@ -213,16 +211,16 @@ class ChatProfiles(ProfileCatalog):
         raise RefusalError(ProfileRefusal.PROFILE_NOT_SELECTED, msg)
 
     def resolve_or_default(
-        self, name: str | None, sign_in: SignInMetadata
+        self, name: str | None, access: AccessGrant
     ) -> SelectedProfile:
         """Как resolve, но вместо отказа берётся первый выданный: для API и страниц."""
         try:
-            return self.resolve(name, sign_in)
+            return self.resolve(name, access)
         except RefusalError as exc:
             if exc.kind is not ProfileRefusal.PROFILE_NOT_SELECTED:
                 raise
 
-        visible = self.visible_for(sign_in.profiles)
+        visible = self.visible_for(access.profiles)
         first = next(iter(visible))
 
         return SelectedProfile(name=first, config=visible[first])

@@ -43,9 +43,9 @@ from boba.aid.infra.config import AppConfig
 from boba.aid.mcp_servers.sources import McpViewer, StoredServers
 from boba.aid.mcp_servers.store import McpServerStore
 from boba.config import ConfigError, bind
-from boba.connection_broker.crypto import SecretCipher
-from boba.identity.api import AuthenticatedUser
-from boba.identity.session import Login
+from boba.crypto import SecretCipher
+from boba.identity.api import StoredUser
+from boba.identity.principal import UserIdentity
 from boba.mcp_client.client import (
     HttpEndpoint,
     HttpLocation,
@@ -53,7 +53,7 @@ from boba.mcp_client.client import (
     McpServerLimits,
     ProxyAuth,
 )
-from boba.runtime.users import UsersTable
+from boba.aid.data.users import UsersTable
 from boba.stand.names import StandNames
 from boba.stand.ui.database import StandDatabase, StandServerSeed
 from boba.stand.ui.stand import (
@@ -536,13 +536,13 @@ async def _cookie_header(context: Any) -> str:
 
 
 def _app_config(stand: E2eStand) -> AppConfig:
-    raw = AppConfig.loader(stand.paths(StandApp.AID)).load()
+    raw = StandApp.AID.config_files().loader(stand.paths(StandApp.AID)).load()
     return bind(raw, path="app", model=AppConfig)
 
 
 async def _user_row(
     config: AppConfig, identifier: str
-) -> AuthenticatedUser:
+) -> StoredUser:
     """Пользователь стенда: identity и роли из общей таблицы users.
 
     Пул свой и закрывается здесь же: общий пул процесса привязан к циклу
@@ -553,10 +553,8 @@ async def _user_row(
     pool = AsyncPostgresPool(config.postgres)
     await pool.open()
     try:
-        from boba.runtime.users import UsersTable
-
-        user = await UsersTable(None, config.db_schema, pool).get_user(
-            Login(f"aid-debug-local:{identifier}")
+        user = await UsersTable(pool, config.db_schema).stored(
+            UserIdentity(realm="aid-debug-local", login=identifier)
         )
     finally:
         await pool.close()
@@ -583,7 +581,7 @@ async def _store(thread_id: str, files: Mapping[str, bytes], stand: E2eStand) ->
     cipher = SecretCipher(config.mcp_servers.cipher.get_secret_value())
     source = StoredServers(
         McpServerStore(pool, config.db_schema, cipher),
-        UsersTable(config.postgres, config.db_schema, pool),
+        UsersTable(pool, config.db_schema),
     )
     viewer = McpViewer(user_id=owner.id, login=caller.login, roles=caller.roles)
     names = await source.enabled_names(viewer)

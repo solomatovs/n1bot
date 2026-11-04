@@ -14,15 +14,18 @@ from aid_stand import StandTokens
 from omegaconf import DictConfig
 
 from boba.aid.data.data_layer import PostgresDataLayer
-from boba.aid.infra import providers
+from boba.aid.infra import providers, services
 from boba.aid.infra.config import AppConfig
 from boba.aid.infra.session import ChainlitSessions
+from boba.aid.infra.messaging_backends import StandardMessagingBackends
+from boba.aid.infra.turns import StaleTurnCloser
 from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import CallContexts
-from boba.runtime import providers as runtime
-from boba.runtime.config import AppName
-from boba.runtime.di import Container
+from boba.chat.messages import ChatMessages
+from boba.messaging.config import AppName
+from boba.aid.infra.di import Container
+from boba.stand.migrate import StandMigrations
 from boba.stand.overlay import ConfigOverlay
 
 pytestmark = pytest.mark.anyio
@@ -54,32 +57,27 @@ async def app_container(
     storage: object,
 ) -> Container:
     """Провайдеры aid, которым нужен postgres; тяжёлое подставлено готовым."""
-    from boba.db.postgres import PostgresSchema
-
-    async with await AsyncPostgresPool.dedicated(stand_config.postgres) as conn:
-        await PostgresSchema(stand_config.db_schema).apply_packages(
-            conn,
-            (
-                "boba.identity_postgres",
-                "boba.runtime",
-                "boba.access_postgres",
-                "boba.aid.mcp_servers",
-            ),
-        )
+    migrations = StandMigrations()
+    await migrations.application(
+        stand_config.postgres, stand_config.db_schema, "boba.aid"
+    )
 
     container = Container(level="app")
     container.provide(providers.get_app_config, stand_config)
-    container.provide(runtime.get_runtime_config, stand_config)
-    container.provide(runtime.get_raw_config, stand_raw)
-    container.provide(runtime.app_name, AppName.AID)
+    container.provide(services.application_config, stand_config)
+    container.provide(services.app_name, AppName("aid"))
+    container.provide(services.message_codec, ChatMessages().codec)
+    container.provide(
+        services.messaging_backends, StandardMessagingBackends().registry
+    )
+    container.provide(services.stale_observer, StaleTurnCloser)
+    container.provide(services.call_contexts, CallContexts())
     container.provide(providers.storage_provider, storage)
     container.provide(providers.session_source, ChainlitSessions(StandTokens()))
-    container.provide(runtime.connection_types, runtime.connection_types())
-    container.provide(runtime.call_contexts, CallContexts())
-    container.eager(runtime.users_table)
-    container.eager(runtime.message_bus)
-    container.eager(runtime.payload_store)
-    container.eager(runtime.live_locks)
+    container.eager(services.users_table)
+    container.eager(services.message_bus)
+    container.eager(services.payload_store)
+    container.eager(services.live_locks)
     container.eager(providers.mcp_server_store)
     container.eager(providers.chainlit_data_layer)
 
@@ -98,7 +96,7 @@ async def test_aid_components_share_one_pool(app_container: Container) -> None:
             raise AssertionError(f"data layer provider gives a layer: {layer!r}")
 
         opened = AsyncPostgresPool.opened()
-        pool = app_container.resolved(runtime.postgres_pool)
+        pool = app_container.resolved(services.postgres_pool)
         if len(opened) != 1:
             raise AssertionError(f"aid opens one pool, got {len(opened)} pools")
 

@@ -1,0 +1,255 @@
+"""Блокировки на Postgres: гонка за область, протухание, heartbeat, fencing шины."""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import AsyncIterator, Sequence
+from uuid import UUID, uuid4
+
+import pytest
+from psycopg import sql
+
+from boba.aid.infra.config import AppConfig
+from boba.aid.infra.messaging_backends import LockReaper
+from boba.chat.messages import ChatMessages, RunStateChanged
+from boba.db.postgres import AsyncPostgresPool, PgQueryBuilder
+from boba.db.postgres.connection import PostgresConfig
+from boba.db.postgres.messaging.bus import PgMessageBus
+from boba.db.postgres.messaging.schema import LiveTable
+from boba.identity.context import Scope
+from boba.identity.locks import (
+    LockBusyError,
+    LockLostError,
+    LockMode,
+    LockPurpose,
+    LockToken,
+    StaleLock,
+)
+from boba.identity_postgres.locks import PgLiveLocks
+from boba.messaging.config import AppName, ClusterConfig
+from boba.stand.database import PostgresSessions
+from boba.stand.migrate import StandMigrations
+
+pytestmark = [pytest.mark.integration, pytest.mark.anyio]
+
+TTL_SEC = 2
+
+
+def _cluster(bus_config: AppConfig) -> ClusterConfig:
+    return bus_config.cluster.model_copy(
+        update={"lock_ttl_sec": TTL_SEC, "heartbeat_sec": 1, "reaper_period_sec": 1}
+    )
+
+
+class Stand:
+    """Шина и блокировки одного инстанса над тестовой базой."""
+
+    def __init__(self, bus: PgMessageBus, locks: PgLiveLocks) -> None:
+        self.bus = bus
+        self.locks = locks
+
+
+async def _stand(
+    bus_config: AppConfig,
+    test_database: str,
+    pool: AsyncPostgresPool,
+    name: str,
+) -> Stand:
+    cfg = bus_config.postgres.model_copy(update={"dbname": test_database})
+    cluster = _cluster(bus_config)
+    bus = PgMessageBus(
+        pool,
+        bus_config.db_schema,
+        name,
+        cluster,
+        ChatMessages().codec,
+        listener_connect=lambda: AsyncPostgresPool.dedicated(cfg),
+    )
+    await StandMigrations().application(cfg, bus_config.db_schema, "boba.aid")
+
+    await bus.start()
+    locks = PgLiveLocks(pool, bus_config.db_schema, name, AppName("aid"), cluster)
+    await locks.register_instance()
+    return Stand(bus, locks)
+
+
+@pytest.fixture
+async def stands(
+    bus_config: AppConfig, test_database: str, pool: AsyncPostgresPool
+) -> AsyncIterator[tuple[Stand, Stand]]:
+    first = await _stand(bus_config, test_database, pool, "node1-aid")
+    second = await _stand(bus_config, test_database, pool, "node2-aid")
+    try:
+        yield first, second
+    finally:
+        await first.bus.stop()
+        await second.bus.stop()
+
+
+async def test_only_one_of_concurrent_holders_gets_the_scope(
+    stands: tuple[Stand, Stand],
+) -> None:
+    first, second = stands
+    scope = Scope.workflow(uuid4())
+
+    results = await asyncio.gather(
+        first.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.RUN, UUID(int=1)),
+        second.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.RUN, UUID(int=1)),
+        return_exceptions=True,
+    )
+
+    refused = [r for r in results if isinstance(r, LockBusyError)]
+    assert len(refused) == 1
+    assert refused[0].busy.holder in ("node1-aid", "node2-aid")
+    holders = await first.locks.holders_of(scope)
+    assert [h.purpose for h in holders] == [LockPurpose.RUN]
+
+
+async def test_shared_and_exclusive_matrix(stands: tuple[Stand, Stand]) -> None:
+    first, second = stands
+    scope = Scope.chat(str(uuid4()))
+    await first.locks.acquire(scope, LockMode.SHARED, LockPurpose.CLEANUP, UUID(int=1))
+    await second.locks.acquire(scope, LockMode.SHARED, LockPurpose.CLEANUP, UUID(int=2))
+
+    with pytest.raises(LockBusyError):
+        await first.locks.acquire(
+            scope, LockMode.EXCLUSIVE, LockPurpose.TURN, UUID(int=1)
+        )
+
+    assert len(await first.locks.holders_of(scope)) == 2
+
+
+async def test_stale_lock_expires_by_ttl_and_lost_heartbeat_returns_false(
+    stands: tuple[Stand, Stand],
+) -> None:
+    first, second = stands
+    scope = Scope.chat(str(uuid4()))
+    lock = await first.locks.acquire(
+        scope, LockMode.EXCLUSIVE, LockPurpose.TURN, UUID(int=1)
+    )
+
+    with pytest.raises(LockBusyError):
+        await second.locks.acquire(
+            scope, LockMode.EXCLUSIVE, LockPurpose.TURN, UUID(int=2)
+        )
+
+    await asyncio.sleep(TTL_SEC + 0.3)
+
+    taken = await second.locks.acquire(
+        scope, LockMode.EXCLUSIVE, LockPurpose.TURN, UUID(int=2)
+    )
+    assert taken.holder == "node2-aid"
+    assert await first.locks.heartbeat(lock.token) is False
+    assert await second.locks.heartbeat(taken.token) is True
+
+
+async def test_publish_is_fenced_by_the_lock_token(stands: tuple[Stand, Stand]) -> None:
+    first, _ = stands
+    run_id = uuid4()
+    scope = Scope.workflow(run_id)
+    changed = RunStateChanged(run_id=run_id, status="running")
+
+    with pytest.raises(LockLostError):
+        await first.bus.publish(scope, changed, LockToken.local())
+
+    lock = await first.locks.acquire(
+        scope, LockMode.EXCLUSIVE, LockPurpose.RUN, UUID(int=1)
+    )
+    assert await first.bus.publish(scope, changed, lock.token) >= 1
+
+    await first.locks.release(lock.token)
+    with pytest.raises(LockLostError):
+        await first.bus.publish(scope, changed, lock.token)
+
+
+async def test_reaper_removes_stale_locks_and_dead_instances(
+    stands: tuple[Stand, Stand],
+) -> None:
+    first, second = stands
+    scope = Scope.workflow(uuid4())
+    await second.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.RUN, UUID(int=1))
+    seen: list[StaleLock] = []
+
+    async def on_stale(stale: Sequence[StaleLock]) -> None:
+        seen.extend(stale)
+
+    async def on_sweep() -> None:
+        return None
+
+    reaper = LockReaper(first.locks, 1.0, on_stale, on_sweep)
+    assert scope not in [s.scope for s in await reaper.sweep()]
+    seen.clear()
+
+    await asyncio.sleep(TTL_SEC + 0.3)
+    stale = await reaper.sweep()
+
+    ours = [s for s in stale if s.scope == scope]
+    assert len(ours) == 1
+    assert ours[0].holder == "node2-aid"
+    assert ours[0].purpose is LockPurpose.RUN
+    assert ours[0] in seen
+    assert await first.locks.holders_of(scope) == []
+
+
+async def test_instance_registration_survives_a_postgres_restart(
+    stands: tuple[Stand, Stand], pool: AsyncPostgresPool
+) -> None:
+    """После рестарта Postgres unlogged-таблица инстансов пуста: проход сторожа
+    регистрирует инстанс заново, и захват блокировки снова возможен.
+    """
+    first, _ = stands
+    truncate = (
+        PgQueryBuilder(
+            instances=sql.Identifier(first.locks.schema, LiveTable.INSTANCES.value)
+        )
+        .add("truncate {instances} cascade")
+        .build()
+    )
+    async with pool.cursor() as cur:
+        await cur.execute(truncate.text, truncate.params)
+
+    async def on_stale(stale: Sequence[StaleLock]) -> None:
+        return None
+
+    async def on_sweep() -> None:
+        return None
+
+    await LockReaper(first.locks, 1.0, on_stale, on_sweep).sweep()
+
+    scope = Scope.chat(str(uuid4()))
+    lock = await first.locks.acquire(
+        scope, LockMode.EXCLUSIVE, LockPurpose.TURN, UUID(int=1)
+    )
+    assert lock.holder == first.locks.instance
+    await first.locks.release(lock.token)
+
+
+async def test_locks_survive_connections_terminated_on_the_server(
+    bus_config: AppConfig, test_database: str, test_postgres: PostgresConfig
+) -> None:
+    """Обрыв всех соединений пула блокировок на сервере (как перезапуск
+    Postgres): следующий захват и пульс идут на новых соединениях пула."""
+    sessions = PostgresSessions(test_postgres)
+    name = f"locks-{uuid4().hex[:8]}"
+    pool = AsyncPostgresPool(sessions.signed(name))
+    await pool.open()
+    stand = await _stand(bus_config, test_database, pool, "node1-aid")
+    try:
+        scope = Scope.chat(str(uuid4()))
+        first = await stand.locks.acquire(
+            scope, LockMode.EXCLUSIVE, LockPurpose.TURN, UUID(int=1)
+        )
+        assert await sessions.terminate(name) >= 1
+
+        assert await stand.locks.heartbeat(first.token)
+        await stand.locks.release(first.token)
+
+        assert await sessions.terminate(name) >= 1
+
+        again = await stand.locks.acquire(
+            scope, LockMode.EXCLUSIVE, LockPurpose.TURN, UUID(int=1)
+        )
+        await stand.locks.release(again.token)
+    finally:
+        await stand.bus.stop()
+        await pool.close()

@@ -34,7 +34,7 @@ import signal
 import sys
 from asyncio.streams import FlowControlMixin
 from collections.abc import AsyncGenerator, Mapping, Sequence
-from contextlib import aclosing
+from contextlib import AsyncExitStack, aclosing
 from dataclasses import dataclass, field
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, version
@@ -91,8 +91,10 @@ from boba.cli.settings import (
     SettingsSource,
 )
 from boba.cli.threads import LoopThread, SessionThreads, ThreadedHistoryStore
+from boba.config.arguments import CommandSpec, ConfigArguments
 from boba.core.package_data import PackageDataCheck, PackageDataError
 from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres.migration_options import MigrationArguments, MigrationOptions
 from boba.history.jsonl import JsonlHistoryStore
 from boba.history.postgres import PostgresHistoryStore, SessionLocks
 from boba.llm.chat import ChatModel, LlmError
@@ -100,8 +102,6 @@ from boba.llm.http.ollama import MANIFEST as OLLAMA
 from boba.llm.http.openai import MANIFEST as OPENAI
 from boba.llm.onnx.chat import MANIFEST as ONNX
 from boba.llm.providers import LlmProviders, LlmProvidersError, LlmProviderTypes
-from boba.runtime.config import MigrationArguments, MigrationOptions
-from boba.runtime.program import CommandSpec, ConfigArguments
 from boba.transport.acp.protocol import AgentSide, BatchTransport
 
 logger = logging.getLogger(__name__)
@@ -888,19 +888,24 @@ class AgentProcess:
         try:
             settings = self._settings.effective()
             os.environ.update(settings.env)
-            opened = self._store(settings)
         except SettingsError as exc:
             raise SystemExit(str(exc)) from exc
 
-        self._store_thread.start()
-        threaded = ThreadedHistoryStore(opened.store, self._store_thread)
-        try:
+        async with AsyncExitStack() as cleanup:
+            self._store_thread.start()
+            cleanup.push_async_callback(self._store_thread.stop)
+            cleanup.push_async_callback(
+                lambda: self._store_thread.run(AsyncPostgresPool.close_all())
+            )
+            try:
+                opened = await self._store_thread.run(self._store(settings))
+            except SettingsError as exc:
+                raise SystemExit(str(exc)) from exc
+
+            cleanup.push_async_callback(lambda: self._store_thread.run(opened.close()))
+            threaded = ThreadedHistoryStore(opened.store, self._store_thread)
+            cleanup.push_async_callback(threaded.close)
             await self._serve(settings, threaded)
-        finally:
-            await threaded.close()
-            await self._store_thread.run(opened.close())
-            await self._store_thread.run(AsyncPostgresPool.close_all())
-            await self._store_thread.stop()
 
     async def _serve(self, settings: EffectiveSettings, store: HistoryStore) -> None:
         """Ошибки:
@@ -962,16 +967,20 @@ class AgentProcess:
             self._version,
         )
 
-    def _store(self, settings: EffectiveSettings) -> OpenedStore:
-        """Ошибки:
+    async def _store(self, settings: EffectiveSettings) -> OpenedStore:
+        """Собирает хранилище и открывает пул в цикле потока истории.
+
+        Ошибки:
         SettingsError — строка подключения Postgres не задана или не годится.
+        PostgresError — не удалось открыть пул истории.
         """
         history = settings.history
         if isinstance(history, PostgresHistorySettings):
             postgres = PostgresBuilder(self._env).config(history)
+            pool = await AsyncPostgresPool.get(postgres)
             locks = SessionLocks(postgres)
             store = PostgresHistoryStore(
-                postgres, history.db_schema, history.user_id, locks
+                pool, history.db_schema, history.user_id, locks
             )
             return OpenedStore(store=store, locks=(locks,))
 
@@ -1003,7 +1012,7 @@ async def main(argv: Sequence[str] | None = None) -> None:
         if invocation.command is Command.MIGRATE:
             from boba.cli.serve import ServeConfig  # noqa: PLC0415
             from boba.config import ConfigSchema  # noqa: PLC0415
-            from boba.runtime.migrate import (  # noqa: PLC0415 — служебный режим
+            from boba.db.postgres.migration_cli import (  # noqa: PLC0415
                 ApplicationMigrations,
             )
 

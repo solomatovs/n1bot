@@ -20,6 +20,7 @@ from typing import BinaryIO, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from boba.canvas.storage import ReadWindow
 from boba.toolkit.timing import Elapsed
 from boba.workspace.binaries import (
     SandboxBinary,
@@ -88,45 +89,6 @@ class LauncherMode(StrEnum):
         """Читающий режим: образ монтируется ro под разделяемым локом."""
         readonly = (LauncherMode.READ, LauncherMode.LIST, LauncherMode.STAT)
         return self in readonly
-
-
-class ReadWindow(BaseModel):
-    """Окно чтения файла: length None — до конца, 0 — только размер."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    UNBOUNDED_ARG: ClassVar[str] = "-1"
-    """Представление length=None в argv: между процессами едут только строки."""
-
-    offset: int = Field(ge=0)
-    length: int | None = Field(ge=0)
-
-    @classmethod
-    def entire(cls) -> ReadWindow:
-        return cls(offset=0, length=None)
-
-    def to_argv(self) -> list[str]:
-        length = self.UNBOUNDED_ARG
-        if self.length is not None:
-            length = str(self.length)
-
-        return [str(self.offset), length]
-
-    @classmethod
-    def from_argv(cls, offset: str, length: str) -> ReadWindow:
-        if length == cls.UNBOUNDED_ARG:
-            return cls(offset=int(offset), length=None)
-
-        return cls(offset=int(offset), length=int(length))
-
-    def resolve_length(self, size: int) -> int:
-        """Сколько байт реально отдать из файла известного размера."""
-        available = max(size - self.offset, 0)
-
-        if self.length is None:
-            return available
-
-        return min(self.length, available)
 
 
 class FileHead(BaseModel):
@@ -201,7 +163,7 @@ class LauncherInterpreter(BaseModel):
     собранного бинарника или модуль лаунчера интерпретатором исходников. Во
     внешнем слое цепочки он видит только явный список путей (LauncherView) и
     приносит в него свои. Это факт процесса, а не конфиг: его даёт ProgramRoot
-    (boba.runtime.config), его получают построитель цепочки LauncherChain
+    (boba.sandbox.paths), его получают построитель цепочки LauncherChain
     хранилища образов и реестр зигот способа запуска песочницы.
     """
 

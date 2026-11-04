@@ -28,9 +28,21 @@ from chainlit.config import config as chainlit_config
 from chainlit.context import ChainlitContextException
 from chainlit.session import WebsocketSession, ws_sessions_id
 
+from boba.aid.auth.claims import (
+    SessionClaims,
+    TokenReader,
+    TokenRejectedError,
+    TokenRejection,
+)
 from boba.aid.chat.ui_text import UiText
+from boba.aid.infra.di import Container
+from boba.aid.infra.refresh import LiveSessions, LiveToken
 from boba.canvas.canvas import CanvasScope
-from boba.identity.api import AuthenticatedUser
+from boba.identity.authentication import (
+    AccessGrant,
+    AuthenticatedPrincipal,
+    AuthenticatedSession,
+)
 from boba.identity.context import (
     DelegatedTicket,
 )
@@ -40,16 +52,7 @@ from boba.identity.errors import (
     ViewErrorMessage,
 )
 from boba.identity.session import Login, Session, SessionSource
-from boba.identity.signin import SignInMetadata
-from boba.identity.token import (
-    SessionClaims,
-    TokenReader,
-    TokenRejectedError,
-    TokenRejection,
-)
-from boba.runtime.di import Container
-from boba.runtime.refresh import LiveSessions, LiveToken
-from boba.runtime.storage import StorageClient
+from boba.storage.client import StorageClient
 
 __all__ = [
     "ChainlitSession",
@@ -101,13 +104,8 @@ class LiveSignIn(Protocol):
     """
 
     @abstractmethod
-    def signed_in(self) -> SessionClaims:
-        """Вход, каким его несёт токен сессии сейчас.
-
-        Ошибки:
-        AuthenticationError — токена нет либо он не принят (истёк, чужое
-            поколение сессий).
-        """
+    def authenticated_session(self) -> AuthenticatedSession:
+        """Текущая подтверждённая сессия; AuthenticationError — вход истёк."""
 
 
 class SocketSend:
@@ -218,26 +216,19 @@ class ChainlitSession(Session, LiveSignIn):
         return str(getattr(self.user, "id", "") or "")
 
     @property
-    def metadata(self) -> Mapping[str, object]:
-        if not self.token:
-            return {}
-
-        return self.signed_in().metadata
-
-    @property
     def roles(self) -> frozenset[str]:
         """Роли из подписанных claims входа."""
         return self.authenticated_user().roles
 
     @property
     def profiles(self) -> frozenset[str]:
-        """Выданные профили после проверки актуальных ролей."""
+        """Выданные профили из подписанного снимка прав."""
         return self.authenticated_user().profiles
 
     @property
-    def sign_in(self) -> SignInMetadata:
-        """Данные входа с правами последней проверки сессии."""
-        return self.authenticated_user().sign_in
+    def access(self) -> AccessGrant:
+        """Права из подписанного токена сессии."""
+        return self.authenticated_user().access
 
     @property
     def chat_profile(self) -> str | None:
@@ -308,8 +299,6 @@ class ChainlitSession(Session, LiveSignIn):
             ) from exc
 
         try:
-            signed = claims.signed()
-            signed.sign_in.identity_for(signed.identifier)
             self._ensure_session_user_matches(claims)
         except ValueError as exc:
             msg = (
@@ -322,10 +311,13 @@ class ChainlitSession(Session, LiveSignIn):
 
         return claims
 
-    def authenticated_user(self) -> AuthenticatedUser:
+    def authenticated_user(self) -> AuthenticatedPrincipal:
         """Проверенный principal, восстановленный из JWT текущей сессии."""
         claims = self.signed_in()
-        return claims.authenticated_user()
+        return claims.principal()
+
+    def authenticated_session(self) -> AuthenticatedSession:
+        return self.signed_in().session()
 
     def _ensure_session_user_matches(self, claims: SessionClaims) -> None:
         """Chainlit user binds the websocket to claims; it does not supply identity.
@@ -386,6 +378,7 @@ class ChainlitSession(Session, LiveSignIn):
         workspace = await storage.workspace(user_id, thread_id)
 
         return CanvasScope(user_id=user_id, scope_id=thread_id, workspace=workspace)
+
 
 class OwnerSessions(Protocol):
     """Живые сессии пользователя на этом инстансе: по ним хранилище файлов
@@ -475,9 +468,10 @@ class ChainlitSessions(SessionSource, LiveSessions, OwnerSessions):
             if Login(user.identifier) != identifier:
                 continue
 
+            if str(getattr(user, "id", "")) != str(claims.user_id):
+                continue
+
             session.token = token
-            user.metadata = claims.sign_in().render()
-            user.display_name = claims.display_name
             adopted += 1
 
         return adopted

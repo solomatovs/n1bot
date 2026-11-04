@@ -9,10 +9,10 @@ from typing import Any, ClassVar
 from starlette.requests import HTTPConnection
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from boba.aid.auth.claims import TokenReader, TokenRejectedError
+from boba.aid.auth.http import RequestTokens
 from boba.aid.infra.session import current_session
 from boba.identity.session import LogUserMark
-from boba.identity.token import TokenReader, TokenRejectedError
-from boba.runtime.http import RequestTokens
 
 __all__ = ["RequestUserContext", "RequestUserMiddleware", "UserLogContext"]
 

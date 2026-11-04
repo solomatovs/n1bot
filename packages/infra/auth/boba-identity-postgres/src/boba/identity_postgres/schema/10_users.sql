@@ -1,21 +1,14 @@
 create table if not exists {schema}.users (
     id         uuid primary key default gen_random_uuid(),
-    identifier text not null unique,
     created_at timestamptz not null default now(),
-    realm      text,
-    login      text,
+    realm      text not null,
+    login      text not null,
+    constraint users_realm_login_key unique (realm, login),
     constraint users_identity check (
-        (realm is null and login is null)
-        or (realm is not null and login is not null
-            and realm ~ '^[a-z0-9][a-z0-9._-]*$'
-            and length(login) > 0 and login = lower(btrim(login))
-            and identifier = realm || ':' || login)
+        realm ~ '^[a-z0-9][a-z0-9._-]*$'
+        and length(login) > 0 and login = lower(btrim(login))
     )
 );
-
--- регистр логина не заводит вторую личность: инвариант держит база
-create unique index if not exists idx_users_identifier_lower
-    on {schema}.users (lower(identifier));
 
 create table if not exists {schema}.roles (
     id        uuid primary key default gen_random_uuid(),

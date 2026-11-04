@@ -20,6 +20,7 @@ dependencies = [
     "boba-transport-http==0.0.33.dev1",
     "httpx>=0.28,<1",
     "pydantic>=2.12,<3",
+    "boba-db-postgres==0.0.33.dev1",
 ]
 
 # зависимости payload'а: нужны только внутри песочницы,
@@ -34,10 +35,8 @@ payload = [
     "boba-confluence[html]==0.0.33.dev1",
 ]
 dev = [
-    "boba-connection-broker==0.0.33.dev1",
     "boba-connections==0.0.33.dev1",
     "boba-mcp==0.0.33.dev1",
-    "boba-runtime==0.0.33.dev1",
     "boba-db-postgres==0.0.33.dev1",
     "boba-sandbox==0.0.33.dev1",
     "boba-config==0.0.33.dev1",
@@ -46,6 +45,7 @@ dev = [
     "omegaconf>=2.3,<3",
     "psycopg>=3.3,<4",
     "pytest>=9.1,<10",
+    "boba-crypto==0.0.33.dev1",
 ]
 
 [tool.setuptools.packages.find]

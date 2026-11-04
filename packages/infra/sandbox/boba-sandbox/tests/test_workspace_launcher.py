@@ -16,7 +16,7 @@ from typing import ClassVar
 
 import pytest
 
-from boba.runtime.config import ProgramRoots
+from boba.sandbox.paths import ProgramRoots
 from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.images import (
     FuseMounter,

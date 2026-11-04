@@ -8,6 +8,8 @@ version = "0.0.33.dev1"
 description = "Boba cli: процесс агента — режимы boba --stdio (Agent Client Protocol через стандартные потоки) и boba serve (агент как служба по сети с входом OAuth)."
 requires-python = ">=3.11,<4"
 dependencies = [
+    "boba-krb[config]==0.0.33.dev1",
+    "boba-http-server==0.0.33.dev1",
     "boba-identity-postgres==0.0.33.dev1",
     "boba-core==0.0.33.dev1",
     "agent-client-protocol==1.0.0rc3",
@@ -16,17 +18,16 @@ dependencies = [
     "boba-config==0.0.33.dev1",
     "boba-history-jsonl==0.0.33.dev1",
     "boba-history-postgres==0.0.33.dev1",
-    "boba-db-postgres==0.0.33.dev1",
+    "boba-db-postgres[cli]==0.0.33.dev1",
     "boba-llm==0.0.33.dev1",
     "boba-llm-http==0.0.33.dev1",
     "boba-llm-onnx==0.0.33.dev1",
     "boba-transport-acp==0.0.33.dev1",
     "boba-access==0.0.33.dev1",
-    "boba-auth==0.0.33.dev1",
+    "boba-auth[kerberos]==0.0.33.dev1",
     "boba-identity==0.0.33.dev1",
     "boba-ldap==0.0.33.dev1",
-    "boba-oauth==0.0.33.dev1",
-    "boba-runtime==0.0.33.dev1",
+    "boba-oauth[server]==0.0.33.dev1",
     "fastmcp-slim[server]>=4.1.4,<5",
     "httpx>=0.28,<1",
     "mcp>=2.3,<3",
@@ -48,6 +49,7 @@ dev = [
     "httpx2>=2.10,<3",
     "omegaconf>=2.3,<3",
     "pytest>=9.1,<10",
+    "boba-aid==0.0.33.dev1",
 ]
 
 [tool.boba.unimported]

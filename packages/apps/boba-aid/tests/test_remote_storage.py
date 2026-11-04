@@ -21,7 +21,8 @@ from boba.canvas.keys import ObjectKey, ScopeDir
 from boba.canvas.storage import StorageError, StorageNotFoundError
 from boba.identity.api import StoredUser
 from boba.identity.principal import UserIdentity
-from boba.identity.session import Login, UserMetadataField
+from boba.identity.session import Login
+from aid_stand import AuthTestClaim as UserMetadataField
 from boba.mcp_client.client import McpCaller, McpServers, McpToolServer
 from boba.toolrun.call_id import CallFields
 from boba.workspace.launcher import ReadWindow
@@ -72,7 +73,6 @@ def _storage(
     users = OwnerRows(
         StoredUser(
             id=USER,
-            identifier=Login("corporate:alice"),
             created_at=datetime.now(UTC),
             identity=UserIdentity(realm="corporate", login=Login("alice")),
             roles=frozenset(meta.get("roles", ())),

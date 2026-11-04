@@ -63,13 +63,12 @@ from boba.chat.threads import (
 )
 from boba.identity.api import StoredUser, UserRows
 from boba.identity.context import Scope
-from boba.identity.session import Login, UserMetadataField
-from boba.identity.signin import SignInMetadata
+from boba.identity.principal import UserIdentity
 from boba.messaging import (
     LockToken,
     MessageBus,
 )
-from boba.runtime.storage import StorageClient
+from boba.storage.client import StorageClient
 
 __all__ = [
     "ActivityThreadDict",
@@ -227,17 +226,12 @@ class ThreadDicts:
 
     @staticmethod
     def user(stored: StoredUser) -> PersistedUser:
-        identified = stored.authenticated()
-        metadata = identified.sign_in.render()
-        metadata[UserMetadataField.ROLES] = sorted(stored.roles)
-        if not stored.roles:
-            metadata[UserMetadataField.PROFILES] = []
-            metadata[UserMetadataField.PROFILE] = ""
         return PersistedUser(
-            id=str(identified.id),
-            identifier=identified.identifier,
+            id=str(stored.id),
+            identifier=stored.identifier,
+            display_name=stored.identity.login,
             createdAt=Codec.iso(stored.created_at),
-            metadata=metadata,
+            metadata={},
         )
 
     @staticmethod
@@ -313,7 +307,7 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership, FeedRows):
     @data_boundary
     async def get_user(self, identifier: str) -> PersistedUser | None:
         # граница chainlit: identifier из его JWT приходит как набран
-        stored = await self._users.stored(Login(identifier))
+        stored = await self._users.stored(UserIdentity.model_validate(identifier))
         if stored is None:
             return None
 
@@ -321,14 +315,13 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership, FeedRows):
 
     @data_boundary
     async def create_user(self, user: ChainlitUser) -> PersistedUser | None:
-        # В базе остаются личность и членство; metadata сессии живёт в JWT.
-        sign_in = SignInMetadata.parse(dict(user.metadata))
-        identifier = Login(user.identifier)
-        sign_in.identity_for(identifier)
-        stored = await self._users.upsert(
-            identifier, sign_in.identity_for(identifier), sign_in.roles
-        )
-
+        # Пользователя создаёт BrowserSessions; Chainlit не назначает ему роли.
+        stored = await self._users.stored(UserIdentity.model_validate(user.identifier))
+        if stored is None:
+            raise DataRejectedError(
+                "create_user",
+                "the user must sign in before Chainlit can persist its projection",
+            )
         return ThreadDicts.user(stored)
 
     @data_boundary

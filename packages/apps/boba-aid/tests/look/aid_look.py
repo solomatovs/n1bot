@@ -36,7 +36,7 @@ from PIL import Image, ImageChops
 from playwright.sync_api import Browser, BrowserContext, Locator, Page, ViewportSize
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 
-from boba.runtime.config import SourceTree
+from boba.sandbox.paths import ProgramDir
 from boba.stand.ui.stand import (
     StandApp,
     StandAuth,
@@ -1275,7 +1275,7 @@ class LookAppRoots:
 
         tree = self._workdir / f"sources-{language.value}"
         runtime = tree / "runtime"
-        share = tree / SourceTree.AID_ASSETS.value
+        share = tree / ProgramDir.SHARE.value
         if not share.is_dir():
             runtime.mkdir(parents=True, exist_ok=True)
             shutil.copytree(LookPaths.ASSETS, share)

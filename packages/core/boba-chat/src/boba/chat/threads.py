@@ -32,6 +32,7 @@ __all__ = [
     "ChatTable",
     "ChatThreads",
     "DataBrokenError",
+    "DataConflictError",
     "DataLayerError",
     "DataRejectedError",
     "DataUnavailableError",
@@ -87,6 +88,13 @@ class DataRejectedError(DataLayerError):
 
     STATUS: int = 404
     USER_TEXT: str = "The requested data is not found"
+
+
+class DataConflictError(DataLayerError):
+    """Конфликт текущего состояния: операция требует повторной проверки данных."""
+
+    STATUS: int = 409
+    USER_TEXT: str = "The operation conflicts with the current stored data"
 
 
 class DataBrokenError(DataLayerError):

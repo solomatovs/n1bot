@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 
 from boba.config import bind
-from boba.connection_broker.crypto import SecretCipher
-from boba.connection_broker.store import ConnectionStore
+from boba.crypto import SecretCipher
+from boba.mcp_server.connections.store import ConnectionStore
 from boba.connections.manifest import ConnectionTypes
 from boba.db.postgres import AsyncPostgresPool
 from boba.mcp_server.app import McpAppConfig

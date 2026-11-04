@@ -27,14 +27,16 @@ from test_acp_chat import BOOT_TIMEOUT_SEC, AgentProcesses, ChatSocket
 
 import boba.aid.agent
 from boba.aid.agent.client import AgentProcess
+from boba.aid.infra.config import AppConfig
 from boba.aid.rendering.chat_view import StepStatus
 from boba.canvas.canvas import CanvasAction, CanvasElement, CanvasKind
 from boba.config import ConfigLoader, bind
 from boba.core.mcp_names import McpToolNames
 from boba.db.postgres.connection import PostgresConfig
 from boba.mcp_client.client import FixedServerConfigs, McpServerConfig
-from boba.runtime.config import RuntimeConfig, SessionConfig, TokenConfig
-from boba.runtime.http import RequestTokens
+from boba.aid.auth.config import SessionConfig
+from boba.oauth.server.config import TokenConfig
+from boba.aid.auth.http import RequestTokens
 from boba.stand.names import StandNames
 from boba.stand.site import Stand
 from boba.stand.ui.database import StandDatabase
@@ -187,7 +189,7 @@ def cookie(login: httpx.Response) -> str:
 
 
 @pytest.fixture(scope="module")
-def session_jwt(login: httpx.Response, runtime_config: RuntimeConfig) -> str:
+def session_jwt(login: httpx.Response, runtime_config: AppConfig) -> str:
     """JWT входа пользователя из cookie: агенту он не передаётся, и входы
     чата для агента его не принимают."""
     token = RequestTokens(runtime_config.session.cookie).of_cookies(dict(login.cookies))
@@ -720,7 +722,7 @@ class TestRelayAcceptance:
 
         return f"{ScenarioName.CALL.value} {json.dumps(spec)}"
 
-    async def test_tool_of_a_foreign_role_is_not_offered(
+    async def test_tools_from_an_authorized_server_are_offered_for_any_role(
         self, agents: Agents, model: FakeModel, auth_token: str
     ) -> None:
         names = McpToolNames()
@@ -738,7 +740,7 @@ class TestRelayAcceptance:
 
         assert offered_wide.named("fake_whoami") == "mcp__boba__fake_whoami"
         assert offered_narrow.named("fake_echo") == "mcp__boba__fake_echo"
-        assert offered_narrow.named("fake_whoami") == "fake_whoami"
+        assert offered_narrow.named("fake_whoami") == "mcp__boba__fake_whoami"
 
     async def test_stop_cancels_the_call_on_the_server(
         self, agents: Agents, tmp_path: Path, auth_token: str

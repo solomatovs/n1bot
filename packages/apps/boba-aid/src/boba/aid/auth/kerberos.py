@@ -16,21 +16,19 @@ from fastapi import FastAPI
 from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 
+from boba.aid.auth.http import SessionCookie
+from boba.aid.auth.preferences import SessionPreferences
 from boba.aid.auth.refresh import PageUrls, SessionRefresh
-from boba.auth import AuthService
-from boba.auth.http import SsoRequests, SsoResponses
+from boba.aid.auth.session import BrowserSessions
+from boba.aid.rendering.failures import FailureReports
 from boba.auth.realms import RealmSelection
+from boba.auth.transport.http import SsoErrorCode, SsoRequests, SsoResponses
 from boba.identity.errors import (
     AuthorizationError,
     BaseError,
 )
 from boba.identity.session import LogLine
-from boba.identity.sso import (
-    SsoChallenge,
-    SsoErrorCode,
-)
-from boba.runtime.errors import FailureReports
-from boba.runtime.http import SessionCookie
+from boba.identity.sso import SsoChallenge
 
 
 class KerberosAuth:
@@ -47,7 +45,7 @@ class KerberosAuth:
         self,
         sso_path: str,
         urls: PageUrls,
-        auth: AuthService,
+        auth: BrowserSessions,
         realms: frozenset[str] = frozenset(),
     ) -> None:
         # роут без префикса (root_path учтёт роутер), адреса страницы — с полным
@@ -103,5 +101,6 @@ class KerberosAuth:
 
         response = RedirectResponse(url=self._urls.app, status_code=303)
         SessionCookie(self.auth.cookie()).put(response, request.cookies, outcome.token)
+        SessionPreferences(self.auth.cookie()).put(response, outcome.preferred_profile)
 
         return response

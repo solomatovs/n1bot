@@ -7,7 +7,7 @@ McpAppError — the requested authorization has no valid pending browser flow.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
@@ -27,6 +27,8 @@ from mcp.client.auth import OAuthClientProvider
 from mcp.shared.auth import AuthorizationCodeResult, OAuthClientMetadata
 from pydantic import AnyUrl
 
+from boba.aid.auth.claims import TokenReader, TokenRejectedError
+from boba.aid.auth.http import RequestTokens
 from boba.aid.mcp_servers import McpAppError
 from boba.aid.mcp_servers.oauth_store import (
     McpOAuthStore,
@@ -34,9 +36,7 @@ from boba.aid.mcp_servers.oauth_store import (
     OAuthWriteGate,
     UserOAuthTokens,
 )
-from boba.identity.token import TokenReader, TokenRejectedError
 from boba.mcp_client.client import BrowserOAuthRuntime
-from boba.runtime.http import RequestTokens
 
 
 @dataclass
@@ -198,7 +198,7 @@ class McpBrowserOAuth(BrowserOAuthRuntime):
             raise McpAppError("MCP OAuth credentials could not be removed") from exc
 
     @asynccontextmanager
-    async def editing(self, server_id: UUID) -> AsyncIterator[None]:
+    async def editing(self, server_id: UUID) -> AsyncGenerator[None, None]:
         """Stop old token writers while a server row and its tokens change."""
         if server_id in self._editing:
             raise McpAppError("MCP OAuth server is already being edited")

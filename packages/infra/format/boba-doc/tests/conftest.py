@@ -7,6 +7,7 @@ import pytest
 from boba.doc.config import DocConfig, OcrLanguage, RapidOcrConfig
 from boba.doc.document import DisabledOcr
 from boba.doc.ocr import RapidOcrEngine
+from boba.doc.formats import StandardDocuments
 from boba.doc.router import DocumentRouter
 from boba.stand.doc import DocStand
 
@@ -15,7 +16,7 @@ from boba.stand.doc import DocStand
 def router() -> DocumentRouter:
     config = DocConfig(text_encodings=("utf-8", "cp1251"))
 
-    return DocumentRouter(config, DisabledOcr())
+    return StandardDocuments(config, DisabledOcr()).router
 
 
 @pytest.fixture(scope="session")
@@ -40,4 +41,4 @@ def ocr_engine(doc_stand: DocStand) -> RapidOcrEngine:
 def ocr_router(ocr_engine: RapidOcrEngine) -> DocumentRouter:
     config = DocConfig(text_encodings=("utf-8",))
 
-    return DocumentRouter(config, ocr_engine)
+    return StandardDocuments(config, ocr_engine).router

@@ -12,10 +12,13 @@ import pytest
 from omegaconf import DictConfig
 
 from boba.config import bind
+from boba.config.application import ConfigFiles
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.llm.providers import LlmProviderTypes
-from boba.runtime.config import ProcessConfig, RawConfig, RuntimeConfig
+from boba.aid.infra.config import AppConfig
+from boba.krb.layout import InstanceLayout
+from boba.mcp_server.app import McpAppConfig
 from boba.stand.apps_slot import AppsDocker, AppsSlot
 from boba.stand.database import TestDatabase
 from boba.stand.overlay import ConfigOverlay
@@ -111,7 +114,7 @@ def raw_config() -> DictConfig:
     """Конфиг прогона: файлы BOBA_CONFIG_PATH — конфиг приложения и наложение
     стенда stand.toml поверх; он же — дерево процесса (RawConfig)."""
     files = StandConfigPaths(StandConfigEnv.RUN)
-    return RawConfig.load(files.paths(), schema=files.schema())
+    return ConfigFiles(AppConfig, values=("auth",)).read(files.paths())
 
 
 @pytest.fixture(scope="session")
@@ -152,32 +155,30 @@ def service_raw_config(service_overlay: ConfigOverlay) -> DictConfig:
 
 
 @pytest.fixture(scope="session")
-def runtime_config(raw_config: DictConfig) -> RuntimeConfig:
-    """Конфиг рантайма без побочных действий загрузчика: кэши kerberos ставит стенд."""
-    return bind(raw_config, path=RuntimeConfig.SECTION, model=RuntimeConfig)
+def runtime_config(raw_config: DictConfig) -> AppConfig:
+    """Настройки AID стенда; окружение Kerberos ставит fixture."""
+    return bind(raw_config, path="app", model=AppConfig)
 
 
 @pytest.fixture(scope="session")
-def bus_config(config_overlay: ConfigOverlay) -> RuntimeConfig:
-    """Конфиг рантайма с шиной на Postgres для тестов самой шины: отладка
+def bus_config(config_overlay: ConfigOverlay) -> AppConfig:
+    """Конфиг AID с шиной на Postgres для тестов самой шины: отладка
     выбирает в конфиге provider = local, а шину на Postgres тесты поднимают
     сами в тестовой базе."""
     raw = config_overlay.tree({"env.messaging_provider": "postgres"})
 
-    return bind(raw, path=RuntimeConfig.SECTION, model=RuntimeConfig)
+    return bind(raw, path="app", model=AppConfig)
 
 
 @pytest.fixture(scope="session")
-def service_runtime(service_raw_config: DictConfig) -> ProcessConfig:
-    """Секции процесса сервиса boba-mcp: модель самого сервиса лежит в его
-    пакете и пакетам инструментов недоступна по слоям."""
-    return bind(service_raw_config, path=ProcessConfig.SECTION, model=ProcessConfig)
+def service_config(service_raw_config: DictConfig) -> McpAppConfig:
+    """Настройки MCP, который исполняет инструменты стенда."""
+    return bind(service_raw_config, path="app", model=McpAppConfig)
 
 
 @pytest.fixture(scope="session")
-def process_config(runtime_config: RuntimeConfig) -> ProcessConfig:
-    """Секции процесса набора: по умолчанию — приложения с браузером; набор
-    над конфигом сервиса отдаёт service_runtime."""
+def process_config(runtime_config: AppConfig) -> AppConfig:
+    """Настройки AID для тестовых пакетов, обслуживаемых приложением."""
     return runtime_config
 
 
@@ -190,14 +191,16 @@ def stand_postgres(raw_config: DictConfig) -> PostgresConfig:
 
 @pytest.fixture(scope="session", autouse=True)
 def kerberos_workspace(
-    process_config: ProcessConfig, tmp_path_factory: pytest.TempPathFactory
+    process_config: AppConfig, tmp_path_factory: pytest.TempPathFactory
 ) -> None:
     """Кэши билетов теста: тела инструментов ждут настроенный workspace;
     krb5.conf и keytab'ы — conf/krb рядом с главным конфигом прогона."""
     from boba.krb import KerberosWorkspace  # noqa: PLC0415
 
     conf_dir = StandConfigPaths(StandConfigEnv.RUN).main().resolve().parent
-    krb5_conf = process_config.paths.layout(conf_dir).krb5_conf()
+    krb5_conf = InstanceLayout(
+        conf_dir, process_config.paths, process_config.tls
+    ).krb5_conf()
     cache = tmp_path_factory.mktemp("krb-cache")
     KerberosWorkspace.configure(str(krb5_conf), str(cache))
 

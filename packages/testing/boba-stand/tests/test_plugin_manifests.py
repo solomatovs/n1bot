@@ -14,7 +14,7 @@ import pytest
 from omegaconf import DictConfig, OmegaConf
 
 from boba.config import bind
-from boba.runtime.plugins import PluginMeta
+from boba.toolrun.plugins import PluginMeta
 from boba.sandbox.program import PluginCommand, PluginEntry
 from boba.toolkit.manifest import PluginManifest
 

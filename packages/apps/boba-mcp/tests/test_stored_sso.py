@@ -27,23 +27,25 @@ from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from pydantic import BaseModel, RootModel
 
 from boba.config import bind
-from boba.connection_broker.crypto import SecretCipher
-from boba.connection_broker.store import ConnectionStore
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.stored import GrantTarget
+from boba.crypto import SecretCipher
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
-from boba.identity.signin import SignInMetadata
+from boba.identity.context import DelegatedTicket
 from boba.kerberos import DelegatedAuth, KerberosPasswordAuth
 from boba.krb import PasswordCredentials
 from boba.krb.spnego import SpnegoNegotiate
 from boba.mcp_server.app import McpAppConfig
 from boba.mcp_server.auth import ServiceMark
-from boba.oauth.server import ServiceTokens, TokenClaims
+from boba.mcp_server.connections.store import ConnectionStore
+from boba.mcp_server.migrations import configured_migrations
+from boba.oauth.claims import TokenClaims
+from boba.oauth.server.tokens import ServiceTokens
 from boba.stand.migrate import StandSchema
 from boba.stand.service_signin import ServiceSignIn
 from boba.stand.site import Stand
-from boba.stand.ui.config import ServiceStand, StandPorts
+from boba.stand.ui.config import ServiceStand, StandApp, StandPorts
 from boba.stand.ui.stand import StandProcess
 from boba.stand.ui.toml_text import TomlText
 
@@ -83,11 +85,10 @@ class StoredSsoService:
     def resource(self) -> str:
         return f"{self.public}/all"
 
-    def metadata(self, token: str) -> SignInMetadata:
+    def claims(self, token: str) -> TokenClaims:
         access = self.tokens.read(token)
         assert access is not None, "MCP must accept its own access token"
-        claims = TokenClaims.model_validate(access.claims)
-        return SignInMetadata.parse(claims.metadata)
+        return TokenClaims.model_validate(access.claims)
 
     async def grant(self) -> None:
         auth = DelegatedAuth(method="kerberos_delegated")
@@ -127,25 +128,23 @@ async def service(
     paths = config.files.paths(config.app)
     schema = StandSchema(
         paths,
-        (
-            "boba.identity_postgres",
-            "boba.access_postgres",
-            "boba.connection_broker",
-        ),
+        "boba.mcp_server",
+        configured_migrations(),
     )
     process = StandProcess(config, tmp_path / "mcp.log")
     await schema.create()
     try:
         await asyncio.to_thread(process.start, 180.0)
-        app = bind(McpAppConfig.loader(paths).load(), "app", McpAppConfig)
+        app = bind(
+            StandApp.MCP.config_files().loader(paths).load(), "app", McpAppConfig
+        )
         cipher = SecretCipher(app.connection_store.cipher.get_secret_value())
         store = ConnectionStore(pool, app.db_schema, cipher, ConnectionTypes.discover())
         session = app.session
         tokens = ServiceTokens(
             app.server.public_url,
             session.auth_secret,
-            session.session_ttl_sec,
-            session.session_max_sec,
+            session.lifetime(),
             session.session_generation(),
             ServiceMark.TOKEN_SALT,
         )
@@ -307,8 +306,9 @@ async def test_sso_ticket_survives_oauth_refresh_and_mcp_restart(
     async with httpx.AsyncClient(timeout=60) as http:
         browser = OAuthBrowser(http, service)
         client_id, issued = await browser.login(kerberos=True)
-        ticket = service.metadata(issued.access_token).ticket()
-        assert ticket is not None
+        claims = service.claims(issued.access_token)
+        assert isinstance(claims.credential, DelegatedTicket)
+        ticket = claims.credential
         assert ticket.principal == principal
         assert ticket.sealed
         reply.user(await service.query(issued.access_token), expected)
@@ -318,7 +318,7 @@ async def test_sso_ticket_survives_oauth_refresh_and_mcp_restart(
         reply.user(await service.query(issued.access_token), expected)
 
         renewed = await browser.refresh(client_id, issued)
-        assert service.metadata(renewed.access_token).ticket() == ticket
+        assert service.claims(renewed.access_token).credential == ticket
         reply.user(await service.query(renewed.access_token), expected)
 
 
@@ -344,7 +344,7 @@ async def test_other_sign_in_cannot_use_a_delegated_connection(
             token = await asyncio.to_thread(
                 proxy.token, "reader", "ADM", service.resource
             )
-    assert service.metadata(token).ticket() is None
+    assert not isinstance(service.claims(token).credential, DelegatedTicket)
     result = await service.query(token)
     assert result.is_error
     assert "sign in through Kerberos SSO" in QueryReply().text(result)

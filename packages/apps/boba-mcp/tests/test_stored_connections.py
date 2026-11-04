@@ -19,7 +19,8 @@ from pydantic import SecretStr
 from service_stand import ServiceStand
 
 from boba.config import bind
-from boba.connection_broker.store import ConnectionStore
+from boba.crypto import SecretCipher
+from boba.mcp_server.connections.store import ConnectionStore
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.stored import GrantTarget
 from boba.db.postgres import AsyncPostgresPool
@@ -35,7 +36,7 @@ from boba.db.postgres.migrate import (
     PostgresMigrations,
 )
 from boba.kerberos import DelegatedAuth, KeytabAuth
-from boba.mcp_server.app import McpAppConfig, mcp_connections
+from boba.mcp_server.app import McpAppConfig
 from boba.mcp_server.server import RunLimits
 from boba.stand.overlay import ConfigOverlay
 from boba.stand.roles import RoleSeed
@@ -60,16 +61,15 @@ async def store(
         }
     )
     config = bind(raw, "app", McpAppConfig)
-    plan = MigrationScripts(schema).packages(
-        (
-            "boba.identity_postgres",
-            "boba.access_postgres",
-            "boba.connection_broker",
-        )
-    )
+    plan = MigrationScripts(schema).application("boba.mcp_server")
     await PostgresMigrations().apply((MigrationTarget(test_postgres, plan),))
     try:
-        store = await mcp_connections(config, pool, ConnectionTypes.discover())
+        store = ConnectionStore(
+            pool,
+            schema,
+            SecretCipher(config.connection_store.cipher.get_secret_value()),
+            ConnectionTypes.discover(),
+        )
         await RoleSeed(store).add(("dev",))
         yield store
     finally:

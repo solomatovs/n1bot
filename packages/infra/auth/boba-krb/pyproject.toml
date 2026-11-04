@@ -16,6 +16,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+config = [
+    "boba-config==0.0.33.dev1",
+]
+connections = [
+    "boba-connections==0.0.33.dev1",
+    "boba-identity==0.0.33.dev1",
+    "cryptography>=45.0.1",
+]
 seal = ["cryptography>=45.0.1"]
 dev = [
     "boba-db-clickhouse==0.0.33.dev1",
@@ -24,6 +32,7 @@ dev = [
     "boba-stand==0.0.33.dev1",
     "ldap3>=2.9,<3",
     "pytest>=9.1,<10",
+    "boba-config==0.0.33.dev1",
 ]
 
 [tool.setuptools.packages.find]
@@ -32,4 +41,6 @@ include = ["boba*"]
 namespaces = true
 
 [tool.boba.extras]
+"boba.krb.connections" = "connections"
+"boba.krb.layout" = "config"
 "boba.krb.seal" = "seal"

@@ -5,7 +5,6 @@ from __future__ import annotations
 import time
 from uuid import UUID
 
-import jwt
 import pytest
 from aid_stand import (
     ChatSessionStand,
@@ -52,7 +51,7 @@ class TestCurrent:
         with call_stand.contexts.applied(context):
             if call_stand.contexts.current() is not context:
                 raise AssertionError("context inside the block")
-            if LogUserMark.current() != f"ivanov {THREAD[:8]}":
+            if LogUserMark.current() != f"corporate:ivanov {THREAD[:8]}":
                 raise AssertionError(LogUserMark.current())
 
         if call_stand.contexts.peek() is not None:
@@ -120,7 +119,7 @@ class TestPrincipalFormat:
 
 
 class TestExpiredSignIn:
-    def test_signed_token_is_the_source_of_identity_metadata(
+    def test_signed_token_is_the_source_of_identity_and_access(
         self,
         chat_session: ChatSessionStand,
     ) -> None:
@@ -138,12 +137,13 @@ class TestExpiredSignIn:
         claims = session.signed_in()
 
         assert claims.identifier == "corporate:alice"
-        assert claims.sign_in().identity_for(claims.identifier).login == "alice"
+        assert claims.identity.login == "alice"
         assert session.identifier == claims.identifier
         assert session.user_id == str(claims.user_id)
-        assert session.metadata == claims.metadata
-        assert session.roles == claims.sign_in().roles
-        assert session.profiles == claims.sign_in().profiles
+        assert session.user is not None
+        assert session.user.metadata == {}
+        assert session.roles == claims.principal().roles
+        assert session.profiles == claims.principal().profiles
 
     def test_expired_token_refuses_the_call_context(
         self,
@@ -154,10 +154,10 @@ class TestExpiredSignIn:
             user_id=str(UUID(int=5)),
             thread_id="thread-expired",
         )
-        expired = jwt.encode(
-            {"identifier": "user-expired", "exp": int(time.time()) - 5},
-            StandTokens.secret(),
-            algorithm="HS256",
+        user_id = UUID(session.user_id)
+        issued_at = int(time.time()) - StandTokens.TTL_SEC - 5
+        expired = StandTokens.tokens().issue(
+            StandTokens.session(session.identifier, user_id), issued_at
         )
         stub = session.raw
         assert stub is not None

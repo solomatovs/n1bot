@@ -22,7 +22,8 @@ from omegaconf import DictConfig, OmegaConf
 from test_sandbox_disguise import HostOwner
 
 from boba.config import bind
-from boba.runtime.config import PathsConfig, ProgramRoots
+from boba.config.paths import PathsConfig
+from boba.sandbox.paths import ProgramRoots
 from boba.sandbox import SandboxProfile
 from boba.sandbox.zygote import (
     ZygoteState,

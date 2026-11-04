@@ -27,12 +27,12 @@ from gssapi import Credentials, Name, NameType, SecurityContext
 from boba.aid.auth.kerberos import KerberosAuth
 from boba.aid.data.data_layer import PostgresDataLayer
 from boba.config import bind
-from boba.connection_broker.store import ConnectionStore
+from boba.mcp_server.connections.store import ConnectionStore
 from boba.connections.stored import ConnectionBase, GrantTarget
 from boba.db.clickhouse.connection import ClickHouseConfig
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
-from boba.identity.session import UserMetadataField
+from aid_stand import AuthTestClaim as UserMetadataField
 from boba.kerberos import (
     AcceptConfig,
     ConstrainedDelegation,

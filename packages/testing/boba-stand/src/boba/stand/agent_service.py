@@ -28,7 +28,7 @@ from boba.core.secrets import SecretReveal
 from boba.db.postgres import AsyncPostgresPool, PostgresTable
 from boba.db.postgres.connection.auth import KeytabAuth
 from boba.krb import KerberosWorkspace
-from boba.runtime.config import PathsConfig
+from boba.config.paths import PathsConfig
 from boba.stand.roles import RoleSeed
 from boba.stand.service_signin import ServiceSignIn
 from boba.stand.ui.toml_text import TomlText
@@ -134,7 +134,7 @@ class ServeStandConfig:
         pool = AsyncPostgresPool(self._history.postgres)
         await pool.open()
         try:
-            table = PostgresTable(None, self._history.db_schema, pool)
+            table = PostgresTable(pool, self._history.db_schema)
             await RoleSeed(table).add(
                 ("dev", "analyst", "nobody", "ADM", "DEV", "GST", "read", "wrt")
             )

@@ -27,6 +27,15 @@ postgresql = "boba.db.postgres.address:PgAddresses"
 postgres = "boba.db.postgres.manifest:MANIFEST"
 
 [project.optional-dependencies]
+cli = [
+    "boba-config==0.0.33.dev1",
+    "boba-krb[config]==0.0.33.dev1",
+    "omegaconf>=2.3,<3",
+]
+messaging = [
+    "boba-identity==0.0.33.dev1",
+    "boba-messaging==0.0.33.dev1",
+]
 arrow = [
     "boba-tool-io[arrow]==0.0.33.dev1",
     "pyarrow>=25,<26",
@@ -34,9 +43,15 @@ arrow = [
 dev = [
     "boba-stand==0.0.33.dev1",
     "pytest>=9.1,<10",
+    "boba-aid==0.0.33.dev1",
+    "boba-chat==0.0.33.dev1",
+    "boba-identity==0.0.33.dev1",
+    "boba-messaging==0.0.33.dev1",
 ]
 
 [tool.boba.extras]
+"boba.db.postgres.messaging" = "messaging"
+"boba.db.postgres.migration_cli" = "cli"
 "boba.db.postgres.arrow" = "arrow"
 "boba.db.postgres.arrow_stream" = "arrow"
 

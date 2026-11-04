@@ -1,7 +1,4 @@
-"""Токены и печати сервера авторизации служб: поколение сессий снимает все
-входы разом, токен несёт то, что вход знает о себе, продление упирается в
-потолок сессии; клиент, зарегистрировавшийся сам, остаётся известен после
-рестарта и неизвестен службе с другим секретом."""
+"""OAuth service tokens, stateless client registration and refresh behavior."""
 
 from __future__ import annotations
 
@@ -11,138 +8,161 @@ from enum import StrEnum
 from uuid import UUID
 
 import pytest
+from fastmcp.server.auth import AccessToken
 from mcp.server.auth.provider import RefreshToken, TokenError
 from mcp.shared.auth import OAuthClientInformationFull
 from pydantic import AnyUrl
 
-from boba.auth import SignIns
-from boba.auth.proxy import ProxyAssertionVerifier
-from boba.identity.api import AuthenticatedUser, PersistedUsers, UsersUpsert
+from boba.auth import SessionService, SignIns
+from boba.identity.api import StoredUser, UserRows
+from boba.identity.authentication import AccessGrant, AuthenticatedPrincipal
+from boba.identity.context import DelegatedTicket
+from boba.identity.lifetime import SessionLifetime
 from boba.identity.principal import UserIdentity
-from boba.identity.session import Login, SignInProvider
-from boba.identity.signin import SignInMetadata
-from boba.oauth.server import (
-    AuthServer,
-    RegisteredClients,
-    ResourceTokens,
-    SealedValues,
-    ServiceTokens,
-    TokenClaims,
-    TokenHolder,
-)
+from boba.oauth.claims import TokenClaims
+from boba.oauth.server.assertions import ProxyAssertionVerifier
+from boba.oauth.server.clients import RegisteredClients
+from boba.oauth.server.provider import AuthServer
+from boba.oauth.server.resources import ResourceTokens
+from boba.oauth.server.sealed import SealedValues
+from boba.oauth.server.tokens import ServiceTokens, TokenHolder
 from boba.stand.signin import SignInStand
+
+pytestmark = pytest.mark.anyio
 
 CREATED_AT = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 class Salt(StrEnum):
-    """Соли службы стенда и профиль, выданный вошедшему."""
+    """Independent keys for service JWTs and sealed OAuth state."""
 
     TOKEN = "stand-access-token"
     SEALED = "stand-sealed-values"
     PROFILE = "general"
 
 
-class TestSessionGeneration:
-    """Поколение сессий: токены другого поколения сервис не принимает —
-    так рестарт процесса или смена generation снимает все входы разом."""
+class Users(UserRows):
+    """User rows read during refresh; authentication itself remains stateless."""
 
-    PUBLIC: str = "http://127.0.0.1:8650"
-    SECRET: str = "stand-session-secret"
+    def __init__(self, user: StoredUser) -> None:
+        self.current = user
+        self.upserts = 0
+
+    async def stored(self, identity: UserIdentity) -> StoredUser | None:
+        if self.current.identity != identity:
+            return None
+        return self.current
+
+    async def stored_by_id(self, user_id: UUID) -> StoredUser | None:
+        if self.current.id != user_id:
+            return None
+        return self.current
+
+    async def upsert(
+        self,
+        identity: UserIdentity,
+        roles: frozenset[str] | None = None,
+    ) -> StoredUser:
+        self.upserts += 1
+        assigned = self.current.roles if roles is None else roles
+        self.current = self.current.model_copy(
+            update={"identity": identity, "roles": assigned}
+        )
+        return self.current
+
+
+class TestSessionGeneration:
+    """Service generation, ticket-bearing claims and absolute session lifetime."""
+
+    PUBLIC = "http://127.0.0.1:8650"
+    SECRET = "stand-session-secret"
+    USER_ID = UUID("2bf9ba29-177a-4ddb-8912-e555dd90cf37")
+    LOGIN = UserIdentity.model_validate("corporate:ivanov")
+    RESOURCE = f"{PUBLIC}/acp"
+    CLIENT_ID = "stand-client"
 
     def _tokens(self, generation: str, max_sec: int = 3600) -> ServiceTokens:
         return ServiceTokens(
             self.PUBLIC,
             self.SECRET,
-            300,
-            max_sec,
+            SessionLifetime(ttl_sec=300, max_sec=max_sec),
             generation,
             Salt.TOKEN,
         )
 
     def _holder(self, started: int) -> TokenHolder:
-        sign_in = SignInMetadata(
-            provider=SignInProvider.KERBEROS.value,
-            identity=UserIdentity(realm="corporate", login=Login("ivanov")),
-            roles=frozenset({"dev"}),
-            profiles=frozenset({Salt.PROFILE}),
-            principal="ivanov@LOSHARA.COM",
-            sealed_ticket="sealed-ticket",
+        principal = AuthenticatedPrincipal(
+            id=self.USER_ID,
+            identity=self.LOGIN,
+            access=AccessGrant(
+                roles=frozenset({"dev"}), profiles=frozenset({Salt.PROFILE})
+            ),
         )
-
+        credential = DelegatedTicket(
+            principal="ivanov@LOSHARA.COM", sealed="sealed-ticket"
+        )
         return TokenHolder(
-            login="corporate:ivanov",
-            sign_in=sign_in,
+            principal=principal,
+            credential=credential,
             started=started,
-            resource=f"{self.PUBLIC}/acp",
-            user_id=UUID("2bf9ba29-177a-4ddb-8912-e555dd90cf37"),
+            resource=self.RESOURCE,
         )
 
-    def test_token_carries_the_sign_in(self) -> None:
-        """Токен несёт то, что вход знает о себе: по нему вызов получает
-        делегированный билет входа kerberos."""
+    def _stored_user(self, *, roles: frozenset[str] = frozenset({"dev"})) -> StoredUser:
+        return StoredUser(
+            id=self.USER_ID,
+            created_at=CREATED_AT,
+            identity=self.LOGIN,
+            roles=roles,
+        )
+
+    def test_token_carries_identity_access_and_delegated_ticket(self) -> None:
         tokens = self._tokens("stand")
-        issued = tokens.session(self._holder(int(time.time())), "stand-client")
+        issued = tokens.session(self._holder(int(time.time())), self.CLIENT_ID)
 
         access = tokens.read(issued.access_token)
-        if access is None or access.scopes != [Salt.PROFILE]:
-            raise AssertionError(f"the token opens the granted endpoint: {access}")
-
-        if access.resource != f"{self.PUBLIC}/acp":
-            raise AssertionError(f"the token names its endpoint: {access}")
-
-        metadata = SignInMetadata.parse((access.claims or {})["metadata"])
-        ticket = metadata.ticket()
-        if ticket is None or ticket.sealed != "sealed-ticket":
-            raise AssertionError(f"the token carries the sealed ticket: {metadata}")
+        assert isinstance(access, AccessToken)
+        assert access.scopes == [Salt.PROFILE]
+        assert access.resource == self.RESOURCE
+        claims = TokenClaims.model_validate(access.claims)
+        assert claims.identity == self.LOGIN
+        assert claims.roles == {"dev"}
+        assert claims.credential == DelegatedTicket(
+            principal="ivanov@LOSHARA.COM", sealed="sealed-ticket"
+        )
 
         refresh = tokens.refreshed(str(issued.refresh_token))
-        if refresh is None:
-            raise AssertionError("the refresh token is accepted")
-
-        renewed = tokens.renewed(refresh)
-        again = tokens.read(renewed.access_token)
-        if again is None or again.resource != access.resource:
-            raise AssertionError(f"the renewal keeps the endpoint: {again}")
-
-        kept = SignInMetadata.parse(((again and again.claims) or {})["metadata"])
-        if kept.ticket() != ticket:
-            raise AssertionError(f"the renewal keeps the sign-in: {kept}")
+        assert isinstance(refresh, RefreshToken)
+        holder = tokens.refresh_holder(refresh)
+        assert holder.credential == claims.credential
+        assert holder.started == claims.iat
 
     def test_tokens_of_another_generation_are_rejected(self) -> None:
         before = self._tokens("before-restart")
         after = self._tokens("after-restart")
-        issued = before.session(self._holder(int(time.time())), "stand-client")
-        refresh = str(issued.refresh_token)
+        issued = before.session(self._holder(int(time.time())), self.CLIENT_ID)
+        refresh_token = str(issued.refresh_token)
 
-        if before.read(issued.access_token) is None:
-            raise AssertionError("the issuing generation accepts its access token")
-
-        if before.refreshed(refresh) is None:
-            raise AssertionError("the issuing generation accepts its refresh token")
-
-        if after.read(issued.access_token) is not None:
-            raise AssertionError("another generation rejects the access token")
-
-        if after.refreshed(refresh) is not None:
-            raise AssertionError("another generation rejects the refresh token")
+        assert before.read(issued.access_token) is not None
+        assert before.refreshed(refresh_token) is not None
+        assert after.read(issued.access_token) is None
+        assert after.refreshed(refresh_token) is None
 
     def test_renewal_stops_at_the_session_limit(self) -> None:
         tokens = self._tokens("stand", max_sec=600)
-        fresh = tokens.session(self._holder(int(time.time()) - 500), "stand-client")
-        left = fresh.expires_in
-        if left is None or left > 100:
-            raise AssertionError(f"the token ends with the session: {left}")
+        now = int(time.time())
+        fresh = tokens.session(self._holder(now - 500), self.CLIENT_ID)
+        assert fresh.expires_in is not None
+        assert fresh.expires_in <= 100
 
-        with pytest.raises(TokenError, match="over its limit"):
-            tokens.session(self._holder(int(time.time()) - 601), "stand-client")
+        with pytest.raises(TokenError, match="session lifetime is exhausted"):
+            tokens.session(self._holder(now - 601), self.CLIENT_ID)
 
 
 class TestRegisteredClients:
-    """Клиент, зарегистрировавшийся сам, остаётся известен после рестарта:
-    его запись едет в его же идентификаторе, хранить её сервису негде."""
+    """A DCR client identifier carries its sealed registration across restarts."""
 
-    SECRET: str = "stand-session-secret"
+    SECRET = "stand-session-secret"
 
     def _client(self) -> OAuthClientInformationFull:
         return OAuthClientInformationFull(
@@ -162,55 +182,25 @@ class TestRegisteredClients:
             issued
         )
 
-        if found is None or found.client_id != issued:
-            raise AssertionError(f"another process knows the client: {found}")
-
-        if found.redirect_uris != client.redirect_uris:
-            raise AssertionError(f"the registration is kept whole: {found}")
+        assert found is not None
+        assert found.client_id == issued
+        assert found.redirect_uris == client.redirect_uris
 
     def test_foreign_identifier_is_unknown(self) -> None:
         client = self._client()
         RegisteredClients(SealedValues("another-secret", Salt.SEALED), {}).register(
             client
         )
-
         clients = RegisteredClients(SealedValues(self.SECRET, Salt.SEALED), {})
 
-        if clients.find(str(client.client_id)) is not None:
-            raise AssertionError("an identifier of another service is not accepted")
-
-        if clients.find("f625f2db-d8a0-4146-958f-94c6bf9ef636") is not None:
-            raise AssertionError("a made-up identifier is not accepted")
-
-
-class RefreshUsers(PersistedUsers, UsersUpsert):
-    """Держит строку пользователя, которую сервер читает при обновлении."""
-
-    def __init__(self, user: AuthenticatedUser) -> None:
-        self.current: AuthenticatedUser | None = user
-        self.upserts = 0
-
-    async def get_user(self, identifier: Login) -> AuthenticatedUser | None:
-        if self.current is None:
-            return None
-
-        if self.current.identifier != identifier:
-            return None
-
-        return self.current
-
-    async def ensure_user(self, signed: object) -> AuthenticatedUser:
-        self.upserts += 1
-        if self.current is None:
-            raise AssertionError("refresh must not create a user")
-
-        return self.current
+        assert clients.find(str(client.client_id)) is None
+        assert clients.find("f625f2db-d8a0-4146-958f-94c6bf9ef636") is None
 
 
 class TestRefresh:
-    """Refresh rechecks DB membership without changing session credentials."""
+    """Refresh resolves current roles from users and retains sign-in credentials."""
 
-    CLIENT_ID: str = "stand-client"
+    CLIENT_ID = TestSessionGeneration.CLIENT_ID
 
     def _client(self) -> OAuthClientInformationFull:
         return OAuthClientInformationFull(
@@ -220,108 +210,84 @@ class TestRefresh:
             token_endpoint_auth_method="none",
         )
 
-    def _server(self, users: RefreshUsers) -> AuthServer:
-        case = TestSessionGeneration()
+    def _server(
+        self,
+        case: TestSessionGeneration,
+        tokens: ServiceTokens,
+        users: Users,
+    ) -> AuthServer:
         sealed = SealedValues(case.SECRET, Salt.SEALED)
-        tokens = case._tokens("stand")
-
         return AuthServer(
             case.PUBLIC,
-            SignIns(None, {}, {}, profiles=SignInStand.profiles()),
+            SignIns(None, {}, {}),
             tokens,
             ProxyAssertionVerifier(()),
             RegisteredClients(sealed, {}),
             sealed,
-            [f"{case.PUBLIC}/acp"],
-            users=users,
+            [case.RESOURCE],
+            SessionService(users, SignInStand.profiles()),
         )
 
-    async def _refresh(self) -> tuple[RefreshToken, ServiceTokens]:
-        case = TestSessionGeneration()
-        tokens = case._tokens("stand")
+    async def _refresh(
+        self, case: TestSessionGeneration, tokens: ServiceTokens
+    ) -> RefreshToken:
         issued = tokens.session(case._holder(int(time.time())), self.CLIENT_ID)
         refresh = tokens.refreshed(str(issued.refresh_token))
-        if refresh is None:
-            raise AssertionError("the issued refresh token is accepted")
+        assert isinstance(refresh, RefreshToken)
+        return refresh
 
-        return refresh, tokens
-
-    @pytest.mark.anyio
     async def test_refresh_uses_current_roles_and_preserves_sso_ticket(self) -> None:
         case = TestSessionGeneration()
-        holder = case._holder(int(time.time()))
-        user = AuthenticatedUser(
-            id=holder.user_id,
-            identifier=Login(holder.login),
-            created_at=CREATED_AT,
-            sign_in=holder.sign_in,
-        )
-        users = RefreshUsers(user)
-        server = self._server(users)
-        refresh, tokens = await self._refresh()
-        users.current = user.model_copy(
-            update={"sign_in": SignInMetadata(identity=holder.sign_in.identity)}
-        )
+        tokens = case._tokens("stand")
+        users = Users(case._stored_user(roles=frozenset()))
+        server = self._server(case, tokens, users)
+        refresh = await self._refresh(case, tokens)
 
         issued = await server.exchange_refresh_token(
             self._client(), refresh, [Salt.PROFILE]
         )
 
         access = tokens.read(issued.access_token)
-        if access is None:
-            raise AssertionError(
-                "the reduced refresh still issues a valid access token"
-            )
-
-        assert not access.scopes
+        assert access is not None
+        assert access.scopes == []
         claims = TokenClaims.model_validate(access.claims)
-        assert not claims.roles
-        metadata = SignInMetadata.parse(claims.metadata)
-        assert metadata.ticket() == holder.sign_in.ticket()
+        assert claims.roles == frozenset()
+        assert claims.credential == DelegatedTicket(
+            principal="ivanov@LOSHARA.COM", sealed="sealed-ticket"
+        )
         assert users.upserts == 0
-        old = tokens.refresh_holder(refresh)
+
         renewed = tokens.refreshed(str(issued.refresh_token))
-        if renewed is None:
-            raise AssertionError("the refreshed session token is accepted")
+        assert isinstance(renewed, RefreshToken)
+        holder = tokens.refresh_holder(renewed)
+        assert holder.credential == claims.credential
 
-        current = tokens.refresh_holder(renewed)
-        assert current.started == old.started
-        assert current.sign_in.ticket() == old.sign_in.ticket()
-
-    @pytest.mark.anyio
     async def test_refresh_rejects_a_replaced_user_uuid(self) -> None:
         case = TestSessionGeneration()
-        holder = case._holder(int(time.time()))
-        user = AuthenticatedUser(
-            id=holder.user_id,
-            identifier=Login(holder.login),
-            created_at=CREATED_AT,
-            sign_in=holder.sign_in,
-        )
-        users = RefreshUsers(user)
-        server = self._server(users)
-        refresh, _ = await self._refresh()
-        users.current = user.model_copy(update={"id": UUID(int=9999)})
+        tokens = case._tokens("stand")
+        users = Users(case._stored_user())
+        server = self._server(case, tokens, users)
+        refresh = await self._refresh(case, tokens)
+        users.current = users.current.model_copy(update={"id": UUID(int=9999)})
 
-        with pytest.raises(TokenError, match="user has changed"):
+        with pytest.raises(TokenError, match="session user no longer matches"):
             await server.exchange_refresh_token(self._client(), refresh, [Salt.PROFILE])
 
 
-@pytest.mark.anyio
-async def test_resource_uses_signed_scopes_without_losing_the_sso_ticket() -> (
-    None
-):
+async def test_resource_verifies_signed_scopes_and_preserves_sso_ticket() -> None:
     case = TestSessionGeneration()
     tokens = case._tokens("stand")
     holder = case._holder(int(time.time()))
-    issued = tokens.session(holder, "stand-client")
+    issued = tokens.session(holder, case.CLIENT_ID)
     verifier = ResourceTokens(tokens, holder.resource, [Salt.PROFILE])
+
     accepted = await verifier.verify_token(issued.access_token)
     assert accepted is not None
     assert accepted.scopes == [Salt.PROFILE]
     claims = TokenClaims.model_validate(accepted.claims)
-    assert claims.roles == holder.sign_in.roles
-    assert SignInMetadata.parse(claims.metadata).sealed_ticket == "sealed-ticket"
+    assert claims.roles == holder.principal.roles
+    assert claims.credential == holder.credential
+
     repeated = await verifier.verify_token(issued.access_token)
     assert repeated is not None
     assert repeated.scopes == [Salt.PROFILE]

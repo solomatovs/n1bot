@@ -29,16 +29,15 @@ payload = [
     "boba-doc[readers,ocr]==0.0.33.dev1",
 ]
 dev = [
-    "boba-connection-broker==0.0.33.dev1",
     "boba-connections==0.0.33.dev1",
     "boba-db-postgres==0.0.33.dev1",
     "boba-mcp==0.0.33.dev1",
-    "boba-runtime==0.0.33.dev1",
     "boba-stand==0.0.33.dev1",
     "omegaconf>=2.3,<3",
     "boba-config==0.0.33.dev1",
     "pillow>=10",
     "pytest>=9.1,<10",
+    "boba-crypto==0.0.33.dev1",
 ]
 
 [tool.setuptools.packages.find]

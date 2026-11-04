@@ -63,15 +63,15 @@ from boba.canvas.storage import StorageFullError, StorageNotFoundError
 from boba.canvas.transfer import ContentDisposition, FileHeader, UploadPolicy
 from boba.core.validation import ValidationText
 from boba.identity.context import Scope, Subject
-from boba.mcp_adapter import JournalUris
 from boba.mcp_server.auth import TokenSubjects
-from boba.runtime.served import StreamedFile
-from boba.runtime.storage import (
+from boba.mcp_server.tool_adapter import JournalUris
+from boba.storage.client import (
     LocalStorageClient,
     LocalStorageConfig,
     StorageClient,
     StorageConfig,
 )
+from boba.storage.http import StreamedFile
 from boba.toolkit.channels import JournalChannels
 from boba.toolkit.result import ContentMime
 from boba.toolkit.wire import FilesFeature, JournalFeature, JournalRead

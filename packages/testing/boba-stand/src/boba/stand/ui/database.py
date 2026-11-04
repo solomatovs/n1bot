@@ -22,16 +22,16 @@ from psycopg.errors import InsufficientPrivilege
 from psycopg.types.json import Jsonb
 
 from boba.config import bind
-from boba.connection_broker.crypto import SecretCipher
-from boba.connection_broker.store import ConnectionStore
+from boba.aid.infra.config import AppConfig
+from boba.access.grants import GrantSubject, GrantTarget
+from boba.crypto import SecretCipher
+from boba.crypto.config import ValueCipherConfig
+from boba.mcp_server.connections.store import ConnectionStore
+from boba.mcp_server.connections.store import ConnectionTable
+from boba.mcp_server.app import McpAppConfig
 from boba.connections.manifest import ConnectionTypes
-from boba.connections.stored import (
-    ConnectionBase,
-    ConnectionTable,
-    GrantKind,
-    GrantTarget,
-    StoredRole,
-)
+from boba.connections.base import ConnectionBase
+from boba.connections.stored import StoredRole
 from boba.db.clickhouse.connection import ClickHouseConfig
 from boba.db.oracle.connection import OracleConfig
 from boba.db.postgres import AsyncPostgresPool, PgQuery, PgQueryBuilder, PostgresTable
@@ -40,14 +40,10 @@ from boba.db.postgres.migrate import MigrationTarget, PostgresMigrations
 from boba.ix_core.database import IxDatabase
 from boba.krb import KerberosWorkspaceConfig
 from boba.mcp_client.client import McpServerConfig, StdioCommand
-from boba.runtime.config import (
-    PathsConfig,
-    ProcessConfig,
-    RuntimeConfig,
-    ValueCipherConfig,
-)
-from boba.runtime.migrate import ApplicationMigrations
-from boba.runtime.plugins import PluginMigrations
+from boba.config.paths import PathsConfig, TlsConfig
+from boba.db.postgres.migration_cli import ApplicationMigrations
+from boba.mcp_server.migrations import PluginMigrations
+from boba.krb.layout import InstanceLayout
 from boba.stand.database import TestDatabase
 from boba.stand.edm import EdmDataset, EdmSource, EdmSources
 from boba.stand.ix_index import IxPage, IxPages, SharedIndexers, StandIxStack
@@ -163,6 +159,7 @@ class StandDatabase:
     }
 
     def __init__(self, app: StandApp, name: str) -> None:
+        self._app = app
         self._name = name
         self._built = app.config_files().loader().load()
         self._tools = app.tools_app().config_files().loader().load()
@@ -171,19 +168,20 @@ class StandDatabase:
         pool = postgres.pool.model_copy(update=self.POOL_OVERRIDE)
         self._maintenance = postgres.model_copy(update={"pool": pool})
         self._postgres = postgres.model_copy(update={"dbname": name, "pool": pool})
-        runtime = bind(self._built, path=RuntimeConfig.SECTION, model=RuntimeConfig)
-        self._schema = runtime.db_schema
-        key = ValueCipherConfig.model_validate(
-            {"cipher": OmegaConf.select(self._built, "mcp_servers.cipher")}
-        )
-        self._cipher = SecretCipher(key.cipher.get_secret_value())
-        tool_config = bind(self._tools, path="app", model=ProcessConfig)
-        cipher = bind(self._tools, path="app.connection_store", model=ValueCipherConfig)
+        if app is StandApp.AID:
+            application = bind(self._built, path="app", model=AppConfig)
+        else:
+            application = bind(self._built, path="app", model=McpAppConfig)
+        self._schema = application.db_schema
+        tool_config = bind(self._tools, path="app", model=McpAppConfig)
         self._connection_schema = tool_config.db_schema
-        self._connection_cipher = SecretCipher(cipher.cipher.get_secret_value())
+        self._connection_cipher = SecretCipher(
+            tool_config.connection_store.cipher.get_secret_value()
+        )
         self._types = ConnectionTypes.discover()
         instance = bind(self._built, path=PathsConfig.SECTION, model=PathsConfig)
-        layout = instance.layout(app.config_path().parent)
+        tls = bind(self._built, path=TlsConfig.SECTION, model=TlsConfig)
+        layout = InstanceLayout(app.config_path().parent, instance, tls)
         self._krb: KerberosWorkspaceConfig = layout.kerberos()
 
     @property
@@ -202,41 +200,31 @@ class StandDatabase:
         raw = OmegaConf.create(self._built)
         OmegaConf.set_readonly(raw, False)
         OmegaConf.update(raw, "postgres.dbname", self._name)
-        targets = list(
-            await application.targets(
-                raw,
-                (
-                    "boba.identity_postgres",
-                    "boba.runtime",
-                    "boba.access_postgres",
-                    "boba.aid.mcp_servers",
-                ),
-            )
-        )
-        if OmegaConf.select(raw, "app.agent.history.kind") == "postgres":
+        targets = []
+        if self._app is StandApp.AID:
+            targets.extend(await application.targets(raw, "boba.aid"))
+        if (
+            self._app is StandApp.AID
+            and OmegaConf.select(raw, "agent.history.kind") == "postgres"
+        ):
             targets.extend(
                 await application.targets(
                     raw,
-                    ("boba.identity_postgres", "boba.history.postgres"),
-                    section="app.agent.history",
+                    "boba.cli",
+                    section="agent.history",
                 )
             )
         tools = OmegaConf.create(self._tools)
         OmegaConf.set_readonly(tools, False)
         OmegaConf.update(tools, "postgres.dbname", self._name)
         OmegaConf.update(tools, "tool_launcher.provider", "process")
-        plugin_sources = PluginMigrations()
+        plugin_config = bind(tools, "app", McpAppConfig)
+        plugin_sources = PluginMigrations(plugin_config.LAUNCHER_BACKENDS)
         tool_migrations = ApplicationMigrations((plugin_sources,))
-        targets.extend(
-            await tool_migrations.targets(
-                tools,
-                (
-                    "boba.identity_postgres",
-                    "boba.access_postgres",
-                    "boba.connection_broker",
-                ),
-            )
-        )
+        if self._app is StandApp.AID:
+            targets.extend(await tool_migrations.targets(tools, "boba.mcp_server"))
+        else:
+            targets = list(await tool_migrations.targets(tools, "boba.mcp_server"))
         isolated: list[MigrationTarget] = []
         for target in targets:
             connection = target.postgres.model_copy(update={"dbname": self._name})
@@ -262,7 +250,7 @@ class StandDatabase:
         await PostgresMigrations().apply(isolated)
         async with self._pool() as pool:
             for schema in schemas:
-                await RoleSeed(PostgresTable(None, schema, pool)).add(
+                await RoleSeed(PostgresTable(pool, schema)).add(
                     ("ADM", "DEV", "GST", "read", "wrt")
                 )
 
@@ -454,7 +442,7 @@ class StandDatabase:
         targets: list[GrantTarget] = []
         for role_names in StandConfig.STAND_ROLES.values():
             for role in role_names:
-                targets.append(GrantTarget.role(roles[role]))
+                targets.append(GrantTarget(kind=GrantSubject.ROLES, id=roles[role]))
 
         for connection_id in connection_ids:
             for target in targets:
@@ -494,7 +482,7 @@ class StandDatabase:
                         .when(
                             table is ConnectionTable.GRANTS,
                             "where src_kind = %(kind)s",
-                            kind=GrantKind.CONNECTIONS.value,
+                            kind="connections",
                         )
                         .build()
                     )
@@ -713,12 +701,13 @@ class StandServerSeed(ServerSeed):
             .loader(self._config.files.paths(self._config.app))
             .load()
         )
-        runtime = bind(built, RuntimeConfig.SECTION, RuntimeConfig)
+        application = bind(built, "app", AppConfig)
         key = ValueCipherConfig.model_validate(
             {"cipher": OmegaConf.select(built, "mcp_servers.cipher")}
         )
         cipher = SecretCipher(key.cipher.get_secret_value())
-        pool = AsyncPostgresPool(runtime.postgres)
+        postgres = bind(built, "postgres", PostgresConfig)
+        pool = AsyncPostgresPool(postgres)
         await pool.open()
         try:
             async with pool.connection() as conn, conn.transaction():
@@ -732,7 +721,7 @@ class StandServerSeed(ServerSeed):
 
                     server_id = uuid4()
                     query = (
-                        PgQueryBuilder(schema=sql.Identifier(runtime.db_schema))
+                        PgQueryBuilder(schema=sql.Identifier(application.db_schema))
                         .add(
                             """
                             insert into {schema}.mcp_servers (id, name, data)
@@ -754,7 +743,7 @@ class StandServerSeed(ServerSeed):
                         )
 
                     grant = (
-                        PgQueryBuilder(schema=sql.Identifier(runtime.db_schema))
+                        PgQueryBuilder(schema=sql.Identifier(application.db_schema))
                         .add(
                             """
                             insert into {schema}.grants
@@ -763,9 +752,9 @@ class StandServerSeed(ServerSeed):
                             from {schema}.roles r
                             on conflict do nothing
                             """,
-                            src_kind=GrantKind.MCP_SERVERS.value,
+                            src_kind="mcp_servers",
                             id=row[0],
-                            tgt_kind=GrantKind.ROLES.value,
+                            tgt_kind=GrantSubject.ROLES.value,
                         )
                         .build()
                     )
@@ -775,20 +764,71 @@ class StandServerSeed(ServerSeed):
 
 
 def seed_service_roles(config: ServiceStand) -> None:
-    """Явные данные тестового администратора до старта процесса MCP."""
+    """Каталог тестового MCP создаётся через ту же схему и репозитории БД."""
 
     async def seed() -> None:
         raw = config.app.config_files().loader(config.files.paths(config.app)).load()
         postgres = bind(raw, "postgres", PostgresConfig)
-        app = bind(raw, "app", ProcessConfig)
+        app = bind(raw, "app", McpAppConfig)
+        from boba.mcp_server.app import McpHost
+
+        exported = await McpHost(app, raw).tool_schemas()
+        available = frozenset(exported)
+        endpoints: dict[str, tuple[str, ...]] = {}
+        for name, requested in config.ENDPOINTS.items():
+            selected = available if "*" in requested else frozenset(requested)
+            unknown = selected - available
+            if unknown:
+                raise StandError(
+                    f"stand endpoint /{name} names unavailable tools: {sorted(unknown)}"
+                )
+            endpoints[name] = tuple(sorted(selected))
+
         pool = AsyncPostgresPool(postgres)
         await pool.open()
         try:
-            table = PostgresTable(None, app.db_schema, pool)
-            grants = dict(config.role_tools)
-            if "*" in grants:
-                await RoleSeed(table).add(("ADM", "DEV", "GST", "dev", "read", "wrt"))
-            await RoleSeed(table).tools(grants)
+            if config.seed_roles:
+                table = PostgresTable(pool, app.db_schema)
+                await RoleSeed(table).add(
+                    ("ADM", "DEV", "GST", "dev", "read", "wrt")
+                )
+
+            async with pool.connection() as conn, conn.transaction():
+                for name, tools in endpoints.items():
+                    row = await conn.execute(
+                        sql.SQL(
+                            """
+                            insert into {}.mcp_endpoints
+                                (id, prefix_url, title, tools)
+                            values (%s, %s, %s, %s)
+                            on conflict (prefix_url) do update
+                                set title = excluded.title,
+                                    tools = excluded.tools,
+                                    enabled = true
+                            returning id
+                            """
+                        ).format(sql.Identifier(app.db_schema)),
+                        (uuid4(), f"/{name}", name, Jsonb(list(tools))),
+                    )
+                    endpoint = await row.fetchone()
+                    if endpoint is None:
+                        raise StandError(f"Seeding MCP endpoint /{name}: no id returned")
+
+                    await conn.execute(
+                        sql.SQL(
+                            """
+                            insert into {}.grants
+                                (src_kind, src_kind_id, tgt_kind, tgt_kind_id)
+                            select 'mcp_endpoints', %s, 'roles', r.id
+                            from {}.roles r
+                            on conflict do nothing
+                            """
+                        ).format(
+                            sql.Identifier(app.db_schema),
+                            sql.Identifier(app.db_schema),
+                        ),
+                        (endpoint[0],),
+                    )
         finally:
             await pool.close()
 

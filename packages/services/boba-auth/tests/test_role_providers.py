@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from boba.auth.config import LdapRolesConfig
-from boba.auth.roles import DirectoryLookup, LdapRoles, MissingEntry
+from boba.auth.providers.roles import DirectoryLookup, LdapRoles, MissingEntry
 from boba.config import bind
 from boba.identity.admission import PrincipalFacts
 from boba.ldap import Ldap3Directory

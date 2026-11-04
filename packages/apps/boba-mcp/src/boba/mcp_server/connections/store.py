@@ -1,0 +1,535 @@
+"""Таблицы connections/roles/grants: профили соединений и кому они выданы.
+
+connections — чистое хранилище профилей, без владельца и без уникальности
+имени; связь с пользователями и ролями живёт только в grants.
+
+Ошибки:
+ConnectionStoreError — база отказала, строка не сохранилась или её jsonb
+    не разбирается как профиль.
+ConnectionNotFoundError — в connections нет строки с таким id.
+UnknownConnectionKindError — точечное чтение строки типа, чей пакет не установлен;
+    списки такие строки пропускают с warning.
+"""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import replace
+from enum import StrEnum
+from typing import Any, ClassVar
+from uuid import UUID
+
+from psycopg.types.json import Jsonb
+
+from boba.access.grants import (
+    ConnectionFilter,
+    GrantResource,
+    GrantSubject,
+    GrantTarget,
+)
+from boba.connections.address import AddressError
+from boba.connections.catalog import CatalogEntry
+from boba.connections.manifest import (
+    ConnectionTypes,
+    ConnectionTypesError,
+    UnknownConnectionKindError,
+)
+from boba.connections.stored import (
+    ConnectionBase,
+    ConnectionNotFoundError,
+    ConnectionRepository,
+    ConnectionStoreError,
+    GrantedConnection,
+    StoredConnection,
+    StoredRole,
+)
+from boba.crypto import SecretCipher, SecretCryptoError
+from boba.db.postgres import PgQuery, PostgresPool, PostgresTable
+from boba.identity.context import Subject
+from boba.mcp_server.connections.grants import SubjectGrantsQuery, SubjectRowColumn
+
+logger = logging.getLogger(__name__)
+
+__all__ = [
+    "CatalogEntry",
+    "ConnectionStore",
+]
+
+
+class ConnectionTable(StrEnum):
+    """Таблицы соединений: строки, роли и гранты «источник — субъект»."""
+
+    CONNECTIONS = "connections"
+    ROLES = "roles"
+    GRANTS = "grants"
+
+
+class ConnectionsColumn(StrEnum):
+    """Колонки connections; профиль лежит шифротекстом в data."""
+
+    ID = "id"
+    NAME = "name"
+    DATA = "data"
+
+
+class RolesColumn(StrEnum):
+    """Колонки roles."""
+
+    ID = "id"
+    ROLE = "role"
+    CREATED_AT = "create_at"
+
+
+class GrantsColumn(StrEnum):
+    """Колонки grants: источник (соединение) и субъект (пользователь или роль)."""
+
+    ID = "id"
+    SRC_KIND = "src_kind"
+    SRC_KIND_ID = "src_kind_id"
+    TGT_KIND = "tgt_kind"
+    TGT_KIND_ID = "tgt_kind_id"
+
+
+class ConnectionStore(PostgresTable, ConnectionRepository):
+    """CRUD над connections/roles/grants: наружу — модели, в базе — шифротекст.
+
+    Профили разбираются реестром установленных типов соединений: строка с kind
+    без пакета-владельца падает UnknownConnectionKindError при обращении.
+    """
+
+    LABEL: ClassVar[str] = "connections"
+    RESOURCE: ClassVar[GrantResource] = GrantResource("connections")
+
+    def __init__(
+        self,
+        pool: PostgresPool,
+        db_schema: str,
+        cipher: SecretCipher,
+        types: ConnectionTypes,
+    ) -> None:
+        super().__init__(pool, db_schema)
+        self._types = types
+        self._cipher = cipher
+        self._grants = SubjectGrantsQuery(self.RESOURCE)
+
+    def _failure(self, action: str, exc: Exception) -> Exception:
+        return ConnectionStoreError(self._detail(action, exc))
+
+    async def add(self, name: str, connection: ConnectionBase) -> UUID:
+        """Новая строка connections; уникальность имени — забота вызывающего."""
+        payload = self._cipher.encrypt(connection)
+        query = (
+            self._query()
+            .add(
+                """
+                insert into {schema}.connections (
+                    name,
+                    data
+                )
+                values (
+                    %(name)s,
+                    %(data)s
+                )
+                returning
+                    id
+                """,
+                name=name,
+                data=Jsonb(payload),
+            )
+            .build()
+        )
+        row = self._returning(
+            await self._row(query, "add"), f"insert of row {name!r} into connections"
+        )
+
+        return UUID(str(row[ConnectionsColumn.ID.value]))
+
+    async def update(
+        self, connection_id: UUID, name: str, connection: ConnectionBase
+    ) -> bool:
+        """Полная замена имени и профиля; False — строки не было."""
+        payload = self._cipher.encrypt(connection)
+        query = (
+            self._query()
+            .add(
+                """
+                update
+                    {schema}.connections
+                set
+                    name = %(name)s,
+                    data = %(data)s
+                where
+                    id = %(id)s
+                """,
+                id=connection_id,
+                name=name,
+                data=Jsonb(payload),
+            )
+            .build()
+        )
+        touched = await self._execute(query, "update")
+
+        return touched > 0
+
+    async def get(self, connection_id: UUID) -> StoredConnection:
+        query = (
+            self._query()
+            .add(
+                """
+                select
+                    id,
+                    name,
+                    data
+                from
+                    {schema}.connections
+                where
+                    id = %(id)s
+                """,
+                id=connection_id,
+            )
+            .build()
+        )
+        row = await self._row(query, "get")
+        if row is None:
+            msg = (
+                f"connections: connection #{connection_id} not found in "
+                f"{self.schema}.connections"
+            )
+            raise ConnectionNotFoundError(msg)
+
+        return self._stored(row)
+
+    async def list_all(self) -> Sequence[StoredConnection]:
+        query = (
+            self._query()
+            .add(
+                """
+                select
+                    id,
+                    name,
+                    data
+                from
+                    {schema}.connections
+                order by
+                    name
+                """
+            )
+            .build()
+        )
+        rows = await self._rows(query, "list")
+
+        return self._stored_rows(rows)
+
+    async def remove(self, connection_id: UUID) -> bool:
+        """Удаляет строку вместе с её грантами; False — строки не было."""
+        drop_grants = (
+            self._query()
+            .add(
+                """
+                delete from
+                    {schema}.grants
+                where
+                    src_kind = %(src_kind)s
+                    and src_kind_id = %(id)s
+                """,
+                id=connection_id,
+                src_kind=self.RESOURCE.value,
+            )
+            .build()
+        )
+        drop_row = (
+            self._query()
+            .add(
+                """
+                delete from
+                    {schema}.connections
+                where
+                    id = %(id)s
+                """,
+                id=connection_id,
+            )
+            .build()
+        )
+
+        async with self._transaction("remove") as cur:
+            await cur.execute(drop_grants.text, drop_grants.params)
+            await cur.execute(drop_row.text, drop_row.params)
+
+            return cur.rowcount > 0
+
+    async def roles(self) -> Sequence[StoredRole]:
+        query = (
+            self._query()
+            .add(
+                """
+                select
+                    role,
+                    id
+                from
+                    {schema}.roles
+                order by
+                    role
+                """
+            )
+            .build()
+        )
+        rows = await self._rows(query, "roles")
+
+        roles: list[StoredRole] = []
+        for row in rows:
+            roles.append(
+                StoredRole(
+                    id=UUID(str(row[RolesColumn.ID.value])),
+                    name=row[RolesColumn.ROLE.value],
+                )
+            )
+
+        return roles
+
+    async def grant(self, connection_id: UUID, target: GrantTarget) -> UUID:
+        query = self._grant_insert(connection_id, target)
+        row = self._returning(
+            await self._row(query, "grant"),
+            f"insert of link connections#{connection_id} -> "
+            f"{target.kind.value}#{target.id} into grants",
+        )
+
+        return UUID(str(row[GrantsColumn.ID.value]))
+
+    def _grant_insert(self, connection_id: UUID, target: GrantTarget) -> PgQuery:
+        """Грант соединения цели; повтор той же связи ничего не меняет."""
+        return (
+            self._query()
+            .add(
+                """
+                insert into {schema}.grants (
+                    src_kind,
+                    src_kind_id,
+                    tgt_kind,
+                    tgt_kind_id
+                )
+                values (
+                    %(src_kind)s,
+                    %(src_kind_id)s,
+                    %(tgt_kind)s,
+                    %(tgt_kind_id)s
+                )
+                on conflict (src_kind, src_kind_id, tgt_kind, tgt_kind_id)
+                    do update set src_kind = excluded.src_kind
+                returning
+                    id
+                """,
+                **self._grant_params(connection_id, target),
+            )
+            .build()
+        )
+
+    async def revoke(self, connection_id: UUID, target: GrantTarget) -> bool:
+        query = (
+            self._query()
+            .add(
+                """
+                delete from
+                    {schema}.grants
+                where
+                    src_kind = %(src_kind)s
+                    and src_kind_id = %(src_kind_id)s
+                    and tgt_kind = %(tgt_kind)s
+                    and tgt_kind_id = %(tgt_kind_id)s
+                """,
+                **self._grant_params(connection_id, target),
+            )
+            .build()
+        )
+        touched = await self._execute(query, "revoke")
+
+        return touched > 0
+
+    async def grants_of(self, connection_id: UUID) -> Sequence[GrantTarget]:
+        query = (
+            self._query()
+            .add(
+                """
+                select
+                    tgt_kind,
+                    tgt_kind_id
+                from
+                    {schema}.grants
+                where 1=1
+                    and src_kind = %(src_kind)s
+                    and src_kind_id = %(src_kind_id)s
+                order by
+                    tgt_kind,
+                    tgt_kind_id
+                """,
+                src_kind=self.RESOURCE.value,
+                src_kind_id=connection_id,
+            )
+            .build()
+        )
+        rows = await self._rows(query, "grants")
+
+        targets: list[GrantTarget] = []
+        for row in rows:
+            targets.append(
+                GrantTarget(
+                    kind=GrantSubject(row[GrantsColumn.TGT_KIND.value]),
+                    id=UUID(str(row[GrantsColumn.TGT_KIND_ID.value])),
+                )
+            )
+
+        return targets
+
+    async def for_subject(
+        self, subject: Subject, kind: str, *, name: str | None = None
+    ) -> Sequence[GrantedConnection]:
+        """Соединения вида kind, выданные пользователю лично или любой его роли,
+        с признаком дубля имени."""
+        rows = await self._subject_rows(subject, ConnectionFilter(kind=kind), name=name)
+
+        return list(self._granted_rows(rows))
+
+    async def catalog(
+        self, subject: Subject, flt: ConnectionFilter
+    ) -> Sequence[CatalogEntry]:
+        """Соединения субъекта для показа: имя, вид и открытые поля профиля.
+
+        Секреты не читаются. Имя-дубль внутри вида не показывается: вызов
+        отвергнет его как неоднозначное, выбирать из таких нечего.
+        """
+        unique = replace(flt, unique_only=True)
+        rows = await self._subject_rows(subject, unique)
+
+        return list(self._catalog_entries(rows))
+
+    def _catalog_entries(
+        self, rows: Sequence[Mapping[str, Any]]
+    ) -> Iterator[CatalogEntry]:
+        """Записи каталога; строка типа без установленного пакета пропускается
+        так же, как в _stored_rows."""
+        for row in rows:
+            try:
+                url = self._url_of(row)
+            except UnknownConnectionKindError as exc:
+                logger.warning(
+                    "connections: row #%s %r skipped: %s",
+                    row[SubjectRowColumn.ID],
+                    row[SubjectRowColumn.NAME],
+                    exc,
+                )
+                continue
+
+            fields = dict(row[SubjectRowColumn.DATA])
+            fields["name"] = row[SubjectRowColumn.NAME]
+            fields["kind"] = row[SubjectRowColumn.KIND]
+            fields["url"] = url
+
+            yield CatalogEntry.model_validate(fields)
+
+    def _url_of(self, row: Mapping[str, Any]) -> str:
+        """Адрес соединения строки хуком её типа; секреты профиля при этом
+        не расшифровываются. Профиль без адреса — текст причины на его месте.
+
+        Ошибки:
+        UnknownConnectionKindError — пакет типа строки не установлен.
+        ConnectionStoreError — jsonb строки не разбирается как профиль.
+        """
+        try:
+            connection = self._types.parse(row[SubjectRowColumn.DATA])
+        except UnknownConnectionKindError:
+            raise
+        except ConnectionTypesError as exc:
+            # from None: в разобранной строке лежат секреты, пусть и зашифрованные
+            msg = (
+                f"connections: row #{row[SubjectRowColumn.ID]} "
+                f"{row[SubjectRowColumn.NAME]!r} is not a valid connection: {exc}"
+            )
+            raise ConnectionStoreError(msg) from None
+
+        try:
+            return self._types.manifest_of(connection.kind).address(connection)
+        except AddressError as exc:
+            return f"no url: {exc}"
+
+    async def _subject_rows(
+        self, subject: Subject, flt: ConnectionFilter, *, name: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Строки SubjectGrantsQuery, прошедшие фильтр."""
+        text = self._grants.text(flt, name=name)
+        params = self._grants.params(subject, flt, name=name)
+        query = self._query().add(text, **params).build()
+
+        return await self._rows(query, "for subject")
+
+    def _grant_params(self, connection_id: UUID, target: GrantTarget) -> dict[str, Any]:
+        return {
+            "src_kind": self.RESOURCE.value,
+            "src_kind_id": connection_id,
+            "tgt_kind": target.kind.value,
+            "tgt_kind_id": target.id,
+        }
+
+    def _stored_rows(self, rows: Sequence[Mapping[str, Any]]) -> list[StoredConnection]:
+        """Строки списком: запись типа без установленного пакета пропускается.
+
+        Пропуск не молчалив: warning с именем строки и kind; точечный get такой
+        строки падает UnknownConnectionKindError — внятной ошибкой использования.
+        """
+        stored: list[StoredConnection] = []
+        for row in rows:
+            try:
+                stored.append(self._stored(row))
+            except UnknownConnectionKindError as exc:
+                logger.warning(
+                    "connections: row #%s %r skipped: %s",
+                    row["id"],
+                    row["name"],
+                    exc,
+                )
+
+        return stored
+
+    def _granted_rows(
+        self, rows: Sequence[Mapping[str, Any]]
+    ) -> Iterator[GrantedConnection]:
+        """Строки субъекта с признаком дубля; строка без типа пропускается
+        так же, как в _stored_rows."""
+        for row in rows:
+            try:
+                stored = self._stored(row)
+            except UnknownConnectionKindError as exc:
+                logger.warning(
+                    "connections: row #%s %r skipped: %s",
+                    row[SubjectRowColumn.ID],
+                    row[SubjectRowColumn.NAME],
+                    exc,
+                )
+                continue
+
+            copies = int(row[SubjectRowColumn.COPIES])
+
+            yield GrantedConnection(row=stored, ambiguous=copies > 1)
+
+    def _stored(self, row: Mapping[str, Any]) -> StoredConnection:
+        try:
+            connection = self._types.parse(self._cipher.decrypt(row["data"]))
+        except SecretCryptoError as exc:
+            raise ConnectionStoreError(
+                f"reading connection #{row['id']} in {self.schema}.connections: "
+                f"the stored credentials cannot be decrypted: {exc}"
+            ) from exc
+        except UnknownConnectionKindError:
+            raise
+        except ConnectionTypesError as exc:
+            # from None: в разобранной строке лежит пароль, причину печатает
+            # текст самой ошибки, мимо FailureText
+            msg = (
+                f"connections: row #{row['id']} {row['name']!r} is not a valid "
+                f"connection: {exc}"
+            )
+            raise ConnectionStoreError(msg) from None
+
+        return StoredConnection(
+            id=UUID(str(row["id"])), name=row["name"], connection=connection
+        )

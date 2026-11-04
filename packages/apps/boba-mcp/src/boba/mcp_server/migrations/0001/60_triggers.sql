@@ -39,8 +39,6 @@ create constraint trigger check_mcp_grant
     deferrable initially immediate
     for each row execute function {schema}.check_mcp_grant();
 
-update {schema}.grants set id = id;
-
 create or replace function {schema}.remove_mcp_grants() returns trigger language plpgsql as $body$
 begin
     delete from {schema}.grants

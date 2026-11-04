@@ -5,7 +5,6 @@ from __future__ import annotations
 import tempfile
 import unicodedata
 from collections.abc import AsyncIterator, Callable
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, ClassVar
 from uuid import UUID
@@ -15,15 +14,14 @@ from aid_stand import StandTokens
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from boba.aid.auth.http import DomainErrorMiddleware
 from boba.aid.auth.request import authenticated_user
 from boba.aid.data.upload import UploadRoute
 from boba.canvas.storage import StorageFullError
 from boba.canvas.transfer import UploadPolicy
-from boba.identity.api import AuthenticatedUser
-from boba.identity.session import Login
-from boba.identity.signin import SignInMetadata
-from boba.runtime.http import DomainErrorMiddleware
-from boba.runtime.storage import LocalStorageClient
+from boba.identity.authentication import AccessGrant, AuthenticatedPrincipal
+from boba.identity.principal import UserIdentity
+from boba.storage.client import LocalStorageClient
 from boba.workspace.launcher import ReadWindow
 
 pytestmark = pytest.mark.anyio
@@ -31,12 +29,11 @@ pytestmark = pytest.mark.anyio
 CHUNK = 64 * 1024
 
 
-def signed_user(user: FakeUser) -> AuthenticatedUser:
-    return AuthenticatedUser(
+def signed_user(user: FakeUser) -> AuthenticatedPrincipal:
+    return AuthenticatedPrincipal(
         id=user.id,
-        identifier=Login(user.identifier),
-        created_at=datetime(2024, 1, 1, tzinfo=UTC),
-        sign_in=SignInMetadata(),
+        identity=UserIdentity.model_validate(user.identifier),
+        access=AccessGrant(roles=frozenset(), profiles=frozenset({"general"})),
     )
 
 
@@ -114,9 +111,7 @@ def app_builder(
     def build(policy: UploadPolicy) -> FastAPI:
         app = FastAPI()
         UploadRoute(storage, policy).install(app)
-        app.dependency_overrides[authenticated_user] = lambda: signed_user(
-            session.user
-        )
+        app.dependency_overrides[authenticated_user] = lambda: signed_user(session.user)
         app.add_middleware(DomainErrorMiddleware)
         return app
 
@@ -468,7 +463,7 @@ async def test_foreign_session_is_rejected(
     session: FakeSession,
 ):
     client_app.dependency_overrides[authenticated_user] = lambda: signed_user(
-        FakeUser("petrov", UUID(int=8))
+        FakeUser("corporate:petrov", UUID(int=8))
     )
 
     async with transport(client_app) as client:

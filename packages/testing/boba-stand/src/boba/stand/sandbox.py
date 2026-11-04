@@ -14,10 +14,12 @@ from typing import Any
 import pytest
 from omegaconf import DictConfig
 
-from boba.runtime.launchers import PluginLaunch, ZygoteLaunchers
-from boba.runtime.plugins import PluginSections
+from boba.toolrun.launchers import PluginLaunch
+from boba.toolrun.sandbox import SandboxCgroupConfig, ZygoteLaunchers
+from boba.toolrun.plugins import PluginSections
 from boba.sandbox import SandboxProfile
 from boba.sandbox.program import PluginEntry
+from boba.config import bind
 from boba.stand.zygote import ROOTFS_IMAGE, RUNTIME, SandboxCgroup
 
 REPO = Path(__file__).resolve().parents[6]
@@ -210,4 +212,6 @@ def section_profile(raw: DictConfig, plugin_id: str) -> SandboxProfile:
     Образы, workspace и libexec берутся из каталога программы прогона
     (BOBA_RUNTIME), каталог данных — из [paths] конфига.
     """
-    return ZygoteLaunchers(raw).profile_of(plugin_launch(raw, plugin_id))
+    return ZygoteLaunchers(
+        raw, bind(raw, "tool_launcher", SandboxCgroupConfig)
+    ).profile_of(plugin_launch(raw, plugin_id))

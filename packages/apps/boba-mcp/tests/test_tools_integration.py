@@ -9,7 +9,6 @@ import base64
 import re
 import shutil
 from collections.abc import Mapping, Sequence
-from importlib.resources import files
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -18,16 +17,19 @@ import pytest
 from psycopg import sql
 
 from boba.config import bind
-from boba.connection_broker.credentials import KerberosCredentialSource, NoRefresh
-from boba.connection_broker.crypto import SecretCipher
-from boba.connection_broker.store import ConnectionStore
-from boba.connection_broker.tickets import SectionTickets, ServiceTickets
+from boba.krb.connections import KerberosCredentialSource
+from boba.mcp_server.connections import NoRefresh
+from boba.crypto import SecretCipher
+from boba.mcp_server.connections.store import ConnectionStore
+from boba.toolrun.tickets import SectionTickets, ServiceTickets
 from boba.connections.manifest import ConnectionTypes
-from boba.db.pgvector.migrations import Migrations
-from boba.db.postgres import AsyncPostgresPool, PostgresSchema
+from boba.db.pgvector.config import EmbeddingDimension, KnowledgeBaseSchemaConfig
+from boba.db.pgvector.schema import KbSchema
+from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.mcp_server.app import McpAppConfig
 from boba.stand.database import TestDatabase
+from boba.stand.migrate import StandMigrations
 from boba.stand.sandbox import plugin_launch, section_profile
 from boba.stand.shell import ShellRun
 from boba.stand.toolsetup import Call, ToolSetup
@@ -257,25 +259,12 @@ async def kb_store(raw_config, test_database: str) -> ConfluenceIngestConfig:
     store = cfg.model_copy(
         update={"connection": TestDatabase.config_of(cfg.connection, test_database)}
     )
-    schema = sql.SQL("create schema if not exists {}").format(
-        sql.Identifier(store.tables.pg_schema)
+    migration = KnowledgeBaseSchemaConfig(
+        connection=store.connection,
+        tables=store.tables,
+        embedding=EmbeddingDimension(dim=store.embedding.dim),
     )
-
-    pool = AsyncPostgresPool(store.connection)
-    await pool.open()
-    try:
-        async with pool.connection() as conn:
-            await conn.execute(schema)
-            schema_dir = files("boba.db.pgvector") / "schema"
-            names = Migrations(store.tables).names()
-            await PostgresSchema(store.tables.pg_schema).apply_files(
-                conn, schema_dir, names
-            )
-            await Migrations(store.tables).ensure_vector_index(
-                conn, store.embedding.dim
-            )
-    finally:
-        await pool.close()
+    await StandMigrations().storage(store.connection, KbSchema(migration).migration())
 
     return store
 
@@ -370,7 +359,7 @@ def _credentials() -> KerberosCredentialSource:
 def _ticketed() -> InjectedConfig:
     """Секция плагина с keytab-профилем уезжает телу с билетом вызова."""
     return InjectedConfig(
-        SectionTickets(ServiceTickets(_credentials), ConnectionTypes.discover)
+        SectionTickets(ServiceTickets(_credentials()), ConnectionTypes.discover())
     )
 
 

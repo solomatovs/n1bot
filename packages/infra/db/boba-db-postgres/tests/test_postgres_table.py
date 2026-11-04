@@ -142,7 +142,7 @@ async def notes(pool: AsyncPostgresPool, schema_dir: Path) -> AsyncIterator[Note
         await PostgresSchema(SCHEMA).apply_files(conn, schema_dir, {})
 
     try:
-        yield NotesTable(None, SCHEMA, pool)
+        yield NotesTable(pool, SCHEMA)
     finally:
         await _drop(pool, SCHEMA)
 

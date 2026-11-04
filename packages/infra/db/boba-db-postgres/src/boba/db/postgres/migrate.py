@@ -1,4 +1,7 @@
-"""Выполнение SQL выбранной версии без учёта истории состояния БД.
+"""Приведение структуры к SQL выбранной версии без учёта истории состояния БД.
+
+Каждая версия описывает целевые объекты хранения. Перенос строк и
+сопоставление прикладных данных в контракт migrate не входят.
 
 Ошибки:
 PostgresError — версия или SQL-ресурс недоступны, подключение либо SQL отказали.
@@ -42,7 +45,6 @@ class MigrationPlan(BaseModel):
     scripts: tuple[MigrationScript, ...] = Field(min_length=1)
     values: dict[str, str | int] = Field(default_factory=dict)
     identifiers: dict[str, tuple[str, ...]] = Field(default_factory=dict)
-    inputs: tuple[MigrationScript, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -172,14 +174,6 @@ class PostgresMigrations:
             ):
                 await schema.ddl_lock().acquire(conn)
                 await schema.ensure(conn)
-                for script in plan.inputs:
-                    context = (
-                        f"migrate {target.postgres.where()} schema {schema.name}: "
-                        f"{script.name}"
-                    )
-                    query = PgQueryBuilder().raw_query(script.text).build()
-                    await conn.execute(query.text, prepare=False)
-
                 for script in plan.scripts:
                     context = (
                         f"migrate {target.postgres.where()} schema {schema.name}: "

@@ -16,7 +16,7 @@ from boba.auth.config import LdapAuthConfig
 from boba.config import bind
 from boba.identity.errors import AuthenticationError, AuthorizationError
 from boba.identity.principal import IdentityRule
-from boba.identity.session import SignInProvider, UserLogin
+from boba.identity.session import UserLogin
 from boba.identity.signin import PasswordSignIn
 from boba.stand.signin import SignInStand
 from boba.stand.site import Stand
@@ -43,7 +43,7 @@ def _ldap_config(raw_config: DictConfig) -> LdapAuthConfig:
 
 
 def _ldap_sign_in(raw_config: DictConfig) -> PasswordSignIn:
-    signed = SignInStand.assembly().password([_ldap_config(raw_config)])
+    signed = SignInStand.backends().password([_ldap_config(raw_config)])
     if signed is None:
         raise AssertionError("an ldap config yields a password sign-in")
 
@@ -60,7 +60,7 @@ async def test_reader_signs_in_with_the_directory_password(raw_config: Any) -> N
         UserLogin.of(_reader_login()).key
     )
     assert signed.identifier == expected.identifier
-    assert signed.sign_in.provider == SignInProvider.LDAP.value
+    assert signed.provider == LdapAuthConfig.PROVIDER
 
 
 async def test_wrong_password_is_refused(raw_config: Any) -> None:
@@ -78,7 +78,7 @@ async def test_two_directories_are_separate_realms(raw_config: DictConfig) -> No
         update={"identity": IdentityRule(realm="office")}
     )
     partner = office.model_copy(update={"identity": IdentityRule(realm="partner")})
-    providers = SignInStand.assembly().password([office, partner])
+    providers = SignInStand.backends().password([office, partner])
     assert providers is not None
     password = STAND.reader_bind.password.get_secret_value()
     with pytest.raises(AuthorizationError, match="select an identity realm"):

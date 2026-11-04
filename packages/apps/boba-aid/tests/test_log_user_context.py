@@ -16,9 +16,6 @@ from boba.aid.infra.log_context import (
     UserLogContext,
 )
 from boba.aid.infra.session import ChainlitSession
-from boba.identity.principal import UserIdentity
-from boba.identity.session import Login
-from boba.identity.signin import SignedIn, SignInMetadata
 
 
 @pytest.fixture(autouse=True)
@@ -129,14 +126,12 @@ class TestRequestUserMiddleware:
         async def app(scope: Any, receive: Any, send: Any) -> None:
             seen.append(RequestUserContext.get())
 
-        signed = SignedIn(
-            identifier=Login("corporate:sidorov"),
-            display_name="",
-            sign_in=SignInMetadata(
-                identity=UserIdentity(realm="corporate", login=Login("sidorov"))
-            ),
+        session = StandTokens.session(
+            "corporate:sidorov",
+            UUID(int=7),
+            profiles={"general"},
         )
-        token = StandTokens.issue(signed)
+        token = StandTokens.issue(session)
         scope = self._scope([(b"authorization", f"Bearer {token}".encode())])
         self._run(self._middleware(app), scope)
         assert seen == ["corporate:sidorov"], seen

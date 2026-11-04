@@ -35,6 +35,7 @@ from boba.db.pgvector.store import (
     PostgresCollectionsStore,
     PostgresSourceLedger,
 )
+from boba.db.postgres import PostgresPool
 from boba.doc.config import DocSection
 from boba.indexing import (
     ChunkStore,
@@ -477,14 +478,19 @@ class IngestAssembly:
         connection: HttpConnection,
         progress: IngestProgress,
         routes: Mapping[str, Reader[str]],
+        pool: PostgresPool,
     ) -> None:
         self._cfg = cfg
         self._progress = progress
         self._routes = routes
-        self._chunk_store = LoggingChunkStore(PostgresChunkStore(cfg=cfg), logger)
-        self._collections_store = PostgresCollectionsStore(cfg=cfg)
+        self._chunk_store = LoggingChunkStore(
+            PostgresChunkStore(pool, cfg.tables), logger
+        )
+        self._collections_store = PostgresCollectionsStore(pool, cfg.tables)
         self._ledger = LoggingSourceLedger(
-            PostgresSourceLedger(cfg=cfg, collection=CollectionId(cfg.collection)),
+            PostgresSourceLedger(
+                pool, cfg.tables, collection=CollectionId(cfg.collection)
+            ),
             logger,
         )
         self._embedder = LLM.embedding(cfg.embedding)

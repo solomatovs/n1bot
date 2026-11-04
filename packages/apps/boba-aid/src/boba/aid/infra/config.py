@@ -16,14 +16,19 @@ from pydantic import (
 )
 
 from boba.aid.agent.config import AgentSettings, ProcessAgentConfig
+from boba.aid.auth.config import SessionConfig
+from boba.aid.infra.messaging_backends import StandardMessagingBackends
 from boba.aid.mcp_servers.config import McpServersConfig
 from boba.auth.assembly import AuthBackends
 from boba.auth.config import AuthConfig, ProxyAuthConfig
+from boba.auth.providers.backends import StandardAuthBackends
+from boba.auth.settings import SignInSettings
 from boba.chat.profiles import LocalChatProfileConfig, ProfileConfig
 from boba.config import ConfigVariant
-from boba.runtime.auth_backends import StandardAuthBackends
-from boba.runtime.config import MessagingConfig, RuntimeConfig, ServerConfig
-from boba.runtime.messaging_backends import StandardMessagingBackends
+from boba.config.paths import PathsConfig, TlsConfig
+from boba.db.postgres.connection import PostgresConfig
+from boba.http_server import ServerConfig
+from boba.messaging.config import ClusterConfig, MessagingConfig
 
 LOGGING_CONFIG: dict[str, Any] = {
     "version": 1,
@@ -190,8 +195,16 @@ class AidSection(ServerConfig):
         return urlunsplit((parts.scheme, parts.netloc, "", "", ""))
 
 
-class AppConfig(RuntimeConfig):
+class AppConfig(SignInSettings):
     """Секции процесса aid поверх общих: [server], профили, роли и агент."""
+
+    db_schema: str = Field(alias="schema", min_length=1)
+    paths: PathsConfig
+    tls: TlsConfig = Field(default_factory=TlsConfig)
+    session: SessionConfig
+    postgres: PostgresConfig
+    cluster: ClusterConfig
+    messaging: SerializeAsAny[MessagingConfig]
 
     AUTH_BACKENDS: ClassVar[AuthBackends] = StandardAuthBackends().registry
     MESSAGING_BACKENDS: ClassVar = StandardMessagingBackends().registry
@@ -205,7 +218,7 @@ class AppConfig(RuntimeConfig):
     def _messaging_backend(cls, raw: object) -> MessagingConfig:
         return cls.MESSAGING_BACKENDS.parse(raw)
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
     server: Annotated[
         AidSection,

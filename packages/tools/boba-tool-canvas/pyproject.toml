@@ -22,10 +22,10 @@ canvas = "boba.tool.canvas.plugin:MANIFEST"
 payload = [
 ]
 dev = [
-    "boba-runtime==0.0.33.dev1",
     "boba-stand==0.0.33.dev1",
     "omegaconf>=2.3,<3",
     "pytest>=9.1,<10",
+    "boba-mcp==0.0.33.dev1",
 ]
 
 [tool.setuptools.packages.find]

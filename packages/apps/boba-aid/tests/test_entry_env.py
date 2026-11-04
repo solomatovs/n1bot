@@ -14,7 +14,7 @@ from aid_stand import FakeSecret
 
 from boba.aid.infra.entry import AppEntry, ChainlitEnv
 from boba.config import ConfigError, ConfigLoader
-from boba.runtime.config import ProgramRoots
+from boba.sandbox.paths import ProgramRoots
 
 
 @pytest.fixture(autouse=True)

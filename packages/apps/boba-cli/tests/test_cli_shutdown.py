@@ -25,9 +25,10 @@ from test_cli_binary import ReleaseBin, ReleaseBinary
 from test_cli_serve import Connected, HistoryStand, Profile, StandTools
 
 from boba.cli.serve import ServeHistory, ServeMark
+from boba.aid.infra.config import AppConfig
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
-from boba.runtime.config import ProcessConfig
+
 from boba.stand.agent import FakeServer
 from boba.stand.agent_service import (
     AgentServiceProcess,
@@ -340,7 +341,7 @@ class TestServe:
         self,
         serve_model: FakeServer,
         command: list[str],
-        process_config: ProcessConfig,
+        process_config: AppConfig,
         backends: PgBackends,
         schema: str,
         tmp_path: Path,

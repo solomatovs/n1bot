@@ -20,7 +20,7 @@ from pathlib import Path
 from string import Template
 from typing import ClassVar
 
-from boba.connection_broker.user_connections import ConnectionParamHooks
+from boba.mcp_server.connections.user_connections import ConnectionParamHooks
 from boba.connections.manifest import ConnectionTypes
 from boba.identity.run import Runs
 from boba.stand.toolstand import ToolStand
@@ -101,7 +101,7 @@ class PumpDags(ParamSource):
         self._names = dict(names)
         self._directory = dict(connections)
         self._calls = CallStand()
-        self._hooks = ConnectionParamHooks(ConnectionTypes.discover)
+        self._hooks = ConnectionParamHooks(ConnectionTypes.discover())
 
         contexts = self._calls.contexts
         stand = ToolStand(

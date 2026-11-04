@@ -1,4 +1,4 @@
-"""Явная миграция пустой схемы на реальном PostgreSQL стенда."""
+"""Общий загрузчик исполняет только упорядоченные SQL скрипты владельца."""
 
 from __future__ import annotations
 
@@ -12,8 +12,8 @@ from psycopg import sql
 from boba.db.postgres import AsyncPostgresPool, PostgresError, PostgresSchema
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.migrate import (
+    MigrationPlan,
     MigrationScript,
-    MigrationScripts,
     MigrationTarget,
     PostgresMigrations,
 )
@@ -33,109 +33,136 @@ async def schema(pool: AsyncPostgresPool) -> AsyncIterator[str]:
             )
 
 
-async def test_creates_tables_and_refuses_repeat_without_changing_data(
+def _plan(schema: str, component: str = "migration-test") -> MigrationPlan:
+    scripts = (
+        MigrationScript(
+            name="10_known_table.sql",
+            text="""
+                create table if not exists {schema}.known_table (
+                    id integer primary key,
+                    value text not null
+                )
+            """,
+        ),
+        MigrationScript(
+            name="20_known_column.sql",
+            text="""
+                alter table {schema}.known_table
+                    add column if not exists marker text not null default 'ready'
+            """,
+        ),
+    )
+    return MigrationPlan(
+        schema=schema,
+        component=component,
+        version="0001",
+        scripts=scripts,
+    )
+
+
+async def test_sql_plan_is_repeatable_and_leaves_unknown_tables_alone(
     test_postgres: PostgresConfig, schema: str, pool: AsyncPostgresPool
 ) -> None:
-    plan = MigrationScripts(schema).packages(("boba.identity_postgres",))
-    target = MigrationTarget(test_postgres, plan)
-    await PostgresMigrations().apply((target, target))
-    async with pool.connection() as conn:
-        query = sql.SQL("insert into {}.roles (role) values ('reader')").format(
-            sql.Identifier(schema)
-        )
-        await conn.execute(query)
-
-    with pytest.raises(
-        PostgresError, match="existing tables: roles, user_roles, users"
-    ):
-        await PostgresMigrations().apply((target,))
+    target = MigrationTarget(test_postgres, _plan(schema))
+    runner = PostgresMigrations()
+    await runner.apply((target,))
 
     async with pool.connection() as conn:
-        row = await (
-            await conn.execute(
-                sql.SQL("select role from {}.roles").format(sql.Identifier(schema))
-            )
-        ).fetchone()
-    assert row == ("reader",)
-
-
-async def test_checks_every_table_before_creating_anything(
-    test_postgres: PostgresConfig, schema: str, pool: AsyncPostgresPool
-) -> None:
-    async with pool.connection() as conn:
-        await conn.execute(sql.SQL("create schema {}").format(sql.Identifier(schema)))
         await conn.execute(
-            sql.SQL("create table {}.unexpected (id int)").format(
+            sql.SQL("insert into {}.known_table (id, value) values (1, 'kept')").format(
+                sql.Identifier(schema)
+            )
+        )
+        await conn.execute(
+            sql.SQL("create table {}.unowned (id integer primary key)").format(
+                sql.Identifier(schema)
+            )
+        )
+        await conn.execute(
+            sql.SQL("insert into {}.unowned (id) values (7)").format(
                 sql.Identifier(schema)
             )
         )
 
-    plan = MigrationScripts(schema).packages(("boba.identity_postgres",))
-    with pytest.raises(PostgresError, match="existing tables: unexpected"):
-        await PostgresMigrations().apply((MigrationTarget(test_postgres, plan),))
+    await runner.apply((target,))
 
     async with pool.connection() as conn:
-        assert not await PostgresSchema(schema).has_table(conn, "users")
+        known = await (
+            await conn.execute(
+                sql.SQL("select id, value, marker from {}.known_table").format(
+                    sql.Identifier(schema)
+                )
+            )
+        ).fetchone()
+        unowned = await (
+            await conn.execute(
+                sql.SQL("select id from {}.unowned").format(sql.Identifier(schema))
+            )
+        ).fetchone()
+
+    assert known == (1, "kept", "ready")
+    assert unowned == (7,)
 
 
-async def test_rolls_back_all_scripts_if_the_last_one_fails(
-    test_postgres: PostgresConfig, schema: str, pool: AsyncPostgresPool
+async def test_failed_sql_rolls_back_the_whole_plan(
+    test_postgres: PostgresConfig, schema: str
 ) -> None:
-    plan = MigrationScripts(schema).packages(("boba.identity_postgres",))
-    broken = MigrationScript(name="broken.sql", text="select 1 / 0")
-    plan = plan.model_copy(update={"scripts": (*plan.scripts, broken)})
+    plan = _plan(schema).model_copy(
+        update={
+            "scripts": (
+                *_plan(schema).scripts,
+                MigrationScript(name="30_broken.sql", text="select 1 / 0"),
+            )
+        }
+    )
+
     with pytest.raises(PostgresError, match="division by zero"):
         await PostgresMigrations().apply((MigrationTarget(test_postgres, plan),))
 
-    async with pool.connection() as conn:
-        assert not await PostgresSchema(schema).has_table(conn, "users")
+    async with await AsyncPostgresPool.dedicated(test_postgres) as conn:
+        assert not await PostgresSchema(schema).has_table(conn, "known_table")
 
 
-async def test_shared_schema_combines_history_and_identity_once(
-    test_postgres: PostgresConfig, schema: str, pool: AsyncPostgresPool
-) -> None:
-    identity = MigrationScripts(schema).packages(("boba.identity_postgres",))
-    history = MigrationScripts(schema).packages(("boba.history.postgres",))
-    targets = (
-        MigrationTarget(test_postgres, identity),
-        MigrationTarget(test_postgres, history),
-        MigrationTarget(test_postgres, history),
-    )
-    applied = await PostgresMigrations().apply(targets)
-    assert len(applied) == 2
-    async with pool.connection() as conn:
-        assert await PostgresSchema(schema).has_table(conn, "session_records")
-
-
-async def test_parallel_migrations_have_one_winner(
+async def test_repeated_target_in_one_run_executes_once(
     test_postgres: PostgresConfig, schema: str
 ) -> None:
-    plan = MigrationScripts(schema).packages(("boba.identity_postgres",))
-    target = MigrationTarget(test_postgres, plan)
+    target = MigrationTarget(test_postgres, _plan(schema))
+
+    applied = await PostgresMigrations().apply((target, target))
+
+    assert len(applied) == 2
+
+
+async def test_concurrent_idempotent_plans_both_succeed(
+    test_postgres: PostgresConfig, schema: str, pool: AsyncPostgresPool
+) -> None:
+    target = MigrationTarget(test_postgres, _plan(schema))
     results = await asyncio.gather(
         PostgresMigrations().apply((target,)),
         PostgresMigrations().apply((target,)),
         return_exceptions=True,
     )
-    failures = [result for result in results if isinstance(result, PostgresError)]
-    assert len(failures) == 1
-    assert "expected an empty schema" in str(failures[0])
+
+    failures = [result for result in results if isinstance(result, BaseException)]
+    assert failures == []
+    async with pool.connection() as conn:
+        assert await PostgresSchema(schema).has_table(conn, "known_table")
 
 
-async def test_all_schemas_are_checked_before_any_ddl(
+async def test_each_target_uses_its_configured_schema(
     test_postgres: PostgresConfig, schema: str, pool: AsyncPostgresPool
 ) -> None:
-    dirty = MigrationScripts(schema).packages(("boba.identity_postgres",))
-    clean_name = f"a_{schema}_clean"
-    clean = MigrationScripts(clean_name).packages(("boba.identity_postgres",))
-    await PostgresMigrations().apply((MigrationTarget(test_postgres, dirty),))
-    with pytest.raises(PostgresError, match="existing tables"):
-        await PostgresMigrations().apply(
-            (
-                MigrationTarget(test_postgres, clean),
-                MigrationTarget(test_postgres, dirty),
-            )
-        )
+    second = f"{schema}_second"
+    targets = (
+        MigrationTarget(test_postgres, _plan(schema, "first-owner")),
+        MigrationTarget(test_postgres, _plan(second, "second-owner")),
+    )
+
+    await PostgresMigrations().apply(targets)
 
     async with pool.connection() as conn:
-        assert not await PostgresSchema(clean_name).has_table(conn, "users")
+        assert await PostgresSchema(schema).has_table(conn, "known_table")
+        assert await PostgresSchema(second).has_table(conn, "known_table")
+        await conn.execute(
+            sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(second))
+        )

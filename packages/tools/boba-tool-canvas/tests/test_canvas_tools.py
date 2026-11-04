@@ -10,6 +10,7 @@ import pytest
 from boba.canvas.canvas import CanvasErrorKind
 from boba.canvas.keys import WorkspaceRoot
 from boba.identity.context import Scope, ScopeKind, Subject
+from boba.identity.principal import UserIdentity
 from boba.tool.canvas.tools import (
     CanvasToolConfig,
     canvas_open,
@@ -29,8 +30,11 @@ class Workspace:
     """Workspace пользователя во временном каталоге: корень, тред и субъект."""
 
     def __init__(self, tmp_path: Path) -> None:
-        self.subject = Subject(
-            user_id=uuid4(), login="tester", roles=frozenset(), profile="test"
+        self.subject = Subject.of_user(
+            uuid4(),
+            UserIdentity.model_validate("corporate:tester"),
+            (),
+            "test",
         )
         self.scope = Scope(kind=ScopeKind.CHAT, id=THREAD)
         self.root = WorkspaceRoot(path=str(tmp_path / self.subject.user_key))

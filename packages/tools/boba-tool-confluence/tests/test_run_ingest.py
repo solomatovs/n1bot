@@ -7,19 +7,19 @@
 
 from __future__ import annotations
 
-from importlib.resources import files
 from typing import ClassVar
 
 import pytest
 from omegaconf import DictConfig
-from psycopg import sql
 
 from boba.config import bind
-from boba.connection_broker.crypto import SecretCipher
-from boba.connection_broker.store import ConnectionStore
+from boba.crypto import SecretCipher
+from boba.mcp_server.connections.store import ConnectionStore
 from boba.connections.manifest import ConnectionTypes
-from boba.db.pgvector.migrations import Migrations
-from boba.db.postgres import AsyncPostgresPool, PostgresSchema
+from boba.db.pgvector.config import EmbeddingDimension, KnowledgeBaseSchemaConfig
+from boba.db.pgvector.schema import KbSchema
+from boba.stand.migrate import StandMigrations
+from boba.db.postgres import AsyncPostgresPool
 from boba.mcp_server.app import McpAppConfig
 from boba.stand.database import TestDatabase
 from boba.stand.ui.stand import StandApp
@@ -53,25 +53,12 @@ async def ingest_cfg(raw_config: DictConfig) -> IngestToolConfig:
     store = cfg.model_copy(
         update={"connection": TestDatabase.config_of(cfg.connection, database)}
     )
-    schema = sql.SQL("create schema if not exists {}").format(
-        sql.Identifier(store.tables.pg_schema)
+    migration = KnowledgeBaseSchemaConfig(
+        connection=store.connection,
+        tables=store.tables,
+        embedding=EmbeddingDimension(dim=store.embedding.dim),
     )
-
-    pool = AsyncPostgresPool(store.connection)
-    await pool.open()
-    try:
-        async with pool.connection() as conn:
-            await conn.execute(schema)
-            schema_dir = files("boba.db.pgvector") / "schema"
-            names = Migrations(store.tables).names()
-            await PostgresSchema(store.tables.pg_schema).apply_files(
-                conn, schema_dir, names
-            )
-            await Migrations(store.tables).ensure_vector_index(
-                conn, store.embedding.dim
-            )
-    finally:
-        await pool.close()
+    await StandMigrations().storage(store.connection, KbSchema(migration).migration())
 
     return store
 

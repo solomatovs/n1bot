@@ -35,11 +35,11 @@ from pydantic import ValidationError
 
 from boba.config import ConfigError
 from boba.core.mcp_names import McpToolNames
-from boba.runtime.config import ProgramDir, ProgramRoot, ProgramRoots
-from boba.runtime.launchers import PluginSandbox
+from boba.sandbox.paths import ProgramDir, ProgramRoot, ProgramRoots
 from boba.stand.site import StandConfigEnv, StandConfigPaths
 from boba.stand.site import StandError as SiteStandError
 from boba.stand.ui.toml_text import TomlText
+from boba.toolrun.sandbox import PluginSandbox
 
 __all__ = [
     "StandAgentAuth",
@@ -519,9 +519,7 @@ class ServiceStand(StandService):
 
     Создаётся конфигом стенда чата (StandConfig.companion): чат ходит к нему
     клиентом MCP со входом proxy. Конфиг — рабочий конфиг сервиса с правками
-    стенда: своя база плагинов, каталог файлов вместо образов workspace,
-    endpoint'ы
-    под профили стенда.
+    стенда: своя база плагинов и каталог файлов вместо образов workspace.
     """
 
     workdir: Path
@@ -531,12 +529,6 @@ class ServiceStand(StandService):
     sandbox: bool
     db_schema: str = field(default="mcp", kw_only=True)
     """Схема самого MCP: изолируется отдельно от схем хранилищ плагинов."""
-    """Совместимость прежнего MCP для тестов старого клиента брокера."""
-    role_tools: Mapping[str, Sequence[str]] = field(
-        default_factory=lambda: {"ADM": ("*",), "DEV": ("*",), "GST": ()},
-        kw_only=True,
-    )
-    """Явная политика tools стенда; тесты connections задают её отдельно."""
     app: StandApp = StandApp.MCP
     url_prefix: str = ""
     generation: str = ""
@@ -545,6 +537,7 @@ class ServiceStand(StandService):
     session_ttl_sec: int = 300
     """Срок токена доступа: коротким стенд проверяет продление входа."""
     local_sign_in: bool = True
+    seed_roles: bool = True
     plugins: tuple[str, ...] = ()
     """Плагины из StandPlugins.SANDBOXED, которые сервис включает, — те, что
     зовут тесты стенда: тест с соединениями пользователя включает pg, стенд
@@ -657,17 +650,6 @@ class ServiceStand(StandService):
             overlay.set(("storage", "kind"), "local")
             overlay.set(("storage", "files_dir"), str(files_dir))
 
-        endpoints: dict[str, Any] = {}
-        connections = {"roles": ["*"], "offer": ["stored"]}
-        for name, tools in self.ENDPOINTS.items():
-            endpoints[name] = {
-                "roles": ["*"],
-                "tools": list(tools),
-                "connections": [connections],
-                "prompts": {},
-            }
-
-        overlay.replace(("mcp", "endpoints"), endpoints)
         overlay.set(("server", "public_url"), f"http://127.0.0.1:{self.app_port}")
         overlay.set(("server", "url_prefix"), "")
         overlay.replace(
@@ -835,6 +817,9 @@ class StandConfig(StandService, ServerSeedSpec):
 
     llm_port: int
     db_name: str
+    public_url: str = ""
+    """Публичный URL службы для подписи и проверки сессий. Реплики одного
+    приложения задают один URL, даже если в стенде у них разные listen-порты."""
     url_prefix: str = "/boba-test"
     single_profile: bool = False
     """True — в конфиге остаётся один профиль: селектора в UI быть не должно."""
@@ -1143,7 +1128,7 @@ class StandConfig(StandService, ServerSeedSpec):
         if self.app is not StandApp.AID:
             return
 
-        overlay.set(("server", "public_url"), self.base_url)
+        overlay.set(("server", "public_url"), self.public_url or self.base_url)
         overlay.set(("server", "sandbox_port"), self.sandbox_port)
 
     def server_records(self) -> Mapping[str, Mapping[str, Any]]:

@@ -9,6 +9,7 @@ __all__ = [
     "ExternalServiceError",
     "FailureReport",
     "HttpErrorMessage",
+    "IdentityConflictError",
     "InternalServiceError",
     "RefusalError",
     "ServiceDisabledError",
@@ -70,6 +71,20 @@ class ExternalServiceError(BaseError):
             status_code=self.status_code,
             content=self.message,
         )
+
+
+class IdentityConflictError(BaseError):
+    """Личность, членство или план изменились; нужна новая проверка данных."""
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.message = message
+
+    def view_message(self) -> ViewErrorMessage:
+        return ViewErrorMessage(content=self.message)
+
+    def http_message(self) -> HttpErrorMessage:
+        return HttpErrorMessage(status_code=409, content=self.message)
 
 
 class ServiceDisabledError(BaseError):

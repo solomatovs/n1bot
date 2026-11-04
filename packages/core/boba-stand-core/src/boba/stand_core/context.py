@@ -13,11 +13,13 @@ from boba.identity.context import (
     CallContext,
     CallContexts,
     ChatInitiator,
+    CredentialAbsence,
     NoUserCredential,
     Scope,
     Subject,
 )
 from boba.identity.errors import RefusalError
+from boba.identity.principal import UserIdentity
 from boba.identity.run import ElementTarget, RunPort, RunRefusal
 from boba.toolkit.result import ToolResultBase
 
@@ -27,6 +29,7 @@ class StandIdentity(StrEnum):
 
     TURN = "test-turn"
     PROFILE = "test"
+    REALM = "corporate"
     LOGIN = "corporate:tester"
 
 
@@ -85,14 +88,19 @@ class CallStand:
         if cancellation is None:
             cancellation = RunCancellation()
 
+        identity = login if ":" in login else f"{StandIdentity.REALM}:{login}"
+
         return CallContext(
             subject=Subject(
-                user_id=user_id, login=login, roles=frozenset(roles), profile=profile
+                user_id=user_id,
+                identity=UserIdentity.model_validate(identity),
+                roles=frozenset(roles),
+                profile=profile,
             ),
             scope=Scope.chat(thread_id),
             run_id=thread_id,
             initiator=ChatInitiator(thread_id=thread_id, turn_id=StandIdentity.TURN),
-            credential=NoUserCredential(reason="the test context carries no ticket"),
+            credential=NoUserCredential(code=CredentialAbsence.NOT_DELEGATED),
             cancellation=cancellation,
         )
 

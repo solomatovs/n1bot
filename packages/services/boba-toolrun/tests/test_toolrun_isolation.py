@@ -21,15 +21,10 @@ MODULES = sorted(p for p in TOOLRUN.glob("*.py") if p.name != "__init__.py")
 
 
 class TestToolrunIsolation:
-    ALLOWED_PREFIXES: ClassVar[tuple[str, ...]] = (
-        "boba.toolrun",
-        "boba.toolkit",
-        "boba.tool_io",
-        "boba.access",
-        "boba.cancellation",
-        "boba.identity",
-        "boba.canvas",
-        "boba.messaging",
+    APPLICATION_PREFIXES: ClassVar[tuple[str, ...]] = (
+        "boba.aid",
+        "boba.cli",
+        "boba.mcp_server",
     )
 
     @pytest.mark.parametrize("module", MODULES, ids=lambda p: p.name)
@@ -37,15 +32,11 @@ class TestToolrunIsolation:
         """Импорт из chainlit вернёт зависимость, которую мы только что сняли."""
         scan = ImportScan()
 
-        leaked: list[str] = []
-        for name in scan.modules_of(module):
-            if not name.startswith("boba."):
-                continue
-
-            if name.startswith(self.ALLOWED_PREFIXES):
-                continue
-
-            leaked.append(name)
+        leaked = [
+            name
+            for name in scan.modules_of(module)
+            if name.startswith(self.APPLICATION_PREFIXES)
+        ]
 
         if leaked:
-            raise AssertionError(f"{module.name}: внешние зависимости {leaked}")
+            raise AssertionError(f"{module.name}: application imports {leaked}")

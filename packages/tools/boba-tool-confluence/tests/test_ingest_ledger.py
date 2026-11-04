@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator, Sequence
-from importlib.resources import files
 from typing import Any, ClassVar
 
 import pytest
@@ -30,14 +29,20 @@ from boba.confluence.models import (
     TableShape,
 )
 from boba.confluence.rest import CflRestBuilder, ConfluenceConnection
-from boba.db.pgvector.config import PostgresStoreConfig, PostgresStoreSchema
-from boba.db.pgvector.migrations import Migrations
+from boba.db.pgvector.config import (
+    EmbeddingDimension,
+    KnowledgeBaseSchemaConfig,
+    PostgresStoreConfig,
+    PostgresStoreSchema,
+)
+from boba.db.pgvector.schema import KbSchema
 from boba.db.pgvector.store import (
+    KbPool,
     PostgresChunkStore,
     PostgresCollectionsStore,
     PostgresSourceLedger,
 )
-from boba.db.postgres import AsyncPostgresPool, PostgresSchema
+from boba.db.postgres import AsyncPostgresPool, PostgresPool
 from boba.indexing import (
     CollectionId,
     RawDocument,
@@ -55,6 +60,7 @@ from boba.stand.confluence import (
     StubRoute,
 )
 from boba.stand.database import TestDatabase
+from boba.stand.migrate import StandMigrations
 from boba.tool.confluence.chunking import ChunkerParams, StructuralChunkerFactory
 from boba.tool.confluence.indexing_log import (
     IngestProgress,
@@ -130,6 +136,12 @@ async def store_cfg(raw_config: DictConfig) -> AsyncIterator[PostgresStoreConfig
         sources_table="kb_sources",
     )
     cfg = PostgresStoreConfig(connection=connection, tables=tables)
+    migration = KnowledgeBaseSchemaConfig(
+        connection=connection,
+        tables=tables,
+        embedding=EmbeddingDimension(dim=DIM),
+    )
+    await StandMigrations().storage(connection, KbSchema(migration).migration())
 
     pool = AsyncPostgresPool(cfg.connection)
     await pool.open()
@@ -138,12 +150,6 @@ async def store_cfg(raw_config: DictConfig) -> AsyncIterator[PostgresStoreConfig
             await _execute(
                 conn, sql.SQL("drop schema if exists {} cascade").format(_schema())
             )
-            await _execute(conn, sql.SQL("create schema {}").format(_schema()))
-            schema_dir = files("boba.db.pgvector") / "schema"
-            names = Migrations(tables).names()
-            await PostgresSchema(tables.pg_schema).apply_files(conn, schema_dir, names)
-            await Migrations(tables).ensure_vector_index(conn, DIM)
-
         yield cfg
     finally:
         async with pool.connection() as conn:
@@ -174,15 +180,22 @@ class IngestStand:
     ATTACHMENT_MASKS: ClassVar[tuple[str, ...]] = (PDF, TEXT, PNG)
 
     def __init__(
-        self, stub: ConfluenceStub, port: int, cfg: PostgresStoreConfig
+        self,
+        stub: ConfluenceStub,
+        port: int,
+        cfg: PostgresStoreConfig,
+        pool: PostgresPool,
     ) -> None:
         self.stub = stub
         self.cfg = cfg
+        self.pool = pool
         self.reader = CountingReader()
         self.progress = IngestProgress(LOGGER, PipeProgress(-1))
         self._port = port
-        self.ledger = PostgresSourceLedger(cfg=cfg, collection=CollectionId(COLLECTION))
-        self.chunks = PostgresChunkStore(cfg=cfg)
+        self.ledger = PostgresSourceLedger(
+            pool, cfg.tables, collection=CollectionId(COLLECTION)
+        )
+        self.chunks = PostgresChunkStore(pool, cfg.tables)
 
     def connection(self) -> ConfluenceConnection:
         connection = HttpConnection(
@@ -243,7 +256,7 @@ class IngestStand:
             scope=scope,
             conn=self.connection(),
             chunk_store=LoggingChunkStore(self.chunks, LOGGER),
-            collections_store=PostgresCollectionsStore(cfg=self.cfg),
+            collections_store=PostgresCollectionsStore(self.pool, self.cfg.tables),
             ledger=LoggingSourceLedger(self.ledger, LOGGER),
             embedder=ZeroEmbedder(),
             chunker=LoggingChunker(
@@ -328,7 +341,8 @@ def _space(stub: ConfluenceStub) -> None:
 
 
 async def _stand(stub: ConfluenceStub, server: LiveServer, cfg: PostgresStoreConfig):
-    stand = IngestStand(stub, server.port, cfg)
+    pool = await KbPool(cfg.connection).open()
+    stand = IngestStand(stub, server.port, cfg, pool)
     await _wipe(cfg)
     return stand
 

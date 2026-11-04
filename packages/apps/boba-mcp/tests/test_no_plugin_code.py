@@ -17,6 +17,7 @@ import pytest
 from mcp_import_probe import PluginImports
 
 from boba.db.postgres.connection import PostgresConfig
+from boba.mcp_server.migrations import configured_migrations
 from boba.stand.database import TestDatabase
 from boba.stand.migrate import StandSchema
 from boba.stand.ui.database import run_blocking
@@ -39,11 +40,8 @@ class ProbedService:
         self._log_path = log_path
         self._storage = StandSchema(
             config.files.paths(config.app),
-            (
-                "boba.identity_postgres",
-                "boba.access_postgres",
-                "boba.connection_broker",
-            ),
+            "boba.mcp_server",
+            configured_migrations(),
         )
 
     def run(self) -> str:

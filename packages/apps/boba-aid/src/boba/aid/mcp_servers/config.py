@@ -4,7 +4,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.runtime.config import ValueCipherConfig
+from boba.crypto.config import ValueCipherConfig
 
 
 class McpDefaultsConfig(BaseModel):

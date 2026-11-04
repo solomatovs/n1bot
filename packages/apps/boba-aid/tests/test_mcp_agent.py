@@ -24,7 +24,7 @@ from boba.aid.domain.fields import ThreadMetaField
 from boba.aid.infra.config import AppConfig
 from boba.aid.mcp_servers.store import StoredServer
 from boba.config import bind
-from boba.connection_broker.crypto import SecretCipher
+from boba.crypto import SecretCipher
 from boba.db.postgres import AsyncPostgresPool
 from boba.mcp_client.client import HttpEndpoint, McpServerConfig, SseEndpoint
 from boba.stand.names import StandNames
@@ -198,7 +198,11 @@ async def test_own_server_restarts_all_user_agents_and_records_delta(
     await processes.await_thread(tab.thread_id, other_than=first_pid)
     await remote_processes.await_thread(remote.thread_id, other_than=second_pid)
     config = bind(
-        AppConfig.loader(app.config.files.paths(StandApp.AID)).load(), "app", AppConfig
+        StandApp.AID.config_files()
+        .loader(app.config.files.paths(StandApp.AID))
+        .load(),
+        "app",
+        AppConfig,
     )
     for socket in (tab, remote):
         meta = await rows.thread_meta(socket.thread_id)
@@ -236,7 +240,11 @@ async def test_sql_role_grant_appears_only_in_a_new_chat(
     await tab.send(f"before role grant {ScenarioName.ANSWER.value}")
     await tab.wait_task_end()
     config = bind(
-        AppConfig.loader(app.config.files.paths(StandApp.AID)).load(), "app", AppConfig
+        StandApp.AID.config_files()
+        .loader(app.config.files.paths(StandApp.AID))
+        .load(),
+        "app",
+        AppConfig,
     )
     server = McpServerConfig.model_validate(live_host.plain())
     assert isinstance(server.endpoint, (HttpEndpoint, SseEndpoint))

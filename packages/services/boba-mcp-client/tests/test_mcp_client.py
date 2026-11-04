@@ -43,6 +43,7 @@ from boba.canvas.storage import StorageNotFoundError
 from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool, PostgresTable
 from boba.db.postgres.connection import PostgresConfig
+from boba.mcp_server.migrations import configured_migrations
 from boba.mcp_client.client import (
     BearerAuth,
     FixedServerConfigs,
@@ -60,8 +61,8 @@ from boba.mcp_client.client import (
     ProxyAuth,
     StdioCommand,
 )
-from boba.oauth.server import TrustedClient
-from boba.runtime.config import ProgramRoots
+from boba.oauth.server.clients import TrustedClient
+from boba.sandbox.paths import ProgramRoots
 from boba.stand.apps_slot import AppServer, AppsSlot
 from boba.stand.migrate import StandSchema
 from boba.stand.roles import RoleSeed
@@ -1806,11 +1807,8 @@ class BobaMcpService:
 
         self._storage = StandSchema(
             (*self._files, overlay),
-            (
-                "boba.identity_postgres",
-                "boba.access_postgres",
-                "boba.connection_broker",
-            ),
+            "boba.mcp_server",
+            configured_migrations(),
         )
         run_blocking(self._storage.create())
         run_blocking(self._seed_roles(database, changed["app"]["schema"]))
@@ -1840,7 +1838,7 @@ class BobaMcpService:
         pool = AsyncPostgresPool(postgres)
         await pool.open()
         try:
-            await RoleSeed(PostgresTable(None, schema, pool)).tools({"wrt": ["*"]})
+            await RoleSeed(PostgresTable(pool, schema)).add(("wrt",))
         finally:
             await pool.close()
 

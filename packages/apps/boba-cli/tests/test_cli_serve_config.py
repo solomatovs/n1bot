@@ -14,6 +14,7 @@ from pydantic import ValidationError
 
 from boba.cli.serve import AgentServerConfig, ServeConfig, ServeSection
 from boba.config import bind
+from boba.config.application import ConfigFiles
 
 INSTANCE = r"""
 [paths]
@@ -32,22 +33,6 @@ schema = "boba"
 session = "site-auth-secret-of-the-stand"
 agent_proxy = "site-agent-proxy-secret-of-the-stand"
 agent_client = "agent-client-secret-of-the-stand"
-
-[ldap]
-server = "ldaps://dc.example.com:3269"
-base_dn = "DC=example,DC=com"
-
-[ldap.auth]
-method = "simple"
-user = "reader@example.com"
-password = "reader-password"
-
-[ldap.mapping]
-
-[ldap.mapping.dn]
-
-[ldap.mapping.member_of]
-"CN=boba,DC=example,DC=com" = ["read"]
 
 [llm]
 
@@ -129,51 +114,49 @@ reasoningReturn = "${model_limits.main.reasoningReturn}"
 [agent.clients.boba-chat]
 secret = "${keys.agent_client}"
 
-[auth]
-
-[auth.ldap]
+[[auth]]
 type = "ldap"
-server = "${ldap.server}"
-base_dn = "${ldap.base_dn}"
+server = "ldaps://dc.example.com:3269"
+base_dn = "DC=example,DC=com"
 user_filter = "(sAMAccountName={username})"
 bind_dn_template = "EXAMPLE\\{username}"
 
-[auth.ldap.identity]
+[auth.identity]
 realm = "corporate"
 
-[auth.ldap.roles]
-directory = "${ldap.mapping}"
+[auth.roles.directory]
 
-[auth.local]
+[auth.roles.directory.member_of]
+"CN=boba,DC=example,DC=com" = ["read"]
+
+[[auth]]
 type = "local"
 require_roles = true
 
-[auth.local.identity]
+[auth.identity]
 realm = "boba-local"
 
-[auth.local.users]
+[auth.users]
 admin = "admin-password"
 
-[auth.local.roles]
-
-[auth.local.roles.local]
-
-[auth.local.roles.local.mapping]
+[auth.roles.local.mapping]
 admin = ["read"]
 
-[auth.proxy]
+[[auth]]
 type = "proxy"
 secret = "${keys.agent_proxy}"
 max_skew_sec = 60
 require_roles = true
 
-[auth.proxy.identity]
+[auth.identity]
 realm = "corporate"
 
-[auth.proxy.roles]
-
-[auth.proxy.roles.header]
+[auth.roles.header]
 name = "X-Remote-Roles"
+
+[auth.profiles.header]
+name = "X-Remote-Profiles"
+selected = "X-Remote-Profile"
 
 [session]
 auth_secret = "${keys.session}"
@@ -218,7 +201,7 @@ def raw(tmp_path: Path) -> DictConfig:
     config = tmp_path / "config.toml"
     config.write_text(INSTANCE, encoding="utf-8")
 
-    return ServeConfig.loader([config]).load()
+    return ConfigFiles(ServeConfig).read([config])
 
 
 class TestConfig:
@@ -244,7 +227,7 @@ class TestConfig:
         assert list(config.profiles) == self.PROFILES
 
     def test_the_instance_config_binds(self, raw: DictConfig) -> None:
-        config = bind(raw, path=ServeConfig.SECTION, model=ServeConfig)
+        config = bind(raw, path="app", model=ServeConfig)
 
         agent = config.agent
         assert list(agent.profiles) == self.PROFILES

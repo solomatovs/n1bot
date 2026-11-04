@@ -16,6 +16,7 @@ dependencies = [
 dev = [
     "boba-stand==0.0.33.dev1",
     "pytest>=9.1,<10",
+    "boba-chat==0.0.33.dev1",
 ]
 
 [tool.setuptools.packages.find]

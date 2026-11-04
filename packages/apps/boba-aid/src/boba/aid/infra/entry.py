@@ -20,22 +20,18 @@ from typing import ClassVar
 
 from omegaconf import DictConfig
 
+from boba.aid.auth.config import SessionConfig
 from boba.aid.infra.config import AidSection, AppConfig
+from boba.aid.infra.paths import InstanceData
 from boba.config import ConfigError, ConfigSchema, bind
+from boba.config.application import ConfigFiles
+from boba.config.arguments import CommandSpec, ConfigArguments, ProgramCall
+from boba.config.paths import PathsConfig
 from boba.core.package_data import PackageDataCheck, PackageDataError
 from boba.db.postgres.errors import PostgresError
-from boba.runtime.config import (
-    InstanceData,
-    MigrationArguments,
-    MigrationOptions,
-    PathsConfig,
-    ProgramDir,
-    ProgramRoots,
-    RawConfig,
-    SessionConfig,
-)
-from boba.runtime.http import HealthCheckError, HealthProbe
-from boba.runtime.program import CommandSpec, ConfigArguments, ProgramCall, ProgramTool
+from boba.db.postgres.migration_options import MigrationArguments, MigrationOptions
+from boba.http_server import HealthCheckError, HealthProbe
+from boba.sandbox.paths import ProgramDir, ProgramRoots
 
 __all__ = ["AppEntry", "ChainlitEnv", "ChainlitFiles", "cli"]
 
@@ -107,6 +103,7 @@ class AidCommand(StrEnum):
     SERVE = "serve"
     HEALTH = "health"
     MIGRATE = "migrate"
+    SELF_CHECK = "self-check"
 
 
 class AppEntry:
@@ -135,9 +132,10 @@ class AppEntry:
         )
         self._check = PackageDataCheck()
         self._migration = MigrationArguments()
+        self._configs = ConfigFiles(AppConfig, values=("auth",))
 
     def run(self) -> None:
-        if sys.argv[1:] == [ProgramTool.SELF_CHECK.value]:
+        if sys.argv[1:] == [AidCommand.SELF_CHECK.value]:
             self.self_check()
             return
 
@@ -167,7 +165,7 @@ class AppEntry:
         return ConfigArguments(parser, commands).call()
 
     def serve(self, paths: Sequence[Path]) -> None:
-        raw = RawConfig.load(paths, schema=ConfigSchema(AppConfig, values=("auth",)))
+        raw = self._configs.read(paths)
         self.export_env(raw)
         self.attachments(raw).install()
 
@@ -182,7 +180,9 @@ class AppEntry:
         Ошибки:
         SystemExit — конфиг, SQL или подключение не позволили завершить миграцию.
         """
-        from boba.runtime.migrate import ApplicationMigrations  # noqa: PLC0415
+        from boba.db.postgres.migration_cli import (  # noqa: PLC0415
+            ApplicationMigrations,
+        )
 
         migrations = ApplicationMigrations(
             schema=ConfigSchema(AppConfig, values=("auth",))
@@ -199,7 +199,7 @@ class AppEntry:
         SystemExit — конфиг не прочитан или чат не ответил успехом.
         """
         try:
-            aid = bind(AppConfig.loader(paths).load(), self.SECTION, AidSection)
+            aid = bind(self._configs.read(paths), self.SECTION, AidSection)
             checked = HealthProbe(aid.port, aid.url_prefix, self.HEALTH).check()
         except (ConfigError, HealthCheckError) as exc:
             raise SystemExit(f"boba-aid health: {exc}") from exc

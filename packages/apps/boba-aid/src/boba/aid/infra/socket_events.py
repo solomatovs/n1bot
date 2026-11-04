@@ -38,6 +38,7 @@ from chainlit.session import WebsocketSession
 from pydantic import ValidationError
 
 from boba.aid.agent.chat import Question
+from boba.aid.infra import services
 from boba.aid.infra.session import (
     ChainlitSession,
     SessionContainers,
@@ -48,7 +49,6 @@ from boba.aid.rendering.errors import show_error
 from boba.aid.rendering.renderer import ChatRenderers
 from boba.core.validation import ValidationText
 from boba.identity.errors import InternalServiceError
-from boba.runtime import providers as runtime
 
 __all__ = ["SocketEvents"]
 
@@ -106,7 +106,7 @@ class SocketFacts:
 
         turn_alive = False
         if thread_id:
-            turn_alive = runtime.runs_ref().active(thread_id) is not None
+            turn_alive = services.runs_ref().active(thread_id) is not None
 
         return cls(
             sid=session.socket_id,

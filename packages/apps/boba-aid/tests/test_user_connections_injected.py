@@ -9,29 +9,36 @@ from __future__ import annotations
 
 import secrets as std_secrets
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, ClassVar
 from uuid import UUID
 
 import krb5
 import pytest
-from aid_stand import ChatSessionStand, SsoStand, StandTokens
+from aid_stand import AuthTestClaim as UserMetadataField
+from aid_stand import (
+    ChatSessionStand,
+    MirroredUserConnectionStore,
+    SsoStand,
+    StandTokens,
+)
 from chainlit.user import PersistedUser
 from psycopg import sql
 from pydantic import create_model
 
 from boba.aid.auth.kerberos import KerberosAuth
 from boba.aid.data.data_layer import PostgresDataLayer
+from boba.aid.data.users import UsersTable
+from boba.aid.infra.config import AppConfig
+from boba.aid.infra.refresh import BusRefreshSignal
 from boba.config import bind
-from boba.connection_broker.credentials import KerberosCredentialSource
-from boba.connection_broker.crypto import SecretCipher
-from boba.connection_broker.store import ConnectionStore
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.marks import ConnectionRefusal
 from boba.connections.stored import GrantTarget, StoredRole
-from boba.db.postgres import AsyncPostgresPool, PostgresSchema
+from boba.crypto import SecretCipher
+from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig, TrustAuth
 from boba.identity.errors import RefusalError
-from boba.identity.session import UserMetadataField
+from boba.identity.principal import UserIdentity
 from boba.kerberos import (
     DelegatedAuth,
     DelegationMode,
@@ -39,10 +46,12 @@ from boba.kerberos import (
     TicketAuth,
 )
 from boba.krb import KerberosEnv, KeytabCredentials, TicketCredentials
+from boba.krb.connections import KerberosCredentialSource
 from boba.krb.seal import SsoTickets
-from boba.messaging import MemoryMessageBus
-from boba.runtime.refresh import BusRefreshSignal
+from boba.mcp_server.connections.store import ConnectionStore
 from boba.stand.connections import StandUserConnections
+from boba.stand.messaging import memory_message_bus
+from boba.stand.migrate import StandMigrations
 from boba.stand.roles import RoleSeed
 from boba.stand.site import Stand
 from boba.stand.toolstand import ProbeTools
@@ -85,23 +94,21 @@ def _cipher() -> SecretCipher:
 
 
 @pytest.fixture
-async def store(pool: AsyncPostgresPool) -> ConnectionStore:
+async def store(
+    pool: AsyncPostgresPool,
+    test_postgres: PostgresConfig,
+    app_config: AppConfig,
+) -> ConnectionStore:
     async with pool.connection() as conn:
         await conn.execute(
             sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
         )
 
-    async with pool.connection() as conn:
-        await PostgresSchema(SCHEMA).apply_packages(
-            conn,
-            (
-                "boba.identity_postgres",
-                "boba.access_postgres",
-                "boba.connection_broker",
-            ),
-        )
+    await StandMigrations().application(test_postgres, SCHEMA, "boba.mcp_server")
 
-    built = ConnectionStore(pool, SCHEMA, _cipher(), ConnectionTypes.discover())
+    built = MirroredUserConnectionStore(
+        pool, SCHEMA, _cipher(), UsersTable(pool, app_config.db_schema)
+    )
     await RoleSeed(built).add([ROLE])
     return built
 
@@ -207,14 +214,14 @@ class Capture:
         соединение вида kind пробе объявляют входы, как манифест плагина."""
         tool.inputs = ToolInputs(connections={"connection": kind})
         StandUserConnections(
-            lambda: self._store,
-            lambda: KerberosCredentialSource(
+            self._store,
+            KerberosCredentialSource(
                 tickets,
                 BusRefreshSignal(
-                    lambda: MemoryMessageBus("test"), self._calls.contexts
+                    lambda: memory_message_bus("test"), self._calls.contexts
                 ),
             ),
-            ConnectionTypes.discover,
+            ConnectionTypes.discover(),
             self._calls.contexts,
         ).bind_all([tool])
 
@@ -256,16 +263,34 @@ class Session:
             UserMetadataField.PROVIDER: "LocalAuth",
         }
 
-    @staticmethod
+    users: ClassVar[UsersTable | None] = None
+
+    @classmethod
     async def user(
-        layer: PostgresDataLayer, identifier: str, metadata: dict[str, object]
+        cls,
+        layer: PostgresDataLayer,
+        identifier: str,
+        metadata: dict[str, object],
     ) -> PersistedUser:
+        identity = UserIdentity.model_validate(
+            identifier if ":" in identifier else f"corporate:{identifier}"
+        )
+        if cls.users is None:
+            raise AssertionError("test user rows must be bound")
+        await cls.users.upsert(identity)
         persisted = await layer.create_user(
-            StandTokens.user(identifier=identifier, metadata=metadata)
+            StandTokens.user(identifier=identity.identifier, metadata=metadata)
         )
         if persisted is None:
             raise AssertionError("user was not created")
         return persisted
+
+
+@pytest.fixture(autouse=True)
+def bind_test_user_rows(
+    pool: AsyncPostgresPool, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(Session, "users", UsersTable(pool, app_config.db_schema))
 
 
 @pytest.fixture

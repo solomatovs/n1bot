@@ -1,19 +1,6 @@
-"""Вход пользователя, общий для приложений: способы входа, сессия и токены."""
+"""Общие сценарии входа и подтверждения сессии, без транспортных адаптеров."""
 
-from boba.auth.service import (
-    AuthService,
-    AuthUsers,
-    IssuedSession,
-    SignInProviders,
-    SignIns,
-)
-from boba.auth.tokens import JwtTokens
+from boba.auth.service import SessionService
+from boba.auth.signin import SignInProviders, SignIns
 
-__all__ = [
-    "AuthService",
-    "AuthUsers",
-    "IssuedSession",
-    "JwtTokens",
-    "SignInProviders",
-    "SignIns",
-]
+__all__ = ["SessionService", "SignInProviders", "SignIns"]

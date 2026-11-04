@@ -17,12 +17,17 @@ from __future__ import annotations
 import asyncio
 import sys
 from collections.abc import Sequence
+from enum import StrEnum
 
 from boba.core.package_data import PackageDataCheck, PackageDataError
-from boba.runtime.program import ProgramExit, ProgramTool
+from boba.sandbox.commands import ProgramExit, SandboxCommand
 from boba.workspace.launcher import Launcher
 
 __all__ = ["McpProgram", "cli"]
+
+
+class McpUtility(StrEnum):
+    SELF_CHECK = "self-check"
 
 
 class McpProgram:
@@ -42,16 +47,16 @@ class McpProgram:
         if not argv:
             return True
 
-        tools = tuple(ProgramTool)
+        tools = (*SandboxCommand, *McpUtility)
         return argv[0] not in tools
 
     def run(self, argv: Sequence[str]) -> int:
         match argv:
-            case [ProgramTool.LAUNCHER, *options]:
+            case [SandboxCommand.LAUNCHER, *options]:
                 return Launcher.main(list(options))
-            case [ProgramTool.PROBE]:
+            case [SandboxCommand.PROBE]:
                 return ProgramExit.OK
-            case [ProgramTool.SELF_CHECK]:
+            case [McpUtility.SELF_CHECK]:
                 return self._self_check()
             case _:
                 msg = (
@@ -74,12 +79,6 @@ class McpProgram:
 
 def cli() -> None:
     argv = sys.argv[1:]
-    if argv[:1] == [ProgramTool.IDENTITIES]:
-        from boba.runtime.identities import main as identity_main  # noqa: PLC0415
-
-        asyncio.run(identity_main(argv[1:]))
-        return
-
     program = McpProgram()
     if not program.serves(argv):
         sys.exit(program.run(argv))

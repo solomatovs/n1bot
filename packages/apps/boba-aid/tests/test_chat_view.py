@@ -33,7 +33,7 @@ from boba.aid.rendering.chat_view import (
     StepText,
     TurnPulse,
 )
-from boba.runtime.storage import LocalStorageClient
+from boba.storage.client import LocalStorageClient
 from boba.stand.refs import StandRefs
 from boba.toolkit.result import FieldLines
 

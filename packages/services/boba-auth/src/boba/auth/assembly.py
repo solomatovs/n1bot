@@ -14,8 +14,8 @@ from typing import TypeVar
 from pydantic import BaseModel
 
 from boba.auth.config import AuthConfig
-from boba.auth.service import SignIns
-from boba.auth.signin import CompositeSignIn
+from boba.auth.providers.password import CompositeSignIn
+from boba.auth.signin import SignIns
 from boba.core.components import ComponentBuilder, Components
 from boba.identity.api import RoleCatalog
 from boba.identity.directory import UserDirectory
@@ -104,7 +104,7 @@ class AuthBackends:
         if passwords:
             password = CompositeSignIn(passwords)
 
-        return SignIns(password, sso, proxy, services.profiles, renewals)
+        return SignIns(password, sso, proxy, renewals)
 
     def _build_one(
         self, config: AuthConfig, services: AuthServices

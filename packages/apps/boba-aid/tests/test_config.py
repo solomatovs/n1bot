@@ -166,7 +166,7 @@ class TestProxyRealms:
         self, raw_config: DictConfig
     ) -> None:
         configured = AppConfig.model_validate(self._raw(raw_config))
-        assert len(configured.proxy_entries()) == 2
+        assert len(configured.auth_entries(ProxyAuthConfig)) == 2
 
     @pytest.mark.parametrize("field", ["path", "secret"])
     def test_shared_http_proxy_route_or_key_is_refused(

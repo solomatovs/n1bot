@@ -20,13 +20,13 @@ from pydantic import SecretStr
 from boba.aid.auth.kerberos import KerberosAuth
 from boba.aid.data.data_layer import PostgresDataLayer
 from boba.config import bind
-from boba.connection_broker.store import ConnectionStore
+from boba.mcp_server.connections.store import ConnectionStore
 from boba.connections.stored import GrantTarget, StoredRole
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PasswordAuth, PostgresConfig
 from boba.identity.context import ContextKind
 from boba.identity.errors import RefusalError
-from boba.identity.session import UserMetadataField
+from aid_stand import AuthTestClaim as UserMetadataField
 from boba.kerberos import DelegatedAuth, DelegationMode, KeytabAuth
 from boba.krb import KeytabCredentials
 from boba.krb.seal import SsoTickets

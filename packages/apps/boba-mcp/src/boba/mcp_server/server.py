@@ -3,7 +3,7 @@
 Сервер собран на примитивах fastmcp. Список инструментов задаёт каталог endpoint'ов;
 OAuth проверяет доступ к ресурсу; вызов исполняет порт ToolServer — та же
 цепочка обвязок и тот же исполнитель DAG, что в процессе чата; контекст вызова ставит
-middleware из токена. Логики во входе нет: адаптер boba.mcp_adapter
+middleware из токена. Логики во входе нет: адаптер boba.mcp_server.tool_adapter
 (McpTool, McpToolProvider) разбирает запрос в вызов-узел DagNode и зовёт
 порт endpoint'а (EndpointTools); итог порта уходит клиенту ответом
 McpReplies — стандартными полями результата MCP (ResultWire). Тем же
@@ -73,26 +73,19 @@ from starlette.types import Scope as AsgiScope
 
 from boba.cancellation import RunCancellation, StopReason, ToolStopped
 from boba.canvas.keys import ObjectKey
-from boba.connection_broker.params import ConnectionParams
 from boba.core.validation import ValidationText
 from boba.identity.context import (
     CallContext,
     HumanInitiator,
 )
 from boba.identity.run import Runs
-from boba.mcp_adapter import (
-    CallerServers,
-    JournalUris,
-    McpReplies,
-    McpTool,
-    McpToolProvider,
-)
 from boba.mcp_server.auth import (
     CallScopeError,
     CallScopes,
     TokenSubjects,
 )
 from boba.mcp_server.catalog import EndpointConfigError, McpEndpoint
+from boba.mcp_server.connections.params import ConnectionParams
 from boba.mcp_server.files import (
     CallerBus,
     FileRoutes,
@@ -109,8 +102,15 @@ from boba.mcp_server.prompts import (
     FilePrompts,
 )
 from boba.mcp_server.schemas import DescribedTool, EndpointSchemas
-from boba.oauth.server import ServiceAuth
-from boba.runtime.storage import StorageClient, StorageConfig
+from boba.mcp_server.tool_adapter import (
+    CallerServers,
+    JournalUris,
+    McpReplies,
+    McpTool,
+    McpToolProvider,
+)
+from boba.oauth.server.resources import ServiceAuth
+from boba.storage.client import StorageClient, StorageConfig
 from boba.toolkit.channels import JournalChannels, ToolChannel
 from boba.toolkit.dag import CallDag, DagNode
 from boba.toolkit.ports import ProgressReport

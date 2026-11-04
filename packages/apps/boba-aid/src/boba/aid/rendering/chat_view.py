@@ -51,7 +51,7 @@ from boba.canvas.canvas import (
 )
 from boba.canvas.storage import StorageError, StorageNotFoundError
 from boba.core.mcp_names import McpToolNames
-from boba.runtime.storage import StorageClient
+from boba.storage.client import StorageClient
 from boba.toolkit.calls import CallViews, ToolCallBase, ToolCallModels, ToolIntent
 from boba.toolkit.result import (
     BlockAudience,

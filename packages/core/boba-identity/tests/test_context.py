@@ -3,6 +3,7 @@
 from uuid import UUID, uuid4
 
 from boba.identity.context import Scope, ScopeKind, Subject
+from boba.identity.principal import UserIdentity
 
 
 class TestUserScope:
@@ -21,7 +22,12 @@ class TestUserScope:
 class TestSubjectOfUser:
     def test_keeps_the_users_id_and_renders_its_key(self) -> None:
         user_id = uuid4()
-        subject = Subject.of_user(user_id, "ivanov", ("DEV",), "general")
+        subject = Subject.of_user(
+            user_id,
+            UserIdentity(realm="corporate", login="ivanov"),
+            ("DEV",),
+            "general",
+        )
 
         if subject.user_id != user_id or subject.user_key != str(user_id):
             raise AssertionError(subject)

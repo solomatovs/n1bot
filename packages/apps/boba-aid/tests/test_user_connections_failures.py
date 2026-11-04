@@ -9,35 +9,42 @@ from __future__ import annotations
 
 import secrets as std_secrets
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, ClassVar
 from uuid import UUID
 
 import krb5
 import pytest
-from aid_stand import ChatSessionStand, SsoStand, StandTokens
+from aid_stand import (
+    ChatSessionStand,
+    MirroredUserConnectionStore,
+    SsoStand,
+    StandTokens,
+)
 from chainlit.user import PersistedUser
 from psycopg import sql
 from psycopg.types.json import Jsonb
 from pydantic import SecretStr, create_model
 
-from boba.aid.auth.kerberos import KerberosAuth
 from boba.aid.data.data_layer import PostgresDataLayer
+from boba.aid.data.users import UsersTable
+from boba.aid.infra.config import AppConfig
+from boba.aid.infra.refresh import BusRefreshSignal
 from boba.config import bind
-from boba.connection_broker.credentials import KerberosCredentialSource
-from boba.connection_broker.crypto import SecretCipher
-from boba.connection_broker.store import ConnectionStore
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.marks import ConnectionRefusal
 from boba.connections.stored import GrantTarget
-from boba.db.postgres import AsyncPostgresPool, PostgresSchema
+from boba.crypto import SecretCipher
+from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PasswordAuth, PostgresConfig
-from boba.identity.session import UserMetadataField
+from boba.identity.principal import UserIdentity
 from boba.kerberos import DelegatedAuth, DelegationMode, KeytabAuth
 from boba.krb import KeytabCredentials
+from boba.krb.connections import KerberosCredentialSource
 from boba.krb.seal import SsoTickets, TicketSealer
-from boba.messaging import MemoryMessageBus
-from boba.runtime.refresh import BusRefreshSignal
+from boba.mcp_server.connections.store import ConnectionStore
 from boba.stand.connections import StandUserConnections
+from boba.stand.messaging import memory_message_bus
+from boba.stand.migrate import StandMigrations
 from boba.stand.roles import RoleSeed
 from boba.stand.site import Stand
 from boba.stand.toolstand import ProbeTools
@@ -81,23 +88,22 @@ def cipher() -> SecretCipher:
 
 
 @pytest.fixture
-async def store(pool: AsyncPostgresPool, cipher: SecretCipher) -> ConnectionStore:
+async def store(
+    pool: AsyncPostgresPool,
+    cipher: SecretCipher,
+    test_postgres: PostgresConfig,
+    app_config: AppConfig,
+) -> ConnectionStore:
     async with pool.connection() as conn:
         await conn.execute(
             sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
         )
 
-    async with pool.connection() as conn:
-        await PostgresSchema(SCHEMA).apply_packages(
-            conn,
-            (
-                "boba.identity_postgres",
-                "boba.access_postgres",
-                "boba.connection_broker",
-            ),
-        )
+    await StandMigrations().application(test_postgres, SCHEMA, "boba.mcp_server")
 
-    built = ConnectionStore(pool, SCHEMA, cipher, ConnectionTypes.discover())
+    built = MirroredUserConnectionStore(
+        pool, SCHEMA, cipher, UsersTable(pool, app_config.db_schema)
+    )
     await RoleSeed(built).add([ROLE])
     return built
 
@@ -219,41 +225,51 @@ class Tickets:
 
 
 class Session:
+    users: ClassVar[UsersTable | None] = None
+
     @staticmethod
     def sso(principal: str, sealed: str) -> dict[str, object]:
         return {
-            UserMetadataField.ROLES: [ROLE],
-            UserMetadataField.PROVIDER: KerberosAuth.__name__,
-            UserMetadataField.PRINCIPAL: principal,
-            UserMetadataField.TICKET: sealed,
+            "roles": [ROLE],
+            "principal": principal,
+            "sso_ticket": sealed,
         }
 
     @staticmethod
-    def sso_without_delegation(principal: str) -> dict[str, object]:
+    def sso_without_delegation() -> dict[str, object]:
         """SSO прошёл, но AD тикет не делегировал: метки входа нет."""
-        return {
-            UserMetadataField.ROLES: [ROLE],
-            UserMetadataField.PROVIDER: KerberosAuth.__name__,
-            UserMetadataField.PRINCIPAL: principal,
-        }
+        return {"roles": [ROLE]}
 
     @staticmethod
     def local() -> dict[str, object]:
-        return {
-            UserMetadataField.ROLES: [ROLE],
-            UserMetadataField.PROVIDER: "LocalAuth",
-        }
+        return {"roles": [ROLE]}
 
-    @staticmethod
+    @classmethod
     async def user(
-        layer: PostgresDataLayer, identifier: str, metadata: dict[str, object]
+        cls,
+        layer: PostgresDataLayer,
+        identifier: str,
+        metadata: dict[str, object],
     ) -> PersistedUser:
+        identity = UserIdentity.model_validate(
+            identifier if ":" in identifier else f"corporate:{identifier}"
+        )
+        if cls.users is None:
+            raise AssertionError("test user rows must be bound")
+        await cls.users.upsert(identity)
         persisted = await layer.create_user(
-            StandTokens.user(identifier=identifier, metadata=metadata)
+            StandTokens.user(identifier=identity.identifier, metadata=metadata)
         )
         if persisted is None:
             raise AssertionError("user was not created")
         return persisted
+
+
+@pytest.fixture(autouse=True)
+def bind_test_user_rows(
+    pool: AsyncPostgresPool, app_config: AppConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(Session, "users", UsersTable(pool, app_config.db_schema))
 
 
 class Guarded:
@@ -308,14 +324,14 @@ class Guarded:
         # параметр-соединение объявляет манифест плагина: у пробы — входы руками
         tool.inputs = ToolInputs(connections={"connection": kind})
         StandUserConnections(
-            lambda: self._store,
-            lambda: KerberosCredentialSource(
+            self._store,
+            KerberosCredentialSource(
                 tickets,
                 BusRefreshSignal(
-                    lambda: MemoryMessageBus("test"), self._calls.contexts
+                    lambda: memory_message_bus("test"), self._calls.contexts
                 ),
             ),
-            ConnectionTypes.discover,
+            ConnectionTypes.discover(),
             self._calls.contexts,
         ).bind_all([tool])
         ToolErrorGuard().guard_all([tool])
@@ -405,8 +421,8 @@ class TestDelegationUnavailable:
         _expect(
             result,
             ConnectionRefusal.NO_DELEGATION,
-            "you signed in with LocalAuth",
-            "Kerberos SSO instead",
+            "This sign-in supplied no delegated credentials",
+            "retrying will not help until you sign in again",
         )
 
     @live_kdc
@@ -420,7 +436,7 @@ class TestDelegationUnavailable:
         tmp_path: Path,
     ) -> None:
         """AD не выдал форвардный тикет: вход прошёл, метки входа нет."""
-        metadata = Session.sso_without_delegation(SERVICE_PRINCIPAL)
+        metadata = Session.sso_without_delegation()
         user = await Session.user(layer, "f-no-delegation", metadata)
         await _grant_delegated(store, delegated_pg, user)
         chat_session.sign_in(user, metadata, THREAD, PROFILE)
@@ -433,8 +449,8 @@ class TestDelegationUnavailable:
         _expect(
             result,
             ConnectionRefusal.NO_DELEGATION,
-            "carried no delegated ticket",
-            "Active Directory",
+            "This sign-in supplied no delegated credentials",
+            "sign in again",
         )
 
     @live_kdc
@@ -596,7 +612,7 @@ class TestRefusalText:
             raise AssertionError(msg)
         self._refusal(result)
 
-    async def test_message_names_the_provider_and_the_way_out(  # noqa: PLR0913 — фикстуры теста
+    async def test_absence_message_explains_the_way_out(  # noqa: PLR0913 — фикстуры теста
         self,
         guarded: Guarded,
         chat_session: ChatSessionStand,
@@ -615,8 +631,8 @@ class TestRefusalText:
         )
 
         expected = (
-            "LocalAuth",
-            "Kerberos SSO instead",
+            "no delegated credentials",
+            "sign in again",
             KerberosCredentialSource.RETRY_HINT,
         )
         for phrase in expected:
@@ -726,7 +742,7 @@ class TestNoConnections:
             Guarded(call_stand, foreign).pg(None), connection="main"
         )
 
-        _expect(result, "SecretCryptoError", "decrypting a stored secret failed")
+        _expect(result, "ConnectionStoreError", "decrypting a stored secret failed")
 
     @pytest.mark.parametrize(
         "auth",

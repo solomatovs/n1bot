@@ -1,6 +1,6 @@
 """Роли тестовых стендов: явные данные администратора, отдельно от входа."""
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable
 from uuid import UUID
 
 from boba.db.postgres import PostgresTable
@@ -35,24 +35,6 @@ class RoleSeed:
             .build()
         )
         await self._table._execute(query, "seed test roles")
-
-    async def tools(self, grants: Mapping[str, Sequence[str]]) -> None:
-        await self.add(grants)
-        for name, tools in grants.items():
-            query = (
-                self._table._query()
-                .add(
-                    """
-                insert into {schema}.role_tools (role_id, tool)
-                select r.id, unnest(%(tools)s::text[]) from {schema}.roles as r
-                where r.role = %(role)s on conflict do nothing
-                """,
-                    role=name,
-                    tools=list(tools),
-                )
-                .build()
-            )
-            await self._table._execute(query, "seed test tool permissions")
 
     async def user(
         self, user_id: UUID, identity: UserIdentity, roles: Iterable[str]

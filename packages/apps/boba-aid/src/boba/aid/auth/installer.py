@@ -1,3 +1,4 @@
+import os
 from collections.abc import Sequence
 from pathlib import Path
 from urllib.parse import urlencode
@@ -11,8 +12,8 @@ from boba.aid.auth.composite import PasswordCallback, SessionCallback
 from boba.aid.auth.kerberos import KerberosAuth
 from boba.aid.auth.proxy import ProxyAuth
 from boba.aid.auth.refresh import PageUrls, SessionRefresh
+from boba.aid.auth.session import BrowserSessions
 from boba.aid.infra.session import ChainlitSessions
-from boba.auth import AuthService
 from boba.auth.config import KerberosAuthConfig, ProxyAuthConfig
 
 
@@ -41,7 +42,7 @@ class ChainlitAuthInstaller:
         url_prefix: str,
         kerberos: Sequence[KerberosAuthConfig],
         proxy: Sequence[ProxyAuthConfig],
-        auth: AuthService,
+        auth: BrowserSessions,
         session_ttl_sec: int,
         sessions: ChainlitSessions,
         app_root: Path,
@@ -64,7 +65,8 @@ class ChainlitAuthInstaller:
             self._sso_links.append(SsoLoginLink(realm=config.identity.realm, url=url))
 
     def install(self, chainlit_app: FastAPI) -> None:
-        """Ставит способы входа: SSO-роуты, proxy-роут и password-callback."""
+        """Ставит способы входа: SSO-роуты, proxy-роут и парольный маршрут."""
+        os.environ[KerberosAuth.CUSTOM_AUTH_ENV] = "1"
         ChainlitSessionTtl.apply(self._session_ttl_sec)
 
         self._session_callback.install(chainlit_app)
@@ -98,6 +100,7 @@ class ChainlitAuthInstaller:
 
     async def configuration(self) -> dict[str, object]:
         config = get_configuration()
+        config["passwordAuth"] = self._auth.providers().password
         config["passwordRealms"] = self._auth.providers().password_realms
         config["ssoEntries"] = [
             link.model_dump(mode="json") for link in self._sso_links

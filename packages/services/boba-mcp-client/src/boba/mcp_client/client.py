@@ -63,7 +63,6 @@ import anyio
 import anyio.abc
 import httpx2
 import mcp.types as mt
-from mcp import ClientSession, StdioServerParameters
 from mcp.client._probe import negotiate_auto
 from mcp.client.auth import OAuthClientProvider, TokenStorage
 from mcp.client.auth.extensions.identity_assertion import (
@@ -79,12 +78,13 @@ from mcp.client.caching import (
 from mcp.client.extension import NotificationBinding
 from mcp.client.session import (
     ClientRequestContext,
+    ClientSession,
     ElicitationFnT,
     IncomingMessage,
     MessageHandlerFnT,
 )
 from mcp.client.sse import sse_client
-from mcp.client.stdio import stdio_client
+from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.client.streamable_http import MCP_SESSION_ID, streamable_http_client
 from mcp.client.subscriptions import (
     ListenNotSupportedError,
@@ -136,19 +136,20 @@ from pydantic import (
 )
 from pydantic.alias_generators import to_camel
 
-from boba.auth.proxy import ProxyAssertions
-from boba.auth.signin import LoginField
 from boba.canvas.journal import StreamSlice
 from boba.canvas.keys import ObjectKey
 from boba.canvas.storage import (
     FileStat,
     OpenedStream,
+    ReadWindow,
     StorageError,
     StorageFullError,
     StorageNotFoundError,
 )
 from boba.core.mcp_names import McpToolNames
 from boba.identity.principal import UserIdentity
+from boba.oauth.assertions import ProxyAssertions
+from boba.oauth.forms import LoginField
 from boba.toolkit.dag import NestedCallsFeature, ServerFeature
 from boba.toolkit.wire import (
     CommandsFeature,
@@ -159,7 +160,6 @@ from boba.toolkit.wire import (
     JournalRead,
     ScopeFeature,
 )
-from boba.workspace.launcher import ReadWindow
 
 __all__ = [
     "BearerAuth",

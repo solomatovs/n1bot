@@ -21,7 +21,6 @@ class TestUserDict:
     def test_persisted_id_is_the_uuid(self) -> None:
         stored = StoredUser(
             id=UUID(int=7),
-            identifier=Login("corporate:boba"),
             created_at=datetime.now(UTC),
             identity=UserIdentity(realm="corporate", login=Login("boba")),
         )

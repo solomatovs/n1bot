@@ -30,7 +30,7 @@ from playwright.sync_api import Locator, Page, expect
 
 from boba.aid.auth.composite import SignInCode
 from boba.aid.chat.ui_text import UiText
-from boba.identity.sso import SsoErrorCode
+from boba.auth.transport.http import SsoErrorCode
 from boba.stand.ui.stand import StandAuth, StandProcess
 
 pytestmark = [pytest.mark.ui, pytest.mark.look]

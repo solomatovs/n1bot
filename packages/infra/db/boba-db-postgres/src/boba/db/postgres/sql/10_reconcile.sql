@@ -1,3 +1,5 @@
+-- Reconcile declared objects with the selected version's temporary models.
+-- Catalogs describe the actual structure; application rows are not migration input.
 create or replace function pg_temp.migration_constraint(definition oid, target_schema text)
 returns text language plpgsql as $fn$
 declare
@@ -52,15 +54,11 @@ returns boolean language sql as $fn$
     );
 $fn$;
 
-create or replace function pg_temp.migration_sequence(actual regclass, model regclass, used_value bigint default null)
+create or replace function pg_temp.migration_sequence(actual regclass, model regclass)
 returns void language plpgsql as $fn$
 declare
     wanted pg_sequence;
     present pg_sequence;
-    last_number bigint;
-    called boolean;
-    next_number bigint;
-    needed bigint;
     wanted_comment text;
 begin
     select * into strict wanted from pg_sequence where seqrelid = model;
@@ -73,18 +71,6 @@ begin
             actual, format_type(wanted.seqtypid, null), wanted.seqincrement,
             wanted.seqmin, wanted.seqmax, wanted.seqstart, wanted.seqcache,
             case when wanted.seqcycle then 'CYCLE' else 'NO CYCLE' end);
-    end if;
-    execute format('SELECT last_value, is_called FROM %s', actual) into last_number, called;
-    next_number := last_number;
-    if called then
-        next_number := next_number + wanted.seqincrement;
-    end if;
-    if used_value is not null then
-        needed := used_value + wanted.seqincrement;
-        if (wanted.seqincrement > 0 and needed > next_number)
-           or (wanted.seqincrement < 0 and needed < next_number) then
-            execute format('ALTER SEQUENCE %s RESTART WITH %s', actual, needed);
-        end if;
     end if;
     wanted_comment := obj_description(model, 'pg_class');
     if obj_description(actual, 'pg_class') is distinct from wanted_comment then
@@ -103,8 +89,7 @@ declare
     model_sequence regclass;
     previous_value bigint;
     was_called boolean;
-    used_value bigint;
-    direction bigint;
+    increment_by bigint;
 begin
     select attidentity into desired from pg_attribute where attrelid = model and attname = column_name;
     select attidentity into present from pg_attribute where attrelid = actual and attname = column_name;
@@ -122,9 +107,6 @@ begin
         if previous_sequence is not null then
             execute format('SELECT last_value, is_called FROM %s', previous_sequence)
                 into previous_value, was_called;
-            if not was_called then
-                previous_value := null;
-            end if;
             execute format('ALTER TABLE %s ALTER COLUMN %I DROP DEFAULT', actual, column_name);
             execute format('DROP SEQUENCE %s', previous_sequence);
         end if;
@@ -138,15 +120,13 @@ begin
     end if;
     actual_sequence := pg_get_serial_sequence(actual::text, column_name)::regclass;
     model_sequence := pg_get_serial_sequence(model::text, column_name)::regclass;
-    select seqincrement into direction from pg_sequence where seqrelid = model_sequence;
-    execute format('SELECT %s(%I) FROM %s', case when direction > 0 then 'max' else 'min' end,
-        column_name, actual) into used_value;
-    if direction > 0 then
-        used_value := greatest(used_value, previous_value);
-    else
-        used_value := least(used_value, previous_value);
+    perform pg_temp.migration_sequence(actual_sequence, model_sequence);
+    -- Replacing a serial sequence preserves its position without reading table rows.
+    if previous_value is not null then
+        select seqincrement into increment_by from pg_sequence where seqrelid = model_sequence;
+        execute format('ALTER SEQUENCE %s RESTART WITH %s', actual_sequence,
+            previous_value + case when was_called then increment_by else 0 end);
     end if;
-    perform pg_temp.migration_sequence(actual_sequence, model_sequence, used_value);
 end
 $fn$;
 

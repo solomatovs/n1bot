@@ -1,50 +1,37 @@
-"""Входы приложения для стендов: только те сервисы, что стенду нужны, остальные
-отказывают ServiceDisabledError при первом обращении — как процесс без секции.
-
-Ошибки:
-ServiceDisabledError — стенд попросили сервис, которого у него нет.
-"""
+"""Собирает зависимости тестового загрузчика плагинов."""
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from typing import ClassVar
 
 from omegaconf import DictConfig
 
 from boba.access import GrantCheck, ProfileGrant, ToolGrant, ToolGrants
-from boba.connection_broker.credentials import KerberosCredentialSource, NoRefresh
-from boba.connection_broker.params import ConnectionParams
-from boba.connection_broker.store import ConnectionStore
-from boba.connection_broker.tickets import ServiceTickets
-from boba.connection_broker.tools import ConnectionTools
-from boba.connection_broker.user_connections import ArmedConnections, StoreRef
+from boba.connections.credentials import CredentialSource
 from boba.connections.manifest import ConnectionTypes
+from boba.connections.stored import ConnectionRepository
 from boba.identity.context import CallContexts
-from boba.identity.errors import ServiceDisabledError
 from boba.identity.run import Runs
-from boba.krb.seal import SsoTickets
-from boba.runtime.launchers import SectionLaunchers, ToolLaunchers
-from boba.runtime.plugins import PluginKits, ToolLoader
-from boba.runtime.refs import RuntimeRefs
+from boba.stand.connections import DisabledConnectionRepository, StandUserConnections
+from boba.krb.connections import KerberosCredentialSource
+from boba.mcp_server.connections import NoRefresh
 from boba.stand.toolstand import ToolStand
 from boba.tool_io.chain import CallAmbient
+from boba.toolrun.hosted import HostedTool
 from boba.toolrun.injected import ParamSource
+from boba.toolrun.launchers import SectionLaunchers, ToolLaunchers
+from boba.toolrun.plugins import PluginKits, ToolExecution, ToolLoader
 from boba.toolrun.registry import ToolRegistry
+from boba.toolrun.sandbox import StandardToolLaunchers
 from boba.toolrun.stream_calls import StreamGroupsConfig
 from boba.toolrun.streams import CallJournals
 
 __all__ = ["StandRefs"]
 
-TicketsRef = Callable[[], SsoTickets | None]
-
 
 class StandRefs:
-    """Сборка RuntimeRefs и реестра инструментов под стенд.
-
-    Создаётся тестом с держателем контекста вызова своего CallStand; реестр
-    запусков, журналы и обстановка вызова — одни на объект.
-    """
+    """Собирает запуск плагинов из переданных контекстов и ресурсов стенда."""
 
     STREAM_CONFIG: ClassVar[StreamGroupsConfig] = StreamGroupsConfig(
         open_sec=30.0,
@@ -53,106 +40,88 @@ class StandRefs:
         pipe_bytes=65536,
         pipe_bytes_max=1 << 30,
     )
-    """Секция [stream_groups] стендов: сроки групп и размеры пайпов каналов."""
 
-    def __init__(self, contexts: CallContexts) -> None:
+    def __init__(
+        self,
+        contexts: CallContexts,
+        connections: ConnectionRepository | None = None,
+        credentials: CredentialSource | None = None,
+    ) -> None:
         self.contexts = contexts
         self.runs = Runs(contexts)
         self.journals = CallJournals(None, self.runs)
         self.ambient = CallAmbient()
+        self._connections = (
+            connections if connections is not None else DisabledConnectionRepository()
+        )
+        self._credentials = (
+            credentials
+            if credentials is not None
+            else KerberosCredentialSource(None, NoRefresh())
+        )
+        self._backends = StandardToolLaunchers().registry
+
         self._launchers: list[SectionLaunchers] = []
 
     def tool_stand(self, sources: Sequence[ParamSource]) -> ToolStand:
-        """Общий стенд инструментов над держателем контекста, журналами и
-        обстановкой вызова этого стенда; sources — источники служебных
-        параметров тела, которые цепочка ставит на инструменты секции."""
         return ToolStand(
             self.STREAM_CONFIG, self.contexts, self.journals, self.ambient, sources
         )
 
     def launchers(self, raw: DictConfig) -> SectionLaunchers:
-        """Способ запуска инструментов по конфигу raw; стенд гасит его в stop()."""
-        built = ToolLaunchers(raw).build()
-        self._launchers.append(built)
+        launchers = ToolLaunchers(raw, self._backends).build()
+        self._launchers.append(launchers)
 
-        return built
+        return launchers
 
-    async def registry(
-        self, raw: DictConfig, refs: RuntimeRefs, grants: ToolGrants
-    ) -> ToolRegistry:
-        """Реестр инструментов боевым загрузчиком: плагины, включённые в
-        конфиге raw, с манифестами от их программ, и каталог соединений под
-        правами grants. raw — конфиг процесса, который инструменты исполняет
-        (сервис boba-mcp); права тест называет сам: у сервиса их задают
-        endpoint'ы, у чата — роли и профили."""
-        launchers = self.launchers(raw)
-        kits = await PluginKits(raw, launchers).load()
-        loader = ToolLoader(
-            raw,
-            kits,
-            refs.execution(),
-            launchers,
-            grants,
-            ConnectionTools(refs.connection_store, self.contexts).build(),
+    def execution(
+        self,
+        connections: ConnectionRepository | None = None,
+        credentials: CredentialSource | None = None,
+    ) -> ToolExecution:
+        if connections is None:
+            connections = self._connections
+
+        if credentials is None:
+            credentials = self._credentials
+
+        types = ConnectionTypes.discover()
+        params = StandUserConnections(
+            connections, credentials, types, self.contexts
+        ).params()
+
+        return ToolExecution(
+            self.contexts,
+            self.journals,
+            self.ambient,
+            (params,),
+            (params,),
         )
 
-        return loader.load()
+    async def registry(
+        self,
+        raw: DictConfig,
+        execution: ToolExecution,
+        grants: ToolGrants,
+        own_tools: Sequence[HostedTool] = (),
+    ) -> ToolRegistry:
+        launchers = self.launchers(raw)
+        kits = await PluginKits(raw, launchers).load()
+        return ToolLoader(
+            raw, kits, execution, launchers, grants, own_tools
+        ).load()
 
     @staticmethod
     def granted(profile: str, tools: Sequence[str]) -> ToolGrants:
-        """Права стенда: любая роль разрешает любой инструмент, профиль
-        profile виден всем и отдаёт инструменты tools ('*' — все)."""
-        any_role = {ToolGrant.WILDCARD: ToolGrant(tools=[ToolGrant.WILDCARD])}
+        wildcard = {ToolGrant.WILDCARD: ToolGrant(tools=[ToolGrant.WILDCARD])}
         profiles = {
             profile: ProfileGrant(tools=list(tools), roles=[ToolGrant.WILDCARD])
         }
 
-        return ToolGrants(roles=any_role, profiles=profiles, check=GrantCheck.STRICT)
+        return ToolGrants(roles=wildcard, profiles=profiles, check=GrantCheck.STRICT)
 
     def stop(self) -> None:
-        """Гасит способы запуска, построенные стендом: зиготы секций."""
-        for built in self._launchers:
-            built.stop()
+        for launchers in self._launchers:
+            launchers.stop()
 
         self._launchers.clear()
-
-    def none(self) -> RuntimeRefs:
-        """Ни реестра, ни соединений: как процесс без этих секций."""
-        return self._build(self._disabled_store, self._no_tickets)
-
-    def of(self, store: StoreRef, tickets: TicketsRef) -> RuntimeRefs:
-        """Соединения и билеты есть, реестра нет."""
-        return self._build(store, tickets)
-
-    def _build(self, store: StoreRef, tickets: TicketsRef) -> RuntimeRefs:
-        def credentials() -> KerberosCredentialSource:
-            return KerberosCredentialSource(tickets(), NoRefresh())
-
-        params = ConnectionParams(
-            ConnectionTypes.discover,
-            self.contexts,
-            ServiceTickets(credentials),
-            ArmedConnections(store, credentials, self.contexts),
-        )
-
-        return RuntimeRefs(
-            connection_store=store,
-            connection_types=ConnectionTypes.discover,
-            credentials=credentials,
-            contexts=self.contexts,
-            journals=self.journals,
-            ambient=self.ambient,
-            connection_params=params,
-        )
-
-    @staticmethod
-    def _disabled_store() -> ConnectionStore:
-        msg = (
-            "resolving the connection store: [connections] is disabled in the "
-            "config, user connections are unavailable"
-        )
-        raise ServiceDisabledError("connections", msg)
-
-    @staticmethod
-    def _no_tickets() -> SsoTickets | None:
-        return None

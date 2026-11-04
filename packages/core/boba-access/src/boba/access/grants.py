@@ -59,3 +59,11 @@ class GrantTarget(BaseModel):
 
     kind: GrantSubject
     id: UUID
+
+    @classmethod
+    def user(cls, user_id: UUID) -> GrantTarget:
+        return cls(kind=GrantSubject.USERS, id=user_id)
+
+    @classmethod
+    def role(cls, role_id: UUID) -> GrantTarget:
+        return cls(kind=GrantSubject.ROLES, id=role_id)

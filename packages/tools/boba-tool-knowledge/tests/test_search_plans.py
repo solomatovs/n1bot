@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
-from importlib.resources import files
 from typing import Any
 
 import pytest
@@ -19,9 +18,14 @@ from psycopg import AsyncConnection, sql
 from psycopg.rows import dict_row
 
 from boba.config import bind
-from boba.db.pgvector.migrations import Migrations
-from boba.db.pgvector.store import PostgresStoreSchema
-from boba.db.postgres import AsyncPostgresPool, PostgresSchema
+from boba.db.pgvector.config import (
+    EmbeddingDimension,
+    KnowledgeBaseSchemaConfig,
+    PostgresStoreSchema,
+)
+from boba.db.pgvector.schema import KbSchema
+from boba.db.postgres import AsyncPostgresPool
+from boba.stand.migrate import StandMigrations
 from boba.stand.database import TestDatabase
 from boba.tool.kb.kb import PostgresKnowledgeBaseConfig
 from boba.tool.kb.search import KbSearch
@@ -56,10 +60,16 @@ async def bench(
     """Схема стенда в тестовой базе набора: боевые миграции + данные, на
     которых видно выбор плана. База берётся здесь, а не сессионной фикстурой:
     цикл событий у модуля свой."""
-    cfg = bind(raw_config, "tool.kb", PostgresKnowledgeBaseConfig)
-    database = await TestDatabase.ensure(cfg.connection)
+    configured = bind(raw_config, "tool.kb", PostgresKnowledgeBaseConfig)
+    database = await TestDatabase.ensure(configured.connection)
+    store = KnowledgeBaseSchemaConfig(
+        connection=TestDatabase.config_of(configured.connection, database),
+        tables=schema_cfg,
+        embedding=EmbeddingDimension(dim=DIM),
+    )
+    await StandMigrations().storage(store.connection, KbSchema(store).migration())
 
-    pool = AsyncPostgresPool(TestDatabase.config_of(cfg.connection, database))
+    pool = AsyncPostgresPool(store.connection)
     await pool.open()
     try:
         async with pool.connection() as conn:
@@ -67,12 +77,6 @@ async def bench(
                 conn, sql.SQL("drop schema if exists {} cascade").format(_schema())
             )
             await _execute(conn, sql.SQL("create schema {}").format(_schema()))
-            schema_dir = files("boba.db.pgvector") / "schema"
-            names = Migrations(schema_cfg).names()
-            await PostgresSchema(schema_cfg.pg_schema).apply_files(
-                conn, schema_dir, names
-            )
-            await Migrations(schema_cfg).ensure_vector_index(conn, DIM)
             await _fill(conn, schema_cfg)
 
         yield pool

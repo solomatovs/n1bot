@@ -29,6 +29,7 @@ from boba.aid.chat.feed import QuestionBody
 from boba.aid.rendering.acp_view import SessionUpdateCodec, UpdateView
 from boba.aid.rendering.chat_view import ChatView
 from boba.aid.rendering.errors import show_error
+from boba.aid.rendering.failures import FailureReports
 from boba.canvas.canvas import CanvasSignal
 from boba.chat.messages import (
     AgentUpdate,
@@ -48,7 +49,6 @@ from boba.messaging import (
     PayloadStore,
     Unsubscribe,
 )
-from boba.runtime.errors import FailureReports
 
 __all__ = [
     "CatchUp",

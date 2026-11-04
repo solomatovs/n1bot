@@ -155,7 +155,7 @@ injected-параметров** ровно шесть видов. Принцип
 |---|---|---|---|
 | аргумент модели | `pattern: Annotated[str, Field(...)]` | LLM | — (ключ `"pattern"` JSON аргументов) |
 | конфиг плагина | `cfg: Annotated[RedisToolConfig, Injected]` | таблица `[tool.<id>]` целиком, роль `config` | `InjectedConfig` |
-| connection | `connection: Annotated[RedisConnection, UserConnection]` | имя из аргументов клиента; MCP находит профиль в `connections` и проверяет `grants` | `ConnectionParam` (`boba-connection-broker`) на вызове |
+| connection | `connection: Annotated[RedisConnection, UserConnection]` | имя из аргументов клиента; MCP находит профиль в `connections` и проверяет `grants` | `ConnectionParam` (`boba.mcp_server.connections.params`) на вызове |
 | субъект вызова | `subject: Annotated[Subject, Injected]` | `CallContext`: id пользователя, логин, роли, профиль — из токена вызывающего | `CallContextValues` на вызове |
 | область вызова | `scope: Annotated[Scope, Injected]` | `CallContext`: область из параметра `scope_id` с пометкой `x-boba-scope`; без него — личный workspace пользователя | `CallContextValues` на вызове |
 | корень workspace | `root: Annotated[WorkspaceRoot, Injected]` | профиль запуска: `/workspace` в песочнице, `workdir` в `process` | `CallContextValues` на вызове |
@@ -689,7 +689,7 @@ keytab. Профиль соединения в конфиге плагина —
 `[connection_store].cipher` конфига MCP (ссылкой на `[keys].encryption`).
 Сервис MCP читает профиль и проверяет grant при каждом вызове; AID получает
 только открытый каталог через `connection_list` и `connection_search`.
-Строки создаёт `ConnectionStore` пакета `boba-connection-broker`, который
+Строки создаёт `ConnectionStore` из `boba.mcp_server.connections.store`, который
 шифрует секреты перед записью.
 
 Чтобы хост умел разбирать строку таблицы в модель, у каждого профиля есть
@@ -989,7 +989,7 @@ scan_batch = 500
 ### Как модель узнаёт имена
 
 Инструменты `connection_list` и `connection_search` принадлежат MCP
-(`ConnectionTools` в `boba.connection_broker.tools`). Они читают каталог и
+(`GrantedConnections` в `boba.mcp_server.connections.tools`). Они читают каталог и
 grants схемы MCP. Личность приходит из проверенного входа сервера; AID
 не обращается к этим таблицам. Доступность инструментов определяют roles и
 endpoint MCP, а не поле tools профиля чата.
@@ -1049,7 +1049,7 @@ docx, xlsx, pptx, картинки через OCR).
 
 Образец в репозитории: плагин `pg` объявляет
 `PgConnection = Annotated[PostgresConfig, UserConnection]` и строит на нём
-свои инструменты. Серверный resolver живёт в `boba-connection-broker`:
+свои инструменты. Серверный resolver живёт в `boba.mcp_server.connections`:
 `ArmedConnections` выбирает профиль из PostgreSQL по имени, виду и grants;
 `ConnectionParams` / `ConnectionParam` подставляют его в параметры тела.
 Запрос использует равенство имени с SQL-параметром, без шаблонного поиска.
@@ -1498,7 +1498,7 @@ EXPECTED = {
 раздел 3), а всё, что есть в git, — из дерева исходников рядом: статика чата
 из ассетов пакета boba-aid. Собранная Nuitka программа находит свой каталог
 рядом с бинарником, и переменная ей не нужна. Различие держит один объект:
-`ProgramRoots().locate()` (`boba.runtime.config`) отдаёт реализацию
+`ProgramRoots().locate()` (`boba.sandbox.paths`) отдаёт реализацию
 `ProgramRoot` — `SourceProgram` для исходников или `InstalledProgram` для
 собранной Nuitka программы, — и потребители по виду не ветвятся. Службы запускаются подкомандой `serve`, проба
 готовности — `health`:
@@ -1565,7 +1565,7 @@ kerberos-connection в файл подставляется готовая сек
 либо профиль с паролем.
 
 Значения контекста подаются тем же файлом: у CLI нет пользователя, и
-`boba.runtime.toolcli` из toml их не соберёт, а назовёт параметр, который
+`boba.toolrun.cli` из toml их не соберёт, а назовёт параметр, который
 нужно подать в файле `--args`. Для `send_file` файл выглядит так:
 
 ```json
@@ -1586,7 +1586,7 @@ kerberos-connection в файл подставляется готовая сек
 
 ```bash
 echo '{"pattern": "user:*", "limit": 50}' > /tmp/scan.json
-BOBA_TOOL_LAUNCHER=process .venv/bin/python -m boba.runtime.toolcli redis redis_scan \
+BOBA_TOOL_LAUNCHER=process .venv/bin/python -m boba.toolrun.cli redis redis_scan \
     --config compose/mcp/conf/config.toml --config .vscode/boba/mcp.toml \
     --args /tmp/scan.json
 ```
@@ -1634,7 +1634,7 @@ BOBA_MCP_CONFIG_PATH=$PWD/compose/mcp/conf/config.toml:$PWD/.vscode/boba/mcp.tom
 - тело как функция: `packages/tools/boba-tool-canvas/tests/test_canvas_tools.py`
   зовёт `tool.coroutine(**kwargs)` над временным workspace, подавая
   `Subject`, `Scope` и `WorkspaceRoot` руками;
-- тело над живой базой: `packages/services/boba-connection-broker/tests/test_connection_tools.py`
+- тело над живой базой: `packages/apps/boba-mcp/tests/test_connection_tools.py`
   кладёт строки и гранты хранилищем брокера и проверяет выдачу под
   разными субъектами;
 - путь вызова целиком, от чата до тела: `packages/apps/boba-aid/tests/test_user_connections.py`
@@ -2177,8 +2177,9 @@ DDL приложения лежит в его пакете: `boba.aid`, `boba.cl
 MCP запрашивает `migration-plan` у включённых плагинов. Они используют этот же
 загрузчик со своим пакетом SQL; host разрешает ссылку на подключение и отдаёт
 план общему исполнителю. SQL-шаблоны раскрываются после override схемы.
-`--migration-data` передаёт JSON через транзакционный setting
-`boba.migration.data`; содержимое понимает только SQL конкретного компонента.
+Контракт migrate ограничен структурой хранения: SQL-версия описывает конечные
+объекты и не содержит переноса, заполнения или сопоставления прикладных данных.
+Для выбора версии не требуется знать исходное состояние схемы.
 
 Чистая установка не создаёт ролей и endpoint'ов. Runtime не создаёт таблиц.
 Подробности эксплуатации — раздел миграций в руководстве администратора;

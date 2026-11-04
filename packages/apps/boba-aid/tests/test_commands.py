@@ -57,11 +57,11 @@ from boba.aid.agent.chat import (
 )
 from boba.aid.agent.commands import CommandIcon, MenuCommand
 from boba.chat.profiles import LocalChatProfileConfig, SelectedProfile
-from boba.connection_broker.crypto import SecretCipher
-from boba.connection_broker.store import ConnectionStore
+from boba.crypto import SecretCipher
+from boba.mcp_server.connections.store import ConnectionStore
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.stored import GrantTarget, StoredRole
-from boba.db.postgres import AsyncPostgresPool, PostgresSchema
+from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.mcp_client.client import (
     FixedServerConfigs,
@@ -71,10 +71,11 @@ from boba.mcp_client.client import (
     McpServerLimits,
     McpServers,
 )
-from boba.runtime.threads import ThreadsTable
-from boba.runtime.users import UsersTable
+from boba.aid.data.threads import ThreadsTable
+from boba.aid.data.users import UsersTable
 from boba.stand.names import StandNames
 from boba.stand.roles import RoleSeed
+from boba.stand.migrate import StandMigrations
 from boba.stand.signin import SignInStand
 from boba.stand.site import Stand
 from boba.stand.ui.fake_llm import ScenarioName
@@ -191,7 +192,7 @@ def extended() -> Iterator[HttpStandard]:
 
 @pytest.fixture
 async def users(test_postgres: PostgresConfig, pool: AsyncPostgresPool) -> UsersTable:
-    return UsersTable(test_postgres, SCHEMA, pool)
+    return UsersTable(pool, SCHEMA)
 
 
 @pytest.fixture
@@ -199,26 +200,19 @@ async def threads(
     pool: AsyncPostgresPool, test_postgres: PostgresConfig
 ) -> ThreadsTable:
     """Таблица тредов в схеме теста: в threads.meta агент вкладки помнит сессию."""
-    async with pool.connection() as conn:
-        await PostgresSchema(SCHEMA).apply_packages(
-            conn, ("boba.identity_postgres", "boba.runtime")
-        )
+    await StandMigrations().application(test_postgres, SCHEMA, "boba.aid")
 
-    return ThreadsTable(test_postgres, SCHEMA)
+    return ThreadsTable(pool, SCHEMA)
 
 
 @pytest.fixture
-async def store(pool: AsyncPostgresPool) -> ConnectionStore:
+async def store(
+    pool: AsyncPostgresPool, test_postgres: PostgresConfig
+) -> ConnectionStore:
     """Соединения чата в схеме теста; роль dev вкладки известна хранилищу."""
-    async with pool.connection() as conn:
-        await PostgresSchema(CONNECTIONS_SCHEMA).apply_packages(
-            conn,
-            (
-                "boba.identity_postgres",
-                "boba.access_postgres",
-                "boba.connection_broker",
-            ),
-        )
+    await StandMigrations().application(
+        test_postgres, CONNECTIONS_SCHEMA, "boba.mcp_server"
+    )
 
     cipher = SecretCipher(token_bytes(32))
     built = ConnectionStore(

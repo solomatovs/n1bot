@@ -77,6 +77,7 @@ from boba.aid.agent.settings import (
 )
 from boba.aid.chat.feed import QuestionBody
 from boba.aid.data.data_layer import ThreadDeletionListener
+from boba.aid.data.threads import ThreadsTable
 from boba.aid.domain.fields import ThreadMetaField
 from boba.aid.domain.keys import CanvasFileUrl
 from boba.aid.infra.session import ChainlitSession, LiveSignIn
@@ -93,7 +94,6 @@ from boba.chat.threads import DataLayerError, StoredThread, ThreadUpsert
 from boba.identity.api import UserRows
 from boba.identity.errors import InternalServiceError
 from boba.mcp_client.client import McpCaller
-from boba.runtime.threads import ThreadsTable
 from boba.toolkit.result import BlockAudience, ContentMime, JsonBlock
 from boba.transport.acp.protocol import (
     AcpErrorCode,
@@ -916,9 +916,7 @@ class ServiceLinks(AgentLinks):
             )
             raise AgentProcessError(msg, failure)
 
-        user = stored.authenticated()
-
-        return McpCaller(login=user.identifier, roles=user.roles)
+        return McpCaller(login=stored.identifier, roles=stored.roles)
 
     async def _started(
         self,

@@ -12,10 +12,10 @@ from __future__ import annotations
 
 import contextlib
 import json
-from collections.abc import Generator, Mapping
+from collections.abc import Generator
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any, ClassVar, Final, Protocol
+from typing import Any, ClassVar, Protocol
 
 from pydantic import GetCoreSchemaHandler
 from pydantic_core import core_schema
@@ -30,29 +30,11 @@ __all__ = [
     "Session",
     "SessionSource",
     "UserLogin",
-    "UserMetadataField",
 ]
 
 
-class UserMetadataField:
-    "Ключи metadata у cl.User; контракт chainlit."
-
-    PROVIDER: Final = "provider"
-    RENEWAL: Final = "renewal"
-    CREDENTIAL_REASON: Final = "credential_reason"
-    PRINCIPAL: Final = "principal"
-    TICKET: Final = "sso_ticket"
-    ROLES: Final = "roles"
-    PROFILES: Final = "profiles"
-    PROFILE: Final = "profile"
-    GENERATION: Final = "generation"
-    IDENTITY: Final = "identity"
-    USER_ID: Final = "user_id"
-    CREATED_AT: Final = "created_at"
-
-
 class Login(str):
-    """Каноничный логин пользователя: identifier строки users и claims токена.
+    """Каноничный логин или строковой ключ личности в claims токена.
 
     Регистр и пробелы по краям не заводят вторую личность, поэтому значение
     существует только в нижнем регистре и получить его иначе нельзя: конструктор
@@ -232,9 +214,6 @@ class Session(Protocol):
 
     @property
     def chat_profile(self) -> str | None: ...
-
-    @property
-    def metadata(self) -> Mapping[str, object]: ...
 
 
 class SessionSource(Protocol):
