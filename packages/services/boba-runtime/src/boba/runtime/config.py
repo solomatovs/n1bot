@@ -13,7 +13,7 @@ import os
 import secrets
 import sys
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -216,8 +216,6 @@ class SourceTree(StrEnum):
 
     PACKAGES = "packages"
     """Каталог пакетов: его наличие рядом с runtime/ и есть дерево исходников."""
-    AID_ASSETS = "packages/apps/boba-aid/assets"
-    """Статика чата: share/ программы из исходников."""
 
 
 @dataclass(frozen=True)
@@ -292,15 +290,15 @@ class InstalledProgram(ProgramRoot):
 @dataclass(frozen=True)
 class SourceProgram(ProgramRoot):
     """Реализация ProgramRoot программы из исходников (.venv): то, что лежит в
-    git, берётся из дерева исходников sources (статика чата — ассеты пакета
-    boba-aid), а собранное, чего в исходниках нет, — из root, каталога runtime/
-    (libexec, sandbox, rootfs, plugins)."""
+    git, берётся по путям приложения относительно sources. Остальные части
+    берутся из root — каталога собранных ресурсов."""
 
     sources: Path
+    paths: Mapping[ProgramDir, Path] = field(default_factory=dict)
 
     def path(self, part: ProgramDir) -> Path:
-        if part is ProgramDir.SHARE:
-            return self.sources / SourceTree.AID_ASSETS.value
+        if source := self.paths.get(part):
+            return self.sources / source
 
         return self.root / part.value
 
@@ -324,6 +322,11 @@ class ProgramRoots:
 
     SOURCES_PROBE: ClassVar[tuple[str, ...]] = ("-c", "")
     """Пустой процесс интерпретатора исходников для пробы cgroup."""
+
+    def __init__(self, source_paths: Mapping[ProgramDir, Path] | None = None) -> None:
+        self._source_paths: dict[ProgramDir, Path] = {}
+        if source_paths is not None:
+            self._source_paths.update(source_paths)
 
     def compiled(self) -> bool:
         """Процесс — собранная программа: интерпретатора python у неё нет."""
@@ -378,7 +381,10 @@ class ProgramRoots:
             raise ConfigError(msg)
 
         return SourceProgram(
-            root=root, interpreter=self._interpreter(), sources=sources
+            root=root,
+            interpreter=self._interpreter(),
+            sources=sources,
+            paths=self._source_paths,
         )
 
     def _interpreter(self) -> LauncherInterpreter:
@@ -613,13 +619,24 @@ class StreamJournalConfig(BaseModel):
     )
 
 
-class AppName(StrEnum):
-    """Приложения над сервисами; значение служит суффиксом имени инстанса и колонкой
-    app в live_instances.
-    """
+@dataclass(frozen=True)
+class AppName:
+    """Имя, которое приложение передаёт для регистрации своего инстанса."""
 
-    AID = "aid"
-    MCP = "mcp"
+    value: str
+
+    def __post_init__(self) -> None:
+        if not self.value:
+            raise ValueError("application name must not be empty")
+
+        for char in self.value:
+            if char.isascii() and (char.isalnum() or char in "_.-"):
+                continue
+
+            raise ValueError(
+                f"application name {self.value!r}: expected ASCII letters, "
+                "digits, underscores, dots or hyphens"
+            )
 
 
 class ClusterConfig(BaseModel):

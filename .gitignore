@@ -15,6 +15,7 @@ __pycache__
 !/docs/migration-from-dev.md
 !/docs/knowledge-graph-plan.md
 !/docs/mcp-database-endpoints-implementation.md
+!/docs/extensibility-audit.md
 !/docs/knowledge-schema.sql
 !/docs/psql-queries/
 !/docs/migrations/

@@ -63,7 +63,7 @@ from boba.messaging.bus import (
     LiveEventsColumn,
     LiveSequence,
 )
-from boba.runtime.config import AppName, ClusterConfig
+from boba.runtime.config import ClusterConfig
 
 __all__ = [
     "LiveListener",
@@ -317,24 +317,22 @@ class LiveListener:
 
 
 class PgMessageBus(PostgresTable, MessageBus):
-    """Шина процесса на таблицах схемы чата: публикует через пул соединений,
+    """Шина процесса на таблицах своей схемы: публикует через пул соединений,
     принимает через LiveListener; один экземпляр на процесс.
     """
 
     LABEL: ClassVar[str] = "message bus"
 
-    def __init__(  # noqa: PLR0913 — шина собирается из подключения и имён кластера
+    def __init__(
         self,
         cfg: PostgresConfig,
         db_schema: str,
         instance: str,
-        app: AppName,
         cluster: ClusterConfig,
         pool: PostgresPool | None = None,
     ) -> None:
         super().__init__(cfg, db_schema, pool)
         self._instance = instance
-        self._app = app
         self._cluster = cluster
         self._listener = LiveListener(cfg, self._on_pointer, self._catch_up_all)
         self._listeners: dict[Scope, list[Listener]] = {}

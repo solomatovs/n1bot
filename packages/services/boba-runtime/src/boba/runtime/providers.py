@@ -126,21 +126,20 @@ async def postgres_pool(
 
 async def message_bus(
     config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
-    app: Annotated[AppName, Depends(app_name)],
     instance: Annotated[str, Depends(instance_name)],
     pool: Annotated[AsyncPostgresPool, Depends(postgres_pool)],
 ) -> AsyncGenerator[MessageBus, None]:
     """Поднимает шину процесса по секции [messaging]: local живёт в памяти одного
     инстанса, postgres запускает слушателя на всё время работы и останавливает
-    его при закрытии контейнера. Таблицы live_* готовит корень приложения
-    файлами схемы до шины.
+    его при закрытии контейнера. Таблицы live_* заранее готовит отдельная
+    команда migrate приложения.
     """
     if isinstance(config.messaging, LocalMessagingConfig):
         yield MemoryMessageBus(instance)
         return
 
     bus = PgMessageBus(
-        config.postgres, config.db_schema, instance, app, config.cluster, pool
+        config.postgres, config.db_schema, instance, config.cluster, pool
     )
     await bus.start()
 

@@ -9,8 +9,8 @@
 
 - manifest: stdin — JSON секции [tool.<id>]; программа проверяет секцию
   моделями плагина и печатает манифест JSON в stdout.
-- migration-plan: stdin — секция плагина; stdout — собственная опись таблиц
-  и версионный план для общего исполнителя команды migrate.
+- migration-plan [--version VERSION]: stdin — секция плагина; stdout — SQL
+  выбранной версии для общего исполнителя команды migrate.
 - zygote: аргументы ZygoteArgs; зигота плагина в песочнице.
 - call <tool>: один вызов тела без зиготы (ToolMain).
 - self-check: самопроверка бинарника Nuitka по описи сборки

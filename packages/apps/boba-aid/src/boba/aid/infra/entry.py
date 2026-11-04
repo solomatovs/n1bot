@@ -23,9 +23,11 @@ from omegaconf import DictConfig
 from boba.aid.infra.config import AidSection, AppConfig
 from boba.config import ConfigError, ConfigSchema, bind
 from boba.core.package_data import PackageDataCheck, PackageDataError
+from boba.db.postgres.errors import PostgresError
 from boba.runtime.config import (
     ConfigArguments,
     InstanceData,
+    MigrationOptions,
     PathsConfig,
     ProgramCall,
     ProgramCommand,
@@ -122,7 +124,9 @@ class AppEntry:
     """Путь пробы готовности под префиксом чата: страница входа chainlit."""
 
     def __init__(self) -> None:
-        self._programs = ProgramRoots()
+        self._programs = ProgramRoots(
+            source_paths={ProgramDir.SHARE: Path("packages/apps/boba-aid/assets")}
+        )
         self._check = PackageDataCheck()
 
     def run(self) -> None:
@@ -137,22 +141,7 @@ class AppEntry:
             case ProgramCommand.HEALTH:
                 self.health(call.paths)
             case ProgramCommand.MIGRATE:
-                from boba.runtime.migrate import (  # noqa: PLC0415 — служебный режим
-                    ApplicationMigrations,
-                )
-
-                try:
-                    asyncio.run(
-                        ApplicationMigrations(
-                            schema=ConfigSchema(AppConfig, values=("auth",))
-                        ).run(
-                            call.paths,
-                            "boba.aid",
-                            options=call.migration,
-                        )
-                    )
-                except Exception as exc:
-                    raise SystemExit(f"boba-aid migrate failed: {exc}") from exc
+                self.migrate(call.paths, call.migration)
 
     def call(self) -> ProgramCall:
         """Подкоманда и файлы конфига: конфиг экземпляра и наложения."""
@@ -172,6 +161,22 @@ class AppEntry:
         from boba.aid.infra.bootstrap import run_app  # noqa: PLC0415
 
         run_app(raw, paths[0].resolve().parent)
+
+    def migrate(self, paths: Sequence[Path], options: MigrationOptions) -> None:
+        """Явно применяет SQL AID без запуска веб-приложения.
+
+        Ошибки:
+        SystemExit — конфиг, SQL или подключение не позволили завершить миграцию.
+        """
+        from boba.runtime.migrate import ApplicationMigrations  # noqa: PLC0415
+
+        migrations = ApplicationMigrations(
+            schema=ConfigSchema(AppConfig, values=("auth",))
+        )
+        try:
+            asyncio.run(migrations.run(paths, "boba.aid", options=options))
+        except (ConfigError, PostgresError, RuntimeError, OSError, ValueError) as exc:
+            raise SystemExit(f"boba-aid migrate failed: {exc}") from exc
 
     def health(self, paths: Sequence[Path]) -> None:
         """Проба готовности по [app].aid: порт и префикс чата.

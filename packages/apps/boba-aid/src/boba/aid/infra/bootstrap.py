@@ -393,7 +393,7 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container.provide(runtime.get_runtime_config, c)
     contexts = CallContexts()
     container.provide(runtime.call_contexts, contexts)
-    container.provide(runtime.app_name, AppName.AID)
+    container.provide(runtime.app_name, AppName("aid"))
     tokens = runtime.session_tokens(c)
     container.provide(runtime.session_tokens, tokens)
     sessions = ChainlitSessions(tokens)
