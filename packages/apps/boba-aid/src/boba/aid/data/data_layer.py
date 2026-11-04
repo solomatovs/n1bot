@@ -40,6 +40,13 @@ from chainlit.user import User as ChainlitUser
 
 from boba.aid.domain.fields import ThreadMetaField
 from boba.canvas.storage import StorageError
+from boba.chat.messages import (
+    AnyMessage,
+    ChangeAction,
+    FeedbackChanged,
+    ThreadActive,
+    ThreadChanged,
+)
 from boba.chat.threads import (
     ChatThreads,
     DataBrokenError,
@@ -59,13 +66,8 @@ from boba.identity.context import Scope
 from boba.identity.session import Login, UserMetadataField
 from boba.identity.signin import SignInMetadata
 from boba.messaging import (
-    AnyMessage,
-    ChangeAction,
-    FeedbackChanged,
     LockToken,
     MessageBus,
-    ThreadActive,
-    ThreadChanged,
 )
 from boba.runtime.storage import StorageClient
 

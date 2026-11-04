@@ -42,7 +42,6 @@ from boba.identity.errors import (
 from boba.identity.principal import UserIdentity
 from boba.identity.session import (
     LoginTemplate,
-    SignInProvider,
     UserLogin,
 )
 from boba.identity.signin import PasswordSignIn, SignedIn, SignInMetadata
@@ -75,12 +74,17 @@ class LoginField(StrEnum):
 class SignInDetails:
     """Проверенная личность и факты, из которых собирается итог входа."""
 
-    provider: SignInProvider
+    provider: str
     identity: UserIdentity
     display_name: str
     facts: PrincipalFacts
     principal: str = ""
     sealed_ticket: str = ""
+    renewal: str = ""
+    credential_reason: str = (
+        "This sign-in supplied no delegated credentials; "
+        "use Kerberos SSO for delegated connections."
+    )
 
 
 class SignedInFactory:
@@ -98,7 +102,9 @@ class SignedInFactory:
         roles = frozenset(await self._roles.admit(details.facts, details.identity))
         grant = await self._profiles.granted(details.facts, roles)
         sign_in = SignInMetadata(
-            provider=details.provider.value,
+            provider=details.provider,
+            renewal=details.renewal,
+            credential_reason=details.credential_reason,
             identity=details.identity,
             principal=details.principal,
             sealed_ticket=details.sealed_ticket,
@@ -141,7 +147,7 @@ class LocalSignIn(PasswordSignIn):
         identity = self._config.identity.identity(login.key)
         return await self._signed_in.create(
             SignInDetails(
-                provider=SignInProvider.LOCAL,
+                provider=self._config.PROVIDER,
                 identity=identity,
                 display_name=login.display,
                 facts=facts,
@@ -250,7 +256,7 @@ class LdapSignIn(PasswordSignIn):
         identity = self._config.identity.identity(login.key)
         return await self._signed_in.create(
             SignInDetails(
-                provider=SignInProvider.LDAP,
+                provider=self._config.PROVIDER,
                 identity=identity,
                 display_name=login.display,
                 facts=facts,

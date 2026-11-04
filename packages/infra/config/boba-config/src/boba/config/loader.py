@@ -131,7 +131,7 @@ class ConfigLoader:
                 self._schema.apply(merged)
             resolved = OmegaConf.to_container(merged, resolve=True)
             tree = OmegaConf.create(resolved)
-        except OmegaConfBaseException as exc:
+        except (OmegaConfBaseException, ValueError) as exc:
             msg = f"config {self._named()}: resolving the config failed: {exc}"
             raise ConfigError(msg) from exc
 

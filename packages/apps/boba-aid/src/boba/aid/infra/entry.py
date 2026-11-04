@@ -25,19 +25,17 @@ from boba.config import ConfigError, ConfigSchema, bind
 from boba.core.package_data import PackageDataCheck, PackageDataError
 from boba.db.postgres.errors import PostgresError
 from boba.runtime.config import (
-    ConfigArguments,
     InstanceData,
+    MigrationArguments,
     MigrationOptions,
     PathsConfig,
-    ProgramCall,
-    ProgramCommand,
     ProgramDir,
     ProgramRoots,
     RawConfig,
     SessionConfig,
 )
 from boba.runtime.http import HealthCheckError, HealthProbe
-from boba.runtime.program import ProgramTool
+from boba.runtime.program import CommandSpec, ConfigArguments, ProgramCall, ProgramTool
 
 __all__ = ["AppEntry", "ChainlitEnv", "ChainlitFiles", "cli"]
 
@@ -103,6 +101,14 @@ class ChainlitFiles:
             setattr(pathlib.Path, "mkdir", mkdir)  # noqa: B010
 
 
+class AidCommand(StrEnum):
+    """Команды приложения AID."""
+
+    SERVE = "serve"
+    HEALTH = "health"
+    MIGRATE = "migrate"
+
+
 class AppEntry:
     """Конфиг -> env chainlit -> каталог вложений -> запуск приложения.
 
@@ -128,6 +134,7 @@ class AppEntry:
             source_paths={ProgramDir.SHARE: Path("packages/apps/boba-aid/assets")}
         )
         self._check = PackageDataCheck()
+        self._migration = MigrationArguments()
 
     def run(self) -> None:
         if sys.argv[1:] == [ProgramTool.SELF_CHECK.value]:
@@ -136,12 +143,12 @@ class AppEntry:
 
         call = self.call()
         match call.command:
-            case ProgramCommand.SERVE:
+            case AidCommand.SERVE:
                 self.serve(call.paths)
-            case ProgramCommand.HEALTH:
+            case AidCommand.HEALTH:
                 self.health(call.paths)
-            case ProgramCommand.MIGRATE:
-                self.migrate(call.paths, call.migration)
+            case AidCommand.MIGRATE:
+                self.migrate(call.paths, self._migration.read(call.arguments))
 
     def call(self) -> ProgramCall:
         """Подкоманда и файлы конфига: конфиг экземпляра и наложения."""
@@ -150,7 +157,14 @@ class AppEntry:
             description="Aid: the chat web application of boba",
         )
 
-        return ConfigArguments(parser).call()
+        commands = (
+            CommandSpec(AidCommand.SERVE, "run the chat service"),
+            CommandSpec(AidCommand.HEALTH, "probe the chat service"),
+            CommandSpec(
+                AidCommand.MIGRATE, "apply the chat storage schema", self._migration.add
+            ),
+        )
+        return ConfigArguments(parser, commands).call()
 
     def serve(self, paths: Sequence[Path]) -> None:
         raw = RawConfig.load(paths, schema=ConfigSchema(AppConfig, values=("auth",)))

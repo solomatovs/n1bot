@@ -20,8 +20,14 @@ from pydantic import BaseModel
 from boba.db.postgres import PostgresPool, PostgresTable
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.context import Scope
-from boba.messaging import PayloadMissingError, PayloadRef, PayloadStore
-from boba.messaging.bus import LivePayloadsColumn
+from boba.messaging import (
+    PayloadMissingError,
+    PayloadRef,
+    PayloadStore,
+)
+from boba.runtime.bus_schema import (
+    LivePayloadsColumn,
+)
 
 __all__ = ["PayloadBody", "PayloadStoreError", "PgPayloadStore"]
 

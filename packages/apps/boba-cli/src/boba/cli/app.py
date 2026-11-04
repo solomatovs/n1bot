@@ -101,6 +101,7 @@ from boba.llm.http.openai import MANIFEST as OPENAI
 from boba.llm.onnx.chat import MANIFEST as ONNX
 from boba.llm.providers import LlmProviders, LlmProvidersError, LlmProviderTypes
 from boba.runtime.config import MigrationArguments, MigrationOptions
+from boba.runtime.program import CommandSpec, ConfigArguments
 from boba.transport.acp.protocol import AgentSide, BatchTransport
 
 logger = logging.getLogger(__name__)
@@ -147,12 +148,6 @@ class Invocation:
 
     command: Command
     arguments: Arguments
-
-
-class ServeFlag(StrEnum):
-    """Флаги `boba serve`: конфиг экземпляра службы и наложения поверх него."""
-
-    CONFIG = "--config"
 
 
 @dataclass(frozen=True)
@@ -238,69 +233,23 @@ class ArgumentParser:
             help="serve the Agent Client Protocol over stdin/stdout",
         )
         self._define(self._parser)
-        commands = self._parser.add_subparsers(dest="command")
-        serve = commands.add_parser(
-            Command.SERVE.value,
-            help="serve the Agent Client Protocol over the network as a service",
-            description=(
-                "Serve the Agent Client Protocol over streamable HTTP and "
-                "WebSocket with OAuth sign-in; sessions of all connections run "
-                "in this process. The config is config.toml of this instance; "
-                "a repeated --config lays an overlay file over it."
+        commands = (
+            CommandSpec(Command.SERVE, "serve ACP over HTTP and WebSocket with OAuth"),
+            CommandSpec(Command.HEALTH, "probe the running agent service"),
+            CommandSpec(
+                Command.MIGRATE, "apply the agent storage schema", self._migration.add
+            ),
+            CommandSpec(
+                Command.SELF_CHECK, "check packaged resources", config_required=False
+            ),
+            CommandSpec(
+                Command.SETTINGS_SCHEMA,
+                "print settings JSON Schema",
+                config_required=False,
             ),
         )
-        serve.add_argument(
-            ServeFlag.CONFIG,
-            required=True,
-            action="append",
-            type=Path,
-            help="config.toml of this instance; repeat to lay an overlay file over it",
-        )
-        health = commands.add_parser(
-            Command.HEALTH.value,
-            help="probe the running service on the port of its config, then exit",
-            description=(
-                "GET the readiness route of the service on 127.0.0.1 at the port "
-                "and prefix of [agent]; exit 1 names the failure."
-            ),
-        )
-        health.add_argument(
-            ServeFlag.CONFIG,
-            required=True,
-            action="append",
-            type=Path,
-            help="config.toml of this instance; repeat to lay an overlay file over it",
-        )
-        migrate = commands.add_parser(
-            Command.MIGRATE.value,
-            help="create or upgrade the agent's PostgreSQL storage",
-        )
-        self._migration.add(migrate)
-        migrate.add_argument(
-            ServeFlag.CONFIG,
-            required=True,
-            action="append",
-            type=Path,
-            help="config.toml of this instance; repeat for overlays",
-        )
-        commands.add_parser(
-            Command.SELF_CHECK.value,
-            help="check that the package data of this build is inside, then exit",
-            description=(
-                "Check that every package data file named by the build manifest "
-                "is reachable inside this binary. Reads nothing outside it, "
-                "writes one line to stdout; exit 1 names the missing files."
-            ),
-        )
-        commands.add_parser(
-            Command.SETTINGS_SCHEMA.value,
-            help="print the JSON Schema of a settings.json layer, then exit",
-            description=(
-                "Print the JSON Schema (draft 2020-12) of one settings.json layer "
-                "to stdout: the contract of the file a launcher writes for this "
-                "agent. Reads nothing."
-            ),
-        )
+        self._commands = ConfigArguments(self._parser, commands)
+        self._commands.install(required=False)
 
     def parse(self, argv: Sequence[str]) -> Invocation | ServeInvocation:
         space = self._parser.parse_args(list(argv))

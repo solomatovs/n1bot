@@ -1002,7 +1002,6 @@ async def ora_stream_in(  # noqa: PLR0913
     from boba.db.oracle.arrow_stream import OraArrowLoader  # noqa: PLC0415
     from boba.db.oracle.payload import PayloadOracle  # noqa: PLC0415
     from boba.db.oracle.trace import OraSessionTrace  # noqa: PLC0415
-    from boba.toolkit.contract import Engine as NeutralEngine  # noqa: PLC0415
 
     meter = TransferProgress(progress, OraToolConfig.ENGINE)
     journal = CommandJournal(OraPump.STREAM_IN, meter)
@@ -1015,7 +1014,7 @@ async def ora_stream_in(  # noqa: PLR0913
         if head.wire is not StreamWire.ARROW:
             raise ContractError(
                 f"ora_stream_in takes the arrow wire only, got {head.wire.value} "
-                f"from {head.source_engine.value}"
+                f"from {head.source_engine}"
             )
 
         contract = ArrowContract.model_validate(head.contract)
@@ -1029,7 +1028,7 @@ async def ora_stream_in(  # noqa: PLR0913
                 conn,
                 table,
                 StreamContract().specs(contract.columns),
-                NeutralEngine(head.source_engine.value),
+                head.source_engine,
                 inbound,
                 payload,
                 trace,

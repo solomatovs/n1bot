@@ -8,7 +8,7 @@ ListenerFailedError — подписчик не справился с конве
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 
 from pydantic import ValidationError
@@ -25,7 +25,7 @@ from boba.messaging.bus import (
     MessageTooLargeError,
     Unsubscribe,
 )
-from boba.messaging.messages import AnyCommand, AnyMessage
+from boba.messaging.messages import Command, Message, MessageCodec
 
 __all__ = ["MemoryMessageBus"]
 
@@ -35,8 +35,15 @@ class MemoryMessageBus(MessageBus):
     прямо при публикации.
     """
 
-    def __init__(self, origin: str) -> None:
+    def __init__(
+        self,
+        origin: str,
+        codec: MessageCodec,
+        fence: Callable[[Scope, LockToken], None],
+    ) -> None:
         self._origin = origin
+        self._codec = codec
+        self._fence = fence
         self._events: dict[Scope, list[Envelope]] = {}
         self._commands: dict[Scope, list[CommandEnvelope]] = {}
         self._taken: dict[int, str] = {}
@@ -44,7 +51,11 @@ class MemoryMessageBus(MessageBus):
         self._command_listeners: list[CommandListener] = []
         self._next_command = 1
 
-    async def publish(self, scope: Scope, message: AnyMessage, token: LockToken) -> int:
+    async def publish(self, scope: Scope, message: Message, token: LockToken) -> int:
+        message = self._codec.checked_event(message)
+        if self._codec.requires_lock(message):
+            self._fence(scope, token)
+
         stored = self._events.setdefault(scope, [])
 
         seq = 1
@@ -60,7 +71,7 @@ class MemoryMessageBus(MessageBus):
                 message=message,
             )
         except ValidationError as exc:
-            msg = f"publishing {message.kind.value} to {scope.render()}: {exc}"
+            msg = f"publishing {message.kind} to {scope.render()}: {exc}"
             raise MessageTooLargeError(msg) from exc
 
         stored.append(envelope)
@@ -73,13 +84,14 @@ class MemoryMessageBus(MessageBus):
                 failures.append(exc)
 
         if failures:
-            kind = message.kind.value
+            kind = message.kind
             what = f"{scope.render()}: listener failed on {kind} seq {seq}"
             raise ListenerFailedError(what, failures)
 
         return seq
 
-    async def command(self, scope: Scope, command: AnyCommand) -> int:
+    async def command(self, scope: Scope, command: Command) -> int:
+        command = self._codec.checked_command(command)
         command_id = self._next_command
         self._next_command += 1
 
@@ -96,7 +108,7 @@ class MemoryMessageBus(MessageBus):
                 failures.append(exc)
 
         if failures:
-            kind = command.kind.value
+            kind = command.kind
             what = f"{scope.render()}: command listener failed on {kind} #{command_id}"
             raise ListenerFailedError(what, failures)
 
@@ -133,6 +145,11 @@ class MemoryMessageBus(MessageBus):
         return [envelope for envelope in stored if envelope.seq > after_seq]
 
     async def take(self, scope: Scope, command_id: int, instance: str) -> bool:
+        if not any(
+            item.command_id == command_id for item in self._commands.get(scope, ())
+        ):
+            return False
+
         if command_id in self._taken:
             return False
 

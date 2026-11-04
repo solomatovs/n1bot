@@ -60,7 +60,7 @@ class HtmlDocument(PagedDocument):
     в разметке или её байты (bs4), в текст идёт тело документа, скрипты и
     стили markdownify отбрасывает."""
 
-    KIND: ClassVar[DocumentKind] = DocumentKind.HTML
+    KIND: ClassVar[DocumentKind] = "html"
     PARSER: ClassVar[str] = "lxml"
 
     def __init__(self, soup: BeautifulSoup, markdown: HtmlMarkdown) -> None:

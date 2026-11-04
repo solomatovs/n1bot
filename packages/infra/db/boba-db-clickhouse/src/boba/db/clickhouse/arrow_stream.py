@@ -31,6 +31,7 @@ from typing import ClassVar
 
 from clickhouse_connect.driver.asyncclient import AsyncClient
 
+from boba.db.clickhouse.contract import ChContract
 from boba.db.clickhouse.formats.arrow import ArrowEos
 from boba.db.clickhouse.payload import PayloadClickHouse, ReadTuning
 from boba.db.clickhouse.target import ChCluster, ChPlacement, ChTableRef
@@ -63,7 +64,6 @@ from boba.toolkit.contract import (
     TimeUnit,
     TypeFamily,
 )
-from boba.toolkit.contract import Engine as NeutralEngine
 from boba.toolkit.stream import Chunk
 from boba.toolkit.transfer import (
     ColumnRules,
@@ -96,7 +96,7 @@ class ChArrowSource:
     """Источник sync-потока ClickHouse: всегда Arrow IPC — контракт из схемы
     ответа сервера, тела кадров — те же пачки, переписанные писателем IPC."""
 
-    ENGINE: ClassVar[Engine] = Engine.CLICKHOUSE
+    ENGINE: ClassVar[Engine] = ChContract.ENGINE
     FORMAT: ClassVar[str] = "ArrowStream"
 
     def __init__(self, client: AsyncClient, journal: CommandJournal) -> None:
@@ -260,7 +260,7 @@ class ChDdlTypes:
     def __init__(self) -> None:
         self._types = ChTypes()
 
-    def render(self, column: TableColumn, source_engine: NeutralEngine) -> str:
+    def render(self, column: TableColumn, source_engine: Engine) -> str:
         """Текст типа с Nullable по потоку; пусто — пары у ClickHouse нет."""
         inner = self._named(column, source_engine)
         if not inner:
@@ -282,13 +282,13 @@ class ChDdlTypes:
         return column.kind.text
 
     @staticmethod
-    def _named(column: TableColumn, source_engine: NeutralEngine) -> str:
+    def _named(column: TableColumn, source_engine: Engine) -> str:
         """Тип, названный текстом: правилом приёмника или источником того же
         движка; пусто — выводить из нейтрального типа."""
         if column.ddl_type:
             return column.ddl_type
 
-        if source_engine is NeutralEngine.CLICKHOUSE and column.source_type:
+        if source_engine == ChContract.ENGINE and column.source_type:
             return column.source_type
 
         return ""
@@ -417,7 +417,7 @@ class ChArrowLoader:
         table: ChTableRef,
         placement: ChPlacement,
         contract: Sequence[ColumnSpec],
-        source_engine: NeutralEngine,
+        source_engine: Engine,
         inbound: TransferInbound,
         journal: CommandJournal,
     ) -> None:
@@ -427,7 +427,7 @@ class ChArrowLoader:
         self._placement = placement
         self._stream = ChStreamProjection().project(contract)
         self._source_engine = source_engine
-        self._exact = source_engine is NeutralEngine.CLICKHOUSE
+        self._exact = source_engine == ChContract.ENGINE
         self._inbound = inbound
         self._facts = ChNeutralFacts(client, table, journal)
         self._declared = ChDeclaredTypes(client, journal)

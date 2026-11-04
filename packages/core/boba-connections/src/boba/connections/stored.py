@@ -12,12 +12,12 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from collections.abc import Iterable, Mapping, Sequence
-from enum import StrEnum
 from typing import Protocol
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict
 
+from boba.access.grants import GrantTarget
 from boba.connections.base import ConnectionBase
 from boba.identity.context import Subject
 
@@ -25,13 +25,8 @@ __all__ = [
     "ConnectionNotFoundError",
     "ConnectionRepository",
     "ConnectionStoreError",
-    "ConnectionTable",
-    "ConnectionsColumn",
-    "GrantKind",
     "GrantTarget",
     "GrantedConnection",
-    "GrantsColumn",
-    "RolesColumn",
     "StoredConnection",
     "StoredRole",
 ]
@@ -43,49 +38,6 @@ class ConnectionStoreError(Exception):
 
 class ConnectionNotFoundError(ConnectionStoreError):
     """В таблице connections нет строки с таким id."""
-
-
-class GrantKind(StrEnum):
-    """Стороны связи в grants: значение — имя таблицы, kind_id — id в ней."""
-
-    CONNECTIONS = "connections"
-    MCP_SERVERS = "mcp_servers"
-    ROLES = "roles"
-    USERS = "users"
-
-
-class ConnectionTable(StrEnum):
-    """Таблицы соединений: строки, роли и гранты «источник — субъект»."""
-
-    CONNECTIONS = "connections"
-    ROLES = "roles"
-    GRANTS = "grants"
-
-
-class ConnectionsColumn(StrEnum):
-    """Колонки connections; профиль лежит шифротекстом в data."""
-
-    ID = "id"
-    NAME = "name"
-    DATA = "data"
-
-
-class RolesColumn(StrEnum):
-    """Колонки roles."""
-
-    ID = "id"
-    ROLE = "role"
-    CREATED_AT = "create_at"
-
-
-class GrantsColumn(StrEnum):
-    """Колонки grants: источник (соединение) и субъект (пользователь или роль)."""
-
-    ID = "id"
-    SRC_KIND = "src_kind"
-    SRC_KIND_ID = "src_kind_id"
-    TGT_KIND = "tgt_kind"
-    TGT_KIND_ID = "tgt_kind_id"
 
 
 class StoredRole(BaseModel):
@@ -103,35 +55,6 @@ class StoredRole(BaseModel):
             index[role.name] = role.id
 
         return index
-
-
-class GrantTarget(BaseModel):
-    """Кому выдано соединение: пользователю или роли по id в их таблице."""
-
-    model_config = ConfigDict(frozen=True)
-
-    kind: GrantKind
-    id: UUID
-
-    @field_validator("kind")
-    @classmethod
-    def _target_only(cls, value: GrantKind) -> GrantKind:
-        if value in (GrantKind.CONNECTIONS, GrantKind.MCP_SERVERS):
-            msg = (
-                f"grant target kind: expected {GrantKind.USERS.value!r} or "
-                f"{GrantKind.ROLES.value!r}, got {value.value!r}"
-            )
-            raise ValueError(msg)
-
-        return value
-
-    @classmethod
-    def user(cls, user_id: UUID) -> GrantTarget:
-        return cls(kind=GrantKind.USERS, id=user_id)
-
-    @classmethod
-    def role(cls, role_id: UUID) -> GrantTarget:
-        return cls(kind=GrantKind.ROLES, id=role_id)
 
 
 class StoredConnection(BaseModel):

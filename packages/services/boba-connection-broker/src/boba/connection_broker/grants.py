@@ -1,6 +1,6 @@
-"""Запросы выдачи соединений и MCP-серверов пользователю и его ролям.
+"""Запросы выдачи ресурсов пользователю и его ролям.
 
-ConnectionStore и McpServerStore используют общий CTE GrantedIds.
+Репозитории ресурсов используют общий CTE GrantedIds.
 Фильтрация соединений сохраняет подсчёт дублей по всей выдаче субъекта.
 
 Ошибки: своих не выпускает.
@@ -14,8 +14,7 @@ from enum import StrEnum
 from typing import Any, ClassVar, LiteralString
 from uuid import UUID
 
-from boba.access.grants import ConnectionFilter
-from boba.connections.stored import GrantKind
+from boba.access.grants import ConnectionFilter, GrantResource, GrantSubject
 from boba.identity.context import Subject
 
 __all__ = ["GrantedIds", "SubjectGrantsQuery", "SubjectRowColumn"]
@@ -83,8 +82,8 @@ class GrantedIds:
     """Идентификаторы строк одной таблицы-источника, выданные субъекту лично
     или любой его роли, из таблицы grants.
 
-    CTE subject_roles и granted общие у соединений и MCP-серверов: выдача
-    любого вида решается одним SQL. Текст собирается частями литералов:
+    CTE subject_roles и granted находят гранты переданного вида ресурса.
+    Текст собирается частями литералов:
     сначала GrantedIds.TEXT, затем своя проекция и фильтры хозяина.
     """
 
@@ -120,14 +119,14 @@ class GrantedIds:
     """
 
     def params(
-        self, user_id: UUID, roles: Iterable[str], src_kind: GrantKind
+        self, user_id: UUID, roles: Iterable[str], src_kind: GrantResource
     ) -> dict[str, Any]:
         """Параметры CTE: src_kind задаёт вид выдачи, user_id и roles — кому
         она считается."""
         return {
             "src_kind": src_kind.value,
-            "users_kind": GrantKind.USERS.value,
-            "roles_kind": GrantKind.ROLES.value,
+            "users_kind": GrantSubject.USERS.value,
+            "roles_kind": GrantSubject.ROLES.value,
             "user_id": user_id,
             "roles": sorted(roles),
         }
@@ -177,8 +176,9 @@ class SubjectGrantsQuery:
     """
     )
 
-    def __init__(self) -> None:
+    def __init__(self, resource: GrantResource) -> None:
         self._grants = GrantedIds()
+        self._resource = resource
 
     def text(self, flt: ConnectionFilter, *, name: str | None = None) -> LiteralString:
         clauses = "\n".join(self._clauses(flt))
@@ -190,9 +190,7 @@ class SubjectGrantsQuery:
     def params(
         self, subject: Subject, flt: ConnectionFilter, *, name: str | None = None
     ) -> dict[str, Any]:
-        params = self._grants.params(
-            subject.user_id, subject.roles, GrantKind.CONNECTIONS
-        )
+        params = self._grants.params(subject.user_id, subject.roles, self._resource)
         params.update(
             {
                 "kind_key": ProfileKey.KIND.value,

@@ -13,12 +13,11 @@ from __future__ import annotations
 import hashlib
 import io
 from abc import abstractmethod
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import ClassVar, Protocol
 
-from PIL import Image, UnidentifiedImageError
+from PIL import Image
 
 __all__ = [
     "BoxedHit",
@@ -28,6 +27,7 @@ __all__ = [
     "DocumentError",
     "DocumentHint",
     "DocumentKind",
+    "FormatSpec",
     "Formats",
     "Hit",
     "MemoryFile",
@@ -57,19 +57,8 @@ class ByteStream(Protocol):
     def read(self, size: int = -1, /) -> bytes: ...
 
 
-class DocumentKind(StrEnum):
-    """Вид документа: определяет ридер, который его откроет."""
-
-    PDF = "pdf"
-    DOCX = "docx"
-    XLSX = "xlsx"
-    PPTX = "pptx"
-    XLS = "xls"
-    RTF = "rtf"
-    HTML = "html"
-    IMAGE = "image"
-    TEXT = "text"
-    UNKNOWN = "unknown"
+DocumentKind = str
+"""Открытый идентификатор формата, который объявляет реализация ридера."""
 
 
 @dataclass(frozen=True)
@@ -83,186 +72,108 @@ class DocumentHint:
     filename: str = ""
 
 
+@dataclass(frozen=True)
+class FormatSpec:
+    """Признаки одного формата; регистрацию предоставляет реализация ридера."""
+
+    kind: DocumentKind
+    media_types: tuple[str, ...] = ()
+    suffixes: tuple[str, ...] = ()
+    media_prefixes: tuple[str, ...] = ()
+    recognize: Callable[[bytes], bool] | None = None
+
+
 class Formats:
-    """Карта форматов: media_type и суффикс имени дают вид документа, первые
-    байты файла — запасной способ, когда транспорт отдал octet-stream."""
+    """Определяет формат только по переданным регистрациям ридеров."""
 
     HEAD_SIZE: ClassVar[int] = 8192
-    IMAGE_PREFIX: ClassVar[str] = "image/"
-    TEXT_PREFIX: ClassVar[str] = "text/"
-    MEDIA_TYPE_SEPARATOR: ClassVar[str] = ";"
-    SUFFIX_SEPARATOR: ClassVar[str] = "."
-    ZIP_MAGIC: ClassVar[bytes] = b"PK\x03\x04"
-    HTML_MAGIC: ClassVar[tuple[bytes, ...]] = (b"<!doctype html", b"<html")
 
-    BY_MEDIA_TYPE: ClassVar[Mapping[str, DocumentKind]] = {
-        "application/pdf": DocumentKind.PDF,
-        "application/vnd.openxmlformats-officedocument."
-        "wordprocessingml.document": DocumentKind.DOCX,
-        "application/vnd.openxmlformats-officedocument."
-        "spreadsheetml.sheet": DocumentKind.XLSX,
-        "application/vnd.openxmlformats-officedocument."
-        "presentationml.presentation": DocumentKind.PPTX,
-        "application/vnd.ms-excel": DocumentKind.XLS,
-        "application/rtf": DocumentKind.RTF,
-        "text/rtf": DocumentKind.RTF,
-        "text/html": DocumentKind.HTML,
-        "application/xhtml+xml": DocumentKind.HTML,
-        "application/json": DocumentKind.TEXT,
-        "application/xml": DocumentKind.TEXT,
-        "application/x-yaml": DocumentKind.TEXT,
-    }
+    def __init__(self, formats: Iterable[FormatSpec]) -> None:
+        self._formats = tuple(formats)
+        self._media: dict[str, DocumentKind] = {}
+        self._suffixes: dict[str, DocumentKind] = {}
+        self._prefixes: dict[str, DocumentKind] = {}
+        kinds: set[str] = set()
+        for spec in self._formats:
+            if not spec.kind:
+                raise DocumentError("reader registration needs a non-empty kind")
 
-    BY_SUFFIX: ClassVar[Mapping[str, DocumentKind]] = {
-        "pdf": DocumentKind.PDF,
-        "docx": DocumentKind.DOCX,
-        "xlsx": DocumentKind.XLSX,
-        "xlsm": DocumentKind.XLSX,
-        "pptx": DocumentKind.PPTX,
-        "xls": DocumentKind.XLS,
-        "rtf": DocumentKind.RTF,
-        "htm": DocumentKind.HTML,
-        "html": DocumentKind.HTML,
-        "xhtml": DocumentKind.HTML,
-        "png": DocumentKind.IMAGE,
-        "jpg": DocumentKind.IMAGE,
-        "jpeg": DocumentKind.IMAGE,
-        "gif": DocumentKind.IMAGE,
-        "bmp": DocumentKind.IMAGE,
-        "webp": DocumentKind.IMAGE,
-        "tif": DocumentKind.IMAGE,
-        "tiff": DocumentKind.IMAGE,
-        "txt": DocumentKind.TEXT,
-        "md": DocumentKind.TEXT,
-        "csv": DocumentKind.TEXT,
-        "tsv": DocumentKind.TEXT,
-        "log": DocumentKind.TEXT,
-        "json": DocumentKind.TEXT,
-        "xml": DocumentKind.TEXT,
-        "yaml": DocumentKind.TEXT,
-        "yml": DocumentKind.TEXT,
-        "sql": DocumentKind.TEXT,
-    }
+            if spec.kind in kinds:
+                raise DocumentError(f"reader kind {spec.kind!r} is registered twice")
 
-    BY_MAGIC: ClassVar[Mapping[bytes, DocumentKind]] = {
-        b"%PDF": DocumentKind.PDF,
-        b"{\\rtf": DocumentKind.RTF,
-        b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1": DocumentKind.XLS,
-    }
+            kinds.add(spec.kind)
+            self._register(self._media, spec.media_types, spec.kind)
+            self._register(self._suffixes, spec.suffixes, spec.kind)
+            self._register(self._prefixes, spec.media_prefixes, spec.kind)
 
-    BY_ZIP_ENTRY: ClassVar[Mapping[bytes, DocumentKind]] = {
-        b"word/": DocumentKind.DOCX,
-        b"xl/": DocumentKind.XLSX,
-        b"ppt/": DocumentKind.PPTX,
-    }
+    def _register(
+        self, table: dict[str, DocumentKind], names: Iterable[str], kind: DocumentKind
+    ) -> None:
+        for name in names:
+            if name in table:
+                raise DocumentError(
+                    f"format key {name!r} is registered by both "
+                    f"{table[name]!r} and {kind!r}"
+                )
 
-    IMAGE_MEDIA_TYPES: ClassVar[tuple[str, ...]] = (
-        "image/png",
-        "image/jpeg",
-        "image/gif",
-        "image/bmp",
-        "image/webp",
-        "image/tiff",
-    )
+            table[name] = kind
 
-    @classmethod
-    def media_types(cls) -> tuple[str, ...]:
-        """Явные media_type документов для маршрутов по типу: карта плюс
-        картинки; текстовые text/* остаются за текстовыми ридерами."""
-        return tuple(cls.BY_MEDIA_TYPE) + cls.IMAGE_MEDIA_TYPES
-
-    @classmethod
-    def normalize(cls, media_type: str) -> str:
-        """media_type без параметров (`; charset=...`), в нижнем регистре."""
-        base = media_type.split(cls.MEDIA_TYPE_SEPARATOR, 1)[0]
-
-        return base.strip().lower()
-
-    @classmethod
-    def of_media_type(cls, media_type: str) -> DocumentKind:
-        normalized = cls.normalize(media_type)
-        if not normalized:
-            return DocumentKind.UNKNOWN
-
-        if normalized in cls.BY_MEDIA_TYPE:
-            return cls.BY_MEDIA_TYPE[normalized]
-
-        if normalized.startswith(cls.IMAGE_PREFIX):
-            return DocumentKind.IMAGE
-
-        if normalized.startswith(cls.TEXT_PREFIX):
-            return DocumentKind.TEXT
-
-        return DocumentKind.UNKNOWN
-
-    @classmethod
-    def of_filename(cls, filename: str) -> DocumentKind:
-        if cls.SUFFIX_SEPARATOR not in filename:
-            return DocumentKind.UNKNOWN
-
-        suffix = filename.rsplit(cls.SUFFIX_SEPARATOR, 1)[1].lower()
-
-        return cls.BY_SUFFIX.get(suffix, DocumentKind.UNKNOWN)
-
-    @classmethod
-    def of_hint(cls, hint: DocumentHint) -> DocumentKind:
-        """Вид по подсказке транспорта; media_type главнее имени файла."""
-        kind = cls.of_media_type(hint.media_type)
-        if kind is not DocumentKind.UNKNOWN:
-            return kind
-
-        return cls.of_filename(hint.filename)
-
-    @classmethod
-    def detect(cls, hint: DocumentHint, head: bytes) -> DocumentKind:
-        """Вид по подсказке, а когда её нет — по первым байтам файла."""
-        kind = cls.of_hint(hint)
-        if kind is not DocumentKind.UNKNOWN:
-            return kind
-
-        return cls.sniff(head)
-
-    @classmethod
-    def sniff(cls, head: bytes) -> DocumentKind:
-        for magic, kind in cls.BY_MAGIC.items():
-            if head.startswith(magic):
-                return kind
-
-        if head.startswith(cls.ZIP_MAGIC):
-            return cls._sniff_zip(head)
-
-        if cls._is_html(head):
-            return DocumentKind.HTML
-
-        if cls._is_image(head):
-            return DocumentKind.IMAGE
-
-        return DocumentKind.UNKNOWN
-
-    @classmethod
-    def _sniff_zip(cls, head: bytes) -> DocumentKind:
-        """Office-документ — zip, чей вид виден по именам первых записей."""
-        for entry, kind in cls.BY_ZIP_ENTRY.items():
-            if entry in head:
-                return kind
-
-        return DocumentKind.UNKNOWN
-
-    @classmethod
-    def _is_html(cls, head: bytes) -> bool:
-        """Страница без подсказки транспорта: документ начинается с doctype
-        или корневого тега, пробелы и BOM перед ними не в счёт."""
-        opening = head.lstrip(b"\xef\xbb\xbf \t\r\n").lower()
-
-        return opening.startswith(cls.HTML_MAGIC)
+    def media_types(self) -> tuple[str, ...]:
+        return tuple(self._media)
 
     @staticmethod
-    def _is_image(head: bytes) -> bool:
-        try:
-            with Image.open(io.BytesIO(head)):
-                return True
-        except (UnidentifiedImageError, OSError, ValueError):
-            return False
+    def normalize(media_type: str) -> str:
+        return media_type.partition(";")[0].strip().lower()
+
+    def of_media_type(self, media_type: str) -> DocumentKind | None:
+        normalized = self.normalize(media_type)
+        found = self._media.get(normalized)
+        if found is not None:
+            return found
+
+        for prefix, kind in self._prefixes.items():
+            if normalized.startswith(prefix):
+                return kind
+
+        return None
+
+    def of_filename(self, filename: str) -> DocumentKind | None:
+        _, separator, suffix = filename.rpartition(".")
+        if not separator:
+            return None
+
+        return self._suffixes.get(suffix.lower())
+
+    def of_hint(self, hint: DocumentHint) -> DocumentKind | None:
+        kind = self.of_media_type(hint.media_type)
+        if kind is not None:
+            return kind
+
+        return self.of_filename(hint.filename)
+
+    def detect(self, hint: DocumentHint, head: bytes) -> DocumentKind | None:
+        kind = self.of_hint(hint)
+        if kind is not None:
+            return kind
+
+        return self.sniff(head)
+
+    def sniff(self, head: bytes) -> DocumentKind | None:
+        for spec in self._formats:
+            if spec.recognize is None:
+                continue
+
+            try:
+                recognized = spec.recognize(head)
+            except Exception as exc:
+                raise DocumentError(
+                    f"detecting format {spec.kind!r} failed: {exc}"
+                ) from exc
+
+            if recognized:
+                return spec.kind
+
+        return None
 
 
 @dataclass(frozen=True)
@@ -552,7 +463,7 @@ class PagedDocument(Document):
     ) -> Iterator[Hit]:
         if not query:
             raise DocumentError(
-                f"{self.KIND.value} document: search expects a non-empty query"
+                f"{self.KIND} document: search expects a non-empty query"
             )
 
         for page in self.pages(window):
@@ -563,13 +474,13 @@ class PagedDocument(Document):
     def failure(self, action: str, exc: Exception) -> DocumentError:
         """Ошибка библиотеки формата в ошибке слоя, с действием и причиной."""
         return DocumentError(
-            f"{self.KIND.value} document: {action} failed: {type(exc).__name__}: {exc}"
+            f"{self.KIND} document: {action} failed: {type(exc).__name__}: {exc}"
         )
 
     @classmethod
     def open_failure(cls, exc: Exception) -> DocumentError:
         return DocumentError(
-            f"{cls.KIND.value} document: opening failed: {type(exc).__name__}: {exc}"
+            f"{cls.KIND} document: opening failed: {type(exc).__name__}: {exc}"
         )
 
     @abstractmethod

@@ -113,8 +113,7 @@ class TextDecoder:
 
         tried = ", ".join(encodings)
         raise DocumentError(
-            f"{kind.value} document: cannot decode {len(raw)} bytes "
-            f"with any of: {tried}"
+            f"{kind} document: cannot decode {len(raw)} bytes with any of: {tried}"
         )
 
 
@@ -171,7 +170,7 @@ class PdfDocument(PagedDocument):
     их строки дописываются после слоя. Поиск по текстовому слою отдаёт
     координаты."""
 
-    KIND: ClassVar[DocumentKind] = DocumentKind.PDF
+    KIND: ClassVar[DocumentKind] = "pdf"
     PICTURE_DEPTH: ClassVar[int] = 3
     RENDER_SCALE: ClassVar[int] = 2
 
@@ -371,7 +370,7 @@ class DocxDocument(PagedDocument):
     картинки абзаца не меньше полудюйма идут в OCR отдельным блоком за ним.
     Страниц у docx нет, поэтому страница — пачка блоков фиксированного размера."""
 
-    KIND: ClassVar[DocumentKind] = DocumentKind.DOCX
+    KIND: ClassVar[DocumentKind] = "docx"
     BLOCKS_PER_PAGE: ClassVar[int] = 40
     DRAWING: ClassVar[str] = ".//w:drawing"
     EXTENT: ClassVar[str] = ".//wp:extent"
@@ -474,7 +473,7 @@ class XlsxDocument(PagedDocument):
     """Excel через openpyxl в режиме read_only: лист — страница, строки
     читаются лениво из zip и не держатся в памяти целиком."""
 
-    KIND: ClassVar[DocumentKind] = DocumentKind.XLSX
+    KIND: ClassVar[DocumentKind] = "xlsx"
 
     def __init__(self, buffer: io.BytesIO, workbook: Any) -> None:
         self._buffer = buffer
@@ -513,7 +512,7 @@ class XlsDocument(PagedDocument):
     """Excel 97-2003 через xlrd: библиотека берёт только байты целиком,
     лист — страница."""
 
-    KIND: ClassVar[DocumentKind] = DocumentKind.XLS
+    KIND: ClassVar[DocumentKind] = "xls"
 
     def __init__(self, book: Any) -> None:
         self._book = book
@@ -554,7 +553,7 @@ class PptxDocument(PagedDocument):
     """PowerPoint через python-pptx: слайд — страница, текст рамок, таблиц,
     групп и заметок докладчика; картинки слайда не меньше полудюйма идут в OCR."""
 
-    KIND: ClassVar[DocumentKind] = DocumentKind.PPTX
+    KIND: ClassVar[DocumentKind] = "pptx"
 
     def __init__(self, slides: Sequence[Any], ocr: OcrEngine) -> None:
         self._slides = slides
@@ -677,7 +676,7 @@ class RtfDocument(PagedDocument):
     """RTF через striprtf: разметка снимается, кодовая страница берётся из
     заголовка документа. Одна страница."""
 
-    KIND: ClassVar[DocumentKind] = DocumentKind.RTF
+    KIND: ClassVar[DocumentKind] = "rtf"
 
     def __init__(self, text: str) -> None:
         self._text = text
@@ -707,7 +706,7 @@ class RtfDocument(PagedDocument):
 class TextDocument(PagedDocument):
     """Текстовый файл: декодирование кодировками из конфига, одна страница."""
 
-    KIND: ClassVar[DocumentKind] = DocumentKind.TEXT
+    KIND: ClassVar[DocumentKind] = "text"
 
     def __init__(self, text: str) -> None:
         self._text = text
@@ -734,7 +733,7 @@ class ImageDocument(PagedDocument):
     """Картинка через Pillow: кадр — страница (многостраничный tiff даёт
     несколько), текст каждой — OCR."""
 
-    KIND: ClassVar[DocumentKind] = DocumentKind.IMAGE
+    KIND: ClassVar[DocumentKind] = "image"
 
     def __init__(
         self,

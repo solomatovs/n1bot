@@ -707,7 +707,6 @@ async def pg_stream_in(  # noqa: PLR0913
     """
     from boba.db.postgres.arrow_stream import PgArrowLoader  # noqa: PLC0415
     from boba.toolkit.contract import ArrowContract, StreamContract  # noqa: PLC0415
-    from boba.toolkit.contract import Engine as NeutralEngine  # noqa: PLC0415
 
     meter = TransferProgress(progress, PgToolConfig.ENGINE)
     journal = CommandJournal(PgPump.STREAM_IN, meter)
@@ -731,36 +730,30 @@ async def pg_stream_in(  # noqa: PLR0913
             f"backend pid {conn.info.backend_pid}"
         )
         async with conn, conn.transaction():
-            await run_steps(conn, before, journal)
             if head.wire is StreamWire.ARROW:
                 contract = ArrowContract.model_validate(head.contract)
                 loader = PgArrowLoader(
                     conn,
                     table,
                     StreamContract().specs(contract.columns),
-                    NeutralEngine(head.source_engine.value),
+                    head.source_engine,
                     inbound,
                     copy_options.exact_floats,
                     journal,
                 )
-                report = await loader.run(
-                    schema_strategy,
-                    delete_strategy,
-                    insert_strategy,
-                    unknown_types,
-                    rules,
-                    template,
-                )
             else:
-                pair = PgTransfers.discover().pair(head.source_engine)
-                report = await pair(conn, table, head, inbound, journal).run(
-                    schema_strategy,
-                    delete_strategy,
-                    insert_strategy,
-                    unknown_types,
-                    rules,
-                    template,
-                )
+                pair = PgTransfers().pair(head.source_engine)
+                loader = pair(conn, table, head, inbound, journal)
+
+            await run_steps(conn, before, journal)
+            report = await loader.run(
+                schema_strategy,
+                delete_strategy,
+                insert_strategy,
+                unknown_types,
+                rules,
+                template,
+            )
 
             await run_steps(conn, after, journal)
             await inbound.committing()

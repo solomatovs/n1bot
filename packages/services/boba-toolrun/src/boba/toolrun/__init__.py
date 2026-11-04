@@ -1,7 +1,6 @@
 """Конвейер обёрток вызова инструмента: права, отмена, журнал, поток, ошибки."""
 
 from boba.toolrun.access import (
-    ToolAccess,
     ToolAccessDeniedError,
     ToolAccessGuard,
 )
@@ -23,7 +22,6 @@ __all__ = [
     "CancellableTools",
     "HostedCall",
     "HostedTool",
-    "ToolAccess",
     "ToolAccessDeniedError",
     "ToolAccessGuard",
     "ToolBody",

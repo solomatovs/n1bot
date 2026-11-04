@@ -1280,7 +1280,6 @@ async def ch_stream_in(  # noqa: PLR0913
     from boba.db.clickhouse.payload import PayloadClickHouse  # noqa: PLC0415
     from boba.db.clickhouse.transfer import ChTransfers  # noqa: PLC0415
     from boba.toolkit.contract import ArrowContract, StreamContract  # noqa: PLC0415
-    from boba.toolkit.contract import Engine as NeutralEngine  # noqa: PLC0415
 
     meter = TransferProgress(progress, ChToolConfig.ENGINE)
     journal = CommandJournal(ChPump.STREAM_IN, meter)
@@ -1301,8 +1300,6 @@ async def ch_stream_in(  # noqa: PLR0913
         meter.connecting()
         async with payload.opened_session(connection) as client:
             meter.connected(f"server {client.server_version}")
-            await run_steps(client, tuning.statements(head.wire, head.width()), journal)
-            await run_steps(client, before, journal)
             if head.wire is StreamWire.ARROW:
                 contract = ArrowContract.model_validate(head.contract)
                 loader = ChArrowLoader(
@@ -1310,30 +1307,24 @@ async def ch_stream_in(  # noqa: PLR0913
                     table,
                     placement,
                     StreamContract().specs(contract.columns),
-                    NeutralEngine(head.source_engine.value),
+                    head.source_engine,
                     inbound,
                     journal,
                 )
-                report = await loader.run(
-                    schema_strategy,
-                    delete_strategy,
-                    insert_strategy,
-                    unknown_types,
-                    rules,
-                    template,
-                )
             else:
-                pair = ChTransfers.discover().pair(head.source_engine)
-                report = await pair(
-                    client, table, placement, head, inbound, journal
-                ).run(
-                    schema_strategy,
-                    delete_strategy,
-                    insert_strategy,
-                    unknown_types,
-                    rules,
-                    template,
-                )
+                pair = ChTransfers().pair(head.source_engine)
+                loader = pair(client, table, placement, head, inbound, journal)
+
+            await run_steps(client, tuning.statements(head.wire, head.width()), journal)
+            await run_steps(client, before, journal)
+            report = await loader.run(
+                schema_strategy,
+                delete_strategy,
+                insert_strategy,
+                unknown_types,
+                rules,
+                template,
+            )
 
             await run_steps(client, after, journal)
     except Exception as exc:

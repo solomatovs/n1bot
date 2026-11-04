@@ -23,7 +23,7 @@ import stat as stat_module
 import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, AsyncIterator, Sequence
-from typing import Annotated, Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal
 
 from anyio import Path, open_file
 from pydantic import AliasChoices, AliasPath, BaseModel, ConfigDict, Field
@@ -41,11 +41,10 @@ from boba.canvas.storage import (
     StorageOp,
     StorageUrl,
 )
+from boba.core.components import Components
 from boba.runtime.config import (
-    InstanceData,
     PathsConfig,
     ProgramRoot,
-    ProgramRoots,
 )
 from boba.sandbox import WorkspaceSpec
 from boba.toolkit.result import ContentMime
@@ -75,7 +74,19 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 
-class LocalStorageConfig(BaseModel):
+class StorageConfig(BaseModel, ABC):
+    """Общие настройки публикации файлов; остальные поля задаёт реализация."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str = Field(min_length=1)
+    public_prefix: str = "/upload"
+
+    @abstractmethod
+    def read_chunk_bytes(self) -> int: ...
+
+
+class LocalStorageConfig(StorageConfig):
     """Настройки файлового хранилища для LocalStorageClient: каталог и размер
     блока чтения. StorageFactory выбирает его по kind=local."""
 
@@ -93,8 +104,11 @@ class LocalStorageConfig(BaseModel):
         description="Размер блока потокового чтения файлов, байт.",
     )
 
+    def read_chunk_bytes(self) -> int:
+        return self.chunk_bytes
 
-class ImageStorageConfig(BaseModel):
+
+class ImageStorageConfig(StorageConfig):
     """Настройки ext4-хранилища для ImageStorageClient: монтирование и сроки
     операций. StorageFactory выбирает его по kind=image."""
 
@@ -126,11 +140,8 @@ class ImageStorageConfig(BaseModel):
     def chunk_bytes(self) -> int:
         return self.mounting.copy_chunk_bytes
 
-
-StorageConfig = Annotated[
-    LocalStorageConfig | ImageStorageConfig, Field(discriminator="kind")
-]
-"""Секция storage: параметры только выбранного способа хранения."""
+    def read_chunk_bytes(self) -> int:
+        return self.chunk_bytes
 
 
 class StorageClient(ABC):
@@ -274,24 +285,25 @@ class StorageClient(ABC):
 
 
 class StorageFactory:
-    """Выбирает реализацию хранилища по конфигу.
+    """Собирает хранилище зарегистрированной фабрикой; конфиг уже проверен входом."""
 
-    Создаёт его сервис boba-mcp над секцией [paths]: образы workspace
-    пользователей лежат в каталоге данных экземпляра, шаблон образа, bwrap и
-    fuse2fs — в каталоге программы (ProgramRoot).
-    """
-
-    def __init__(self, instance: PathsConfig) -> None:
+    def __init__(
+        self,
+        instance: PathsConfig,
+        backends: Components[StorageConfig, PathsConfig, StorageClient],
+    ) -> None:
         self._instance = instance
+        self._backends = backends
 
     def create(self, config: StorageConfig) -> StorageClient:
-        if isinstance(config, ImageStorageConfig):
-            program = ProgramRoots().locate()
-            images = self._instance.data(InstanceData.WORKSPACE)
-
-            return ImageStorageClient(config, program.workspace(images), program)
-
-        return LocalStorageClient(config)
+        try:
+            return self._backends.build(config, self._instance)
+        except StorageError:
+            raise
+        except Exception as exc:
+            raise StorageError(
+                f"creating storage {config.kind!r} failed: {exc}"
+            ) from exc
 
 
 class LocalStorageClient(StorageClient):

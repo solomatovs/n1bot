@@ -560,7 +560,7 @@ class JournalRoutes:
         config = LocalStorageConfig(
             files_dir=root,
             public_prefix=self._config.public_prefix,
-            chunk_bytes=self._config.chunk_bytes,
+            chunk_bytes=self._config.read_chunk_bytes(),
         )
         files = StreamedFile(LocalStorageClient(config), self._policy)
         self._files[root] = files

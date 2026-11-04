@@ -10,12 +10,14 @@ RuntimeError — контейнер не поднят или процесс не
 
 import logging
 from collections.abc import AsyncGenerator, Generator, Mapping, Sequence
+from contextlib import AbstractAsyncContextManager
 from typing import Annotated
 
 from omegaconf import DictConfig
 
 from boba.access import ToolPolicy
 from boba.auth import AuthService, JwtTokens, SignIns
+from boba.auth.assembly import AuthServices
 from boba.chat.profiles import ChatProfiles
 from boba.config import bind
 from boba.connection_broker.credentials import KerberosCredentialSource
@@ -24,27 +26,27 @@ from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.tickets import ServiceTickets
 from boba.connection_broker.user_connections import ArmedConnections
 from boba.connections.manifest import ConnectionTypes
+from boba.core.components import Components
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import CallContexts
 from boba.identity.directory import UserDirectory
-from boba.identity.locks import LiveLocks, MemoryLiveLocks, StaleLock
+from boba.identity.locks import LiveLocks
 from boba.identity.run import Runs
 from boba.identity.signin import ProfileCatalog
 from boba.identity.sso import RefreshSignal
 from boba.identity_postgres import UsersTable as IdentityUsers
 from boba.ldap import Ldap3Directory
 from boba.messaging import (
-    MemoryMessageBus,
-    MemoryPayloadStore,
     MessageBus,
+    MessageCodec,
     PayloadStore,
 )
-from boba.runtime.bus import PgMessageBus
+from boba.runtime.auth_backends import KerberosSessionTickets
 from boba.runtime.commands import CommandRunner
 from boba.runtime.config import (
     AppName,
     InstanceData,
-    LocalMessagingConfig,
+    MessagingConfig,
     PathsConfig,
     ProcessConfig,
     RawConfig,
@@ -54,14 +56,15 @@ from boba.runtime.config import (
 from boba.runtime.di import Container, Depends
 from boba.runtime.journal import DirVault, StreamJournal
 from boba.runtime.launchers import SectionLaunchers, ToolLaunchers
-from boba.runtime.locks import LockReaper, PgLiveLocks
-from boba.runtime.payloads import PgPayloadStore
+from boba.runtime.messaging import (
+    MessagingRuntime,
+    MessagingServices,
+    StaleObserverFactory,
+)
 from boba.runtime.plugins import PluginKit, PluginKits, ToolLoader
 from boba.runtime.refresh import BusRefreshSignal, LiveSessions, SessionKeeper
 from boba.runtime.refs import ExecRefs
-from boba.runtime.signin import SignInAssembly
 from boba.runtime.threads import ThreadsTable
-from boba.runtime.turns import StaleTurnCloser
 from boba.runtime.users import UsersTable
 from boba.tool_io.chain import CallAmbient
 from boba.toolrun.hosted import HostedTool
@@ -124,42 +127,54 @@ async def postgres_pool(
         await pool.close()
 
 
-async def message_bus(
+def message_codec() -> MessageCodec:
+    """Каталог сообщений предоставляет корень приложения."""
+    raise RuntimeError("the application must provide its message codec")
+
+
+def messaging_backends() -> Components[
+    MessagingConfig, MessagingServices, AbstractAsyncContextManager[MessagingRuntime]
+]:
+    """Реестр транспортов предоставляет корень приложения."""
+    raise RuntimeError("the application must provide its messaging backends")
+
+
+def stale_observer() -> StaleObserverFactory:
+    """Обработчик потерянных держателей предоставляет приложение."""
+    raise RuntimeError("the application must provide its stale-lock observer")
+
+
+async def messaging_runtime(  # noqa: PLR0913 — зависимости ресурса DI
     config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
     instance: Annotated[str, Depends(instance_name)],
+    app: Annotated[AppName, Depends(app_name)],
     pool: Annotated[AsyncPostgresPool, Depends(postgres_pool)],
-) -> AsyncGenerator[MessageBus, None]:
-    """Поднимает шину процесса по секции [messaging]: local живёт в памяти одного
-    инстанса, postgres запускает слушателя на всё время работы и останавливает
-    его при закрытии контейнера. Таблицы live_* заранее готовит отдельная
-    команда migrate приложения.
-    """
-    if isinstance(config.messaging, LocalMessagingConfig):
-        yield MemoryMessageBus(instance)
-        return
-
-    bus = PgMessageBus(
-        config.postgres, config.db_schema, instance, config.cluster, pool
-    )
-    await bus.start()
-
-    try:
-        yield bus
-    finally:
-        await bus.stop()
+    codec: Annotated[MessageCodec, Depends(message_codec)],
+    observer: Annotated[StaleObserverFactory, Depends(stale_observer)],
+    backends: Annotated[
+        Components[
+            MessagingConfig,
+            MessagingServices,
+            AbstractAsyncContextManager[MessagingRuntime],
+        ],
+        Depends(messaging_backends),
+    ],
+) -> AsyncGenerator[MessagingRuntime, None]:
+    services = MessagingServices(config, instance, app, pool, codec, observer)
+    async with backends.build(config.messaging, services) as runtime:
+        yield runtime
 
 
-async def payload_store(
-    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
-    bus: Annotated[MessageBus, Depends(message_bus)],
-    pool: Annotated[AsyncPostgresPool, Depends(postgres_pool)],
+def message_bus(
+    runtime: Annotated[MessagingRuntime, Depends(messaging_runtime)],
+) -> MessageBus:
+    return runtime.bus
+
+
+def payload_store(
+    runtime: Annotated[MessagingRuntime, Depends(messaging_runtime)],
 ) -> PayloadStore:
-    """Хранилище тел сообщений: при local — в памяти рядом с шиной, при postgres —
-    в live_payloads."""
-    if isinstance(config.messaging, LocalMessagingConfig):
-        return MemoryPayloadStore()
-
-    return PgPayloadStore(config.postgres, config.db_schema, pool)
+    return runtime.payloads
 
 
 def call_contexts() -> CallContexts:
@@ -210,7 +225,8 @@ def credential_source(
     """Источник кредов вызова на процесс; без kerberos в [auth] делегирование
     отказывает.
     """
-    return KerberosCredentialSource(config.sso_tickets(), refresh)
+    tickets = KerberosSessionTickets().build(config.auth, config.session.auth_secret)
+    return KerberosCredentialSource(tickets, refresh)
 
 
 def credential_source_ref() -> KerberosCredentialSource:
@@ -277,11 +293,12 @@ def exec_refs(params: ConnectionParams) -> ExecRefs:
 
 
 def tool_launchers(
+    config: Annotated[ProcessConfig, Depends(get_process_config)],
     raw: Annotated[DictConfig, Depends(get_raw_config)],
 ) -> Generator[SectionLaunchers, None, None]:
     """Способ запуска инструментов процесса: один на все сборки реестра;
     зиготы гасятся при закрытии контейнера, в том числе после сорванного старта."""
-    launchers = ToolLaunchers(raw).build()
+    launchers = ToolLaunchers(raw, config.LAUNCHER_BACKENDS).build()
 
     try:
         yield launchers
@@ -325,24 +342,10 @@ def tool_registry(  # noqa: PLR0913 — реестр собирается все
     return loader.load()
 
 
-async def live_locks(
-    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
-    instance: Annotated[str, Depends(instance_name)],
-    app: Annotated[AppName, Depends(app_name)],
-    bus: Annotated[MessageBus, Depends(message_bus)],
-    pool: Annotated[AsyncPostgresPool, Depends(postgres_pool)],
+def live_locks(
+    runtime: Annotated[MessagingRuntime, Depends(messaging_runtime)],
 ) -> LiveLocks:
-    """Блокировки областей процесса; при local они живут в памяти, при postgres
-    инстанс регистрируется здесь и дальше подтверждается сторожем.
-    """
-    if isinstance(config.messaging, LocalMessagingConfig):
-        return MemoryLiveLocks(instance, config.cluster.lock_ttl_sec)
-
-    locks = PgLiveLocks(
-        config.postgres, config.db_schema, instance, app, config.cluster, pool
-    )
-    await locks.register_instance()
-    return locks
+    return runtime.locks
 
 
 def connection_types() -> ConnectionTypes:
@@ -428,9 +431,9 @@ def sign_ins(
 ) -> SignIns:
     """Способы входа процесса из [auth]: пароли, SPNEGO и proxy с их
     провайдерами ролей и профилей."""
-    assembly = SignInAssembly(directory, profiles, catalog)
+    services = AuthServices(directory, profiles, catalog, config.session.auth_secret)
 
-    return assembly.build(config.auth, config.session.auth_secret)
+    return config.AUTH_BACKENDS.build(config.auth, services)
 
 
 def auth_service(
@@ -451,99 +454,6 @@ def auth_service(
         users=users,
         renewal=session.renewal(),
     )
-
-
-class ReaperHandlers:
-    """Обработчики сторожа блокировок: осиротевшие ходы и ретенция."""
-
-    def __init__(
-        self,
-        config: RuntimeConfig,
-        locks: PgLiveLocks,
-        bus: PgMessageBus,
-        payloads: PgPayloadStore,
-    ) -> None:
-        self._config = config
-        self._locks = locks
-        self._bus = bus
-        self._payloads = payloads
-
-    async def on_stale(self, stale: Sequence[StaleLock]) -> None:
-        for lock in stale:
-            logger.warning(
-                "stale lock removed: %s held by %s for %s",
-                lock.scope.render(),
-                lock.holder,
-                lock.purpose.value,
-            )
-
-        turns = await StaleTurnCloser(self._bus, self._locks).close(stale)
-        if turns:
-            logger.warning("chat: %d turn(s) of dead holders closed", turns)
-
-    async def on_sweep(self) -> None:
-        usage = await self._bus.queue_usage()
-        if usage > self._config.cluster.queue_usage_limit:
-            # долю очереди держит соединение слушателя: освобождает только разрыв
-            logger.error(
-                "notification queue usage %.3f exceeds %.3f: reconnecting the listener",
-                usage,
-                self._config.cluster.queue_usage_limit,
-            )
-            await self._bus.listener.reconnect()
-
-        removed = await self._bus.purge_idle(self._config.cluster.retention_sec)
-        bodies = await self._payloads.purge_idle(self._config.cluster.retention_sec)
-        if removed or bodies:
-            logger.info("live retention: %d events, %d bodies removed", removed, bodies)
-
-
-async def lock_reaper(
-    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
-    locks: Annotated[LiveLocks, Depends(live_locks)],
-    bus: Annotated[MessageBus, Depends(message_bus)],
-    payloads: Annotated[PayloadStore, Depends(payload_store)],
-) -> AsyncGenerator[LockReaper | None, None]:
-    """Запускает сторожа блокировок на всё время работы: он закрывает ходы без
-    держателя, следит за очередью уведомлений и убирает старые события; при
-    остановке снимает блокировки инстанса. При local сторож не поднимается:
-    протухшие блокировки памяти снимает ленивый reap при захвате, ретенции нет.
-    """
-    if isinstance(config.messaging, LocalMessagingConfig):
-        yield None
-        return
-
-    if not isinstance(locks, PgLiveLocks):
-        msg = (
-            "lock reaper with [messaging] provider = postgres requires "
-            f"PgLiveLocks, got {type(locks).__name__}"
-        )
-        raise RuntimeError(msg)
-
-    if not isinstance(bus, PgMessageBus):
-        msg = (
-            "lock reaper with [messaging] provider = postgres requires "
-            f"PgMessageBus, got {type(bus).__name__}"
-        )
-        raise RuntimeError(msg)
-
-    if not isinstance(payloads, PgPayloadStore):
-        msg = (
-            "lock reaper with [messaging] provider = postgres requires "
-            f"PgPayloadStore, got {type(payloads).__name__}"
-        )
-        raise RuntimeError(msg)
-
-    handlers = ReaperHandlers(config, locks, bus, payloads)
-    reaper = LockReaper(
-        locks, config.cluster.reaper_period_sec, handlers.on_stale, handlers.on_sweep
-    )
-    await reaper.start()
-    try:
-        yield reaper
-    finally:
-        await reaper.stop()
-        await locks.release_all(locks.instance)
 
 
 def command_runner(

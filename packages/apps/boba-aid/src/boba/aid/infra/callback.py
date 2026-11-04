@@ -104,6 +104,9 @@ from boba.aid.mcp_servers.sources import ServerSource
 from boba.aid.rendering.errors import chainlit_error_ctx_handler
 from boba.cancellation import StopReason
 from boba.canvas.canvas import CanvasAction, CanvasFileRequest, RenderVerdicts
+from boba.chat.messages import (
+    StopRequested,
+)
 from boba.chat.profiles import ChatProfiles, SelectedProfile
 from boba.chat.threads import DataLayerError
 from boba.identity.api import AuthenticatedUser
@@ -123,7 +126,6 @@ from boba.mcp_client.client import (
 )
 from boba.messaging import (
     MessageBus,
-    StopRequested,
 )
 from boba.runtime import providers as runtime
 from boba.runtime.config import RuntimeConfig

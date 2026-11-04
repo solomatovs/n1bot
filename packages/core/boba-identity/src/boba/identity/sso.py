@@ -19,6 +19,7 @@ __all__ = [
     "OwnRequest",
     "RefreshSignal",
     "RequestHeader",
+    "SessionRefresh",
     "SpnegoExchange",
     "SsoAdmission",
     "SsoChallenge",
@@ -130,3 +131,12 @@ class RefreshSignal(Protocol):
     @abstractmethod
     async def send(self) -> bool:
         """True — сигнал ушёл живому слушателю; False — слушать некому."""
+
+
+class SessionRefresh(Protocol):
+    """Обновляет credentials подтверждённой сессии способом её провайдера."""
+
+    @abstractmethod
+    async def renew(
+        self, request: SsoRequest, signed: SignedIn
+    ) -> SsoChallenge | SsoRefused | SsoSigned: ...

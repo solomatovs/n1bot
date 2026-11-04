@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from boba.identity.context import Credential, DelegatedTicket, NoUserCredential
 from boba.identity.principal import UserIdentity
-from boba.identity.session import Login, SignInProvider, UserMetadataField
+from boba.identity.session import Login, UserMetadataField
 
 __all__ = [
     "PasswordSignIn",
@@ -55,6 +55,8 @@ class SignInMetadata(BaseModel):
     principal: str = ""
     sealed_ticket: str = ""
     generation: str = ""
+    renewal: str = "reauthenticate"
+    credential_reason: str = "The sign-in supplied no delegated credentials."
 
     def with_access(
         self, roles: frozenset[str], profiles: frozenset[str]
@@ -78,6 +80,8 @@ class SignInMetadata(BaseModel):
 
         return cls(
             provider=cls._text(raw.get(UserMetadataField.PROVIDER)),
+            renewal=cls._text(raw.get(UserMetadataField.RENEWAL, "reauthenticate")),
+            credential_reason=cls._text(raw.get(UserMetadataField.CREDENTIAL_REASON)),
             identity=identity,
             roles=cls._names_in(raw.get(UserMetadataField.ROLES)),
             profiles=cls._names_in(raw.get(UserMetadataField.PROFILES)),
@@ -89,7 +93,10 @@ class SignInMetadata(BaseModel):
 
     def render(self) -> dict[str, object]:
         """Ключи UserMetadataField для cl.User и claims JWT."""
-        rendered: dict[str, object] = {}
+        rendered: dict[str, object] = {UserMetadataField.RENEWAL: self.renewal}
+        if self.credential_reason:
+            rendered[UserMetadataField.CREDENTIAL_REASON] = self.credential_reason
+
         if self.provider:
             rendered[UserMetadataField.PROVIDER] = self.provider
 
@@ -138,14 +145,8 @@ class SignInMetadata(BaseModel):
         """Тот же вход, помеченный текущим поколением сессий."""
         return self.model_copy(update={"generation": generation})
 
-    def is_kerberos(self) -> bool:
-        return self.provider == SignInProvider.KERBEROS
-
     def ticket(self) -> DelegatedTicket | None:
-        """Билет SSO-входа; None — делегирования не было."""
-        if not self.is_kerberos():
-            return None
-
+        """Подтверждённый провайдером билет, независимо от способа входа."""
         if not self.principal:
             return None
 
@@ -163,32 +164,11 @@ class SignInMetadata(BaseModel):
         return NoUserCredential(reason=self.absence_reason())
 
     def absence_reason(self) -> str:
-        """Почему у входа нет делегированного билета; текст готов для отказа."""
-        if not self.is_kerberos():
-            return (
-                f"you signed in with {self._provider_name()}, and this "
-                "connection acts in the database on your behalf: sign in "
-                "through Kerberos SSO instead"
-            )
+        """Причина отсутствия credentials, которую сообщил провайдер входа."""
+        if self.credential_reason:
+            return self.credential_reason
 
-        if not self.principal:
-            return (
-                "your Kerberos sign-in predates delegated connections "
-                "(the session token names no principal): sign out and sign in again"
-            )
-
-        return (
-            f"the Kerberos sign-in of {self.principal} carried no delegated ticket: "
-            "either Active Directory does not allow this service to act for "
-            "you, or the browser sent no ticket; sign in again from a "
-            "domain-joined browser"
-        )
-
-    def _provider_name(self) -> str:
-        if not self.provider:
-            return "no known provider"
-
-        return self.provider
+        return "The sign-in supplied no delegated credentials; sign in again."
 
     @staticmethod
     def _text(value: object) -> str:

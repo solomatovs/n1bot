@@ -20,7 +20,7 @@ from boba.auth.roles import RoleProviders
 from boba.auth.signin import SignedInFactory, SignInDetails
 from boba.identity.admission import PrincipalFacts
 from boba.identity.errors import AuthorizationError
-from boba.identity.session import LoginTemplate, SignInProvider, UserLogin
+from boba.identity.session import LoginTemplate, UserLogin
 from boba.identity.signin import SignedIn
 from boba.identity.sso import SsoAdmission
 from boba.toolkit.template import TemplateError
@@ -65,7 +65,12 @@ class SsoSignIn(SsoAdmission):
 
         return await self._signed_in.create(
             SignInDetails(
-                provider=SignInProvider.KERBEROS,
+                provider=self._config.PROVIDER,
+                renewal=self._config.type,
+                credential_reason=(
+                    f"The Kerberos sign-in of {facts.principal} carried no delegated "
+                    "ticket: check delegation policy and sign in from a domain browser."
+                ),
                 identity=identity,
                 display_name=login.display,
                 facts=facts,

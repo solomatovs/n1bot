@@ -30,7 +30,6 @@ from collections.abc import (
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
-from importlib.metadata import entry_points
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
 from clickhouse_connect.driver.asyncclient import AsyncClient
@@ -76,6 +75,7 @@ from boba.toolkit.transfer import (
     StreamWire,
     TemplateVar,
     TransferError,
+    TransferFactories,
     TransferInbound,
     TransferOutbound,
     TransferReport,
@@ -152,7 +152,7 @@ class ChTsvOut:
                 await out.schema(
                     SchemaHead(
                         kind="schema",
-                        source_engine=Engine.CLICKHOUSE,
+                        source_engine=ChContract.ENGINE,
                         wire=StreamWire.TSV,
                         contract=contract.model_dump(mode="json"),
                     )
@@ -1361,46 +1361,14 @@ class ChTransferFactory(Protocol):
 
 
 class ChTransfers:
-    """Реестр пар в ClickHouse по entry points группы
-    boba.transfer.clickhouse: имя записи — движок источника, значение —
-    класс пары."""
+    """Реестр адаптеров в clickhouse; использует общий загрузчик TransferFactories."""
 
     GROUP: ClassVar[str] = "boba.transfer.clickhouse"
 
-    def __init__(self, factories: Mapping[Engine, ChTransferFactory]) -> None:
-        self._factories = dict(factories)
-
-    @classmethod
-    def discover(cls) -> ChTransfers:
-        factories: dict[Engine, ChTransferFactory] = {}
-        for entry in entry_points(group=cls.GROUP):
-            try:
-                engine = Engine(entry.name)
-            except ValueError as exc:
-                raise TransferError(
-                    f"entry point {entry.name!r} of group {cls.GROUP!r} "
-                    f"({entry.value}): the name must be a source engine, one of "
-                    f"{[member.value for member in Engine]}"
-                ) from exc
-
-            loaded = entry.load()
-            if not isinstance(loaded, ChTransferFactory):
-                raise TransferError(
-                    f"entry point {entry.name!r} of group {cls.GROUP!r} "
-                    f"({entry.value}): expected a transfer class, got {loaded!r}"
-                )
-
-            factories[engine] = loaded
-
-        return cls(factories)
+    def __init__(
+        self, factories: Mapping[Engine, ChTransferFactory] | None = None
+    ) -> None:
+        self._registry = TransferFactories(self.GROUP, ChTransferFactory, factories)
 
     def pair(self, engine: Engine) -> ChTransferFactory:
-        factory = self._factories.get(engine)
-        if factory is None:
-            installed = ", ".join(sorted(member.value for member in self._factories))
-            raise TransferError(
-                f"no transfer from {engine.value} into clickhouse is installed "
-                f"(installed: {installed or 'none'}); take wire arrow at the source"
-            )
-
-        return factory
+        return self._registry.pair(engine)

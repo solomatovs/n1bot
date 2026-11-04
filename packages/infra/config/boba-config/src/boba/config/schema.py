@@ -2,15 +2,30 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from types import UnionType
-from typing import Annotated, Any, Literal, Union, get_args, get_origin
+from typing import Annotated, Any, ClassVar, Literal, Union, get_args, get_origin
 
 from omegaconf import DictConfig, ListConfig, OmegaConf
 from pydantic import BaseModel, TypeAdapter
 from pydantic.fields import FieldInfo
 
-__all__ = ["ConfigSchema"]
+__all__ = ["ConfigModel", "ConfigSchema", "ConfigVariant"]
+
+
+@dataclass(frozen=True)
+class ConfigVariant:
+    """Выбор модели зарегистрированного компонента до раскрытия его defaults."""
+
+    discriminator: str
+    select: Callable[[Mapping[str, object]], type[BaseModel]]
+
+
+class ConfigModel(BaseModel):
+    """Корень конфигурации передаёт выбор моделей; загрузчик не знает реализаций."""
+
+    CONFIG_VARIANTS: ClassVar[Mapping[type[BaseModel], ConfigVariant]] = {}
 
 
 class ConfigSchema:
@@ -30,6 +45,9 @@ class ConfigSchema:
         self._model_type = model
         self._section = section
         self._values = frozenset(values)
+        self._variants: Mapping[type[BaseModel], ConfigVariant] = {}
+        if issubclass(model, ConfigModel):
+            self._variants = model.CONFIG_VARIANTS
 
     def apply(self, tree: DictConfig) -> None:
         sections = self._sections(tree)
@@ -70,6 +88,9 @@ class ConfigSchema:
         for name, field in self._model_type.model_fields.items():
             key = field.alias or name
             discriminator = field.discriminator
+            variant = self._variants.get(self._unwrap(field.annotation))
+            if variant is not None:
+                discriminator = variant.discriminator
             if (
                 not isinstance(discriminator, str)
                 or key not in upper
@@ -109,7 +130,7 @@ class ConfigSchema:
         visited: set[tuple[int, type[BaseModel]]],
     ) -> None:
         annotation = self._unwrap(annotation)
-        model = self._model(annotation, node)
+        model = self._model(annotation, node, follow)
         if model is not None and model.__pydantic_root_model__:
             self._node(model.model_fields["root"].annotation, node, follow, visited)
             return
@@ -177,13 +198,14 @@ class ConfigSchema:
             return get_args(annotation)[0]
         return annotation
 
-    @classmethod
-    def _model(cls, annotation: Any, node: Any) -> type[BaseModel] | None:
+    def _model(
+        self, annotation: Any, node: Any, follow: bool
+    ) -> type[BaseModel] | None:
         if isinstance(annotation, type) and issubclass(annotation, BaseModel):
-            return annotation
+            return self._registered_model(annotation, node, follow)
         if get_origin(annotation) not in (Union, UnionType):
             return None
-        variants = [cls._unwrap(arg) for arg in get_args(annotation)]
+        variants = [self._unwrap(arg) for arg in get_args(annotation)]
         models = [
             arg
             for arg in variants
@@ -193,8 +215,27 @@ class ConfigSchema:
             return models[0]
         if not isinstance(node, DictConfig):
             return None
-        matches = [model for model in models if cls._matches(model, node)]
+        matches = [model for model in models if self._matches(model, node)]
         return matches[0] if len(matches) == 1 else None
+
+    def _registered_model(
+        self, model: type[BaseModel], node: Any, follow: bool
+    ) -> type[BaseModel] | None:
+        variant = self._variants.get(model)
+        if variant is None:
+            return model
+
+        if not isinstance(node, DictConfig):
+            return None
+
+        key = variant.discriminator
+        if key not in node:
+            return None
+
+        if not follow and OmegaConf.is_interpolation(node, key):
+            return None
+
+        return variant.select({key: node[key]})
 
     @staticmethod
     def _matches(model: type[BaseModel], node: DictConfig) -> bool:

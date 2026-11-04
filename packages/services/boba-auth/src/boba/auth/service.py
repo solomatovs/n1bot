@@ -40,6 +40,7 @@ from boba.identity.signin import (
     SignInMetadata,
 )
 from boba.identity.sso import (
+    SessionRefresh,
     SpnegoExchange,
     SsoChallenge,
     SsoRefused,
@@ -92,7 +93,7 @@ class SignIns:
     Ядро входа, общее для всех приложений: по предъявленному отдаёт итог
     входа SignedIn (кто вошёл, роли, профили) и ничего не знает о токене,
     cookie и хранении пользователей. Собирается провайдером из секций [auth]
-    (SignInAssembly); поверх него стоят слой сессии приложения с браузером
+    (AuthBackends); поверх него стоят слой сессии приложения с браузером
     (AuthService) и провайдер авторизации fastmcp сервиса boba-mcp.
     """
 
@@ -102,12 +103,16 @@ class SignIns:
         sso: Mapping[str, SpnegoExchange],
         proxy: Mapping[str, ProxySignIn],
         profiles: ProfileCatalog | None = None,
+        renewals: Mapping[tuple[str, str], SessionRefresh] | None = None,
     ) -> None:
         self._password = password
         self._sso = dict(sso)
         self._proxy = dict(proxy)
         self._selection = RealmSelection()
         self._access = SessionAccess(profiles)
+        self._renewals: dict[tuple[str, str], SessionRefresh] = {}
+        if renewals is not None:
+            self._renewals.update(renewals)
 
     def current(self, sign_in: SignInMetadata, roles: frozenset[str]) -> SignInMetadata:
         return self._access.current(sign_in, roles)
@@ -192,6 +197,26 @@ class SignIns:
         selected = self._selection.selected(realm, self._sso, "SPNEGO exchange")
 
         return self._sso[selected]
+
+    async def renew(
+        self, request: SsoRequest, signed: SignedIn
+    ) -> SsoChallenge | SsoRefused | SsoSigned:
+        identity = signed.sign_in.identity_for(signed.identifier)
+        key = (signed.sign_in.renewal, identity.realm)
+        refresh = self._renewals.get(key)
+        if refresh is None:
+            return SsoRefused(
+                reason=f"Session refresh {key!r} is unavailable; sign in again."
+            )
+
+        result = await refresh.renew(request, signed)
+        if isinstance(result, SsoSigned):
+            if result.signed.identifier != signed.identifier:
+                return SsoRefused(
+                    reason="Session refresh resolved to another user; sign in again."
+                )
+
+        return result
 
 
 class AuthService(Authenticator):
@@ -299,8 +324,8 @@ class AuthService(Authenticator):
     async def refresh_session(
         self, request: SsoRequest, token: str | None
     ) -> SsoChallenge | SsoRefused | IssuedSession:
-        """Обновление живой сессии по её виду входа: SPNEGO-обмен для kerberos, иначе
-        перевыпуск JWT; отказ — SsoRefused с причиной, приложение разлогинивает.
+        """Обновление через порт провайдера либо перевыпуск JWT без credentials.
+        Отказ — SsoRefused с причиной, приложение разлогинивает.
         """
         if token is None:
             reason = (
@@ -314,22 +339,14 @@ class AuthService(Authenticator):
         except AuthenticationError as exc:
             return SsoRefused(reason=str(exc))
 
-        if claims.sign_in().is_kerberos():
-            return await self._refresh_kerberos(request, token)
+        if claims.sign_in().renewal:
+            outcome = await self._sign_ins.renew(request, claims.signed())
+            if isinstance(outcome, SsoSigned):
+                return await self.issue(outcome.signed)
+
+            return outcome
 
         return await self._renew_session(request, token)
-
-    async def _refresh_kerberos(
-        self, request: SsoRequest, token: str
-    ) -> SsoChallenge | SsoRefused | IssuedSession:
-        if not self._sign_ins.has_sso():
-            reason = (
-                f"kerberos session refresh from [{request.client}]: [auth] has "
-                "no kerberos provider configured"
-            )
-            return SsoRefused(reason=reason)
-
-        return await self.refresh(request, token)
 
     async def _renew_session(
         self, request: SsoRequest, token: str
@@ -407,10 +424,10 @@ class AuthService(Authenticator):
         """
         claims = self.stale_claims(token)
         signed = claims.signed()
-        if signed.sign_in.is_kerberos():
+        if signed.sign_in.renewal:
             msg = (
-                f"jwt renewal of {claims.identifier!r}: a kerberos sign-in renews "
-                "only by a SPNEGO refresh"
+                f"jwt renewal of {claims.identifier!r}: the session requires "
+                f"refresh method {signed.sign_in.renewal!r}"
             )
             raise AuthenticationError(msg)
 

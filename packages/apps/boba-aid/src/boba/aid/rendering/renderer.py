@@ -30,20 +30,22 @@ from boba.aid.rendering.acp_view import SessionUpdateCodec, UpdateView
 from boba.aid.rendering.chat_view import ChatView
 from boba.aid.rendering.errors import show_error
 from boba.canvas.canvas import CanvasSignal
-from boba.identity.context import Scope
-from boba.messaging import (
+from boba.chat.messages import (
     AgentUpdate,
     AnswerInterrupted,
     CanvasChanged,
-    Envelope,
     FeedbackChanged,
     JournalOpened,
-    MessageBus,
     MessageKind,
-    PayloadStore,
     ThreadRewound,
     TurnFinished,
     TurnStarted,
+)
+from boba.identity.context import Scope
+from boba.messaging import (
+    Envelope,
+    MessageBus,
+    PayloadStore,
     Unsubscribe,
 )
 from boba.runtime.errors import FailureReports
@@ -253,7 +255,7 @@ class ChatRenderer:
         async with self._order:
             await handler(envelope.message)
 
-    def _handler_table(self) -> Mapping[MessageKind, Handler]:
+    def _handler_table(self) -> Mapping[str, Handler]:
         return {
             MessageKind.TURN_STARTED: self._on_turn_started,
             MessageKind.AGENT_UPDATE: self._on_agent_update,

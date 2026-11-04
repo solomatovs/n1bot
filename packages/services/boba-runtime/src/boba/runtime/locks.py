@@ -21,7 +21,6 @@ from boba.identity.context import Scope, ScopeKind
 from boba.identity.locks import (
     LiveLock,
     LiveLocks,
-    LiveLocksColumn,
     LockBusy,
     LockBusyError,
     LockMode,
@@ -29,8 +28,13 @@ from boba.identity.locks import (
     LockToken,
     StaleLock,
 )
-from boba.messaging import MessageBusError
-from boba.messaging.bus import LiveInstancesColumn
+from boba.messaging import (
+    MessageBusError,
+)
+from boba.runtime.bus_schema import (
+    LiveInstancesColumn,
+    LiveLocksColumn,
+)
 from boba.runtime.config import AppName, ClusterConfig
 from boba.runtime.payloads import PayloadStoreError
 

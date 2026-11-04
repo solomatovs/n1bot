@@ -63,7 +63,6 @@ from boba.toolkit.contract import (
     ContractTable,
     Declarations,
     DeclaredType,
-    Engine,
     SchemaMatcher,
     StreamContract,
     TableColumn,
@@ -78,6 +77,7 @@ from boba.toolkit.transfer import (
     CreateTemplate,
     DeleteOutcome,
     DeleteStrategyApply,
+    Engine,
     InsertStrategyApply,
     PlannedColumn,
     SchemaHead,
@@ -93,7 +93,6 @@ from boba.toolkit.transfer import (
     TransferTable,
     UnknownTypeApply,
 )
-from boba.toolkit.transfer import Engine as WireEngine
 
 __all__ = [
     "OraArrowLoader",
@@ -113,7 +112,7 @@ class OraArrowSource:
     драйвера потоком Arrow IPC как есть (PayloadOracle.arrow_into). Пара к
     OraArrowLoader, как PgArrowSource и ChArrowSource у своих движков."""
 
-    ENGINE: ClassVar[WireEngine] = WireEngine.ORACLE
+    ENGINE: ClassVar[Engine] = "oracle"
 
     def __init__(
         self,
@@ -369,7 +368,7 @@ class OraStreamProjection:
     }
 
     def __init__(self, source_engine: Engine) -> None:
-        self._strings_nullable = source_engine is not Engine.ORACLE
+        self._strings_nullable = source_engine != OraArrowSource.ENGINE
 
     def project(
         self, columns: Sequence[ColumnSpec], schema: pyarrow.Schema
@@ -484,7 +483,7 @@ class OraDdlTypes:
         if column.ddl_type:
             return column.ddl_type
 
-        if source_engine is Engine.ORACLE and column.source_type:
+        if source_engine == OraArrowSource.ENGINE and column.source_type:
             return column.source_type
 
         if column.kind.family.named_only():
@@ -498,7 +497,7 @@ class OraDdlTypes:
         if column.ddl_type:
             return column.ddl_type
 
-        if source_engine is Engine.ORACLE and column.source_type:
+        if source_engine == OraArrowSource.ENGINE and column.source_type:
             return column.source_type
 
         if column.kind.family.named_only():
@@ -860,7 +859,7 @@ class OraArrowLoader:
         self._projection = OraStreamProjection(source_engine)
         self._binds = OraArrowBinds(self._facts.has_boolean())
         self._source_engine = source_engine
-        self._exact = source_engine is Engine.ORACLE
+        self._exact = source_engine == OraArrowSource.ENGINE
         self._inbound = inbound
         self._payload = payload
         self._trace = trace

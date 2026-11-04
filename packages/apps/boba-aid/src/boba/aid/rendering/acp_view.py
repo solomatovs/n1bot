@@ -65,12 +65,15 @@ from boba.aid.rendering.tool import (
     ToolAppView,
     ToolSource,
 )
+from boba.chat.messages import (
+    JournalOpened,
+    TurnOutcome,
+)
 from boba.core.mcp_names import McpToolNames
 from boba.mcp_client.client import (
     JournalLinks,
     McpDescription,
 )
-from boba.messaging import JournalOpened, TurnOutcome
 from boba.toolkit.calls import CallViews
 from boba.toolkit.chain import StreamPlanError
 from boba.toolkit.dag import (

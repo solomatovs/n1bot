@@ -3,12 +3,14 @@
 
 from boba.config.bind import bind
 from boba.config.loader import ConfigError, ConfigLoader, ConfigResolver
-from boba.config.schema import ConfigSchema
+from boba.config.schema import ConfigModel, ConfigSchema, ConfigVariant
 
 __all__ = [
     "ConfigError",
     "ConfigLoader",
+    "ConfigModel",
     "ConfigResolver",
     "ConfigSchema",
+    "ConfigVariant",
     "bind",
 ]

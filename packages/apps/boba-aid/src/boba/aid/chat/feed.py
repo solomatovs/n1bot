@@ -15,17 +15,19 @@ from acp.experimental.v2 import schema
 from pydantic import BaseModel, ConfigDict
 
 from boba.aid.rendering.acp_view import SessionUpdate, SessionUpdateCodec
-from boba.identity.context import Scope
-from boba.messaging import (
+from boba.chat.messages import (
     AgentUpdate,
     AnyMessage,
-    LockToken,
-    MessageBus,
-    PayloadStore,
     ThreadRewound,
     TurnFinished,
     TurnOutcome,
     TurnStarted,
+)
+from boba.identity.context import Scope
+from boba.messaging import (
+    LockToken,
+    MessageBus,
+    PayloadStore,
 )
 
 __all__ = ["TextClip", "TurnFeed"]

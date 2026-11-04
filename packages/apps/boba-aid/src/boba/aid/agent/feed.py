@@ -82,10 +82,16 @@ from boba.aid.rendering.question import QuestionCards
 from boba.aid.rendering.renderer import RenderSurface, SignalType, TabSurfaces
 from boba.aid.rendering.tool import ChatElements
 from boba.cancellation import RunCancellation
+from boba.chat.messages import (
+    TurnOutcome,
+)
 from boba.identity.context import Scope
 from boba.identity.errors import InternalServiceError
 from boba.identity.locks import LiveLocks, LockKeeper, LockMode, LockPurpose
-from boba.messaging import MessageBus, PayloadStore, TurnOutcome
+from boba.messaging import (
+    MessageBus,
+    PayloadStore,
+)
 from boba.runtime.storage import StorageClient
 from boba.transport.acp.protocol import ErrorDataKey
 

@@ -45,7 +45,7 @@ lxml = "парсер BeautifulSoup, который boba.doc.html называе�
 [tool.boba.extras]
 "boba.doc.html" = "readers"
 "boba.doc.readers" = "readers"
-"boba.doc.router" = "readers"
+"boba.doc.formats" = "readers"
 "boba.doc.bridge" = "readers"
 "boba.doc.ocr" = "ocr"
 

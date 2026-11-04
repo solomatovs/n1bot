@@ -23,9 +23,9 @@ from psycopg.errors import UniqueViolation
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from boba.access.grants import GrantResource, GrantSubject
 from boba.connection_broker.crypto import SecretCipher, SecretCryptoError
 from boba.connection_broker.grants import GrantedIds
-from boba.connections.stored import GrantKind
 from boba.db.postgres import PgQuery, PostgresPool, PostgresTable
 from boba.mcp_client.client import HttpEndpoint, McpServerLimits, SseEndpoint
 
@@ -100,6 +100,7 @@ class McpServerStore(PostgresTable):
     процесса на пул и шифр конфига; зовёт его ServerSource.
     """
 
+    RESOURCE: ClassVar[GrantResource] = GrantResource("mcp_servers")
     LABEL: ClassVar[str] = "mcp_servers"
     """Подпись слоя в текстах ошибок."""
 
@@ -246,7 +247,7 @@ class McpServerStore(PostgresTable):
                     and src_kind_id = %(id)s
                 """,
                 id=server_id,
-                src_kind=GrantKind.MCP_SERVERS.value,
+                src_kind=self.RESOURCE.value,
             )
             .build()
         )
@@ -361,7 +362,7 @@ class McpServerStore(PostgresTable):
                 s.name
         """
         )
-        params = self._grants.params(user_id, roles, GrantKind.MCP_SERVERS)
+        params = self._grants.params(user_id, roles, self.RESOURCE)
 
         return self._query().add(text, **params).build()
 
@@ -385,7 +386,7 @@ class McpServerStore(PostgresTable):
                 s.name = %(name)s
         """
         )
-        params = self._grants.params(user_id, roles, GrantKind.MCP_SERVERS)
+        params = self._grants.params(user_id, roles, self.RESOURCE)
 
         return self._query().add(text, name=name, **params).build()
 
@@ -410,9 +411,9 @@ class McpServerStore(PostgresTable):
                 on conflict (src_kind, src_kind_id, tgt_kind, tgt_kind_id)
                     do nothing
                 """,
-                src_kind=GrantKind.MCP_SERVERS.value,
+                src_kind=self.RESOURCE.value,
                 src_kind_id=server_id,
-                tgt_kind=GrantKind.USERS.value,
+                tgt_kind=GrantSubject.USERS.value,
                 tgt_kind_id=owner_id,
             )
             .build()

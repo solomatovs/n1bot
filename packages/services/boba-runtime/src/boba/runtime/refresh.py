@@ -25,10 +25,16 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from boba.chat.messages import (
+    SignInRefreshRequested,
+)
 from boba.identity.context import CallContexts, Scope
 from boba.identity.sso import RefreshSignal
 from boba.identity.token import SessionRenewal, TokenReader, TokenRejectedError
-from boba.messaging import LockToken, MessageBus, SignInRefreshRequested
+from boba.messaging import (
+    LockToken,
+    MessageBus,
+)
 
 __all__ = ["BusRefreshSignal", "LiveSessions", "LiveToken", "SessionKeeper"]
 

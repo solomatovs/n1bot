@@ -38,7 +38,6 @@ from boba.toolkit.transfer import (
     CommandJournal,
     CreateTemplate,
     DeleteStrategyApply,
-    Engine,
     InsertStrategyApply,
     SchemaHead,
     SchemaStrategyPlan,
@@ -69,10 +68,10 @@ class ChToCh(ChTransfer):
         feed: TransferInbound,
         journal: CommandJournal,
     ) -> None:
-        if head.source_engine is not Engine.CLICKHOUSE:
+        if head.source_engine != ChContract.ENGINE:
             raise TransferError(
                 f"transfer clickhouse -> clickhouse got a schema frame from "
-                f"{head.source_engine.value}"
+                f"{head.source_engine}"
             )
 
         self._client = client

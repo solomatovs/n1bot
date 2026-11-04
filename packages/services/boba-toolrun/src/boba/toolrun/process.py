@@ -77,7 +77,7 @@ class ProcessLauncherConfig(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    provider: Literal["process"]
+    provider: Literal["process"] = "process"
 
     timeout_sec: float = Field(gt=0, description="Потолок времени одного вызова.")
 

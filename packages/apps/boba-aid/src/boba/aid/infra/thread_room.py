@@ -33,17 +33,19 @@ from boba.aid.rendering.renderer import (
     TabSurfaces,
 )
 from boba.canvas.canvas import CanvasSignal, SignalTransport
-from boba.identity.context import Scope
-from boba.identity.errors import InternalServiceError
-from boba.identity.locks import LockMode
-from boba.messaging import (
+from boba.chat.messages import (
     CanvasChanged,
-    Envelope,
-    LockToken,
     McpServersChanged,
     SignInRefreshRequested,
     ThreadActive,
     ThreadChanged,
+)
+from boba.identity.context import Scope
+from boba.identity.errors import InternalServiceError
+from boba.identity.locks import LockMode
+from boba.messaging import (
+    Envelope,
+    LockToken,
     Unsubscribe,
 )
 from boba.runtime import providers as runtime

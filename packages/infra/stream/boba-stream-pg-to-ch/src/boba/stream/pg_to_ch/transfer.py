@@ -47,7 +47,6 @@ from boba.toolkit.transfer import (
     CommandJournal,
     CreateTemplate,
     DeleteStrategyApply,
-    Engine,
     InsertStrategyApply,
     SchemaHead,
     SchemaStrategyPlan,
@@ -234,10 +233,10 @@ class PgToCh(ChTransfer):
         feed: TransferInbound,
         journal: CommandJournal,
     ) -> None:
-        if head.source_engine is not Engine.POSTGRES:
+        if head.source_engine != PgContract.ENGINE:
             raise TransferError(
                 f"transfer postgres -> clickhouse got a schema frame from "
-                f"{head.source_engine.value}"
+                f"{head.source_engine}"
             )
 
         self._client = client

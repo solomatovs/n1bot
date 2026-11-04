@@ -8,8 +8,8 @@ version = "0.0.33.dev1"
 description = "Aid: the chat web UI of the Boba agent."
 requires-python = ">=3.11,<4"
 dependencies = [
+    "boba-access==0.0.33.dev1",
     "boba-sandbox==0.0.33.dev1",
-    "boba-identity-postgres==0.0.33.dev1",
     "boba-core==0.0.33.dev1",
     "boba-auth[http]==0.0.33.dev1",
     "boba-messaging==0.0.33.dev1",
@@ -50,7 +50,6 @@ dev = [
     "boba-mcp==0.0.33.dev1",
     "boba-oauth==0.0.33.dev1",
     "boba-db-clickhouse==0.0.33.dev1",
-    "boba-access==0.0.33.dev1",
     "boba-toolrun==0.0.33.dev1",
     "boba-mcp-adapter==0.0.33.dev1",
     "boba-tool-io==0.0.33.dev1",

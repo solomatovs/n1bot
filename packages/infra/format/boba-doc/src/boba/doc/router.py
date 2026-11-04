@@ -9,11 +9,11 @@ DocumentError — вид не определён или не поддержан,
 
 from __future__ import annotations
 
-from collections.abc import Generator, Iterable, Iterator
+from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import ClassVar
 
-from boba.doc.config import DocConfig
 from boba.doc.document import (
     ByteStream,
     Document,
@@ -21,24 +21,21 @@ from boba.doc.document import (
     DocumentHint,
     DocumentKind,
     Formats,
-    OcrEngine,
+    FormatSpec,
     PageWindow,
     ParsedPage,
     Prefixed,
 )
-from boba.doc.html import HeadingStyle, HtmlDocument
-from boba.doc.readers import (
-    DocxDocument,
-    ImageDocument,
-    PdfDocument,
-    PptxDocument,
-    RtfDocument,
-    TextDocument,
-    XlsDocument,
-    XlsxDocument,
-)
 
-__all__ = ["DocumentRouter"]
+__all__ = ["DocumentRouter", "ReaderSpec"]
+
+
+@dataclass(frozen=True)
+class ReaderSpec:
+    """Формат и уже настроенная фабрика документа, передаваемые в роутер."""
+
+    format: FormatSpec
+    open: Callable[[ByteStream], Document]
 
 
 class DocumentRouter:
@@ -48,20 +45,11 @@ class DocumentRouter:
     doc/web/confluence и индексатор вложений."""
 
     PAGE_GLUE: ClassVar[str] = "\n\n"
-    HEADING_STYLE: ClassVar[HeadingStyle] = HeadingStyle.ATX
-    WITH_OCR: ClassVar[frozenset[DocumentKind]] = frozenset(
-        {
-            DocumentKind.PDF,
-            DocumentKind.DOCX,
-            DocumentKind.PPTX,
-            DocumentKind.IMAGE,
-        }
-    )
-    """Виды, внутри которых бывают картинки: их ридер получает движок OCR."""
 
-    def __init__(self, config: DocConfig, ocr: OcrEngine) -> None:
-        self._config = config
-        self._ocr = ocr
+    def __init__(self, readers: Sequence[ReaderSpec]) -> None:
+        formats = (reader.format for reader in readers)
+        self.formats = Formats(formats)
+        self._readers = {reader.format.kind: reader.open for reader in readers}
 
     def detect(
         self, stream: ByteStream, hint: DocumentHint
@@ -69,8 +57,8 @@ class DocumentRouter:
         """Вид документа по подсказке и голове потока; голова возвращается
         в поток, который дальше читает ридер."""
         head = stream.read(Formats.HEAD_SIZE)
-        kind = Formats.detect(hint, head)
-        if kind is DocumentKind.UNKNOWN:
+        kind = self.formats.detect(hint, head)
+        if kind is None:
             raise DocumentError(
                 f"document {hint.filename!r} ({hint.media_type!r}): format not "
                 f"recognized by media type, filename or leading bytes"
@@ -116,42 +104,25 @@ class DocumentRouter:
         try:
             yield document
         finally:
-            document.close()
+            try:
+                document.close()
+            except DocumentError:
+                raise
+            except Exception as exc:
+                raise DocumentError(
+                    f"closing document format {kind!r} failed: {exc}"
+                ) from exc
 
     def _open(self, kind: DocumentKind, stream: ByteStream) -> Document:
-        """Ридер по виду; документ читается в память целиком."""
-        if kind is DocumentKind.UNKNOWN:
-            raise DocumentError("document: kind is unknown, nothing to open it with")
+        factory = self._readers.get(kind)
+        if factory is None:
+            raise DocumentError(f"document format {kind!r} has no registered reader")
 
-        if kind in self.WITH_OCR:
-            return self._open_with_ocr(kind, stream)
-
-        return self._open_plain(kind, stream)
-
-    def _open_with_ocr(self, kind: DocumentKind, stream: ByteStream) -> Document:
-        """Форматы с картинками внутри: страницы, абзацы и слайды отдают
-        растровые вставки движку OCR."""
-        match kind:
-            case DocumentKind.DOCX:
-                return DocxDocument.open(stream, self._ocr)
-            case DocumentKind.PPTX:
-                return PptxDocument.open(stream, self._ocr)
-            case DocumentKind.IMAGE:
-                return ImageDocument.open(stream, self._ocr)
-            case _:
-                return PdfDocument.open(stream, self._ocr)
-
-    def _open_plain(self, kind: DocumentKind, stream: ByteStream) -> Document:
-        """Форматы без картинок: таблицы и текст."""
-        encodings = self._config.text_encodings
-        match kind:
-            case DocumentKind.XLSX:
-                return XlsxDocument.open(stream)
-            case DocumentKind.XLS:
-                return XlsDocument.open(stream)
-            case DocumentKind.RTF:
-                return RtfDocument.open(stream, encodings)
-            case DocumentKind.HTML:
-                return HtmlDocument.open(stream, self.HEADING_STYLE)
-            case _:
-                return TextDocument.open(stream, encodings)
+        try:
+            return factory(stream)
+        except DocumentError:
+            raise
+        except Exception as exc:
+            raise DocumentError(
+                f"opening document format {kind!r} failed: {exc}"
+            ) from exc

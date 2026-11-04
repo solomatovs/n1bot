@@ -17,7 +17,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Any, ClassVar, Literal, Self
+from typing import Annotated, Any, ClassVar, Literal, Self, TypeVar
 
 from omegaconf import DictConfig
 from pydantic import (
@@ -26,22 +26,21 @@ from pydantic import (
     ConfigDict,
     Field,
     Secret,
+    SerializeAsAny,
     field_validator,
     model_validator,
 )
 
-from boba.auth.config import (
-    AuthConfig,
-    KerberosAuthConfig,
-    ProxyAuthConfig,
-)
+from boba.auth.assembly import AuthBackends
+from boba.auth.config import AuthConfig
 from boba.chat.profiles import ProfileConfig
-from boba.config import ConfigError, ConfigLoader, ConfigSchema, bind
+from boba.config import ConfigError, ConfigLoader, ConfigModel, ConfigSchema, bind
+from boba.core.components import Components
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.service import PublicAddress
 from boba.identity.token import CookieSpec, SessionRenewal
-from boba.krb import KerberosWorkspace, KerberosWorkspaceConfig
-from boba.krb.seal import SsoTickets, TicketSealer
+from boba.krb import KerberosWorkspaceConfig
+from boba.runtime.launchers import SectionLaunchers
 from boba.runtime.program import ProgramTool
 from boba.sandbox import WorkspaceSpec
 from boba.workspace.binaries import TrustedBinaries
@@ -50,19 +49,14 @@ from boba.workspace.launcher import LauncherChain, LauncherEnv, LauncherInterpre
 __all__ = [
     "AppName",
     "ClusterConfig",
-    "ConfigArguments",
     "InstalledProgram",
     "InstanceConf",
     "InstanceData",
     "InstanceLayout",
-    "LocalMessagingConfig",
     "MessagingConfig",
     "PathsConfig",
-    "PostgresMessagingConfig",
     "ProcessConfig",
     "ProcessLogging",
-    "ProgramCall",
-    "ProgramCommand",
     "ProgramDir",
     "ProgramFile",
     "ProgramRoot",
@@ -78,14 +72,6 @@ __all__ = [
     "TokenConfig",
     "ValueCipherConfig",
 ]
-
-
-class ProgramCommand(StrEnum):
-    """Подкоманды программы-службы: служба и проба её готовности."""
-
-    SERVE = "serve"
-    HEALTH = "health"
-    MIGRATE = "migrate"
 
 
 @dataclass(frozen=True)
@@ -132,63 +118,6 @@ class MigrationArguments:
             arguments.database,
             arguments.schema,
             arguments.migration_data,
-        )
-
-
-@dataclass(frozen=True)
-class ProgramCall:
-    """Разобранный запуск программы: подкоманда и файлы конфига."""
-
-    command: ProgramCommand
-    paths: tuple[Path, ...]
-    migration: MigrationOptions = field(default_factory=MigrationOptions)
-
-
-class ConfigArguments:
-    """Аргументы запуска службы: `<программа> serve|health --config <файл>`.
-
-    --config повторяется: первый файл — конфиг экземпляра, следующие —
-    наложения поверх него (стенды и отладка). Значений по умолчанию и поиска
-    «рядом» нет: какие файлы читаются, видно из командной строки.
-    """
-
-    CONFIG: ClassVar[str] = "--config"
-    HELP: ClassVar[dict[ProgramCommand, str]] = {
-        ProgramCommand.SERVE: "run the service",
-        ProgramCommand.HEALTH: "probe the running service on its configured port",
-        ProgramCommand.MIGRATE: "create or upgrade application storage schemas",
-    }
-
-    def __init__(self, parser: argparse.ArgumentParser) -> None:
-        self._parser = parser
-        self._migration = MigrationArguments()
-
-    def call(self) -> ProgramCall:
-        commands = self._parser.add_subparsers(dest="command", required=True)
-        for command in ProgramCommand:
-            sub = commands.add_parser(command.value, help=self.HELP[command])
-            if command is ProgramCommand.MIGRATE:
-                self._migration.add(sub)
-
-            sub.add_argument(
-                self.CONFIG,
-                required=True,
-                action="append",
-                type=Path,
-                help=(
-                    "path to config.toml of this instance; repeat to lay an "
-                    "overlay file over it"
-                ),
-            )
-
-        arguments = self._parser.parse_args()
-        command = ProgramCommand(arguments.command)
-        migration = MigrationOptions()
-        if command is ProgramCommand.MIGRATE:
-            migration = self._migration.read(arguments)
-
-        return ProgramCall(
-            command=command, paths=tuple(arguments.config), migration=migration
         )
 
 
@@ -687,32 +616,11 @@ class ClusterConfig(BaseModel):
         return f"{self.node_id}{self.SEPARATOR}{app.value}"
 
 
-class LocalMessagingConfig(BaseModel):
-    """Шина сообщений в памяти процесса: один инстанс, доставка внутри publish.
+class MessagingConfig(BaseModel):
+    """Общие поля выбранного транспорта; конфиг реализации разбирает её фабрика."""
 
-    Лишние ключи игнорируются: секция общая для всех провайдеров, provider
-    выбирается env-переменной.
-    """
-
-    model_config = ConfigDict(extra="ignore")
-
-    provider: Literal["local"]
-
-
-class PostgresMessagingConfig(BaseModel):
-    """Шина сообщений в Postgres: доставка между инстансами через LISTEN/NOTIFY.
-    Таблицы live_* живут в схеме приложения на пуле процесса."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    provider: Literal["postgres"]
-
-
-MessagingConfig = Annotated[
-    LocalMessagingConfig | PostgresMessagingConfig,
-    Field(discriminator="provider"),
-]
-"""Discriminated union по provider — точная диагностика ошибок валидации."""
+    model_config = ConfigDict(extra="forbid")
+    provider: str = Field(min_length=1)
 
 
 class ValueCipherConfig(BaseModel):
@@ -855,7 +763,10 @@ class ProcessLogging:
         }
 
 
-class ProcessConfig(BaseModel):
+AuthConfigT = TypeVar("AuthConfigT", bound=AuthConfig)
+
+
+class ProcessConfig(ConfigModel):
     """Секции [app], нужные любому процессу, который принимает вход: kerberos,
     способы входа, токен сессии. Базовая для RuntimeConfig (чат) и конфига
     сервиса boba-mcp.
@@ -876,7 +787,12 @@ class ProcessConfig(BaseModel):
     paths: PathsConfig
     tls: TlsConfig = Field(default_factory=TlsConfig)
     server: ServerConfig
-    auth: list[AuthConfig]
+    AUTH_BACKENDS: ClassVar[AuthBackends] = AuthBackends(())
+    LAUNCHER_BACKENDS: ClassVar[Components[BaseModel, DictConfig, SectionLaunchers]] = (
+        Components(BaseModel, "provider", ())
+    )
+
+    auth: list[SerializeAsAny[AuthConfig]]
     logger: dict[str, Any] = Field(default_factory=ProcessLogging.default)
     session: TokenConfig
 
@@ -901,51 +817,19 @@ class ProcessConfig(BaseModel):
 
         return config
 
-    @field_validator("auth")
+    @field_validator("auth", mode="before")
     @classmethod
-    def _distinct_auth_backends(cls, value: list[AuthConfig]) -> list[AuthConfig]:
-        backends: set[tuple[str, str]] = set()
-        for entry in value:
-            if not isinstance(entry, (KerberosAuthConfig, ProxyAuthConfig)):
-                continue
+    def _auth_backends(cls, value: object) -> list[AuthConfig]:
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("[auth] expects a sequence of backend configurations")
 
-            backend = (entry.type, entry.identity.realm)
-            if backend in backends:
-                msg = (
-                    f"[auth]: duplicate {entry.type} backend "
-                    f"for realm {entry.identity.realm!r}"
-                )
-                raise ValueError(msg)
+        configs = [cls.AUTH_BACKENDS.parse(raw) for raw in value]
+        cls.AUTH_BACKENDS.validate(configs)
+        return configs
 
-            backends.add(backend)
-
-        return value
-
-    def kerberos_entries(self) -> tuple[KerberosAuthConfig, ...]:
-        entries: list[KerberosAuthConfig] = []
-        for entry in self.auth:
-            if isinstance(entry, KerberosAuthConfig):
-                entries.append(entry)
-
+    def auth_entries(self, model: type[AuthConfigT]) -> tuple[AuthConfigT, ...]:
+        entries = (entry for entry in self.auth if isinstance(entry, model))
         return tuple(entries)
-
-    def proxy_entries(self) -> tuple[ProxyAuthConfig, ...]:
-        entries: list[ProxyAuthConfig] = []
-        for entry in self.auth:
-            if isinstance(entry, ProxyAuthConfig):
-                entries.append(entry)
-
-        return tuple(entries)
-
-    def sso_tickets(self) -> SsoTickets | None:
-        """Открыватель билетов SSO-входа; None — kerberos в [auth] не настроен."""
-        if not self.kerberos_entries():
-            return None
-
-        return SsoTickets(
-            sealer=TicketSealer(self.session.auth_secret),
-            krb5_config=KerberosWorkspace.krb5_config(),
-        )
 
 
 class RuntimeConfig(ProcessConfig):
@@ -962,4 +846,4 @@ class RuntimeConfig(ProcessConfig):
     profiles: dict[str, ProfileConfig]
     session: SessionConfig
     cluster: ClusterConfig
-    messaging: MessagingConfig
+    messaging: SerializeAsAny[MessagingConfig]

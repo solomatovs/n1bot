@@ -18,11 +18,11 @@ from datetime import datetime
 from enum import IntEnum, StrEnum
 from typing import Protocol, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SerializeAsAny, model_validator
 
 from boba.identity.context import Scope
 from boba.identity.locks import LockLostError, LockToken
-from boba.messaging.messages import AnyCommand, AnyMessage, Message
+from boba.messaging.messages import Command, Message, MessageBusError
 
 __all__ = [
     "BusLimit",
@@ -32,13 +32,6 @@ __all__ = [
     "Listener",
     "ListenerFailedError",
     "ListenerState",
-    "LiveChannel",
-    "LiveCommandsColumn",
-    "LiveEventsColumn",
-    "LiveInstancesColumn",
-    "LivePayloadsColumn",
-    "LiveSequence",
-    "LiveTable",
     "LockLostError",
     "LockToken",
     "MessageBus",
@@ -48,10 +41,6 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
-
-
-class MessageBusError(Exception):
-    """Шина не смогла сохранить, доставить или прочитать сообщение."""
 
 
 class MessageTooLargeError(MessageBusError):
@@ -90,7 +79,7 @@ class Envelope(BaseModel):
     seq: int = Field(ge=1)
     at: datetime
     origin: str = Field(min_length=1)
-    message: AnyMessage
+    message: SerializeAsAny[Message]
 
     @model_validator(mode="after")
     def _body_fits(self) -> Self:
@@ -117,86 +106,12 @@ class CommandEnvelope(BaseModel):
     scope: Scope
     command_id: int = Field(ge=1)
     at: datetime
-    command: AnyCommand
+    command: SerializeAsAny[Command]
 
 
 Listener = Callable[[Envelope], Awaitable[None]]
 CommandListener = Callable[[CommandEnvelope], Awaitable[None]]
 Unsubscribe = Callable[[], None]
-
-
-class LiveTable(StrEnum):
-    """Таблицы шины и живучести; live_locks описана колонками в boba.identity.locks."""
-
-    INSTANCES = "live_instances"
-    EVENTS = "live_events"
-    COMMANDS = "live_commands"
-    LOCKS = "live_locks"
-    PAYLOADS = "live_payloads"
-
-
-class LiveSequence(StrEnum):
-    """Последовательности шины: номер события общий на таблицу, чтобы seq области
-    рос и после уборки её строк.
-    """
-
-    EVENTS = "live_events_seq"
-
-
-class LiveChannel(StrEnum):
-    """Каналы LISTEN/NOTIFY; канал один на всё приложение, вид уведомления различает
-    указатель в теле.
-    """
-
-    LIVE = "boba_live"
-
-
-class LiveInstancesColumn(StrEnum):
-    """Колонки live_instances: зарегистрированные процессы и время их последнего
-    подтверждения жизни.
-    """
-
-    INSTANCE_ID = "instance_id"
-    APP = "app"
-    HOST = "host"
-    STARTED_AT = "started_at"
-    HEARTBEAT_AT = "heartbeat_at"
-
-
-class LiveEventsColumn(StrEnum):
-    """Колонки live_events: сообщения шины, пронумерованные внутри области."""
-
-    SCOPE_KIND = "scope_kind"
-    SCOPE_ID = "scope_id"
-    SEQ = "seq"
-    KIND = "kind"
-    ORIGIN = "origin"
-    BODY = "body"
-    AT = "at"
-
-
-class LiveCommandsColumn(StrEnum):
-    """Колонки live_commands: команды областям и кто из инстансов их исполнил."""
-
-    ID = "id"
-    SCOPE_KIND = "scope_kind"
-    SCOPE_ID = "scope_id"
-    ACTION = "action"
-    BODY = "body"
-    BY_INSTANCE = "by_instance"
-    AT = "at"
-    TAKEN_BY = "taken_by"
-    TAKEN_AT = "taken_at"
-
-
-class LivePayloadsColumn(StrEnum):
-    """Колонки live_payloads: тела сообщений, привязанные к области."""
-
-    SCOPE_KIND = "scope_kind"
-    SCOPE_ID = "scope_id"
-    ID = "id"
-    BODY = "body"
-    AT = "at"
 
 
 class ListenerState(StrEnum):
@@ -214,11 +129,11 @@ class MessageBus(Protocol):
     """
 
     @abstractmethod
-    async def publish(self, scope: Scope, message: AnyMessage, token: LockToken) -> int:
+    async def publish(self, scope: Scope, message: Message, token: LockToken) -> int:
         """Публикует сообщение от имени держателя области."""
 
     @abstractmethod
-    async def command(self, scope: Scope, command: AnyCommand) -> int:
+    async def command(self, scope: Scope, command: Command) -> int:
         """Отправляет команду области от любого процесса."""
 
     @abstractmethod

@@ -429,10 +429,10 @@ class AttachmentText:
     конструкторе из секции вызова, потребитель читает поток скачивания."""
 
     def __init__(self, cfg: IngestToolConfig) -> None:
+        from boba.doc.formats import StandardDocuments  # noqa: PLC0415
         from boba.doc.ocr import OcrEngines  # noqa: PLC0415
-        from boba.doc.router import DocumentRouter  # noqa: PLC0415
 
-        self._router = DocumentRouter(cfg, OcrEngines(LLM).of(cfg.ocr))
+        self._router = StandardDocuments(cfg, OcrEngines(LLM).of(cfg.ocr)).router
 
     def consumer(self, filename: str) -> Callable[[BinaryIO], str]:
         hint = DocumentHint(filename=filename)

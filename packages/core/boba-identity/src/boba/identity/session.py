@@ -15,7 +15,6 @@ import json
 from collections.abc import Generator, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import Any, ClassVar, Final, Protocol
 
 from pydantic import GetCoreSchemaHandler
@@ -30,7 +29,6 @@ __all__ = [
     "LoginTemplate",
     "Session",
     "SessionSource",
-    "SignInProvider",
     "UserLogin",
     "UserMetadataField",
 ]
@@ -40,6 +38,8 @@ class UserMetadataField:
     "Ключи metadata у cl.User; контракт chainlit."
 
     PROVIDER: Final = "provider"
+    RENEWAL: Final = "renewal"
+    CREDENTIAL_REASON: Final = "credential_reason"
     PRINCIPAL: Final = "principal"
     TICKET: Final = "sso_ticket"
     ROLES: Final = "roles"
@@ -49,15 +49,6 @@ class UserMetadataField:
     IDENTITY: Final = "identity"
     USER_ID: Final = "user_id"
     CREATED_AT: Final = "created_at"
-
-
-class SignInProvider(StrEnum):
-    """Значение metadata[provider]: каким провайдером выпущен вход."""
-
-    KERBEROS = "KerberosAuth"
-    LDAP = "LdapAuth"
-    LOCAL = "LocalAuth"
-    PROXY = "ProxyAuth"
 
 
 class Login(str):

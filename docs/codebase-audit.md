@@ -4193,7 +4193,7 @@ credentials, определения личности, получения рол�
 
 | Обязанность | Существующий общий компонент | Граница приложения после переноса |
 |---|---|---|
-| Local/LDAP/Kerberos/proxy и получение ролей | `boba-auth`: `SignIns`, реализации входов и провайдеров ролей; `boba.runtime.signin.SignInAssembly` собирает их для обоих приложений | AID подключает `AuthService` к Chainlit, MCP — `SignIns` к `boba-oauth` |
+| Local/LDAP/Kerberos/proxy и получение ролей | `boba-auth`: `SignIns`, реализации входов и провайдеров ролей; `boba.auth.assembly.AuthBackends` собирает выбранные фабрики; готовый комплект `boba.runtime.auth_backends.StandardAuthBackends` подключают приложения | AID подключает `AuthService` к Chainlit, MCP — `SignIns` к `boba-oauth` |
 | Проверенная личность и контекст вызова | `boba-identity`: `SignedIn`, `SignInMetadata`, `Subject`, порты users | Адаптеры сессии/токена преобразуют результат общего входа; не придумывают свои правила сопоставления логина |
 | Выдачи пользователю и ролям | `boba-access` и `boba-connection-broker`: правила, `GrantedIds`/`SubjectGrantsQuery`, хранилище | Отдельные схемы данных AID/MCP, одна реализация запросов и решения о доступе |
 | Права на инструменты | `boba-access.ToolAccess` и `boba-toolrun.ToolAccessGuard` | MCP применяет их к своему каталогу; AID не содержит собственной политики tools |

@@ -33,6 +33,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from boba.access import ToolAccess, ToolGrants, ToolPolicy
 from boba.config import ConfigError, bind
 from boba.connection_broker.tickets import SectionTickets, ServiceTickets
+from boba.core.components import Components
 from boba.core.types import StringList
 from boba.core.validation import ValidationText
 from boba.db.postgres.connection import PostgresConfig
@@ -199,10 +200,15 @@ class PluginMigrations(MigrationSources):
     не подключают.
     """
 
+    def __init__(
+        self, backends: Components[BaseModel, DictConfig, SectionLaunchers]
+    ) -> None:
+        self._backends = backends
+
     async def targets(self, raw: DictConfig) -> Sequence[MigrationTarget]:
         targets: list[MigrationTarget] = []
         sections = PluginSections(raw)
-        launchers = ToolLaunchers(raw).build()
+        launchers = ToolLaunchers(raw, self._backends).build()
         try:
             launchers.probe()
             for plugin in sections.ids():

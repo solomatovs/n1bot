@@ -26,9 +26,17 @@ from collections.abc import AsyncIterator, Generator, Iterator, Mapping, Sequenc
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Annotated, Any, ClassVar, Literal, Protocol
+from importlib.metadata import entry_points
+from typing import Annotated, Any, ClassVar, Generic, Literal, Protocol, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    StringConstraints,
+    TypeAdapter,
+)
 
 from boba.toolkit.failure import FailurePacker, ReportedError
 from boba.toolkit.ports import (
@@ -93,6 +101,7 @@ __all__ = [
     "TemplateVar",
     "TemplateVars",
     "TransferError",
+    "TransferFactories",
     "TransferFrame",
     "TransferInbound",
     "TransferOutbound",
@@ -111,13 +120,75 @@ class TransferError(Exception):
     """Поток кадров нарушен или стратегия приёмника отказала."""
 
 
-class Engine(StrEnum):
-    """Движок источника, записанный в кадре schema. По нему приёмник находит
-    пару «источник → приёмник» в реестре."""
+Engine = Annotated[str, StringConstraints(strict=True, pattern=r"^[a-z][a-z0-9_-]*$")]
+"""Открытое имя движка; значение и совместимость объявляет адаптер источника."""
 
-    POSTGRES = "postgres"
-    CLICKHOUSE = "clickhouse"
-    ORACLE = "oracle"
+FactoryT = TypeVar("FactoryT")
+
+
+class TransferFactories(Generic[FactoryT]):
+    """Загружает адаптеры одной группы entry points и выбирает пару по источнику.
+
+    Реестр создаёт приёмник, передавая контракт своей фабрики. Неизвестные
+    имена и ошибочные регистрации дают TransferError до запуска адаптера.
+    """
+
+    def __init__(
+        self,
+        group: str,
+        factory_type: type[FactoryT],
+        factories: Mapping[Engine, FactoryT] | None = None,
+    ) -> None:
+        self._group = group
+        self._factory_type = factory_type
+        self._engine = TypeAdapter(Engine)
+        self._factories: dict[Engine, FactoryT] = {}
+        if factories is not None:
+            for name, factory in factories.items():
+                self._register(name, factory)
+
+            return
+
+        for entry in entry_points(group=group):
+            try:
+                self._register(entry.name, entry.load())
+            except Exception as exc:
+                raise TransferError(
+                    f"loading transfer {entry.name!r} from {group!r} "
+                    f"({entry.value}) failed: {exc}"
+                ) from exc
+
+    def _register(self, name: str, factory: object) -> None:
+        try:
+            engine = self._engine.validate_python(name)
+        except ValueError as exc:
+            raise TransferError(
+                f"transfer group {self._group!r}: invalid source {name!r}: {exc}"
+            ) from exc
+
+        if engine in self._factories:
+            raise TransferError(
+                f"transfer group {self._group!r}: duplicate source {engine!r}"
+            )
+
+        if not isinstance(factory, self._factory_type):
+            raise TransferError(
+                f"transfer group {self._group!r}, source {engine!r}: "
+                f"expected {self._factory_type.__name__}, got {type(factory).__name__}"
+            )
+
+        self._factories[engine] = factory
+
+    def pair(self, engine: Engine) -> FactoryT:
+        factory = self._factories.get(engine)
+        if factory is None:
+            installed = sorted(self._factories)
+            raise TransferError(
+                f"transfer group {self._group!r}: no adapter for source {engine!r}; "
+                f"installed sources: {installed}"
+            )
+
+        return factory
 
 
 class StreamWire(StrEnum):
@@ -368,7 +439,7 @@ class TransferInbound:
 
         head = first.head
         self._progress.received(
-            f"the incoming stream: {head.wire.value} from {head.source_engine.value}"
+            f"the incoming stream: {head.wire.value} from {head.source_engine}"
         )
 
         return head

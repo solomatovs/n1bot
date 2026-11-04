@@ -44,7 +44,6 @@ __all__ = [
     "ContractTable",
     "Declarations",
     "DeclaredType",
-    "Engine",
     "SchemaDiff",
     "SchemaMatcher",
     "StreamColumn",
@@ -758,16 +757,6 @@ class SchemaMatcher:
             )
 
         return by_name
-
-
-class Engine(StrEnum):
-    """Движок источника нейтрального контракта: у postgres приёмник берёт
-    текст типа как есть, у остальных выводит тип из семейства."""
-
-    POSTGRES = "postgres"
-    GREENPLUM = "greenplum"
-    CLICKHOUSE = "clickhouse"
-    ORACLE = "oracle"
 
 
 class ColumnTypeModel(BaseModel):

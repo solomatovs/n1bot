@@ -454,13 +454,11 @@ provides-extras = ["dev"]
 name = "boba-access-postgres"
 version = "0.0.33.dev1"
 source = { editable = "packages/infra/auth/boba-access-postgres" }
-dependencies = [
-    { name = "boba-access", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "boba-db-postgres", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-]
 
 [package.optional-dependencies]
 dev = [
+    { name = "boba-access", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-db-postgres", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-identity", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-identity-postgres", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-stand", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -470,8 +468,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "boba-access", editable = "packages/core/boba-access" },
-    { name = "boba-db-postgres", editable = "packages/infra/db/boba-db-postgres" },
+    { name = "boba-access", marker = "extra == 'dev'", editable = "packages/core/boba-access" },
+    { name = "boba-db-postgres", marker = "extra == 'dev'", editable = "packages/infra/db/boba-db-postgres" },
     { name = "boba-identity", marker = "extra == 'dev'", editable = "packages/core/boba-identity" },
     { name = "boba-identity-postgres", marker = "extra == 'dev'", editable = "packages/infra/auth/boba-identity-postgres" },
     { name = "boba-stand", marker = "extra == 'dev'", editable = "packages/testing/boba-stand" },
@@ -529,6 +527,7 @@ source = { editable = "packages/apps/boba-aid" }
 dependencies = [
     { name = "agent-client-protocol", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "anyio", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-access", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-auth", extra = ["http"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-cancellation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-canvas", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -539,7 +538,6 @@ dependencies = [
     { name = "boba-core", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-db-postgres", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-identity", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "boba-identity-postgres", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-mcp-client", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-messaging", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-runtime", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -566,7 +564,6 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
-    { name = "boba-access", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-agent", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-cli", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-confluence", extra = ["html"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -599,7 +596,7 @@ dev = [
 requires-dist = [
     { name = "agent-client-protocol", specifier = "==1.0.0rc3" },
     { name = "anyio", specifier = ">=4,<5" },
-    { name = "boba-access", marker = "extra == 'dev'", editable = "packages/core/boba-access" },
+    { name = "boba-access", editable = "packages/core/boba-access" },
     { name = "boba-agent", marker = "extra == 'dev'", editable = "packages/core/boba-agent" },
     { name = "boba-auth", extras = ["http"], editable = "packages/services/boba-auth" },
     { name = "boba-cancellation", editable = "packages/core/boba-cancellation" },
@@ -615,7 +612,6 @@ requires-dist = [
     { name = "boba-db-postgres", editable = "packages/infra/db/boba-db-postgres" },
     { name = "boba-doc", extras = ["readers"], marker = "extra == 'dev'", editable = "packages/infra/format/boba-doc" },
     { name = "boba-identity", editable = "packages/core/boba-identity" },
-    { name = "boba-identity-postgres", editable = "packages/infra/auth/boba-identity-postgres" },
     { name = "boba-kerberos", marker = "extra == 'dev'", editable = "packages/core/boba-kerberos" },
     { name = "boba-krb", extras = ["seal"], marker = "extra == 'dev'", editable = "packages/infra/auth/boba-krb" },
     { name = "boba-llm-onnx", marker = "extra == 'dev'", editable = "packages/infra/llm/boba-llm-onnx" },
@@ -667,6 +663,7 @@ name = "boba-auth"
 version = "0.0.33.dev1"
 source = { editable = "packages/services/boba-auth" }
 dependencies = [
+    { name = "boba-core", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-identity", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-kerberos", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-toolkit", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -690,6 +687,7 @@ http = [
 [package.metadata]
 requires-dist = [
     { name = "boba-config", marker = "extra == 'dev'", editable = "packages/infra/config/boba-config" },
+    { name = "boba-core", editable = "packages/core/boba-core" },
     { name = "boba-identity", editable = "packages/core/boba-identity" },
     { name = "boba-kerberos", editable = "packages/core/boba-kerberos" },
     { name = "boba-ldap", marker = "extra == 'dev'", editable = "packages/infra/auth/boba-ldap" },
@@ -835,6 +833,7 @@ dependencies = [
     { name = "boba-core", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-identity", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-llm", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-messaging", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
 
@@ -850,6 +849,7 @@ requires-dist = [
     { name = "boba-core", editable = "packages/core/boba-core" },
     { name = "boba-identity", editable = "packages/core/boba-identity" },
     { name = "boba-llm", editable = "packages/core/boba-llm" },
+    { name = "boba-messaging", editable = "packages/core/boba-messaging" },
     { name = "boba-stand", marker = "extra == 'dev'", editable = "packages/testing/boba-stand" },
     { name = "pydantic", specifier = ">=2.12,<3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1,<10" },
@@ -1055,6 +1055,7 @@ name = "boba-connections"
 version = "0.0.33.dev1"
 source = { editable = "packages/core/boba-connections" }
 dependencies = [
+    { name = "boba-access", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-core", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-identity", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-kerberos", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -1071,6 +1072,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "boba-access", editable = "packages/core/boba-access" },
     { name = "boba-core", editable = "packages/core/boba-core" },
     { name = "boba-identity", editable = "packages/core/boba-identity" },
     { name = "boba-kerberos", editable = "packages/core/boba-kerberos" },
@@ -1830,8 +1832,6 @@ dependencies = [
     { name = "jsonschema", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "mcp", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "mcp-types", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "omegaconf", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "psycopg", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "starlette", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "uvicorn", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -1860,7 +1860,9 @@ dev = [
     { name = "gssapi", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "httpx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "krb5", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "omegaconf", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "playwright", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "psycopg", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "py-key-value-aio", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pytest", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
@@ -1908,9 +1910,9 @@ requires-dist = [
     { name = "krb5", marker = "extra == 'dev'", specifier = ">=0.7,<1" },
     { name = "mcp", specifier = ">=2.3,<3" },
     { name = "mcp-types", specifier = ">=2.3,<3" },
-    { name = "omegaconf", specifier = ">=2.3,<3" },
+    { name = "omegaconf", marker = "extra == 'dev'", specifier = ">=2.3,<3" },
     { name = "playwright", marker = "extra == 'dev'", specifier = ">=1.47,<2" },
-    { name = "psycopg", specifier = ">=3.3,<4" },
+    { name = "psycopg", marker = "extra == 'dev'", specifier = ">=3.3,<4" },
     { name = "py-key-value-aio", marker = "extra == 'dev'", specifier = ">=0.4,<1" },
     { name = "pydantic", specifier = ">=2.12,<3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1,<10" },

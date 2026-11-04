@@ -47,6 +47,9 @@ from boba.aid.mcp_servers.sources import ServerSource, StoredServers
 from boba.aid.mcp_servers.store import McpServerStore
 from boba.aid.rendering.renderer import TabSurfaces
 from boba.auth import JwtTokens
+from boba.chat.messages import (
+    McpServersChanged,
+)
 from boba.chat.profiles import ChatProfiles, SelectedProfile
 from boba.connection_broker.crypto import SecretCipher
 from boba.db.postgres import AsyncPostgresPool
@@ -58,7 +61,6 @@ from boba.mcp_client.client import McpServers
 from boba.messaging import (
     Envelope,
     LockToken,
-    McpServersChanged,
     MessageBus,
     MessageBusError,
     PayloadStore,

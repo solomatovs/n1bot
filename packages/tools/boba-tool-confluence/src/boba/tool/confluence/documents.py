@@ -19,12 +19,11 @@ from boba.doc.document import (
     DocumentError,
     DocumentHint,
     DocumentKind,
-    Formats,
     PageWindow,
     ParsedPage,
 )
+from boba.doc.formats import StandardDocuments
 from boba.doc.ocr import OcrEngines
-from boba.doc.router import DocumentRouter
 from boba.indexing import (
     IncompatibleContentError,
     RawDocument,
@@ -46,7 +45,7 @@ class DocumentReader(Reader[str]):
     READER_ID: ClassVar[ReaderId] = ReaderId("ext.doc")
 
     def __init__(self, config: DocSection, engines: OcrEngines) -> None:
-        self._router = DocumentRouter(config, engines.of(config.ocr))
+        self._router = StandardDocuments(config, engines.of(config.ocr)).router
 
     def reader_id(self) -> ReaderId:
         return self.READER_ID
@@ -54,13 +53,13 @@ class DocumentReader(Reader[str]):
     @property
     def media_types(self) -> tuple[str, ...]:
         """Маршруты DispatchReader'а: документы и картинки, без text/*."""
-        return Formats.media_types()
+        return self._router.formats.media_types()
 
     async def read(self, value: RawDocument) -> AsyncIterator[Section[str]]:
         media_type = value.metadata.get(TransportKeys.CONTENT_TYPE) or ""
         hint = DocumentHint(media_type=media_type)
-        kind = Formats.of_hint(hint)
-        if kind is DocumentKind.UNKNOWN:
+        kind = self._router.formats.of_hint(hint)
+        if kind is None:
             raise self._incompatible(
                 value, f"media type {media_type!r} is not a readable document"
             )
@@ -91,7 +90,7 @@ class DocumentReader(Reader[str]):
             if not text:
                 continue
 
-            metadata = value.metadata.set(ReaderKeys.DOC_TYPE, kind.value)
+            metadata = value.metadata.set(ReaderKeys.DOC_TYPE, kind)
             metadata = metadata.set(SectionKeys.PAGE_NUMBER, page.number)
             yield Section(
                 source_id=value.source_id,

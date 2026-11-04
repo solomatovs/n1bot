@@ -17,12 +17,18 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import replace
+from enum import StrEnum
 from typing import Any, ClassVar
 from uuid import UUID
 
 from psycopg.types.json import Jsonb
 
-from boba.access.grants import ConnectionFilter
+from boba.access.grants import (
+    ConnectionFilter,
+    GrantResource,
+    GrantSubject,
+    GrantTarget,
+)
 from boba.connection_broker.crypto import SecretCipher
 from boba.connection_broker.grants import SubjectGrantsQuery, SubjectRowColumn
 from boba.connections.address import AddressError
@@ -36,13 +42,8 @@ from boba.connections.stored import (
     ConnectionBase,
     ConnectionNotFoundError,
     ConnectionRepository,
-    ConnectionsColumn,
     ConnectionStoreError,
     GrantedConnection,
-    GrantKind,
-    GrantsColumn,
-    GrantTarget,
-    RolesColumn,
     StoredConnection,
     StoredRole,
 )
@@ -57,6 +58,40 @@ __all__ = [
 ]
 
 
+class ConnectionTable(StrEnum):
+    """Таблицы соединений: строки, роли и гранты «источник — субъект»."""
+
+    CONNECTIONS = "connections"
+    ROLES = "roles"
+    GRANTS = "grants"
+
+
+class ConnectionsColumn(StrEnum):
+    """Колонки connections; профиль лежит шифротекстом в data."""
+
+    ID = "id"
+    NAME = "name"
+    DATA = "data"
+
+
+class RolesColumn(StrEnum):
+    """Колонки roles."""
+
+    ID = "id"
+    ROLE = "role"
+    CREATED_AT = "create_at"
+
+
+class GrantsColumn(StrEnum):
+    """Колонки grants: источник (соединение) и субъект (пользователь или роль)."""
+
+    ID = "id"
+    SRC_KIND = "src_kind"
+    SRC_KIND_ID = "src_kind_id"
+    TGT_KIND = "tgt_kind"
+    TGT_KIND_ID = "tgt_kind_id"
+
+
 class ConnectionStore(PostgresTable, ConnectionRepository):
     """CRUD над connections/roles/grants: наружу — модели, в базе — шифротекст.
 
@@ -65,6 +100,7 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
     """
 
     LABEL: ClassVar[str] = "connections"
+    RESOURCE: ClassVar[GrantResource] = GrantResource("connections")
 
     def __init__(
         self,
@@ -76,7 +112,7 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
         super().__init__(None, db_schema, pool)
         self._types = types
         self._cipher = cipher
-        self._grants = SubjectGrantsQuery()
+        self._grants = SubjectGrantsQuery(self.RESOURCE)
 
     def _failure(self, action: str, exc: Exception) -> Exception:
         return ConnectionStoreError(self._detail(action, exc))
@@ -199,7 +235,7 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
                     and src_kind_id = %(id)s
                 """,
                 id=connection_id,
-                src_kind=GrantKind.CONNECTIONS.value,
+                src_kind=self.RESOURCE.value,
             )
             .build()
         )
@@ -328,7 +364,7 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
                     tgt_kind,
                     tgt_kind_id
                 """,
-                src_kind=GrantKind.CONNECTIONS.value,
+                src_kind=self.RESOURCE.value,
                 src_kind_id=connection_id,
             )
             .build()
@@ -339,7 +375,7 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
         for row in rows:
             targets.append(
                 GrantTarget(
-                    kind=GrantKind(row[GrantsColumn.TGT_KIND.value]),
+                    kind=GrantSubject(row[GrantsColumn.TGT_KIND.value]),
                     id=UUID(str(row[GrantsColumn.TGT_KIND_ID.value])),
                 )
             )
@@ -429,7 +465,7 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
 
     def _grant_params(self, connection_id: UUID, target: GrantTarget) -> dict[str, Any]:
         return {
-            "src_kind": GrantKind.CONNECTIONS.value,
+            "src_kind": self.RESOURCE.value,
             "src_kind_id": connection_id,
             "tgt_kind": target.kind.value,
             "tgt_kind_id": target.id,

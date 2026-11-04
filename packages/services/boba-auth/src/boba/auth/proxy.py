@@ -37,7 +37,7 @@ from boba.auth.signin import SignedInFactory, SignInDetails
 from boba.identity.admission import PrincipalFacts
 from boba.identity.errors import AuthenticationError, AuthorizationError
 from boba.identity.principal import UserIdentity
-from boba.identity.session import SignInProvider, UserLogin
+from boba.identity.session import UserLogin
 from boba.identity.signin import ProxyRequest, ProxySignIn, SignedIn
 
 __all__ = [
@@ -298,7 +298,7 @@ class HmacProxySignIn(ProxySignIn):
         facts = self._facts_of(request, login)
         return await self._signed_in.create(
             SignInDetails(
-                provider=SignInProvider.PROXY,
+                provider=self._config.PROVIDER,
                 identity=identity,
                 display_name=login.display,
                 facts=facts,

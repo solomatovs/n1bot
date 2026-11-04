@@ -9,7 +9,6 @@ from __future__ import annotations
 from abc import abstractmethod
 from collections.abc import Iterable
 from datetime import datetime
-from enum import StrEnum
 from typing import Protocol
 from uuid import UUID
 
@@ -34,7 +33,6 @@ __all__ = [
     "UserIdentityMigration",
     "UserIdentitySnapshot",
     "UserRows",
-    "UsersColumn",
     "UsersUpsert",
 ]
 
@@ -61,17 +59,6 @@ class AuthenticatedUser(BaseModel):
     def credential(self) -> Credential:
         """Делегированный билет входа либо причина его отсутствия."""
         return self.sign_in.credential()
-
-
-class UsersColumn(StrEnum):
-    """Колонки users."""
-
-    ID = "id"
-    IDENTIFIER = "identifier"
-    CREATED_AT = "created_at"
-    REALM = "realm"
-    LOGIN = "login"
-    ROLES = "roles"
 
 
 class StoredUser(BaseModel):

@@ -73,6 +73,8 @@ from boba.agent.settings import (
     SettingsLayer,
 )
 from boba.auth import SignIns
+from boba.auth.assembly import AuthBackends, AuthServices
+from boba.auth.config import AuthConfig, ProxyAuthConfig
 from boba.auth.proxy import ProxyAssertionVerifier
 from boba.cancellation import ProcessStop
 from boba.cli.acp_server import AcpAgent
@@ -85,7 +87,7 @@ from boba.cli.app import (
 )
 from boba.cli.settings import Arguments, EffectiveSettings, Settings, SettingsError
 from boba.cli.threads import LoopThread, SessionThreads, ThreadedHistoryStore
-from boba.config import ConfigError, bind
+from boba.config import ConfigError, ConfigVariant, bind
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import LibpqConnection, PostgresConfig
 from boba.history.postgres import PostgresHistoryStore, SessionLocks
@@ -110,9 +112,9 @@ from boba.oauth.server import (
     TokenClaims,
     TrustedClient,
 )
+from boba.runtime.auth_backends import StandardAuthBackends
 from boba.runtime.config import ProcessConfig, ServerConfig
 from boba.runtime.http import HealthCheckError, HealthProbe, SignalledServer
-from boba.runtime.signin import SignInAssembly
 from boba.transport.acp.protocol import AgentSide
 
 __all__ = [
@@ -228,6 +230,11 @@ class AgentServerConfig(ServerConfig, ServiceAddress):
 
 class ServeConfig(ProcessConfig):
     """Секции процесса службы: секции процесса и [agent]."""
+
+    AUTH_BACKENDS: ClassVar[AuthBackends] = StandardAuthBackends().registry
+    CONFIG_VARIANTS: ClassVar = {
+        AuthConfig: ConfigVariant("type", AUTH_BACKENDS.model_for),
+    }
 
     server: AgentServerConfig
     postgres: PostgresConfig
@@ -856,8 +863,10 @@ class ServeHost:
     ) -> SignIns:
         """Способы входа процесса из [auth]: пароли, SPNEGO и proxy с их
         провайдерами ролей и профилей."""
-        assembly = SignInAssembly(Ldap3Directory(), profiles, roles)
-        return assembly.build(config.auth, config.session.auth_secret)
+        services = AuthServices(
+            Ldap3Directory(), profiles, roles, config.session.auth_secret
+        )
+        return config.AUTH_BACKENDS.build(config.auth, services)
 
     def _auth(self) -> ServiceAuth:
         """Вход службы: сервер авторизации над способами входа [auth] и
@@ -873,7 +882,7 @@ class ServeHost:
             session.session_generation(),
             ServeMark.TOKEN_SALT,
         )
-        assertions = ProxyAssertionVerifier(self._config.proxy_entries())
+        assertions = ProxyAssertionVerifier(self._config.auth_entries(ProxyAuthConfig))
 
         sealed = SealedValues(session.auth_secret, ServeMark.SEALED_SALT)
         server = AuthServer(

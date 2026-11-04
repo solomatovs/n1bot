@@ -9,6 +9,7 @@ description = "Boba connections: профили внешних систем (pos
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba-core==0.0.33.dev1",
+    "boba-access==0.0.33.dev1",
     "boba-toolkit==0.0.33.dev1",
     "boba-identity==0.0.33.dev1",
     "boba-kerberos==0.0.33.dev1",

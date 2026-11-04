@@ -23,10 +23,10 @@ from boba.doc.document import (
     DocumentError,
     DocumentHint,
     DocumentKind,
-    Formats,
 )
+from boba.doc.formats import StandardDocuments
 from boba.doc.ocr import OcrEngines
-from boba.doc.router import DocumentRouter
+from boba.doc.readers import ImageDocument
 
 __all__ = ["AttachmentReader", "DocumentTextError"]
 
@@ -47,7 +47,7 @@ class AttachmentReader:
     def __init__(
         self, doc: DocSection, masks: Sequence[str], engines: OcrEngines
     ) -> None:
-        self._router = DocumentRouter(doc, engines.of(doc.ocr))
+        self._router = StandardDocuments(doc, engines.of(doc.ocr)).router
         self._gate = AttachmentGate(
             allowed=AttachmentFilter(masks), requested=True, ocr=doc.ocr.enabled
         )
@@ -66,16 +66,16 @@ class AttachmentReader:
             return verdict
 
         kind = self.kind(attachment)
-        if kind is DocumentKind.UNKNOWN:
+        if kind is None:
             return AttachmentVerdict.NOT_ALLOWED
 
-        if kind is DocumentKind.IMAGE and not self._gate.ocr:
+        if kind == ImageDocument.KIND and not self._gate.ocr:
             return AttachmentVerdict.IMAGE_WITHOUT_OCR
 
         return AttachmentVerdict.TAKE
 
     def aspect(self, attachment: Attachment) -> Aspect:
-        if self.kind(attachment) is DocumentKind.IMAGE:
+        if self.kind(attachment) == ImageDocument.KIND:
             return Aspect.OCR
 
         return Aspect.BODY
@@ -99,5 +99,5 @@ class AttachmentReader:
     def hint(self, attachment: Attachment) -> DocumentHint:
         return DocumentHint(media_type=attachment.media_type, filename=attachment.title)
 
-    def kind(self, attachment: Attachment) -> DocumentKind:
-        return Formats.of_hint(self.hint(attachment))
+    def kind(self, attachment: Attachment) -> DocumentKind | None:
+        return self._router.formats.of_hint(self.hint(attachment))

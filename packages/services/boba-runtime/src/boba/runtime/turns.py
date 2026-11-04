@@ -11,6 +11,13 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 
+from boba.chat.messages import (
+    AnswerInterrupted,
+    MessageKind,
+    TurnFinished,
+    TurnOutcome,
+    TurnStarted,
+)
 from boba.identity.context import Scope
 from boba.identity.locks import (
     LiveLocks,
@@ -20,21 +27,17 @@ from boba.identity.locks import (
     StaleLock,
 )
 from boba.messaging import (
-    AnswerInterrupted,
     Envelope,
     MessageBus,
-    MessageKind,
-    TurnFinished,
-    TurnOutcome,
-    TurnStarted,
 )
+from boba.runtime.messaging import StaleObserver
 
 __all__ = ["StaleTurnCloser"]
 
 logger = logging.getLogger(__name__)
 
 
-class StaleTurnCloser:
+class StaleTurnCloser(StaleObserver):
     """Находит по сохранённым сообщениям открытый ход области и публикует его
     завершение под блокировкой уборки, чтобы ленты на живых инстансах закрыли ход.
     """

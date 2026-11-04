@@ -3,21 +3,27 @@
 Ошибки: своих не выпускает; выбор профиля — boba.chat.profiles.
 """
 
-from typing import Annotated, Any, Self
+from typing import Annotated, Any, ClassVar, Self
 from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import (
     ConfigDict,
     Field,
     HttpUrl,
+    SerializeAsAny,
+    field_validator,
     model_validator,
 )
 
 from boba.aid.agent.config import AgentSettings, ProcessAgentConfig
 from boba.aid.mcp_servers.config import McpServersConfig
-from boba.auth.config import AuthConfig
+from boba.auth.assembly import AuthBackends
+from boba.auth.config import AuthConfig, ProxyAuthConfig
 from boba.chat.profiles import LocalChatProfileConfig, ProfileConfig
-from boba.runtime.config import RuntimeConfig, ServerConfig
+from boba.config import ConfigVariant
+from boba.runtime.auth_backends import StandardAuthBackends
+from boba.runtime.config import MessagingConfig, RuntimeConfig, ServerConfig
+from boba.runtime.messaging_backends import StandardMessagingBackends
 
 LOGGING_CONFIG: dict[str, Any] = {
     "version": 1,
@@ -187,6 +193,18 @@ class AidSection(ServerConfig):
 class AppConfig(RuntimeConfig):
     """Секции процесса aid поверх общих: [server], профили, роли и агент."""
 
+    AUTH_BACKENDS: ClassVar[AuthBackends] = StandardAuthBackends().registry
+    MESSAGING_BACKENDS: ClassVar = StandardMessagingBackends().registry
+    CONFIG_VARIANTS: ClassVar = {
+        AuthConfig: ConfigVariant("type", AUTH_BACKENDS.model_for),
+        MessagingConfig: ConfigVariant("provider", MESSAGING_BACKENDS.model_for),
+    }
+
+    @field_validator("messaging", mode="before")
+    @classmethod
+    def _messaging_backend(cls, raw: object) -> MessagingConfig:
+        return cls.MESSAGING_BACKENDS.parse(raw)
+
     model_config = ConfigDict(extra="ignore")
 
     server: Annotated[
@@ -220,7 +238,7 @@ class AppConfig(RuntimeConfig):
     def _proxy_realms_are_isolated(self) -> Self:
         routes: set[str] = set()
         secrets: set[str] = set()
-        for proxy in self.proxy_entries():
+        for proxy in self.auth_entries(ProxyAuthConfig):
             if proxy.path in routes:
                 msg = (
                     f"[auth]: proxy realm {proxy.identity.realm!r} repeats route "
@@ -269,7 +287,7 @@ class AppConfig(RuntimeConfig):
         raise ValueError(msg)
 
     auth: Annotated[
-        list[AuthConfig],
+        list[SerializeAsAny[AuthConfig]],
         Field(
             default_factory=list,
             description="Доступные способы авторизации",

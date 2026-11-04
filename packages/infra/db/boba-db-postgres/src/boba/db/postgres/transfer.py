@@ -23,7 +23,6 @@ from collections.abc import AsyncIterator, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
-from importlib.metadata import entry_points
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
 import psycopg
@@ -65,6 +64,7 @@ from boba.toolkit.transfer import (
     TemplateVar,
     TemplateVars,
     TransferError,
+    TransferFactories,
     TransferInbound,
     TransferOutbound,
     TransferReport,
@@ -200,6 +200,8 @@ class PgContract(BaseModel):
     """Контракт источника postgres: колонки выборки в порядке RowDescription,
     версия сервера и integer_datetimes — их сверяет пара, когда тела идут
     binary. Едет в кадре schema как есть и разбирается парой на приёмнике."""
+
+    ENGINE: ClassVar[Engine] = "postgres"
 
     model_config = ConfigDict(frozen=True)
 
@@ -480,7 +482,7 @@ class PgCopyOut:
         await out.schema(
             SchemaHead(
                 kind="schema",
-                source_engine=Engine.POSTGRES,
+                source_engine=PgContract.ENGINE,
                 wire=layout.wire(),
                 contract=contract.model_dump(mode="json"),
             )
@@ -1470,45 +1472,14 @@ class PgTransferFactory(Protocol):
 
 
 class PgTransfers:
-    """Реестр пар в postgres по entry points группы boba.transfer.postgres:
-    имя записи — движок источника, значение — класс пары."""
+    """Реестр адаптеров в postgres; использует общий загрузчик TransferFactories."""
 
     GROUP: ClassVar[str] = "boba.transfer.postgres"
 
-    def __init__(self, factories: Mapping[Engine, PgTransferFactory]) -> None:
-        self._factories = dict(factories)
-
-    @classmethod
-    def discover(cls) -> PgTransfers:
-        factories: dict[Engine, PgTransferFactory] = {}
-        for entry in entry_points(group=cls.GROUP):
-            try:
-                engine = Engine(entry.name)
-            except ValueError as exc:
-                raise TransferError(
-                    f"entry point {entry.name!r} of group {cls.GROUP!r} "
-                    f"({entry.value}): the name must be a source engine, one of "
-                    f"{[member.value for member in Engine]}"
-                ) from exc
-
-            loaded = entry.load()
-            if not isinstance(loaded, PgTransferFactory):
-                raise TransferError(
-                    f"entry point {entry.name!r} of group {cls.GROUP!r} "
-                    f"({entry.value}): expected a transfer class, got {loaded!r}"
-                )
-
-            factories[engine] = loaded
-
-        return cls(factories)
+    def __init__(
+        self, factories: Mapping[Engine, PgTransferFactory] | None = None
+    ) -> None:
+        self._registry = TransferFactories(self.GROUP, PgTransferFactory, factories)
 
     def pair(self, engine: Engine) -> PgTransferFactory:
-        factory = self._factories.get(engine)
-        if factory is None:
-            installed = ", ".join(sorted(member.value for member in self._factories))
-            raise TransferError(
-                f"no transfer from {engine.value} into postgres is installed "
-                f"(entry point group {self.GROUP}); installed: {installed or 'none'}"
-            )
-
-        return factory
+        return self._registry.pair(engine)

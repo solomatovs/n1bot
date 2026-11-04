@@ -33,8 +33,6 @@ dependencies = [
     "websockets>=15,<16",
     "pydantic>=2.12,<3",
     "jsonschema>=4.23,<5",
-    "psycopg>=3.3,<4",
-    "omegaconf>=2.3,<3",
 ]
 
 [project.scripts]
@@ -42,6 +40,8 @@ boba-mcp = "boba.mcp_server.program:cli"
 
 [project.optional-dependencies]
 dev = [
+    "omegaconf>=2.3,<3",
+    "psycopg>=3.3,<4",
     "boba-kerberos==0.0.33.dev1",
     "boba-tool-io==0.0.33.dev1",
     "fastmcp-slim[client]>=4.1.4,<5",

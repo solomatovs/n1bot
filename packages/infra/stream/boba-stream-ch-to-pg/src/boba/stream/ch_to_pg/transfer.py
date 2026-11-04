@@ -39,7 +39,6 @@ from boba.toolkit.transfer import (
     CommandJournal,
     CreateTemplate,
     DeleteStrategyApply,
-    Engine,
     InsertStrategyApply,
     SchemaHead,
     SchemaStrategyPlan,
@@ -196,10 +195,10 @@ class ChToPg(PgTransfer):
         feed: TransferInbound,
         journal: CommandJournal,
     ) -> None:
-        if head.source_engine is not Engine.CLICKHOUSE:
+        if head.source_engine != ChContract.ENGINE:
             raise TransferError(
                 f"transfer clickhouse -> postgres got a schema frame from "
-                f"{head.source_engine.value}"
+                f"{head.source_engine}"
             )
 
         if head.wire is not StreamWire.TSV:

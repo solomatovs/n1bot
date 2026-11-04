@@ -22,7 +22,9 @@ from boba.identity.errors import (
     ExternalServiceError,
     InternalServiceError,
 )
+from boba.identity.signin import SignedIn
 from boba.identity.sso import (
+    SessionRefresh,
     SpnegoExchange,
     SsoChallenge,
     SsoRefused,
@@ -80,7 +82,7 @@ class KerberosErrorToDomain:
         )
 
 
-class SpnegoGate(SpnegoExchange):
+class SpnegoGate(SpnegoExchange, SessionRefresh):
     """SPNEGO-обмен на URL приложения: вход и молчаливое обновление билета сессии."""
 
     def __init__(self, sign_in: SsoSignIn, secret: str) -> None:
@@ -125,6 +127,11 @@ class SpnegoGate(SpnegoExchange):
         )
 
         return SsoSigned(signed=signed, principal=identity.principal)
+
+    async def renew(
+        self, request: SsoRequest, signed: SignedIn
+    ) -> SsoChallenge | SsoRefused | SsoSigned:
+        return await self.refresh(request, signed.sign_in.ticket())
 
     async def refresh(
         self, request: SsoRequest, session: DelegatedTicket | None

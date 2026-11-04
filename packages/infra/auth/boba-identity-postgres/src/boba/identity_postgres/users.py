@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any, ClassVar
 from uuid import UUID
 
@@ -27,7 +28,6 @@ from boba.identity.api import (
     UserIdentityMigration,
     UserIdentitySnapshot,
     UserRows,
-    UsersColumn,
     UsersUpsert,
 )
 from boba.identity.errors import ExternalServiceError
@@ -36,6 +36,17 @@ from boba.identity.session import Login
 from boba.identity.signin import SignedIn
 
 __all__ = ["UsersTable"]
+
+
+class UsersColumn(StrEnum):
+    """Колонки users."""
+
+    ID = "id"
+    IDENTIFIER = "identifier"
+    CREATED_AT = "created_at"
+    REALM = "realm"
+    LOGIN = "login"
+    ROLES = "roles"
 
 
 class UsersTable(PostgresTable, UserRows, PersistedUsers, UsersUpsert, RoleCatalog):

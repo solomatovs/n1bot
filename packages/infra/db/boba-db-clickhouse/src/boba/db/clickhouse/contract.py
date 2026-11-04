@@ -14,7 +14,7 @@ from typing import ClassVar
 from pydantic import BaseModel, ConfigDict
 
 from boba.toolkit.contract import ColumnType, ContractColumn, TimeUnit, TypeFamily
-from boba.toolkit.transfer import StreamWire
+from boba.toolkit.transfer import Engine, StreamWire
 
 __all__ = ["ChContract", "ChParsedType", "ChSourceColumn", "ChTypes", "ChWrapper"]
 
@@ -34,6 +34,8 @@ class ChContract(BaseModel):
     """Контракт источника ClickHouse в кадре schema: колонки из шапки
     TabSeparatedWithNamesAndTypes того же запроса, что везёт данные, и имя
     сервера из заголовка ответа."""
+
+    ENGINE: ClassVar[Engine] = "clickhouse"
 
     model_config = ConfigDict(frozen=True)
 

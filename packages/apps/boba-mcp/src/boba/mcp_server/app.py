@@ -16,15 +16,17 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Self
+from typing import Annotated, ClassVar, Self
 from uuid import UUID
 
 import uvicorn
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SerializeAsAny, field_validator
 
+from boba.auth.assembly import AuthBackends
+from boba.auth.config import AuthConfig, ProxyAuthConfig
 from boba.auth.proxy import ProxyAssertionVerifier
 from boba.cancellation import ProcessStop, StopReason
-from boba.config import ConfigSchema, bind
+from boba.config import ConfigSchema, ConfigVariant, bind
 from boba.connection_broker.credentials import NoRefresh
 from boba.connection_broker.crypto import SecretCipher
 from boba.connection_broker.store import ConnectionStore
@@ -56,6 +58,7 @@ from boba.oauth.server import (
     TrustedClient,
 )
 from boba.runtime import providers
+from boba.runtime.auth_backends import StandardAuthBackends
 from boba.runtime.config import (
     MigrationArguments,
     MigrationOptions,
@@ -66,8 +69,11 @@ from boba.runtime.config import (
 )
 from boba.runtime.di import Container, Depends
 from boba.runtime.http import HealthProbe, SignalledServer
+from boba.runtime.launcher_backends import StandardToolLaunchers
 from boba.runtime.launchers import ToolLaunchers
+from boba.runtime.program import CommandSpec, ConfigArguments
 from boba.runtime.storage import StorageConfig, StorageFactory
+from boba.runtime.storage_backends import StandardStorageBackends
 from boba.toolrun.hosted import DirectCalls
 from boba.toolrun.registry import ToolRegistry
 
@@ -97,21 +103,35 @@ class McpAppConfig(ProcessConfig):
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
+    AUTH_BACKENDS: ClassVar[AuthBackends] = StandardAuthBackends().registry
+    LAUNCHER_BACKENDS: ClassVar = StandardToolLaunchers().registry
+
     server: McpServerConfig
     mcp: McpSection
     postgres: PostgresConfig
     connection_store: ValueCipherConfig
     """Ключ шифрования секретов каталога MCP, отдельный от подписи токенов."""
-    storage: StorageConfig
+    STORAGE_BACKENDS: ClassVar = StandardStorageBackends().registry
+    CONFIG_VARIANTS: ClassVar = {
+        AuthConfig: ConfigVariant("type", AUTH_BACKENDS.model_for),
+        StorageConfig: ConfigVariant("kind", STORAGE_BACKENDS.model_for),
+    }
+
+    storage: SerializeAsAny[StorageConfig]
     """Хранилище workspace: туда пишут маршруты файлов и оттуда читают
     инструменты."""
+
+    @field_validator("storage", mode="before")
+    @classmethod
+    def _storage_backend(cls, raw: object) -> StorageConfig:
+        return cls.STORAGE_BACKENDS.parse(raw)
 
     @classmethod
     def load(cls, paths: Sequence[Path]) -> Self:
         """Конфиг процесса и проверка предпосылок способа запуска инструментов
         [tool_launcher]: отказ виден на старте сервиса."""
         config = super().load(paths)
-        ToolLaunchers(RawConfig.get()).build().probe()
+        ToolLaunchers(RawConfig.get(), cls.LAUNCHER_BACKENDS).build().probe()
 
         return config
 
@@ -269,7 +289,9 @@ class McpHost:
                 self._container.resolved(providers.connection_params),
                 section.limits,
                 self._config.storage,
-                StorageFactory(self._config.paths).create(self._config.storage),
+                StorageFactory(
+                    self._config.paths, self._config.STORAGE_BACKENDS
+                ).create(self._config.storage),
             )
             stop = ProcessStop()
             stop.on_stop(StoppedRuns(self._container.resolved(providers.runs)))
@@ -317,7 +339,9 @@ class McpHost:
                 self._container.resolved(providers.connection_params),
                 RunLimitMiddleware(self._config.mcp.limits, McpEndpoints.OPERATIONS),
                 self._config.storage,
-                StorageFactory(self._config.paths).create(self._config.storage),
+                StorageFactory(
+                    self._config.paths, self._config.STORAGE_BACKENDS
+                ).create(self._config.storage),
                 endpoint.prefix_url,
                 auth.published(),
                 (),
@@ -339,7 +363,7 @@ class McpHost:
             generation,
             ServiceMark.TOKEN_SALT,
         )
-        assertions = ProxyAssertionVerifier(self._config.proxy_entries())
+        assertions = ProxyAssertionVerifier(self._config.auth_entries(ProxyAuthConfig))
 
         sealed = SealedValues(session.auth_secret, ServiceMark.SEALED_SALT)
         resources = catalog.resources(public_url)
@@ -393,23 +417,21 @@ class McpEntry:
         parser = argparse.ArgumentParser(
             prog="boba-mcp", description="Tool execution service of boba"
         )
-        commands = parser.add_subparsers(dest="command", required=True)
-        for command in McpCommand:
-            sub = commands.add_parser(command.value)
-            sub.add_argument("--config", required=True, action="append", type=Path)
-            if command is McpCommand.MIGRATE:
-                self._migration.add(sub)
-
-        arguments = parser.parse_args()
-        migration = MigrationOptions()
-        if arguments.command == McpCommand.MIGRATE:
-            migration = self._migration.read(arguments)
-
-        return McpCall(
-            command=McpCommand(arguments.command),
-            paths=tuple(arguments.config),
-            migration=migration,
+        commands = (
+            CommandSpec(McpCommand.SERVE, "run the MCP service"),
+            CommandSpec(McpCommand.HEALTH, "probe the MCP service"),
+            CommandSpec(McpCommand.TOOLS, "export tool schemas"),
+            CommandSpec(
+                McpCommand.MIGRATE, "apply MCP and plugin schemas", self._migration.add
+            ),
         )
+        call = ConfigArguments(parser, commands).call()
+        command = McpCommand(call.command)
+        migration = MigrationOptions()
+        if command is McpCommand.MIGRATE:
+            migration = self._migration.read(call.arguments)
+
+        return McpCall(command=command, paths=call.paths, migration=migration)
 
     async def run(self) -> None:
         call = self.call()
@@ -419,23 +441,25 @@ class McpEntry:
             case McpCommand.HEALTH:
                 self.health(call.paths)
             case McpCommand.TOOLS:
-                config = McpAppConfig.load(call.paths)
-                logging.config.dictConfig(config.logger)
-                schemas = await McpHost(config).tool_schemas()
-                sys.stdout.write(
-                    json.dumps(schemas, ensure_ascii=False, indent=2) + "\n"
-                )
+                await self.tools(call.paths)
             case McpCommand.MIGRATE:
-                from boba.runtime.migrate import ApplicationMigrations  # noqa: PLC0415
-                from boba.runtime.plugins import PluginMigrations  # noqa: PLC0415
+                await self.migrate(call.paths, call.migration)
 
-                migration = ApplicationMigrations(
-                    (PluginMigrations(),),
-                    schema=ConfigSchema(McpAppConfig, values=("auth",)),
-                )
-                await migration.run(
-                    call.paths, "boba.mcp_server", options=call.migration
-                )
+    async def tools(self, paths: Sequence[Path]) -> None:
+        config = McpAppConfig.load(paths)
+        logging.config.dictConfig(config.logger)
+        schemas = await McpHost(config).tool_schemas()
+        sys.stdout.write(json.dumps(schemas, ensure_ascii=False, indent=2) + "\n")
+
+    async def migrate(self, paths: Sequence[Path], options: MigrationOptions) -> None:
+        from boba.runtime.migrate import ApplicationMigrations  # noqa: PLC0415
+        from boba.runtime.plugins import PluginMigrations  # noqa: PLC0415
+
+        migration = ApplicationMigrations(
+            (PluginMigrations(McpAppConfig.LAUNCHER_BACKENDS),),
+            schema=ConfigSchema(McpAppConfig, values=("auth",)),
+        )
+        await migration.run(paths, "boba.mcp_server", options=options)
 
     async def serve(self, paths: Sequence[Path]) -> None:
         config = McpAppConfig.load(paths)

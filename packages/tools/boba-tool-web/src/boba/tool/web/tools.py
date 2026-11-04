@@ -104,7 +104,7 @@ class PageFormat(StrEnum):
 
     @classmethod
     def of(cls, kind: DocumentKind, *, as_markdown: bool) -> PageFormat:
-        if kind is not DocumentKind.HTML:
+        if kind != PageFormat.HTML:
             return cls.TEXT
 
         if as_markdown:
@@ -173,12 +173,14 @@ class WebPage:
         *,
         ocr_enabled: bool,
     ) -> None:
+        from boba.doc.formats import StandardDocuments  # noqa: PLC0415
         from boba.doc.ocr import OcrEngines  # noqa: PLC0415
-        from boba.doc.router import DocumentRouter  # noqa: PLC0415
 
         self._cfg = cfg.for_call(ocr=ocr_enabled)
         self._progress = progress
-        self._router = DocumentRouter(self._cfg, OcrEngines(LLM).of(self._cfg.ocr))
+        self._router = StandardDocuments(
+            self._cfg, OcrEngines(LLM).of(self._cfg.ocr)
+        ).router
         self._http = HttpTransport(connection, cfg.transport)
 
     async def load(self, url: str, *, as_markdown: bool) -> WebText:
@@ -233,8 +235,8 @@ class WebPage:
             kind, stream = self._router.detect(source, hint)
 
             opened = kind
-            if kind is DocumentKind.HTML and not as_markdown:
-                opened = DocumentKind.TEXT
+            if kind == PageFormat.HTML and not as_markdown:
+                opened = PageFormat.TEXT
 
             return WebText(text=self._router.read_text_as(opened, stream), kind=kind)
 
@@ -274,7 +276,7 @@ async def web_fetch_page(  # noqa: PLR0913
         text=window.text(),
         language=PageFormat.of(page.kind, as_markdown=as_markdown),
         note=window.note(),
-        metadata={"url": url, "kind": page.kind.value},
+        metadata={"url": url, "kind": page.kind},
     )
 
 
@@ -330,7 +332,7 @@ async def web_grep_page(  # noqa: PLR0913
         text=report.render(),
         language=report.LANG,
         note=report.note,
-        metadata={"url": url, "kind": page.kind.value},
+        metadata={"url": url, "kind": page.kind},
     )
 
 

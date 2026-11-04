@@ -26,7 +26,7 @@ import psycopg
 from psycopg import sql
 from psycopg.rows import DictRow
 from psycopg.types.json import Jsonb
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from boba.db.postgres import (
     AsyncPostgresPool,
@@ -40,8 +40,6 @@ from boba.db.postgres import (
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.context import Scope, ScopeKind
 from boba.messaging import (
-    AnyCommand,
-    AnyMessage,
     BusLimit,
     CommandEnvelope,
     CommandListener,
@@ -52,12 +50,18 @@ from boba.messaging import (
     LockToken,
     MessageBus,
     MessageBusError,
-    MessageKind,
     MessageTooLargeError,
     Unsubscribe,
 )
 from boba.messaging.bus import (
     ListenerState,
+)
+from boba.messaging.messages import (
+    Command,
+    Message,
+    MessageCodec,
+)
+from boba.runtime.bus_schema import (
     LiveChannel,
     LiveCommandsColumn,
     LiveEventsColumn,
@@ -323,12 +327,13 @@ class PgMessageBus(PostgresTable, MessageBus):
 
     LABEL: ClassVar[str] = "message bus"
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — ресурсы PostgreSQL и кодек сообщений
         self,
         cfg: PostgresConfig,
         db_schema: str,
         instance: str,
         cluster: ClusterConfig,
+        codec: MessageCodec,
         pool: PostgresPool | None = None,
     ) -> None:
         super().__init__(cfg, db_schema, pool)
@@ -339,8 +344,7 @@ class PgMessageBus(PostgresTable, MessageBus):
         self._command_listeners: list[CommandListener] = []
         self._last_seen: dict[Scope, int] = {}
         self._scope_locks: dict[Scope, asyncio.Lock] = {}
-        self._envelope = TypeAdapter(AnyMessage)
-        self._command_body = TypeAdapter(AnyCommand)
+        self._codec = codec
 
     @property
     def instance(self) -> str:
@@ -358,23 +362,6 @@ class PgMessageBus(PostgresTable, MessageBus):
         return sql.Literal(sql.Identifier(self.schema, sequence.value).as_string())
 
     async def start(self) -> None:
-        """Слушатель на всё время работы. Перед ним удаляются строки видов,
-        которых шина больше не знает: догон области разбирает каждую строку,
-        и выкат без этого шага падал бы на них."""
-        known: list[str] = []
-        for kind in MessageKind:
-            known.append(kind.value)
-
-        query = (
-            self._query()
-            .add(
-                "delete from {schema}.live_events where kind <> all(%(known)s)",
-                known=known,
-            )
-            .build()
-        )
-        await self._execute(query, "removing events of unknown kinds")
-
         await self._listener.start()
 
     async def stop(self) -> None:
@@ -386,8 +373,9 @@ class PgMessageBus(PostgresTable, MessageBus):
         except ValueError as exc:
             raise MessageBusError(f"message bus: {exc}") from exc
 
-    async def publish(self, scope: Scope, message: AnyMessage, token: LockToken) -> int:
+    async def publish(self, scope: Scope, message: Message, token: LockToken) -> int:
         self._listener.ensure_alive()
+        message = self._codec.checked_event(message)
         size = Envelope.body_size(message)
         if size > BusLimit.BODY_MAX_BYTES:
             msg = (
@@ -416,7 +404,7 @@ class PgMessageBus(PostgresTable, MessageBus):
                 events_seq_name=self._sequence_name(LiveSequence.EVENTS),
                 scope_kind=scope.kind.value,
                 scope_id=scope_id,
-                kind=message.kind.value,
+                kind=message.kind,
                 origin=self._instance,
                 body=Jsonb(message.model_dump(mode="json")),
             )
@@ -425,7 +413,7 @@ class PgMessageBus(PostgresTable, MessageBus):
 
         async def work(cur: Cursor) -> int:
             await self._advisory_lock(cur, scope.render())
-            if message.kind.requires_lock:
+            if self._codec.requires_lock(message):
                 await self._fence(cur, scope, scope_id, token)
 
             await cur.execute(insert.text, insert.params)
@@ -494,8 +482,9 @@ class PgMessageBus(PostgresTable, MessageBus):
             )
             raise LockLostError(msg)
 
-    async def command(self, scope: Scope, command: AnyCommand) -> int:
+    async def command(self, scope: Scope, command: Command) -> int:
         self._listener.ensure_alive()
+        command = self._codec.checked_command(command)
         scope_id = self._scope_id(scope)
         insert = (
             self._query()
@@ -519,7 +508,7 @@ class PgMessageBus(PostgresTable, MessageBus):
                 """,
                 scope_kind=scope.kind.value,
                 scope_id=scope_id,
-                action=command.kind.value,
+                action=command.kind,
                 body=Jsonb(command.model_dump(mode="json")),
                 by_instance=self._instance,
             )
@@ -748,7 +737,7 @@ class PgMessageBus(PostgresTable, MessageBus):
         )
 
     def _to_envelope(self, scope: Scope, row: DictRow) -> Envelope:
-        message = self._envelope.validate_python(row[LiveEventsColumn.BODY.value])
+        message = self._codec.event(row[LiveEventsColumn.BODY.value])
         at: datetime = row[LiveEventsColumn.AT.value]
         return Envelope(
             scope=scope,
@@ -825,7 +814,7 @@ class PgMessageBus(PostgresTable, MessageBus):
         if row is None:
             return
 
-        command = self._command_body.validate_python(row[LiveCommandsColumn.BODY.value])
+        command = self._codec.command(row[LiveCommandsColumn.BODY.value])
         at: datetime = row[LiveCommandsColumn.AT.value]
         envelope = CommandEnvelope(
             scope=pointer.scope, command_id=pointer.seq, at=at, command=command

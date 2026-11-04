@@ -10,8 +10,15 @@ from __future__ import annotations
 import logging
 
 from boba.cancellation import StopReason
+from boba.chat.messages import (
+    StopRequested,
+)
 from boba.identity.run import Runs
-from boba.messaging import CommandEnvelope, MessageBus, StopRequested, Unsubscribe
+from boba.messaging import (
+    CommandEnvelope,
+    MessageBus,
+    Unsubscribe,
+)
 
 __all__ = ["CommandRunner"]
 

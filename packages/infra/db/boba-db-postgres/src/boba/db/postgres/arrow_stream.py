@@ -29,6 +29,7 @@ from boba.db.postgres.query import PgQuery, PgQueryBuilder
 from boba.db.postgres.trace import PgCommandReport
 from boba.db.postgres.transfer import (
     PgColumnDeclaration,
+    PgContract,
     PgLoadTable,
     PgTableFacts,
     PgTableRef,
@@ -44,7 +45,6 @@ from boba.toolkit.contract import (
     ContractTable,
     Declarations,
     DeclaredType,
-    Engine,
     SchemaMatcher,
     StreamContract,
     TableColumn,
@@ -58,6 +58,7 @@ from boba.toolkit.transfer import (
     CommandKind,
     CreateTemplate,
     DeleteStrategyApply,
+    Engine,
     InsertStrategyApply,
     PlannedColumn,
     SchemaHead,
@@ -71,7 +72,6 @@ from boba.toolkit.transfer import (
     TransferSink,
     UnknownTypeApply,
 )
-from boba.toolkit.transfer import Engine as WireEngine
 
 __all__ = [
     "PgArrowLoader",
@@ -129,7 +129,7 @@ class PgDdlTypes:
         if column.ddl_type:
             return column.ddl_type
 
-        if source_engine is Engine.POSTGRES and column.source_type:
+        if source_engine == PgContract.ENGINE and column.source_type:
             return column.source_type
 
         if column.kind.family.named_only():
@@ -143,7 +143,7 @@ class PgDdlTypes:
         if column.ddl_type:
             return column.ddl_type
 
-        if source_engine is Engine.POSTGRES and column.source_type:
+        if source_engine == PgContract.ENGINE and column.source_type:
             return column.source_type
 
         if column.kind.family.named_only():
@@ -336,7 +336,7 @@ class PgArrowSource:
     с декларациями вызова поверх, схема потока из контракта, тела — поток
     Arrow IPC через PgArrowOut."""
 
-    ENGINE: ClassVar[WireEngine] = WireEngine.POSTGRES
+    ENGINE: ClassVar[Engine] = PgContract.ENGINE
 
     def __init__(
         self, conn: psycopg.AsyncConnection[Any], journal: CommandJournal
@@ -499,7 +499,7 @@ class PgArrowLoader:
         self._journal = journal
         self._stream = tuple(contract)
         self._source_engine = source_engine
-        self._exact = source_engine is Engine.POSTGRES
+        self._exact = source_engine == PgContract.ENGINE
         self._inbound = inbound
         self._exact_floats = exact_floats
         self._facts = PgNeutralFacts(conn, table, journal)

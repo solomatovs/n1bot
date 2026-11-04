@@ -42,7 +42,9 @@ from boba.aid.infra.session import (
 from boba.aid.infra.socket_events import SocketEvents
 from boba.aid.infra.stale_action import StaleActionMiddleware
 from boba.auth import AuthService
+from boba.auth.config import KerberosAuthConfig, ProxyAuthConfig
 from boba.cancellation import ProcessStop, StopReason
+from boba.chat.messages import ChatMessages
 from boba.config import ConfigError
 from boba.identity.context import CallContexts
 from boba.runtime import providers as runtime
@@ -54,6 +56,7 @@ from boba.runtime.http import (
     StaleSessionMiddleware,
 )
 from boba.runtime.storage import StorageClient
+from boba.runtime.turns import StaleTurnCloser
 
 
 def run_app(raw: DictConfig, conf_dir: Path):
@@ -368,8 +371,8 @@ def _use_auth(container: Container) -> None:
 
     installer = ChainlitAuthInstaller(
         config.server.url_prefix,
-        config.kerberos_entries(),
-        config.proxy_entries(),
+        config.auth_entries(KerberosAuthConfig),
+        config.auth_entries(ProxyAuthConfig),
         auth,
         config.session.session_ttl_sec,
         sessions,
@@ -394,6 +397,9 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     contexts = CallContexts()
     container.provide(runtime.call_contexts, contexts)
     container.provide(runtime.app_name, AppName("aid"))
+    container.provide(runtime.message_codec, ChatMessages().codec)
+    container.provide(runtime.messaging_backends, c.MESSAGING_BACKENDS)
+    container.provide(runtime.stale_observer, StaleTurnCloser)
     tokens = runtime.session_tokens(c)
     container.provide(runtime.session_tokens, tokens)
     sessions = ChainlitSessions(tokens)
@@ -404,11 +410,10 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container.eager(runtime.postgres_pool)
     container.eager(runtime.users_table)
     container.eager(runtime.auth_service)
+    container.eager(runtime.messaging_runtime)
     container.eager(runtime.session_keeper)
     container.eager(providers.chat_profiles_registry)
     container.eager(providers.chainlit_data_layer)
-    container.eager(runtime.message_bus)
-    container.eager(runtime.payload_store)
     container.eager(runtime.call_ambient)
     container.eager(
         providers.agent_launcher,
@@ -420,10 +425,6 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container.eager(providers.mcp_servers)
     container.eager(providers.mcp_updates)
     container.eager(providers.agent_feeds)
-    # инстанс регистрируется после блокирующего старта зигот и моделей: иначе
-    # его пульс молчит дольше lock_ttl, и соседи снимают его как мёртвый
-    container.eager(runtime.live_locks)
-    container.eager(runtime.lock_reaper)
     container.eager(runtime.command_runner)
     Container.set_root(container)
     Container.set_session_hook(_session_container)

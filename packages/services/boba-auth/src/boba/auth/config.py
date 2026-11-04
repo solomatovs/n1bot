@@ -1,4 +1,4 @@
-"""Конфиги способов входа: local, ldap, kerberos, proxy; union AuthConfig по type.
+"""Конфигурации встроенных способов входа и общий контракт AuthConfig.
 
 Роли у каждого типа задаются секциями roles.<провайдер>: секция есть — провайдер
 подключён. Провайдеры: local (таблица логинов), directory (правила по фактам
@@ -11,7 +11,7 @@ bind'ом плюс те же правила), principal (принципал и S
 from __future__ import annotations
 
 from ipaddress import IPv4Network, IPv6Network, ip_network
-from typing import Annotated, Literal
+from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
@@ -219,8 +219,21 @@ class ProxyProfileProviders(BaseModel):
     header: HeaderProfilesConfig | None = None
 
 
-class LocalAuthConfig(BaseModel):
+class AuthConfig(BaseModel):
+    """Общие поля конфигурации входа; конкретную модель задаёт фабрика приложения."""
+
+    unique_per_realm: ClassVar[bool] = False
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: str = Field(min_length=1)
+    identity: IdentityRule
+
+
+class LocalAuthConfig(AuthConfig):
     """Авторизация по статической таблице логин/пароль из конфига."""
+
+    PROVIDER: ClassVar[str] = "LocalAuth"
 
     model_config = ConfigDict(extra="forbid")
 
@@ -241,8 +254,10 @@ class LocalAuthConfig(BaseModel):
     )
 
 
-class LdapAuthConfig(BaseModel):
+class LdapAuthConfig(AuthConfig):
     """Логин/пароль с проверкой bind'ом в AD; роли — провайдером directory."""
+
+    PROVIDER: ClassVar[str] = "LdapAuth"
 
     model_config = ConfigDict(extra="forbid")
 
@@ -277,9 +292,12 @@ class LdapAuthConfig(BaseModel):
         return LoginTemplate.check(value)
 
 
-class KerberosAuthConfig(BaseModel):
+class KerberosAuthConfig(AuthConfig):
     """SSO через Kerberos/SPNEGO: тикет валидирует middleware, роли — провайдерами
     principal и ldap."""
+
+    unique_per_realm: ClassVar[bool] = True
+    PROVIDER: ClassVar[str] = "KerberosAuth"
 
     model_config = ConfigDict(extra="forbid")
 
@@ -326,9 +344,12 @@ class ProxyHeaders(BaseModel):
     signature: str = Field(default="X-Boba-Signature", min_length=1)
 
 
-class ProxyAuthConfig(BaseModel):
+class ProxyAuthConfig(AuthConfig):
     """Вход по доверенному заголовку: логин ставит свой бэкенд и подписывает
     запрос общим секретом; роли и профили — провайдерами roles.* и profiles.*."""
+
+    unique_per_realm: ClassVar[bool] = True
+    PROVIDER: ClassVar[str] = "ProxyAuth"
 
     model_config = ConfigDict(extra="forbid")
 
@@ -408,9 +429,3 @@ class ProxyAuthConfig(BaseModel):
             parsed.append(ip_network(raw, strict=False))
 
         return parsed
-
-
-AuthConfig = Annotated[
-    LocalAuthConfig | KerberosAuthConfig | LdapAuthConfig | ProxyAuthConfig,
-    Field(discriminator="type"),
-]

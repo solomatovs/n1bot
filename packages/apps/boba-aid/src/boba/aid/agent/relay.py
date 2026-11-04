@@ -73,6 +73,9 @@ from boba.aid.rendering.tool import (
 )
 from boba.cancellation import RunCancellation
 from boba.canvas.canvas import CanvasScope
+from boba.chat.messages import (
+    JournalOpened,
+)
 from boba.core.mcp_names import McpToolNames
 from boba.core.validation import ValidationText
 from boba.identity.context import (
@@ -95,7 +98,11 @@ from boba.mcp_client.client import (
     ProgressHeard,
     QuestionHeard,
 )
-from boba.messaging import JournalOpened, LockToken, MessageBus, MessageBusError
+from boba.messaging import (
+    LockToken,
+    MessageBus,
+    MessageBusError,
+)
 from boba.toolkit.chain import StreamPlanError
 from boba.toolkit.wire import JournalNotice
 from boba.transport.acp.protocol import (

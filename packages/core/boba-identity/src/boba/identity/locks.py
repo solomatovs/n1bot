@@ -29,7 +29,6 @@ from boba.identity.errors import RefusalError
 __all__ = [
     "LiveLock",
     "LiveLocks",
-    "LiveLocksColumn",
     "LockBusy",
     "LockBusyError",
     "LockKeeper",
@@ -91,23 +90,6 @@ class LockToken(BaseModel):
     def local(cls) -> LockToken:
         """Выпускает token без блокировки для сообщений, которым держатель не нужен."""
         return cls(value=uuid4())
-
-
-class LiveLocksColumn(StrEnum):
-    """Колонки live_locks: кто, зачем и в каком режиме держит область и когда
-    подтверждал жизнь.
-    """
-
-    SCOPE_KIND = "scope_kind"
-    SCOPE_ID = "scope_id"
-    MODE = "mode"
-    HOLDER = "holder"
-    TOKEN = "token"  # noqa: S105
-    PURPOSE = "purpose"
-    USER_ID = "user_id"
-    ACQUIRED_AT = "acquired_at"
-    HEARTBEAT_AT = "heartbeat_at"
-    TTL_SEC = "ttl_sec"
 
 
 class LiveLock(BaseModel):
@@ -397,6 +379,18 @@ class MemoryLiveLocks(LiveLocks):
             self._forget(token)
 
         return stale
+
+    def fence(self, scope: Scope, token: LockToken) -> None:
+        """Проверяет token и его область перед публикацией в локальной шине."""
+        if not self.holds(token):
+            raise LockLostError(
+                f"lock of {scope.render()} is no longer held by {token.value}"
+            )
+
+        if self._locks[token].scope != scope:
+            raise LockLostError(
+                f"token {token.value} does not own scope {scope.render()}"
+            )
 
     def holds(self, token: LockToken) -> bool:
         """Проверяет, жива ли блокировка с этим token; заменяет fencing шине в
