@@ -28,7 +28,7 @@ services:
       - /app/boba/conf/config.toml
     volumes:
       - ./conf/config.toml:/app/boba/conf/config.toml:ro
-      - ./conf/prompts:/app/boba/conf/prompts:ro
+      - ./conf/migrations:/app/boba/conf/migrations:ro
       - ./conf/krb:/app/boba/conf/krb:ro
       - ${BOBA_MODELS}:/app/boba/models:ro
       - ./data:/app/boba/data:rw

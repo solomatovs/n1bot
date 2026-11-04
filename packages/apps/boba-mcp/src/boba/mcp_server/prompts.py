@@ -17,14 +17,14 @@ PromptError — prompts/get не называет обязательный ар�
 
 from __future__ import annotations
 
-import string
 from collections.abc import Mapping, Sequence
-from typing import Any, Literal
+from typing import Any
 
 from fastmcp.exceptions import PromptError
 from fastmcp.prompts import Message, Prompt, PromptArgument
 from fastmcp.server.providers import Provider
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from boba.mcp_server.catalog import PromptFile
 
 __all__ = [
     "EndpointPrompts",
@@ -32,61 +32,6 @@ __all__ = [
     "FilePrompts",
     "PromptFile",
 ]
-
-
-class PromptArgumentFile(BaseModel):
-    """Секция [arguments.<имя>] файла промпта."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    description: str = Field(min_length=1)
-    required: bool
-
-
-class PromptMessageFile(BaseModel):
-    """Сообщение [[messages]] файла промпта: роль и текст с подстановкой
-    аргументов."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    role: Literal["user", "assistant"]
-    text: str = Field(min_length=1)
-
-
-class PromptFile(BaseModel):
-    """Файл промпта целиком; аргументы в тексте сообщений — только
-    объявленные."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    description: str = Field(min_length=1)
-    arguments: dict[str, PromptArgumentFile] = Field(default_factory=dict)
-    messages: list[PromptMessageFile] = Field(min_length=1)
-
-    @model_validator(mode="after")
-    def _declared(self) -> PromptFile:
-        formatter = string.Formatter()
-        for message in self.messages:
-            for _, field, spec, conversion in formatter.parse(message.text):
-                if field is None:
-                    continue
-
-                if field not in self.arguments:
-                    known = sorted(self.arguments)
-                    msg = (
-                        f"a message text names {{{field}}}, expected only the "
-                        f"declared arguments {known}; write a brace as text doubled"
-                    )
-                    raise ValueError(msg)
-
-                if spec or conversion:
-                    msg = (
-                        f"a message text formats {{{field}}} with "
-                        f"{conversion or ''}{spec or ''}, expected a bare {{{field}}}"
-                    )
-                    raise ValueError(msg)
-
-        return self
 
 
 class FilePrompt(Prompt):

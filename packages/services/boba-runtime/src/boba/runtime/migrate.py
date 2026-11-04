@@ -2,7 +2,7 @@
 
 Ошибки:
 ConfigError — секции конфига или план плагина не прошли проверку.
-PostgresError — схема не пуста либо БД отклонила миграцию.
+PostgresError — схема, история версий или выполнение SQL не соответствуют плану.
 RuntimeError — программа плагина не отдала план создания хранилища.
 """
 
@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from boba.config import ConfigSchema, bind
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.migrate import (
+    MigrationPlan,
     MigrationScripts,
     MigrationTarget,
     PostgresMigrations,
@@ -41,6 +42,12 @@ class MigrationSources(Protocol):
     async def targets(self, raw: DictConfig) -> Sequence[MigrationTarget]: ...
 
 
+class MigrationPreparation(Protocol):
+    """Приложение готовит данные только для своего потока миграций."""
+
+    async def prepare(self, raw: DictConfig, plan: MigrationPlan) -> MigrationPlan: ...
+
+
 class MigrationConfig(MigrationLocation):
     """Минимальные секции команды migrate, включая окружение Kerberos."""
 
@@ -49,7 +56,7 @@ class MigrationConfig(MigrationLocation):
 
 
 class ApplicationMigrations:
-    """Собирает планы по конфигу и создаёт пустые схемы без запуска приложения.
+    """Собирает планы по конфигу и мигрирует хранилища без запуска приложения.
 
     Вызывается подкомандой migrate AID, MCP или Boba. Плагины только отдают
     SQL и ссылку на подключение; учётные данные остаются у команды приложения.
@@ -60,15 +67,20 @@ class ApplicationMigrations:
         sources: Sequence[MigrationSources] = (),
         *,
         schema: ConfigSchema | None = None,
+        preparation: MigrationPreparation | None = None,
     ) -> None:
         self._migrations = PostgresMigrations()
         self._sources = tuple(sources)
-        self._schema = schema or ConfigSchema(MigrationConfig)
+        self._schema = schema
+        if self._schema is None:
+            self._schema = ConfigSchema(MigrationConfig)
+
+        self._preparation = preparation
 
     async def run(
         self,
         paths: Sequence[Path],
-        packages: Sequence[str],
+        packages: Sequence[str] | str,
         *,
         section: str = "app",
     ) -> None:
@@ -86,13 +98,20 @@ class ApplicationMigrations:
     async def targets(
         self,
         raw: DictConfig,
-        packages: Sequence[str],
+        packages: Sequence[str] | str,
         *,
         section: str = "app",
     ) -> Sequence[MigrationTarget]:
         """Общие планы для консоли и подготовки тестовых баз."""
         location = bind(raw, section, MigrationLocation)
-        plan = MigrationScripts(location.db_schema).packages(packages)
+        scripts = MigrationScripts(location.db_schema)
+        if isinstance(packages, str):
+            plan = scripts.application(packages)
+        else:
+            plan = scripts.packages(packages)
+        if self._preparation is not None:
+            plan = await self._preparation.prepare(raw, plan)
+
         targets = [MigrationTarget(location.postgres, plan)]
         for source in self._sources:
             targets.extend(await source.targets(raw))

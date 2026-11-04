@@ -108,7 +108,7 @@ class ConfigArguments:
     HELP: ClassVar[dict[ProgramCommand, str]] = {
         ProgramCommand.SERVE: "run the service",
         ProgramCommand.HEALTH: "probe the running service on its configured port",
-        ProgramCommand.MIGRATE: "create storage tables in empty PostgreSQL schemas",
+        ProgramCommand.MIGRATE: "create or upgrade application storage schemas",
     }
 
     def __init__(self, parser: argparse.ArgumentParser) -> None:

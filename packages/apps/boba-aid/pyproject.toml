@@ -10,7 +10,6 @@ requires-python = ">=3.11,<4"
 dependencies = [
     "boba-sandbox==0.0.33.dev1",
     "boba-identity-postgres==0.0.33.dev1",
-    "boba-access-postgres==0.0.33.dev1",
     "boba-core==0.0.33.dev1",
     "boba-auth[http]==0.0.33.dev1",
     "boba-messaging==0.0.33.dev1",
@@ -82,10 +81,10 @@ boba-aid = "boba.aid.infra.entry:cli"
 
 [tool.boba.unimported]
 websockets = "WebSocket backend uvicorn: выбирается по aid.ws_protocol, загружается сервером динамически"
-boba-access-postgres = "Команда migrate передаёт пакет схемы по имени через importlib"
 
 
 [tool.setuptools.package-data]
+"boba.aid" = ["schema/*.sql", "upgrades/*.sql", "adoption/*.sql"]
 "boba.aid.mcp_servers" = ["schema/*.sql"]
 
 [tool.setuptools.packages.find]

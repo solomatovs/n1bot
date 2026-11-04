@@ -1,31 +1,27 @@
-"""Процесс сервиса исполнения: сборка объектов и запуск MCP-сервера.
-
-`boba-mcp serve --config <toml> [--config <наложение>]` читает конфиг
-экземпляра (промпты endpoint'ов он подключает сам), поднимает контейнер
-общих сервисов (журналы вызовов, реестр запусков, способ запуска, реестр
-инструментов, способы входа), строит endpoint'ы MCP над реестром — по одному на
-профиль конфига — и слушает адрес секции [mcp]. `boba-mcp health --config
-<toml>` пробует готовность запущенного сервиса на порту из [mcp].
+"""Процесс MCP: плагины из TOML, endpoint'ы и grants из PostgreSQL.
 
 Ошибки:
-SystemExit — конфиг не прочитан, сервис не поднялся либо не ответил на
-    пробу готовности; текст называет причину.
+SystemExit — конфиг, миграция, запуск службы или проба готовности отказали;
+    сообщение сохраняет причину и контекст компонента.
 """
 
 import argparse
+import json
 import logging
 import logging.config
 import signal
 import sys
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator, Mapping, Sequence
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Self
+from uuid import UUID
 
 import uvicorn
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.access import GrantCheck, ToolGrants
-from boba.access_postgres.roles import RoleToolsTable
 from boba.auth.proxy import ProxyAssertionVerifier
 from boba.cancellation import ProcessStop, StopReason
 from boba.config import ConfigSchema, bind
@@ -42,10 +38,13 @@ from boba.identity.run import Runs
 from boba.identity.service import ServiceAddress
 from boba.identity_postgres import UsersTable
 from boba.mcp_server.auth import ServiceMark
+from boba.mcp_server.catalog import EndpointCatalog, McpEndpoint
+from boba.mcp_server.endpoints import McpEndpointStore
 from boba.mcp_server.server import (
-    EndpointCatalog,
-    McpEndpoint,
+    FileUploadTool,
     McpEndpoints,
+    McpServer,
+    RunLimitMiddleware,
     RunLimits,
 )
 from boba.oauth.server import (
@@ -58,10 +57,7 @@ from boba.oauth.server import (
 )
 from boba.runtime import providers
 from boba.runtime.config import (
-    ConfigArguments,
     ProcessConfig,
-    ProgramCall,
-    ProgramCommand,
     RawConfig,
     ServerConfig,
     ValueCipherConfig,
@@ -70,6 +66,8 @@ from boba.runtime.di import Container, Depends
 from boba.runtime.http import HealthProbe, SignalledServer
 from boba.runtime.launchers import ToolLaunchers
 from boba.runtime.storage import StorageConfig, StorageFactory
+from boba.toolrun.hosted import DirectCalls
+from boba.toolrun.registry import ToolRegistry
 
 __all__ = ["McpAppConfig", "McpEntry", "McpHost", "McpSection"]
 
@@ -77,20 +75,11 @@ logger = logging.getLogger(__name__)
 
 
 class McpSection(BaseModel):
-    """Секция [mcp]: адрес сервиса и его префикс (ServiceAddress), пределы
-    запусков, endpoint'ы и доверенные клиенты. Endpoint
-    [mcp.endpoints.<имя>] — набор инструментов (tools), роли, которым он
-    доступен (roles), и правила предложения соединений (connections);
-    отвечает на `{url_prefix}/{имя}`. Вход — секции [auth.*]."""
+    """Пределы запусков MCP и доверенные OAuth-клиенты из конфига процесса."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    """Сколько остановка ждёт, пока клиенты закроют соединения сами; дальше
-    соединения рвутся, и сервис гасит запуски и зиготы. Без срока остановка
-    ждала бы keep-alive соединений прокси бесконечно и не доходила до
-    завершения запусков."""
     limits: RunLimits
-    endpoints: dict[str, McpEndpoint] = Field(min_length=1)
     clients: dict[str, TrustedClient] = Field(default_factory=dict)
     """Доверенные клиенты OAuth по client_id: им разрешён вход proxy."""
 
@@ -230,37 +219,51 @@ class McpHost:
     def _connection_store(self) -> ConnectionStore:
         return self._container.resolved(mcp_connections)
 
-    async def serve(self) -> None:
-        """Поднимает сервисы, слушает адрес секции [mcp] до остановки процесса
-        и гасит запуски и зиготы на выходе."""
-        section = self._config.mcp
-        server = self._config.server
+    @asynccontextmanager
+    async def _running(
+        self, *, read_catalog: bool
+    ) -> AsyncGenerator[EndpointCatalog, None]:
         Container.set_root(self._container)
+        runs: Runs | None = None
         try:
             users = await self._container.get(mcp_users)
             self._container.provide(providers.identity_users, users)
-            permissions = RoleToolsTable(
-                self._config.postgres,
-                self._config.db_schema,
-                self._container.resolved(mcp_pool),
-            )
-            self._container.provide(
-                providers.tool_grants,
-                ToolGrants(
-                    roles={},
-                    profiles=self._config.mcp.endpoints,
-                    check=GrantCheck.STRICT,
-                    role_permissions=permissions,
-                ),
-            )
+            records: Sequence[McpEndpoint] = ()
+            if read_catalog:
+                store = McpEndpointStore(
+                    self._config.postgres,
+                    self._config.db_schema,
+                    self._container.resolved(mcp_pool),
+                )
+                records = await store.list()
+
+            catalog = EndpointCatalog(records)
+            self._container.provide(providers.tool_policy, catalog)
+            self._container.provide(providers.profile_catalog, catalog)
+            runs = await self._container.get(providers.runs)
             await self._container.start()
-            auth = self._auth(section)
+            yield catalog
+        finally:
+            if runs is not None:
+                runs.stop_all(StopReason.SHUTDOWN)
+
+            try:
+                await self._container.aclose()
+            finally:
+                Container.set_root(None)
+
+    async def serve(self) -> None:
+        """Собирает опубликованные endpoint'ы и слушает адрес до остановки процесса."""
+        section = self._config.mcp
+        server = self._config.server
+        async with self._running(read_catalog=True) as catalog:
+            auth = self._auth(section, catalog)
             endpoints = McpEndpoints(
                 self._container.resolved(providers.tool_registry),
                 self._container.resolved(providers.runs),
                 self._container.resolved(providers.call_journals),
                 auth,
-                section.endpoints,
+                catalog.endpoints(),
                 self._container.resolved(providers.connection_params),
                 section.limits,
                 self._config.storage,
@@ -286,12 +289,40 @@ class McpHost:
                 ", ".join(endpoints.paths()),
             )
             await listener.serve_until_stopped()
-        finally:
-            self._container.resolved(providers.runs).stop_all(StopReason.SHUTDOWN)
-            Container.set_root(None)
-            await self._container.aclose()
 
-    def _auth(self, section: McpSection) -> ServiceAuth:
+    async def tool_schemas(self) -> Mapping[str, Mapping[str, object]]:
+        """Схемы всех загруженных инструментов для администратора, без HTTP-сервера."""
+        async with self._running(read_catalog=False):
+            registry: ToolRegistry = self._container.resolved(providers.tool_registry)
+            port = registry.server(registry.tools, DirectCalls())
+            names = [card.name for card in port.tools()]
+            names.append(FileUploadTool.NAME)
+            endpoint = McpEndpoint(
+                id=UUID(int=0),
+                prefix_url="/export",
+                title="MCP tool schemas",
+                tools=tuple(names),
+            )
+            catalog = EndpointCatalog((endpoint,))
+            auth = self._auth(self._config.mcp, catalog)
+            server = McpServer(
+                registry,
+                self._container.resolved(providers.runs),
+                self._container.resolved(providers.call_journals),
+                auth.resource(endpoint.prefix_url, [endpoint.prefix_url]),
+                endpoint.prefix_url,
+                endpoint,
+                self._container.resolved(providers.connection_params),
+                RunLimitMiddleware(self._config.mcp.limits, McpEndpoints.OPERATIONS),
+                self._config.storage,
+                StorageFactory(self._config.paths).create(self._config.storage),
+                endpoint.prefix_url,
+                auth.published(),
+                (),
+            )
+            return server.tool_schemas()
+
+    def _auth(self, section: McpSection, catalog: EndpointCatalog) -> ServiceAuth:
         """Вход сервиса: сервер авторизации над способами входа [auth] и
         проверяющие токена endpoint'ов."""
         session = self._config.session
@@ -309,9 +340,7 @@ class McpHost:
         assertions = ProxyAssertionVerifier(self._config.proxy_entries())
 
         sealed = SealedValues(session.auth_secret, ServiceMark.SEALED_SALT)
-        resources: dict[str, str] = {}
-        for name in section.endpoints:
-            resources[name] = f"{public_url}/{name}"
+        resources = catalog.resources(public_url)
 
         server = AuthServer(
             public_url,
@@ -330,6 +359,7 @@ class McpHost:
             tokens,
             ServiceMark.NAME,
             resources,
+            profiles=catalog,
         )
 
     def _clients(self, section: McpSection, sealed: SealedValues) -> RegisteredClients:
@@ -337,42 +367,72 @@ class McpHost:
         return RegisteredClients(sealed, section.clients)
 
 
-class McpEntry:
-    """Вход процесса: `boba-mcp serve|health --config <toml> [--config <наложение>]`."""
+class McpCommand(StrEnum):
+    SERVE = "serve"
+    HEALTH = "health"
+    MIGRATE = "migrate"
+    TOOLS = "tools"
 
-    def call(self) -> ProgramCall:
-        """Подкоманда и файлы конфига: конфиг экземпляра и наложения."""
+
+@dataclass(frozen=True)
+class McpCall:
+    command: McpCommand
+    paths: tuple[Path, ...]
+    import_endpoints: Path | None
+
+
+class McpEntry:
+    """Консоль MCP: сервер, готовность, миграции и экспорт схем инструментов."""
+
+    def call(self) -> McpCall:
         parser = argparse.ArgumentParser(
             prog="boba-mcp", description="Tool execution service of boba"
         )
+        commands = parser.add_subparsers(dest="command", required=True)
+        for command in McpCommand:
+            sub = commands.add_parser(command.value)
+            sub.add_argument("--config", required=True, action="append", type=Path)
+            if command is McpCommand.MIGRATE:
+                sub.add_argument(
+                    "--import-endpoints",
+                    type=Path,
+                    help="JSON export of legacy endpoint definitions; applied once",
+                )
 
-        return ConfigArguments(parser).call()
+        parser.set_defaults(import_endpoints=None)
+        arguments = parser.parse_args()
+
+        return McpCall(
+            command=McpCommand(arguments.command),
+            paths=tuple(arguments.config),
+            import_endpoints=arguments.import_endpoints,
+        )
 
     async def run(self) -> None:
         call = self.call()
         match call.command:
-            case ProgramCommand.SERVE:
+            case McpCommand.SERVE:
                 await self.serve(call.paths)
-            case ProgramCommand.HEALTH:
+            case McpCommand.HEALTH:
                 self.health(call.paths)
-            case ProgramCommand.MIGRATE:
-                from boba.runtime.migrate import (  # noqa: PLC0415 — служебный режим
-                    ApplicationMigrations,
+            case McpCommand.TOOLS:
+                config = McpAppConfig.load(call.paths)
+                logging.config.dictConfig(config.logger)
+                schemas = await McpHost(config).tool_schemas()
+                sys.stdout.write(
+                    json.dumps(schemas, ensure_ascii=False, indent=2) + "\n"
                 )
+            case McpCommand.MIGRATE:
+                from boba.mcp_server.migration import McpMigrationInput  # noqa: PLC0415
+                from boba.runtime.migrate import ApplicationMigrations  # noqa: PLC0415
                 from boba.runtime.plugins import PluginMigrations  # noqa: PLC0415
 
-                sources = PluginMigrations()
                 migration = ApplicationMigrations(
-                    (sources,), schema=ConfigSchema(McpAppConfig, values=("auth",))
+                    (PluginMigrations(),),
+                    schema=ConfigSchema(McpAppConfig, values=("auth",)),
+                    preparation=McpMigrationInput(call.import_endpoints),
                 )
-                await migration.run(
-                    call.paths,
-                    (
-                        "boba.identity_postgres",
-                        "boba.access_postgres",
-                        "boba.connection_broker",
-                    ),
-                )
+                await migration.run(call.paths, "boba.mcp_server")
 
     async def serve(self, paths: Sequence[Path]) -> None:
         config = McpAppConfig.load(paths)

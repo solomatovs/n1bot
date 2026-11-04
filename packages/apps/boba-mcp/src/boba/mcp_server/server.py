@@ -1,11 +1,11 @@
-"""MCP-сервер сервиса исполнения: инструменты реестра по ролям вызывающего.
+"""MCP-сервер сервиса исполнения: инструменты опубликованных endpoint'ов.
 
-Сервер собран на примитивах fastmcp. Список инструментов отдаёт провайдер
-по ролям токена; вызов исполняет порт ToolServer — та же цепочка обвязок и
+Сервер собран на примитивах fastmcp. Список инструментов задаёт каталог endpoint'ов;
+OAuth проверяет доступ к ресурсу; вызов исполняет порт ToolServer — та же цепочка обвязок и
 тот же исполнитель DAG, что в процессе чата; контекст вызова ставит
 middleware из токена. Логики во входе нет: адаптер boba.mcp_adapter
 (McpTool, McpToolProvider) разбирает запрос в вызов-узел DagNode и зовёт
-порт вызывающего (RoleToolServers); итог порта уходит клиенту ответом
+порт endpoint'а (EndpointTools); итог порта уходит клиенту ответом
 McpReplies — стандартными полями результата MCP (ResultWire). Тем же
 компонентом отвечают операции сервиса и middleware: отказ сервера — тоже
 итог с текстом отказа.
@@ -44,6 +44,7 @@ from uuid import uuid4
 import mcp_types as mt
 from fastmcp import Context, FastMCP
 from fastmcp.apps.config import AppConfig, app_config_to_meta_dict
+from fastmcp.exceptions import ToolError
 from fastmcp.server.auth import AuthProvider
 from fastmcp.server.dependencies import get_context
 from fastmcp.server.http import StarletteWithLifespan
@@ -70,38 +71,28 @@ from starlette.routing import BaseRoute, Mount, Route
 from starlette.types import ASGIApp, Receive, Send
 from starlette.types import Scope as AsgiScope
 
-from boba.access import (
-    GrantCheck,
-    ProfileGrant,
-    RoleVisibility,
-    ToolGrant,
-    ToolGrants,
-)
 from boba.cancellation import RunCancellation, StopReason, ToolStopped
 from boba.canvas.keys import ObjectKey
 from boba.connection_broker.params import ConnectionParams
-from boba.connection_broker.tools import ConnectionTool
-from boba.connections.offers import OfferedSource
 from boba.core.validation import ValidationText
 from boba.identity.context import (
     CallContext,
     HumanInitiator,
 )
 from boba.identity.run import Runs
-from boba.identity.signin import ProfileCatalog
 from boba.mcp_adapter import (
     CallerServers,
     JournalUris,
     McpReplies,
     McpTool,
     McpToolProvider,
-    RoleTools,
 )
 from boba.mcp_server.auth import (
     CallScopeError,
     CallScopes,
     TokenSubjects,
 )
+from boba.mcp_server.catalog import EndpointConfigError, McpEndpoint
 from boba.mcp_server.files import (
     CallerBus,
     FileRoutes,
@@ -116,12 +107,12 @@ from boba.mcp_server.prompts import (
     EndpointPrompts,
     FilePrompt,
     FilePrompts,
-    PromptFile,
 )
+from boba.mcp_server.schemas import DescribedTool, EndpointSchemas
 from boba.oauth.server import ServiceAuth
 from boba.runtime.storage import StorageClient, StorageConfig
 from boba.toolkit.channels import JournalChannels, ToolChannel
-from boba.toolkit.dag import CallDag, DagNode, ToolServer
+from boba.toolkit.dag import CallDag, DagNode
 from boba.toolkit.ports import ProgressReport
 from boba.toolkit.result import ContentMime, ErrorResult
 from boba.toolkit.wire import (
@@ -148,13 +139,11 @@ from boba.toolrun.streams import (
 __all__ = [
     "CallContextMiddleware",
     "CallProgress",
-    "ConnectionOfferRule",
-    "EndpointCatalog",
+    "EndpointTools",
     "FileUploadTool",
     "McpEndpoint",
     "McpEndpoints",
     "McpServer",
-    "RoleToolServers",
     "RunLimitMiddleware",
     "RunLimits",
 ]
@@ -162,43 +151,12 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 
-class ConnectionOfferRule(RoleVisibility):
-    """Источники connections, доступные ролям endpoint'а MCP."""
+class EndpointTools(CallerServers):
+    """Публикует выбранные инструменты и проверяет доступ ко всему endpoint'у.
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    offer: list[OfferedSource] = Field(min_length=1)
-
-
-class McpEndpoint(ProfileGrant):
-    """Секция [mcp.endpoints.<имя>]: грант профиля (роли, инструменты),
-    правила предложения соединений и промпты. Правило пишется явно, у
-    endpoint'а без соединений — пустым списком; промпты — таблицей по именам
-    (обычно ${toml_dir:prompts/<имя>}), у endpoint'а без промптов — пустой.
-    Конфиг сервиса разбирает секцию на старте; EndpointCatalog берёт её
-    грантом профиля, RoleToolServers — правилами, McpEndpoints — промптами."""
-
-    connections: list[ConnectionOfferRule]
-    prompts: dict[str, PromptFile]
-
-    def offer(self, roles: frozenset[str]) -> frozenset[OfferedSource]:
-        """Источники соединений по первому подходящему правилу; ни одно не
-        подошло — соединений нет."""
-        for rule in self.connections:
-            if rule.visible_for(roles):
-                return frozenset(rule.offer)
-
-        return frozenset()
-
-
-# RoleTools первым: иначе __init__ протокола CallerServers молча пропустит его __init__
-class RoleToolServers(
-    RoleTools[tuple[frozenset[str], str, frozenset[str]]], CallerServers
-):
-    """Реализация CallerServers на основе ролей и профиля пользователя.
-
-    Сборка MCP передаёт реестр и ConnectionParams. Кэш хранит доступные
-    инструменты и схемы; grants на connections проверяются заново при вызове."""
+    McpServer собирает карточки один раз. Порт исполнения содержит только
+    выбранные инструменты; встроенные операции проходят ту же политику.
+    """
 
     def __init__(
         self,
@@ -206,32 +164,69 @@ class RoleToolServers(
         subjects: TokenSubjects,
         endpoint: McpEndpoint,
         params: ConnectionParams,
+        operations: Sequence[Tool],
     ) -> None:
-        super().__init__()
-        self._registry = registry
         self._subjects = subjects
         self._endpoint = endpoint
-        self._params = params
-        self._calls = DirectCalls()
+        self._schemas = EndpointSchemas()
+        selected = frozenset(endpoint.tools)
+        complete = registry.server(registry.tools, DirectCalls())
+        available = {card.name for card in complete.tools()}
+        available.update(tool.name for tool in operations)
+        unknown = selected - available
+        if unknown:
+            raise EndpointConfigError(
+                f"endpoint {endpoint.prefix_url!r}: unknown tools {sorted(unknown)}; "
+                f"loaded tools: {sorted(available)}"
+            )
 
-    async def current(self) -> Mapping[str, McpTool]:
-        """Инструменты вызывающего текущего запроса; без токена —
-        TokenClaimsError."""
+        hosted = [tool for tool in registry.tools if tool.name in selected]
+        published = params.published(hosted)
+        port = registry.server(published, DirectCalls())
+        tools: dict[str, Tool] = {}
+        for card in port.tools():
+            tools[card.name] = McpTool(card, port)
+
+        for tool in operations:
+            if tool.name in selected:
+                tools[tool.name] = tool
+
+        unavailable = selected - tools.keys()
+        if unavailable:
+            raise EndpointConfigError(
+                f"endpoint {endpoint.prefix_url!r}: tools {sorted(unavailable)} "
+                "require streaming tools in the same endpoint"
+            )
+
+        self._features = dict(port.features())
+        nested = CallDag().feature()
+        if nested.tool not in selected:
+            self._features.pop(nested.ID, None)
+
+        self._tools: dict[str, Tool] = {}
+        for name in endpoint.tools:
+            tool = tools[name]
+            override = endpoint.overrides.get(name)
+            if override is not None:
+                schema = self._schemas.effective(endpoint.prefix_url, tool, override)
+                tool = DescribedTool(tool, schema)
+
+            self._tools[name] = tool
+
+    def features(self) -> Mapping[str, Mapping[str, object]]:
+        return self._features
+
+    def described(self) -> Mapping[str, Tool]:
+        return self._tools
+
+    async def current(self) -> Mapping[str, Tool]:
         subject = self._subjects.current()
+        if not self._endpoint.available_to(subject.roles):
+            raise ToolError(
+                f"access to endpoint {self._endpoint.prefix_url!r} is denied"
+            )
 
-        tools = await self._registry.for_caller(subject.roles, subject.profile)
-        return self.tools((subject.roles, subject.profile, frozenset(tools)))
-
-    def _server(self, key: tuple[frozenset[str], str, frozenset[str]]) -> ToolServer:
-        roles, _, names = key
-        tools = {tool.name: tool for tool in self._registry.tools if tool.name in names}
-        sources = self._endpoint.offer(roles)
-        if OfferedSource.STORED not in sources:
-            for name in ConnectionTool:
-                tools.pop(name, None)
-        offered = self._params.offered(list(tools.values()), sources)
-
-        return self._registry.server(offered, self._calls)
+        return self._tools
 
 
 class ProgressChannelError(Exception):
@@ -831,28 +826,11 @@ class RunLimitMiddleware(Middleware):
 
 
 class McpServer(Middleware):
-    """Сборка MCP-сервера одного endpoint'а сервиса исполнения и его
-    middleware fastmcp, отвечающий на согласование протокола.
+    """Собирает один endpoint из каталога, инструментов runtime и общего входа.
 
-    Создаётся сборкой endpoint'ов (McpEndpoints) на endpoint конфига сервиса:
-    из реестра инструментов, реестра запусков, журналов, проверяющего
-    токены, имени профиля и общего на процесс предела запусков. Инструменты
-    endpoint'а — те, что профиль и роли вошедшего разрешают; mcp() отдаёт
-    готовый сервер fastmcp. При активных журналах каналы журнала — ресурсы
-    сервера: шаблон и окна (JournalRoutes), журналы идущих вызовов
-    вызывающего (JournalListing над OpenJournals), рост и смена списка —
-    потоками subscriptions/listen над шиной CallerBus. Ответы на
-    согласование (эпоху выбирает SDK тем, какой крючок зовёт) объявляют
-    ровно это: список инструментов не меняется (он зависит только от ролей
-    токена, а реестр собран на старте), промпты — файлы каталога endpoint'а
-    (FilePrompts), их список тоже не меняется, логов и подсказок нет.
-    Расширение команд пользователя (CommandsFeature) объявлено: промпт,
-    который открывает приложение сервиса, несёт пометку PromptCommand.meta().
-    Подсказки кэша — по природе ответа: описание зависит только от конфига
-    (public), список инструментов — от ролей токена и объявленного клиентом
-    расширения (private), оба свежи HINT_TTL_MS; журналы идущих вызовов и их
-    окна меняются всё время и идут с умолчанием SDK — 0 и private.
-    close() штатно закрывает потоки подписки при остановке процесса.
+    Создаётся McpEndpoints. Набор инструментов и промптов фиксирован до
+    перезапуска; права ресурса проверяет OAuth. Middleware объявляет
+    возможности протокола, файлы и журналы текущего пользователя.
     """
 
     NAME: ClassVar[str] = "boba-mcp"
@@ -876,7 +854,9 @@ class McpServer(Middleware):
         published: str,
         prompts: Sequence[FilePrompt],
     ) -> None:
-        self._name = f"{self.NAME}/{profile}"
+        self._name = endpoint.title
+        self._description = endpoint.description
+        self._instructions = endpoint.instructions
         self._prompts = FilePrompts(prompts)
         self._prompted = bool(prompts)
         self._auth = auth
@@ -891,9 +871,17 @@ class McpServer(Middleware):
         )
         self._listing = JournalListing(listed, self._subjects)
         upload = FileUploadTool(self._files, self._subjects)
-        self._features = self._features_of(registry)
+        self._tools = EndpointTools(
+            registry, self._subjects, endpoint, params, [upload]
+        )
+        self._features = {
+            key: dict(value) for key, value in self._tools.features().items()
+        }
         self._features[ScopeFeature.ID] = CallFields().feature().settings()
-        self._features[FilesFeature.ID] = self._files.feature(upload.name).settings()
+        if upload.name in endpoint.tools:
+            self._features[FilesFeature.ID] = self._files.feature(
+                upload.name
+            ).settings()
         commands = CommandsFeature(version=CommandsVersion.V2026_10_24)
         self._features[CommandsFeature.ID] = commands.settings()
         self._journaled = journals.active()
@@ -903,24 +891,23 @@ class McpServer(Middleware):
             )
             self._features[JournalFeature.ID] = journal.settings()
 
-        self._provider = McpToolProvider(
-            RoleToolServers(registry, self._subjects, endpoint, params), [upload]
-        )
+        self._provider = McpToolProvider(self._tools)
         self._contexts = CallContextMiddleware(
             runs, journals, self._subjects, McpEndpoints.OPERATIONS, bus, listed
         )
 
-    @staticmethod
-    def _features_of(registry: ToolRegistry) -> dict[str, dict[str, Any]]:
-        """Возможности сервера для объявления при подключении клиента: те,
-        что объявляет порт над всеми инструментами реестра. Область вызова,
-        файлы и журнал endpoint добавляет сам."""
-        declared: dict[str, dict[str, Any]] = {}
-        port = registry.server(registry.tools, DirectCalls())
-        for feature, settings in port.features().items():
-            declared[feature] = dict(settings)
+    def tool_schemas(self) -> Mapping[str, Mapping[str, object]]:
+        exported: dict[str, Mapping[str, object]] = {}
+        schemas = EndpointSchemas()
+        for name, tool in self._tools.described().items():
+            exported[name] = {
+                "mcp": tool.to_mcp_tool().model_dump(
+                    mode="json", by_alias=True, exclude_none=True
+                ),
+                "override": schemas.model_schema(tool.parameters),
+            }
 
-        return declared
+        return exported
 
     def mcp(self) -> FastMCP:
         providers: list[Provider] = [self._provider]
@@ -932,6 +919,7 @@ class McpServer(Middleware):
 
         server = FastMCP(
             self._name,
+            instructions=self._instructions,
             auth=self._auth,
             providers=providers,
             middleware=[self, self._limits, self._contexts],
@@ -966,6 +954,9 @@ class McpServer(Middleware):
             capabilities=capabilities.model_copy(update={"extensions": extensions}),
             ttl_ms=self.HINT_TTL_MS,
             cache_scope="public",
+            instructions="\n\n".join(
+                filter(None, (self._description, self._instructions))
+            ),
         )
 
     async def on_initialize(
@@ -981,7 +972,17 @@ class McpServer(Middleware):
 
         capabilities = self._capabilities(listened=False)
 
-        return initialized.model_copy(update={"capabilities": capabilities})
+        return initialized.model_copy(
+            update={
+                "capabilities": capabilities,
+                "server_info": initialized.server_info.model_copy(
+                    update={
+                        "title": self._name,
+                        "description": self._description,
+                    }
+                ),
+            }
+        )
 
     def _capabilities(self, listened: bool) -> mt.ServerCapabilities:
         """Инструменты без смены списка, промпты файлов endpoint'а без смены
@@ -1025,47 +1026,12 @@ class EndpointApp:
         return path.startswith(f"{self.path}/")
 
 
-class EndpointCatalog(ProfileCatalog):
-    """Endpoint'ы сервиса как гранты и как каталог профилей входа.
-
-    Создаётся сборкой процесса из секций [mcp.endpoints.<имя>]. Реализация
-    ProfileCatalog: вход перечисляет в токене endpoint'ы, выданные ролям
-    вошедшего. grants() отдаёт те же endpoint'ы грантами реестра
-    инструментов: доступ требует одновременно разрешения endpoint'а
-    и хотя бы одной роли из настроенной политики сервиса.
-    """
-
-    def __init__(self, endpoints: Mapping[str, ProfileGrant]) -> None:
-        self._endpoints = dict(endpoints)
-
-    def granted_by_roles(self, user_roles: frozenset[str]) -> frozenset[str]:
-        names: set[str] = set()
-        for name, endpoint in self._endpoints.items():
-            if endpoint.visible_for(user_roles):
-                names.add(name)
-
-        return frozenset(names)
-
-    def known(self, name: str) -> bool:
-        return name in self._endpoints
-
-    def grants(self, roles: Mapping[str, ToolGrant]) -> ToolGrants:
-        return ToolGrants(
-            roles=roles, profiles=self._endpoints, check=GrantCheck.STRICT
-        )
-
-
 class McpEndpoints:
-    """Endpoint'ы MCP сервиса исполнения: по одному на секцию
-    [mcp.endpoints.<имя>].
+    """HTTP-маршруты опубликованных endpoint'ов и их жизненный цикл.
 
-    Создаётся сборкой процесса. Endpoint — набор инструментов, роли,
-    которым он выдан, и правила предложения соединений; каждый отвечает
-    отдельным MCP-сервером на пути `/{имя}` под префиксом сервиса. Токен без области
-    endpoint'а получает 403 от входа fastmcp (EndpointTokens). Реестр
-    инструментов, соединения инструментов, запуски, журналы и предел запусков
-    у endpoint'ов общие. app() — приложение ASGI со всеми endpoint'ами,
-    маршрутами входа и пробой готовности под префиксом сервиса.
+    McpHost передаёт проверенный каталог БД. Каждый endpoint получает
+    собственный OAuth-ресурс и сервер FastMCP; пустой каталог допустим.
+    Вложенные маршруты выбираются от самого длинного пути к короткому.
     """
 
     HEALTH: ClassVar[str] = "/health"
@@ -1086,7 +1052,7 @@ class McpEndpoints:
         runs: Runs,
         journals: CallJournals,
         auth: ServiceAuth,
-        endpoints: Mapping[str, McpEndpoint],
+        endpoints: Sequence[McpEndpoint],
         params: ConnectionParams,
         limits: RunLimits,
         storage: StorageConfig,
@@ -1098,28 +1064,52 @@ class McpEndpoints:
         self._endpoints: list[EndpointApp] = []
         self._servers: list[McpServer] = []
         slots = RunLimitMiddleware(limits, self.OPERATIONS)
-        for profile in sorted(registry.access.profiles()):
-            path = f"/{profile}"
-            provider = auth.resource(profile, [profile])
+        ordered = sorted(
+            endpoints, key=lambda endpoint: len(endpoint.prefix_url), reverse=True
+        )
+        for endpoint in ordered:
+            path = endpoint.prefix_url
+            self._check_route(path)
+            provider = auth.resource(path, [path])
             server = McpServer(
                 registry,
                 runs,
                 journals,
                 provider,
-                profile,
-                endpoints[profile],
+                path,
+                endpoint,
                 params,
                 slots,
                 storage,
                 files,
                 path,
                 auth.published(),
-                self._prompts.prompts(endpoints[profile].prompts),
+                self._prompts.prompts(endpoint.prompts),
             )
             served = server.mcp().http_app(path=path, stateless_http=True)
             self._servers.append(server)
             self._endpoints.append(EndpointApp(path, served, served))
             self._discovery.extend(provider.get_well_known_routes(path))
+
+    def _check_route(self, path: str) -> None:
+        reserved = (
+            self.HEALTH,
+            "/login",
+            "/authorize",
+            "/token",
+            "/register",
+            "/.well-known",
+        )
+        for prefix in reserved:
+            if path == prefix:
+                raise EndpointConfigError(
+                    f"endpoint {path!r}: route is reserved by the service"
+                )
+
+            if path.startswith(prefix + "/"):
+                raise EndpointConfigError(
+                    f"endpoint {path!r}: route is reserved by the service"
+                )
 
     def end_subscriptions(self) -> None:
         """Штатный конец потоков subscriptions/listen всех endpoint'ов: при

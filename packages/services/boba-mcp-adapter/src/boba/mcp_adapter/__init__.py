@@ -6,7 +6,6 @@ from boba.mcp_adapter.tools import (
     McpReplies,
     McpTool,
     McpToolProvider,
-    RoleTools,
 )
 
 __all__ = [
@@ -15,5 +14,4 @@ __all__ = [
     "McpReplies",
     "McpTool",
     "McpToolProvider",
-    "RoleTools",
 ]

@@ -9,7 +9,6 @@ description = "Boba mcp: MCP-сервер с инструментами boba —
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba-identity-postgres==0.0.33.dev1",
-    "boba-access-postgres==0.0.33.dev1",
     "boba-core==0.0.33.dev1",
     "fastmcp-slim[server]>=4.1.4,<5",
     "mcp-types>=2.3,<3",
@@ -33,6 +32,9 @@ dependencies = [
     "uvicorn>=0.35,<1",
     "websockets>=15,<16",
     "pydantic>=2.12,<3",
+    "jsonschema>=4.23,<5",
+    "psycopg>=3.3,<4",
+    "omegaconf>=2.3,<3",
 ]
 
 [project.scripts]
@@ -59,8 +61,6 @@ dev = [
     "boba-tool-shell==0.0.33.dev1",
     "boba-tool-web==0.0.33.dev1",
     "boba-transport-http==0.0.33.dev1",
-    "omegaconf>=2.3,<3",
-    "psycopg>=3.3,<4",
     "httpx>=0.28,<1",
     "playwright>=1.47,<2",
     "py-key-value-aio>=0.4,<1",
@@ -74,3 +74,6 @@ websockets = "WebSocket backend uvicorn: загружается сервером
 where = ["src"]
 include = ["boba*"]
 namespaces = true
+
+[tool.setuptools.package-data]
+"boba.mcp_server" = ["schema/*.sql", "upgrades/*.sql", "adoption/*.sql"]

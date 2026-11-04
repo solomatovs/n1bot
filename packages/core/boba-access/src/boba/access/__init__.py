@@ -23,13 +23,13 @@ __all__ = [
     "GrantCheck",
     "ProfileGrant",
     "RoleConfig",
-    "RolePermissions",
     "RoleVisibility",
     "ToolAccess",
     "ToolAccessError",
     "ToolAvailability",
     "ToolGrant",
     "ToolGrants",
+    "ToolPolicy",
 ]
 
 
@@ -126,10 +126,12 @@ class AccessSubject(Protocol):
     def profile(self) -> str: ...
 
 
-class RolePermissions(Protocol):
-    """Права на инструменты из внешнего хранилища ролей."""
+class ToolPolicy(Protocol):
+    """Решение приложения о вызове инструмента; runtime не знает хранилища прав."""
 
-    async def tools_for_roles(self, roles: frozenset[str]) -> frozenset[str]: ...
+    def decide(
+        self, tool_name: str, user_roles: Iterable[str], profile: str
+    ) -> ToolAvailability: ...
 
 
 class ToolAccessError(Exception):
@@ -156,10 +158,9 @@ class ToolGrants:
     roles: Mapping[str, ToolGrant]
     profiles: Mapping[str, ProfileGrant]
     check: GrantCheck
-    role_permissions: RolePermissions | None = None
 
 
-class ToolAccess:
+class ToolAccess(ToolPolicy):
     """Права доступа: роли, профили и инструменты чата под одним решением."""
 
     def __init__(
@@ -168,12 +169,10 @@ class ToolAccess:
         roles: Mapping[str, ToolGrant],
         profiles: Mapping[str, ProfileGrant],
         check: GrantCheck = GrantCheck.STRICT,
-        role_permissions: RolePermissions | None = None,
     ) -> None:
         self._tool_names = frozenset(tool_names)
         self._roles = dict(roles)
         self._profiles = dict(profiles)
-        self._role_permissions = role_permissions
         if check is GrantCheck.STRICT:
             self._check_grants()
 
@@ -211,28 +210,6 @@ class ToolAccess:
             return False
 
         return self._role_covers(tool_name, roles)
-
-    async def decide_for(
-        self, tool_name: str, user_roles: Iterable[str], profile: str
-    ) -> ToolAvailability:
-        if self._role_permissions is None:
-            return self.decide(tool_name, user_roles, profile)
-
-        roles = frozenset(user_roles)
-        if not self._profile_covers(tool_name, roles, profile):
-            return ToolAvailability.DENIED
-
-        tools = await self._role_permissions.tools_for_roles(roles)
-        if tool_name in tools or ToolGrant.WILDCARD in tools:
-            return ToolAvailability.AVAILABLE
-        return ToolAvailability.DENIED
-
-    async def for_roles(self, roles: frozenset[str]) -> ToolAccess:
-        if self._role_permissions is None:
-            return self
-        tools = await self._role_permissions.tools_for_roles(roles)
-        grants = {role: ToolGrant(tools=sorted(tools)) for role in roles}
-        return ToolAccess(self._tool_names, grants, self._profiles, GrantCheck.HOSTED)
 
     def _profile_covers(
         self, tool_name: str, roles: frozenset[str], profile: str

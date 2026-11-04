@@ -21,7 +21,6 @@ from boba.connection_broker.user_connections import (
 )
 from boba.connections.base import ClientIdentity, ConnectionBase
 from boba.connections.marks import ConnectionRefusal
-from boba.connections.offers import OfferedSource
 from boba.identity.context import CallContexts
 from boba.identity.errors import RefusalError
 from boba.toolrun.hosted import HostedTool, ToolSchema
@@ -128,22 +127,13 @@ class ConnectionParams(NodeArgs, ParamSource):
     def bind_all(self, tools: Sequence[HostedTool]) -> None:
         self._hooks.bind_all(tools, self._hook)
 
-    def offered(
-        self,
-        tools: Sequence[HostedTool],
-        sources: frozenset[OfferedSource],
-    ) -> Sequence[HostedTool]:
-        """Инструменты с именным аргументом видны только endpoint'ам, которым
-        разрешён каталог connections."""
-        stored = OfferedSource.STORED in sources
+    def published(self, tools: Sequence[HostedTool]) -> Sequence[HostedTool]:
+        """Схемы с именами connections; доступ к каждой записи проверяется на вызове."""
         offered: list[HostedTool] = []
         for tool in tools:
             params = self._params.get(tool.name)
             if not params:
                 offered.append(tool)
-                continue
-
-            if not stored:
                 continue
 
             fields: dict[str, tuple[Any, FieldInfo]] = {}

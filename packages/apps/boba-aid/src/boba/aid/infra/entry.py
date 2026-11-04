@@ -137,7 +137,6 @@ class AppEntry:
             case ProgramCommand.HEALTH:
                 self.health(call.paths)
             case ProgramCommand.MIGRATE:
-                import boba.identity_postgres as identity_schema  # noqa: PLC0415
                 from boba.runtime.migrate import (  # noqa: PLC0415 — служебный режим
                     ApplicationMigrations,
                 )
@@ -148,12 +147,7 @@ class AppEntry:
                             schema=ConfigSchema(AppConfig, values=("auth",))
                         ).run(
                             call.paths,
-                            (
-                                identity_schema.__name__,
-                                "boba.runtime",
-                                "boba.access_postgres",
-                                "boba.aid.mcp_servers",
-                            ),
+                            "boba.aid",
                         )
                     )
                 except Exception as exc:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Sequence
 
-from boba.access import AccessSubject, ToolAccess
+from boba.access import AccessSubject, ToolPolicy
 from boba.toolrun.hosted import HostedCall, HostedTool
 from boba.toolrun.wrapping import CallHooks, ToolBody
 
@@ -33,7 +33,7 @@ class ToolAccessGuard:
     class _Hooks(CallHooks[None]):
         def __init__(
             self,
-            access: ToolAccess,
+            access: ToolPolicy,
             subject_source: Callable[[], AccessSubject],
         ) -> None:
             self._access = access
@@ -44,7 +44,7 @@ class ToolAccessGuard:
             subject = self._subject_source()
             roles = frozenset(subject.roles)
             profile = subject.profile
-            if (await self._access.decide_for(name, roles, profile)).allowed:
+            if self._access.decide(name, roles, profile).allowed:
                 return
 
             shown_roles = ", ".join(sorted(roles))
@@ -68,7 +68,7 @@ class ToolAccessGuard:
             raise ToolAccessDeniedError(msg)
 
     def guard_all(
-        self, tools: Sequence[HostedTool], access: ToolAccess
+        self, tools: Sequence[HostedTool], access: ToolPolicy
     ) -> list[HostedTool]:
         """Права проверяются на вызове: субъект берётся источником, не полями."""
         hooks = self._Hooks(access, self._subject_source)

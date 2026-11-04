@@ -11,7 +11,7 @@ import logging
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 
-from boba.access import ToolAccess
+from boba.access import ToolPolicy
 from boba.identity.context import CallContexts
 from boba.tool_io.chain import CallAmbient
 from boba.toolkit.dag import NodeCalls, ToolServer, ToolServers
@@ -104,7 +104,7 @@ class ToolChain:
         return LaunchedTools(tools=tools, specs=StreamSpecs(declared))
 
     def seal(
-        self, tools: Sequence[HostedTool], access: ToolAccess, specs: StreamSpecs
+        self, tools: Sequence[HostedTool], access: ToolPolicy, specs: StreamSpecs
     ) -> None:
         """Ставит обвязки на инструменты; права access проверяются на вызове,
         specs — потоковые декларации этих инструментов."""
@@ -147,12 +147,23 @@ class ToolRegistry:
     неё исполнитель DAG ставит ручку узла."""
 
     tools: list[HostedTool]
-    access: ToolAccess
+    access: ToolPolicy
     stream_config: StreamGroupsConfig
     own: frozenset[str]
     node_args: Sequence[NodeArgs]
     specs: StreamSpecs
     ambient: CallAmbient
+
+    def __post_init__(self) -> None:
+        names: set[str] = set()
+        for tool in self.tools:
+            if tool.name in names:
+                raise ToolConfigError(
+                    f"tool registry: multiple plugins export {tool.name!r}; "
+                    "each exported name must be unique"
+                )
+
+            names.add(tool.name)
 
     def server(self, tools: Iterable[HostedTool], calls: NodeCalls) -> ToolServer:
         """Порт инструментов для клиента по инструментам tools.
@@ -230,17 +241,6 @@ class ToolRegistry:
             by_name[tool.name] = tool
 
         return by_name
-
-    async def for_caller(
-        self, user_roles: Iterable[str], profile: str
-    ) -> dict[str, HostedTool]:
-        roles = frozenset(user_roles)
-        access = await self.access.for_roles(roles)
-        allowed: dict[str, HostedTool] = {}
-        for tool in self.tools:
-            if access.decide(tool.name, roles, profile).allowed:
-                allowed[tool.name] = tool
-        return allowed
 
     def _select(self, roles: frozenset[str], profile: str) -> Iterator[HostedTool]:
         for tool in self.tools:

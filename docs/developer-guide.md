@@ -1005,10 +1005,10 @@ AID не раскрывает профиль и не шифрует аргуме
 перечень имён не встраивается в `enum`, чтобы каталог и гранты можно было
 обновлять без пересборки плагина.
 
-Правила `[[mcp.endpoints.<имя>.connections]]` управляют публикацией параметра
-connection по ролям endpoint'а. `offer = ["stored"]` включает имена из
-таблицы MCP. Без подходящего правила инструмент с именованным параметром
-скрыт из `tools/list`. Других источников именованных профилей нет.
+`ConnectionParams.published()` строит параметры имён connections для
+инструментов endpoint'а. Публикацией управляет только `mcp_endpoints.tools`;
+проверку конкретного connection выполняет брокер по grants на каждом вызове.
+У endpoint'а нет списка источников connections.
 
 Confluence также использует этот путь: `confluence_fetch`, `confluence_search`,
 `confluence_spaces`, `confluence_grep`, `confluence_address` и инструменты
@@ -1675,9 +1675,8 @@ BOBA_MCP_CONFIG_PATH=$PWD/compose/mcp/conf/config.toml:$PWD/.vscode/boba/mcp.tom
   manifest already declares as model arguments»: аргумент модели назван
   так же, как поле хоста (`intent`, `scope_id`, параметр-соединение,
   канал); переименуйте аргумент.
-- Инструмента с параметром-connection нет в `tools/list`: правила
-  `[[mcp.endpoints.<имя>.connections]]` не предлагают каталог `stored`
-  ролям вызывающего.
+- Инструмента с параметром-connection нет в `tools/list`: проверьте
+  `mcp_endpoints.tools`, grant роли на endpoint и выполненный перезапуск MCP.
 - Вызов отвергнут «the connection name is not available» или «the
   connection named by … characters is not among …»: имя недоступно по
   grants, имеет неоднозначное совпадение или не соответствует виду
@@ -2148,3 +2147,29 @@ MCP и Boba без зависимости общего runtime от инфрас
 Пустой HTTP transport получает `HttpTransportConfig` из default_factory
 модели потребителя; для своего прокси/CA/повторов задайте transport явно.
 AID хранит ключ шифрования секретов MCP-серверов в `[mcp_servers].cipher`.
+
+
+### Каталог MCP и миграции приложений
+
+`boba.mcp_server.catalog` содержит модели записей и `EndpointCatalog` —
+реализацию общих портов `ProfileCatalog` и `ToolPolicy`. В нём нет SQL или
+FastMCP. `endpoints.McpEndpointStore` читает PostgreSQL и переводит отказ
+в `EndpointStoreError`; составление HTTP-сервера этой ошибки не скрывает.
+`server.EndpointTools` строит выбранный порт runtime и передаёт ровно его
+инструменты провайдеру MCP. `schemas.EndpointSchemas` проверяет overrides;
+`DescribedTool` валидирует вход и делегирует выполнение исходному Tool.
+
+`ToolPolicy` принимает решение о доступе, `ToolAccessGuard` применяет его
+перед исполнением тела, включая узлы workflow. Runtime не импортирует
+каталог MCP и PostgreSQL. OAuth получает `ProfileCatalog` и пересекает
+области подписанного токена с доступными endpoint'ами снимка каталога;
+SQL при проверке токена не выполняется. AID сохраняет только протокольные
+адаптации audience/scope. Инфраструктура и чистые модели соединены в McpHost.
+
+DDL AID, агента и MCP находится соответственно в пакетах `boba.aid`,
+`boba.cli`, `boba.mcp_server`: `schema/`, `adoption/`, `upgrades/`.
+`MigrationScripts.application()` собирает поток приложения, общий
+`PostgresMigrations` выполняет его и учитывает версии/контрольные суммы.
+`McpMigrationInput` готовит однократный импорт endpoint'ов, не выполняя SQL.
+Чистая установка не создаёт ролей и endpoint'ов. Runtime не создаёт таблиц.
+Подробности эксплуатации — «Endpoint'ы MCP в базе» в руководстве администратора.

@@ -14,6 +14,7 @@ __pycache__
 !/docs/authentication-review.md
 !/docs/migration-from-dev.md
 !/docs/knowledge-graph-plan.md
+!/docs/mcp-database-endpoints-implementation.md
 !/docs/knowledge-schema.sql
 !/docs/psql-queries/
 !/docs/migrations/

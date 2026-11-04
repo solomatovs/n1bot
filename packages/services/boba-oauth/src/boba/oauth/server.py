@@ -100,6 +100,7 @@ from boba.identity.principal import IdentityRealm, UserIdentity
 from boba.identity.service import ServiceAddress
 from boba.identity.session import Login
 from boba.identity.signin import (
+    ProfileCatalog,
     ProxyRequest,
     SignedIn,
     SignInMetadata,
@@ -465,10 +466,12 @@ class ResourceTokens(TokenVerifier):
         tokens: ServiceTokens,
         resource: str,
         scopes: Sequence[str],
+        profiles: ProfileCatalog | None = None,
     ) -> None:
         super().__init__(required_scopes=list(scopes))
         self._tokens = tokens
         self._resource = resource
+        self._profiles = profiles
 
     async def verify_token(self, token: str) -> AccessToken | None:
         """Локально проверяет JWT; None — токен не принят (401)."""
@@ -485,6 +488,12 @@ class ResourceTokens(TokenVerifier):
                 self._resource,
             )
             return None
+
+        if self._profiles is not None:
+            claims = TokenClaims.model_validate(read.claims)
+            permitted = self._profiles.granted_by_roles(claims.roles)
+            scopes = sorted(set(read.scopes) & permitted)
+            read = read.model_copy(update={"scopes": scopes})
 
         return read
 
@@ -1250,19 +1259,22 @@ class ServiceAuth:
     префиксом службы (app_routes).
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — сборка общего входа службы
         self,
         public_url: str,
         server: AuthServer,
         tokens: ServiceTokens,
         service: str,
         resources: Mapping[str, str],
+        *,
+        profiles: ProfileCatalog | None = None,
     ) -> None:
         self._public_url = public_url
         self._server = server
         self._pages = LoginPages(server, public_url, service)
         self._tokens = tokens
         self._resources = dict(resources)
+        self._profiles = profiles
 
     def published(self) -> str:
         """Префикс пути, под которым служба отвечает: путь публичного адреса
@@ -1274,7 +1286,9 @@ class ServiceAuth:
         ресурса с областями scopes и объявляет сервер авторизации в
         метаданных ресурса (RFC 9728)."""
         return RemoteAuthProvider(
-            token_verifier=ResourceTokens(self._tokens, self._resources[name], scopes),
+            token_verifier=ResourceTokens(
+                self._tokens, self._resources[name], scopes, self._profiles
+            ),
             authorization_servers=[AnyHttpUrl(self._public_url)],
             base_url=self._public_url,
         )

@@ -14,7 +14,7 @@ from typing import Annotated
 
 from omegaconf import DictConfig
 
-from boba.access import GrantCheck, ToolGrants
+from boba.access import ToolPolicy
 from boba.auth import AuthService, JwtTokens, SignIns
 from boba.chat.profiles import ChatProfiles
 from boba.config import bind
@@ -194,11 +194,6 @@ def live_sessions() -> LiveSessions:
     raise RuntimeError(msg)
 
 
-def grant_check() -> GrantCheck:
-    """Сверка грантов: процесс без чата проверяет только свои инструменты."""
-    return GrantCheck.HOSTED
-
-
 def own_tools() -> Sequence[HostedTool]:
     """Собственные инструменты процесса — отдельный сервер за портом
     инструментов; у процесса без таких инструментов их нет."""
@@ -295,9 +290,9 @@ def tool_launchers(
         launchers.stop()
 
 
-def tool_grants() -> ToolGrants:
-    """MCP задаёт политику tools из своих endpoint'ов и ролей."""
-    msg = "tool grants must be supplied by the MCP application"
+def tool_policy() -> ToolPolicy:
+    """Приложение передаёт runtime своё решение о доступе к инструментам."""
+    msg = "tool policy must be supplied by the application"
     raise RuntimeError(msg)
 
 
@@ -321,12 +316,12 @@ async def plugin_kits(
 def tool_registry(  # noqa: PLR0913 — реестр собирается всеми входами процесса
     raw: Annotated[DictConfig, Depends(get_raw_config)],
     kits: Annotated[Mapping[str, PluginKit], Depends(plugin_kits)],
-    grants: Annotated[ToolGrants, Depends(tool_grants)],
+    policy: Annotated[ToolPolicy, Depends(tool_policy)],
     own: Annotated[Sequence[HostedTool], Depends(own_tools)],
     launchers: Annotated[SectionLaunchers, Depends(tool_launchers)],
     params: Annotated[ConnectionParams, Depends(connection_params)],
 ) -> ToolRegistry:
-    loader = ToolLoader(raw, kits, exec_refs(params), launchers, grants, own)
+    loader = ToolLoader(raw, kits, exec_refs(params), launchers, policy, own)
 
     return loader.load()
 

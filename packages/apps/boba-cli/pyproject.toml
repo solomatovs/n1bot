@@ -57,3 +57,6 @@ websockets = "протокол WebSocket сервера uvicorn: boba serve пр
 where = ["src"]
 include = ["boba*"]
 namespaces = true
+
+[tool.setuptools.package-data]
+"boba.cli" = ["schema/*.sql", "upgrades/*.sql", "adoption/*.sql"]

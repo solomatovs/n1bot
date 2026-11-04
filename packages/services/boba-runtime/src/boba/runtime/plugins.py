@@ -30,13 +30,13 @@ from typing import Any, ClassVar
 from omegaconf import DictConfig, OmegaConf
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from boba.access import ToolAccess, ToolGrants
+from boba.access import ToolAccess, ToolGrants, ToolPolicy
 from boba.config import ConfigError, bind
 from boba.connection_broker.tickets import SectionTickets, ServiceTickets
 from boba.core.types import StringList
 from boba.core.validation import ValidationText
 from boba.db.postgres.connection import PostgresConfig
-from boba.db.postgres.migrate import MigrationPlan, MigrationTarget
+from boba.db.postgres.migrate import MigrationPlan, MigrationScript, MigrationTarget
 from boba.runtime.launchers import PluginLaunch, SectionLaunchers, ToolLaunchers
 from boba.runtime.refs import ExecRefs
 from boba.toolkit.manifest import ToolDecl
@@ -137,10 +137,8 @@ class PluginKits:
 
     Создаёт его провайдер процесса со способом запуска. load() получает
     манифесты включённых плагинов от их программ одновременно. Таблицы
-    подготавливает отдельная команда migrate. Плагин, которому
-    не хватило файла его конфига (программы, корня, каталога данных) или
-    чья подкоманда сорвалась, исключается с ошибкой в журнале — сервер
-    стартует с остальными.
+    подготавливает отдельная команда migrate. Ошибка включённого плагина
+    останавливает сборку процесса с именем плагина и причиной.
     """
 
     def __init__(self, raw: DictConfig, launchers: SectionLaunchers) -> None:
@@ -162,24 +160,20 @@ class PluginKits:
 
         kits: dict[str, PluginKit] = {}
         for kit in started:
-            if kit is None:
-                continue
-
             kits[kit.launch.id] = kit
 
         return kits
 
     def _started(
         self, enabled: Sequence[tuple[str, PluginMeta, dict[str, Any]]]
-    ) -> Iterator[Coroutine[Any, Any, PluginKit | None]]:
+    ) -> Iterator[Coroutine[Any, Any, PluginKit]]:
         for plugin_id, meta, values in enabled:
             yield self._start(plugin_id, meta, values)
 
     async def _start(
         self, plugin_id: str, meta: PluginMeta, values: dict[str, Any]
-    ) -> PluginKit | None:
-        """Манифест и хранилище одного плагина; отказ — None и ошибка в журнале
-        с причиной: плагин не поднят, остальные стартуют."""
+    ) -> PluginKit:
+        """Манифест одного включённого плагина; отказ прерывает сборку."""
         try:
             manifest = await asyncio.to_thread(
                 self._launchers.manifest_of, plugin_id, values
@@ -189,8 +183,7 @@ class PluginKits:
                 values=values, connections=manifest.connections_in_config
             )
         except (RuntimeError, ConfigError) as exc:
-            logger.error("plugin %s is not started: %s", plugin_id, exc)
-            return None
+            raise ConfigError(f"loading plugin {plugin_id!r} failed: {exc}") from exc
 
         return PluginKit(launch=launch, meta=meta, section=section)
 
@@ -233,6 +226,19 @@ class PluginMigrations:
                 connection = bind(
                     OmegaConf.create(values), storage.connection, PostgresConfig
                 )
+                if not storage.stream:
+                    owners = sorted(
+                        {script.name.split("/")[0] for script in storage.scripts}
+                    )
+                    stream = "storage:" + ",".join(owners)
+                    adoption = MigrationScript(
+                        name="adopt legacy plugin schema",
+                        text="select 1",
+                    )
+                    storage = storage.model_copy(
+                        update={"stream": stream, "adoption": (adoption,)}
+                    )
+
                 targets.append(MigrationTarget(connection, storage))
         finally:
             launchers.stop()
@@ -252,7 +258,7 @@ class ToolLoader:
         kits: Mapping[str, PluginKit],
         refs: ExecRefs,
         launchers: SectionLaunchers,
-        grants: ToolGrants,
+        grants: ToolGrants | ToolPolicy,
         own_tools: Sequence[HostedTool] = (),
     ) -> None:
         self._raw = raw_config
@@ -375,14 +381,12 @@ class ToolLoader:
 
         return bind(self._raw, section, StreamGroupsConfig)
 
-    def _access_of(self, tools: Sequence[HostedTool]) -> ToolAccess:
-        """Права по грантам процесса; опечатка в имени инструмента — отказ.
+    def _access_of(self, tools: Sequence[HostedTool]) -> ToolPolicy:
+        """Использует политику приложения либо собирает статические гранты стенда."""
+        if not isinstance(self._grants, ToolGrants):
+            return self._grants
 
-        Инструменты включённого плагина, который на старте не поднялся
-        (PluginKits), гранты называть могут: имена их известны из секции, а в
-        реестр они не попадают, и вызвать их нельзя.
-        """
-        known: set[str] = set(self._absent_tools())
+        known: set[str] = set()
         for tool in tools:
             known.add(tool.name)
 
@@ -393,17 +397,4 @@ class ToolLoader:
             grants.roles,
             grants.profiles,
             grants.check,
-            grants.role_permissions,
         )
-
-    def _absent_tools(self) -> Iterator[str]:
-        """Инструменты из секций включённых плагинов, которых нет среди поднятых."""
-        for plugin_id in self._sections.ids():
-            if plugin_id in self._kits:
-                continue
-
-            meta = self._sections.meta(plugin_id)
-            if not meta.enable:
-                continue
-
-            yield from meta.tools

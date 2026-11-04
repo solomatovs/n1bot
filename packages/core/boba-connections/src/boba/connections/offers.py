@@ -13,14 +13,7 @@ from boba.toolkit.calls import SchemaMark
 __all__ = [
     "ConnectionOffer",
     "ConnectionParamSchema",
-    "OfferedSource",
 ]
-
-
-class OfferedSource(StrEnum):
-    """Каталог соединений, доступный endpoint'у MCP."""
-
-    STORED = "stored"
 
 
 @dataclass(frozen=True)

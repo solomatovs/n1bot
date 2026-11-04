@@ -1046,9 +1046,6 @@ async def main(argv: Sequence[str] | None = None) -> None:
         if invocation.command is Command.MIGRATE:
             from boba.cli.serve import ServeConfig  # noqa: PLC0415
             from boba.config import ConfigSchema  # noqa: PLC0415
-            from boba.history.postgres.migrations import (  # noqa: PLC0415 — служебный режим
-                HistorySchema,
-            )
             from boba.runtime.migrate import (  # noqa: PLC0415 — служебный режим
                 ApplicationMigrations,
             )
@@ -1058,7 +1055,7 @@ async def main(argv: Sequence[str] | None = None) -> None:
                     schema=ConfigSchema(ServeConfig, values=("auth",))
                 ).run(
                     invocation.config,
-                    tuple(HistorySchema),
+                    "boba.cli",
                 )
             except Exception as exc:
                 raise SystemExit(f"boba migrate failed: {exc}") from exc

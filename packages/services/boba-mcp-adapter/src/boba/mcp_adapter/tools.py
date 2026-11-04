@@ -1,30 +1,20 @@
-"""Карточки инструментов порта ToolServer как инструменты сервера fastmcp.
+"""Адаптация карточек ToolServer к tools/list и tools/call FastMCP.
 
-Один адаптер для инструментов boba по MCP: сервис исполнения boba-mcp
-собирает из этих частей свой FastMCP, ретранслятор чата отдаёт ими
-собственные инструменты чата агенту. McpTool — инструмент fastmcp над
-карточкой порта: схема карточки для клиента, вызов портом узлом DagNode,
-итог клиенту ответом McpReplies стандартными полями результата MCP
-(ResultWire). RoleTools — McpTool порта на ключ наследника (роли, профиль
-и всё, что решает о составе порта), собранные один раз. McpToolProvider —
-провайдер fastmcp: на каждый запрос берёт инструменты вызывающего у
-CallerServers (кто вызывает, решает приложение по своему токену).
-JournalUris — uri каналов журнала вызова ресурсами MCP и их разбор.
+CallerServers принадлежит приложению и выдаёт доступные ему инструменты.
+McpToolProvider только передаёт этот набор FastMCP; McpTool исполняет вызов
+через ToolServer, McpReplies собирает стандартный результат протокола.
 
 Ошибки:
-наружу уходит только итог вызова — сбой любого вида возвращается
-    результатом с isError и текстом отказа в content.
-исключения CallerServers.current() — реализация приложения не узнала
-    вызывающего; список инструментов и вызов для него отказывают.
-исключения RoleTools._server() — наследник не собрал порт ключа.
+Исключения CallerServers.current — приложение не разрешило доступ или
+    не смогло получить набор инструментов; провайдер не скрывает причину.
 """
 
 from __future__ import annotations
 
 import logging
-from abc import ABC, abstractmethod
-from collections.abc import Hashable, Mapping, Sequence
-from typing import Any, Generic, Protocol, TypeVar
+from abc import abstractmethod
+from collections.abc import Mapping, Sequence
+from typing import Any, Protocol
 
 import mcp_types as mt
 from fastmcp.resources.template import expand_uri_template, match_uri_template
@@ -48,12 +38,9 @@ __all__ = [
     "McpReplies",
     "McpTool",
     "McpToolProvider",
-    "RoleTools",
 ]
 
 logger = logging.getLogger(__name__)
-
-ToolsKey = TypeVar("ToolsKey", bound=Hashable)
 
 
 class McpReplies:
@@ -151,7 +138,7 @@ class JournalUris:
 class McpTool(Tool):
     """Инструмент порта как инструмент fastmcp.
 
-    Создаёт его RoleTools из карточки инструмента порта: схема для
+    Создаёт его приложение из карточки инструмента порта: схема для
     клиента — готовая схема вызова после всех обвязок, где аргументы с кодом
     названы типом содержимого (CallViews), и схема итога карточки; тело —
     вызов порта ToolServer узлом DagNode под идентификатором, который
@@ -198,37 +185,6 @@ class McpTool(Tool):
         return self._replies.of(outcome)
 
 
-class RoleTools(ABC, Generic[ToolsKey]):
-    """Базовый класс инструментов порта на ключ ToolsKey: McpTool по
-    карточкам порта строятся один раз на ключ и дальше отдаются готовыми.
-
-    Наследник RoleToolServers сервиса boba-mcp решает, какой порт ToolServer
-    видит ключ (_server). Ключ учитывает роли, профиль и возможности клиента.
-    """
-
-    def __init__(self) -> None:
-        self._tools: dict[ToolsKey, dict[str, McpTool]] = {}
-
-    def tools(self, key: ToolsKey) -> Mapping[str, McpTool]:
-        """Инструменты ключа key по именам."""
-        offered = self._tools.get(key)
-        if offered is not None:
-            return offered
-
-        server = self._server(key)
-        offered = {}
-        for card in server.tools():
-            offered[card.name] = McpTool(card, server)
-
-        self._tools[key] = offered
-
-        return offered
-
-    @abstractmethod
-    def _server(self, key: ToolsKey) -> ToolServer:
-        """Порт инструментов, доступных ключу key."""
-
-
 class CallerServers(Protocol):
     """Инструменты вызывающего текущего запроса.
 
@@ -238,44 +194,29 @@ class CallerServers(Protocol):
     """
 
     @abstractmethod
-    async def current(self) -> Mapping[str, McpTool]:
+    async def current(self) -> Mapping[str, Tool]:
         """Ошибки — свои у приложения: вызывающего по запросу не узнать."""
 
 
 class McpToolProvider(Provider):
-    """Провайдер fastmcp: инструменты вызывающего и операции приложения.
+    """Передаёт FastMCP ровно набор приложения, не добавляя собственных разрешений."""
 
-    Создаётся сборкой сервера. На каждый запрос берёт инструменты
-    вызывающего у CallerServers и добавляет к ним операции приложения
-    (operations), которые видит каждый вызывающий.
-    """
-
-    def __init__(self, servers: CallerServers, operations: Sequence[Tool]) -> None:
+    def __init__(self, servers: CallerServers) -> None:
         super().__init__()
         self._servers = servers
-        self._operations = tuple(operations)
 
     async def _list_tools(self) -> Sequence[Tool]:
-        offered = await self._offered()
+        offered = await self._servers.current()
 
         return list(offered.values())
 
     async def _get_tool(
         self, name: str, version: VersionSpec | None = None
     ) -> Tool | None:
-        offered = await self._offered()
+        offered = await self._servers.current()
 
         return offered.get(name)
 
     async def get_tasks(self) -> Sequence[FastMCPComponent]:
         """Фоновых задач у порта нет: вызов живёт, пока живо соединение."""
         return []
-
-    async def _offered(self) -> dict[str, Tool]:
-        tools = await self._servers.current()
-
-        offered: dict[str, Tool] = dict(tools)
-        for operation in self._operations:
-            offered[operation.name] = operation
-
-        return offered
