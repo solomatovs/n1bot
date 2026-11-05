@@ -14,9 +14,9 @@ import pytest
 from omegaconf import DictConfig, OmegaConf
 
 from boba.config import bind
-from boba.toolrun.plugins import PluginMeta
 from boba.sandbox.program import PluginCommand, PluginEntry
 from boba.toolkit.manifest import PluginManifest
+from boba.toolrun.plugins import PluginMeta
 
 PLUGINS_DIR = (
     Path(__file__).resolve().parents[3] / "apps" / "boba-mcp" / "conf" / "plugins"

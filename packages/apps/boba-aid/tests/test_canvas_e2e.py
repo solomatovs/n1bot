@@ -39,6 +39,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeout
 from pydantic import BaseModel, ConfigDict, SecretStr
 
 from boba.aid.canvas.panel import CanvasNote
+from boba.aid.data.users import UsersTable
 from boba.aid.infra.config import AppConfig
 from boba.aid.mcp_servers.sources import McpViewer, StoredServers
 from boba.aid.mcp_servers.store import McpServerStore
@@ -46,6 +47,7 @@ from boba.config import ConfigError, bind
 from boba.crypto import SecretCipher
 from boba.identity.api import StoredUser
 from boba.identity.principal import UserIdentity
+from boba.identity.session import Login
 from boba.mcp_client.client import (
     HttpEndpoint,
     HttpLocation,
@@ -53,11 +55,11 @@ from boba.mcp_client.client import (
     McpServerLimits,
     ProxyAuth,
 )
-from boba.aid.data.users import UsersTable
 from boba.stand.names import StandNames
-from boba.stand.ui.database import StandDatabase, StandServerSeed
+from boba.stand.ui.database import StandDatabase, StandServerSeed, seed_service_roles
 from boba.stand.ui.stand import (
     ServerSeedSpec,
+    ServiceStand,
     StandApp,
     StandError,
     StandFiles,
@@ -166,6 +168,14 @@ class E2eStand(ServerSeedSpec):
 
         self._files(StandApp.MCP).write(self._service_overlay(name))
         self._files(StandApp.AID).write(self._app_overlay(name))
+        seed_service_roles(
+            ServiceStand(
+                workdir=self._root / StandApp.MCP.value / self.CONF,
+                app_port=self.SERVICE_PORT,
+                db_name=name,
+                sandbox=True,
+            )
+        )
 
     def arguments(self, app: StandApp) -> list[str]:
         """Аргументы --config приложения стенда: конфиг отладки и наложение,
@@ -554,7 +564,7 @@ async def _user_row(
     await pool.open()
     try:
         user = await UsersTable(pool, config.db_schema).stored(
-            UserIdentity(realm="aid-debug-local", login=identifier)
+            UserIdentity(realm="aid-debug-local", login=Login(identifier))
         )
     finally:
         await pool.close()

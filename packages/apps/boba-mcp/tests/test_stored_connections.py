@@ -8,7 +8,7 @@ from __future__ import annotations
 import socket
 from collections.abc import AsyncIterator
 from pathlib import Path
-from uuid import NAMESPACE_URL, uuid4, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import mcp_types as mt
 import pytest
@@ -19,10 +19,9 @@ from pydantic import SecretStr
 from service_stand import ServiceStand
 
 from boba.config import bind
-from boba.crypto import SecretCipher
-from boba.mcp_server.connections.store import ConnectionStore
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.stored import GrantTarget
+from boba.crypto import SecretCipher
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import (
     PasswordAuth,
@@ -35,8 +34,11 @@ from boba.db.postgres.migrate import (
     MigrationTarget,
     PostgresMigrations,
 )
+from boba.identity.principal import UserIdentity
+from boba.identity.session import Login
 from boba.kerberos import DelegatedAuth, KeytabAuth
 from boba.mcp_server.app import McpAppConfig
+from boba.mcp_server.connections.store import ConnectionStore
 from boba.mcp_server.server import RunLimits
 from boba.stand.overlay import ConfigOverlay
 from boba.stand.roles import RoleSeed
@@ -45,6 +47,26 @@ from boba.toolrun.stream_calls import WorkflowTool
 from boba.transport.http.connection import HttpConnection
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
+
+
+async def _grant_user(
+    store: ConnectionStore,
+    connection_id: UUID,
+    *,
+    login: str = "alice",
+    user_id: UUID | None = None,
+    roles: tuple[str, ...] = ("dev",),
+) -> GrantTarget:
+    """Создаёт пользователя-цель grant перед записью в каталог MCP."""
+    if user_id is None:
+        user_id = uuid5(NAMESPACE_URL, f"boba-user:corporate:{login}")
+
+    identity = UserIdentity(realm="corporate", login=Login(login))
+    await RoleSeed(store).user(user_id, identity, roles)
+    target = GrantTarget.user(user_id)
+    await store.grant(connection_id, target)
+
+    return target
 
 
 @pytest.fixture
@@ -136,11 +158,9 @@ class CatalogCalls:
     async def grant(
         self, store: ConnectionStore, name: str = "warehouse"
     ) -> GrantTarget:
-        owner = uuid5(NAMESPACE_URL, "boba-user:corporate:alice")
-        target = GrantTarget.user(owner)
         connection = await store.add(name, self.connection())
-        await store.grant(connection, target)
-        return target
+
+        return await _grant_user(store, connection)
 
 
 async def test_catalog_search_and_named_call_keep_secrets_on_server(
@@ -149,7 +169,7 @@ async def test_catalog_search_and_named_call_keep_secrets_on_server(
     calls = CatalogCalls(service)
     await calls.grant(store)
     hidden = await store.add("hidden", calls.connection("hidden.internal"))
-    await store.grant(hidden, GrantTarget.user(uuid4()))
+    await _grant_user(store, hidden, login="hidden", user_id=uuid4(), roles=())
     async with await calls.client() as client:
         tools = await client.list_tools()
         capabilities = client.server_capabilities
@@ -225,8 +245,7 @@ async def test_same_name_in_wrong_kind_is_not_a_postgres_connection(
 ) -> None:
     calls = CatalogCalls(service)
     connection = await store.add("web-only", HttpConnection(host="public.internal"))
-    target = GrantTarget.user(uuid5(NAMESPACE_URL, "boba-user:corporate:alice"))
-    await store.grant(connection, target)
+    await _grant_user(store, connection)
     async with await calls.client() as client:
         result = await client.call_tool_mcp(calls.TOOL, {"connection": "web-only"})
     assert result.is_error
@@ -247,7 +266,7 @@ async def test_ambiguous_name_is_hidden_and_cannot_execute(
     assert "more than one" in calls.text(result)
 
 
-async def test_role_cannot_call_a_tool_from_another_users_catalog(
+async def test_role_without_connection_grant_sees_endpoint_tool_but_cannot_call_it(
     service: ServiceStand, store: ConnectionStore
 ) -> None:
     calls = CatalogCalls(service)
@@ -264,7 +283,7 @@ async def test_role_cannot_call_a_tool_from_another_users_catalog(
             {"key": "query", "tool": calls.TOOL, "args": {"connection": "warehouse"}}
         ]
         dag = await client.call_tool_mcp(WorkflowTool.NAME, {"nodes": nodes})
-    assert calls.TOOL not in listed
+    assert calls.TOOL in listed
     assert direct.is_error
     assert dag.is_error
 
@@ -295,8 +314,7 @@ async def test_keytab_credentials_are_prepared_by_mcp(
     )
     profile = test_postgres.model_copy(update={"auth": auth})
     connection = await store.add("kerberos", profile)
-    owner = uuid5(NAMESPACE_URL, "boba-user:corporate:alice")
-    await store.grant(connection, GrantTarget.user(owner))
+    await _grant_user(store, connection)
     async with await calls.client() as client:
         result = await client.call_tool_mcp(calls.TOOL, {"connection": "kerberos"})
     assert not result.is_error, calls.text(result)
@@ -312,12 +330,11 @@ async def test_proxy_identity_does_not_invent_delegated_credentials(
     auth = DelegatedAuth(method="kerberos_delegated")
     profile = test_postgres.model_copy(update={"auth": auth})
     connection = await store.add("delegated", profile)
-    owner = uuid5(NAMESPACE_URL, "boba-user:corporate:alice")
-    await store.grant(connection, GrantTarget.user(owner))
+    await _grant_user(store, connection)
     async with await calls.client() as client:
         result = await client.call_tool_mcp(calls.TOOL, {"connection": "delegated"})
     assert result.is_error
-    assert "kerberos" in calls.text(result).lower()
+    assert "no delegated credentials" in calls.text(result).lower()
 
 
 @pytest.mark.parametrize(

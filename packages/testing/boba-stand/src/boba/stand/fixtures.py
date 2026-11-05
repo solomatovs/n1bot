@@ -11,13 +11,13 @@ from enum import StrEnum
 import pytest
 from omegaconf import DictConfig
 
+from boba.aid.infra.config import AppConfig
 from boba.config import bind
 from boba.config.application import ConfigFiles
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
-from boba.llm.providers import LlmProviderTypes
-from boba.aid.infra.config import AppConfig
 from boba.krb.layout import InstanceLayout
+from boba.llm.providers import LlmProviderTypes
 from boba.mcp_server.app import McpAppConfig
 from boba.stand.apps_slot import AppsDocker, AppsSlot
 from boba.stand.database import TestDatabase

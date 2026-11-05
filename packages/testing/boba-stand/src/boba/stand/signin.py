@@ -16,6 +16,7 @@ from boba.auth.config import (
     ProxyAuthConfig,
 )
 from boba.auth.providers.backends import StandardAuthBackends
+from boba.auth.providers.kerberos import SpnegoGate
 from boba.auth.providers.password import CompositeSignIn
 from boba.auth.signin import SignIns
 from boba.chat.profiles import (
@@ -27,7 +28,7 @@ from boba.chat.profiles import (
 from boba.identity.api import RoleCatalog
 from boba.identity.directory import UserDirectory
 from boba.identity.signin import PasswordSignIn, ProxySignIn
-from boba.identity.sso import SpnegoExchange
+from boba.identity.sso import SsoAdmission
 from boba.ldap import Ldap3Directory
 from boba.llm.http.openai import OpenAiProvider
 from boba.stand.roles import MemoryRoles
@@ -122,7 +123,7 @@ class SignInStand:
 class StandAuthBackends:
     """Адаптер фабрик стандартного набора для тестов провайдеров."""
 
-    SECRET: ClassVar[str] = "stand-session-secret"
+    SECRET: ClassVar[str] = "stand-session-secret"  # noqa: S105 — test signing key
 
     def __init__(
         self,
@@ -170,12 +171,12 @@ class StandAuthBackends:
 
         return contribution.proxy
 
-    def sso(self, config: KerberosAuthConfig) -> SpnegoExchange:
+    def sso(self, config: KerberosAuthConfig) -> SsoAdmission:
         contribution = self._standard.kerberos(config, self._services())
-        if contribution.sso is None:
+        if not isinstance(contribution.sso, SpnegoGate):
             raise ValueError(f"auth backend {config.type!r} does not provide SSO")
 
-        return contribution.sso
+        return contribution.sso.sign_in
 
     def _services(self) -> AuthServices:
         return AuthServices(

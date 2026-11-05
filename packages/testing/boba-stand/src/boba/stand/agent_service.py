@@ -24,11 +24,11 @@ import httpx
 import uvicorn
 
 from boba.cli.serve import ServeConfig, ServeHistory, ServeHost, ServeMark
+from boba.config.paths import PathsConfig
 from boba.core.secrets import SecretReveal
 from boba.db.postgres import AsyncPostgresPool, PostgresTable
 from boba.db.postgres.connection.auth import KeytabAuth
 from boba.krb import KerberosWorkspace
-from boba.config.paths import PathsConfig
 from boba.stand.roles import RoleSeed
 from boba.stand.service_signin import ServiceSignIn
 from boba.stand.ui.toml_text import TomlText

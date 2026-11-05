@@ -20,9 +20,9 @@ from pathlib import Path
 from string import Template
 from typing import ClassVar
 
-from boba.mcp_server.connections.user_connections import ConnectionParamHooks
 from boba.connections.manifest import ConnectionTypes
 from boba.identity.run import Runs
+from boba.mcp_server.connections.user_connections import ConnectionParamHooks
 from boba.stand.toolstand import ToolStand
 from boba.stand_core.context import CallStand, StandIdentity
 from boba.tool.ch import tools as ch

@@ -7,6 +7,14 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from boba.chat.messages import (
+    ChatMessages,
+    Notice,
+    NoticeLevel,
+    RunFinished,
+    StopRequested,
+    ThreadRewound,
+)
 from boba.identity.context import Scope
 from boba.messaging import (
     BusLimit,
@@ -15,14 +23,6 @@ from boba.messaging import (
     ListenerFailedError,
     LockToken,
     MessageTooLargeError,
-)
-from boba.chat.messages import (
-    ChatMessages,
-    Notice,
-    NoticeLevel,
-    RunFinished,
-    StopRequested,
-    ThreadRewound,
 )
 from boba.stand.messaging import memory_message_bus
 

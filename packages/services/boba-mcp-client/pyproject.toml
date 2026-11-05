@@ -25,6 +25,7 @@ dev = [
     "boba-stand==0.0.33.dev1",
     "boba-db-postgres==0.0.33.dev1",
     "boba-config==0.0.33.dev1",
+    "psycopg>=3.3,<4",
     "httpx>=0.28,<1",
     "pytest>=9.1,<10",
     "pytest-xdist>=3.6,<4",

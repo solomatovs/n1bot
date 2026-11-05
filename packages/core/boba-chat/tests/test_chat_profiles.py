@@ -12,8 +12,8 @@ from boba.chat.profiles import (
     LocalChatProfileConfig,
     ProfileRefusal,
 )
-from boba.identity.errors import RefusalError
 from boba.identity.authentication import AccessGrant
+from boba.identity.errors import RefusalError
 
 BACKEND: dict[str, Any] = {
     "kind": "openai",

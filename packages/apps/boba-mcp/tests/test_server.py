@@ -11,7 +11,6 @@ import asyncio
 import base64
 import hashlib
 import html
-import os
 import re
 import secrets
 import socket
@@ -20,7 +19,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any, ClassVar
 from urllib.parse import urlsplit
-from uuid import NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import httpx
 import mcp_types as mt
@@ -34,7 +33,7 @@ from mcp.server.apps import APP_MIME_TYPE
 from mcp.server.auth.provider import IdentityAssertionParams, TokenError
 from mcp.shared.auth import JWT_BEARER_GRANT_TYPE, OAuthClientInformationFull
 from mcp.shared.exceptions import MCPError
-from pydantic import AnyUrl, SecretStr
+from pydantic import AnyUrl, SecretStr, ValidationError
 from service_stand import (
     CLIENT_ID,
     CLIENT_SECRET,
@@ -50,11 +49,10 @@ from service_stand import (
 from boba.auth import SessionService, SignIns
 from boba.auth.config import ProxyAuthConfig
 from boba.canvas.journal import StreamSlice
-from boba.config import ConfigError, ConfigLoader, bind
 from boba.identity.lifetime import SessionLifetime
 from boba.identity.principal import IdentityRule
 from boba.mcp_server.auth import ServiceMark
-from boba.mcp_server.catalog import EndpointCatalog
+from boba.mcp_server.catalog import EndpointCatalog, PromptFile
 from boba.mcp_server.files import JournalRoutes
 from boba.mcp_server.server import (
     FileUploadTool,
@@ -68,8 +66,6 @@ from boba.oauth.server.clients import RegisteredClients, TrustedClient
 from boba.oauth.server.provider import AuthServer
 from boba.oauth.server.sealed import SealedValues
 from boba.oauth.server.tokens import ServiceTokens
-from boba.stand.site import StandConfigEnv
-from boba.stand.ui.stand import StandApp
 from boba.toolkit.calls import CallViews, SchemaMark
 from boba.toolkit.channels import JournalChannels, ToolChannel
 from boba.toolkit.dag import (
@@ -215,66 +211,46 @@ class TestPrompts:
         ]
         assert self._texts(full)[0] == ("user", "Review select 2 in {dialect}: oracle.")
 
-    MESSAGE: ClassVar[str] = '[[messages]]\nrole = "{role}"\ntext = "{text}"\n'
-    ENDPOINT: ClassVar[str] = (
-        "[mcp.endpoints.all]\n"
-        'roles = ["*"]\n'
-        'tools = ["*"]\n'
-        "connections = []\n"
-        'prompts = "${toml_dir:prompts/all}"\n'
-    )
-
     @pytest.mark.parametrize(
-        ("folder", "text", "refusal"),
+        "definition",
         [
-            ("all", MESSAGE.format(role="user", text="{x}"), "names {x}"),
-            ("all", MESSAGE.format(role="system", text="t"), "role"),
-            ("all", "= \n", "reading a toml file failed"),
-            ("nowhere", MESSAGE.format(role="user", text="t"), "expected a directory"),
+            {
+                "description": "d",
+                "messages": [{"role": "user", "text": "{x}"}],
+            },
+            {
+                "description": "d",
+                "messages": [{"role": "system", "text": "t"}],
+            },
+            {"description": "d", "messages": []},
+            {"messages": [{"role": "user", "text": "t"}]},
         ],
-        ids=["unknown argument", "role", "not toml", "no folder of the endpoint"],
+        ids=["unknown argument", "role", "no messages", "no description"],
     )
-    def test_prompt_file_off_the_format_is_refused_by_its_path(
-        self, tmp_path: Path, folder: str, text: str, refusal: str
+    def test_prompt_definition_must_follow_its_schema(
+        self, definition: dict[str, object]
     ) -> None:
-        """Каталог или файл промпта не по формату — отказ на старте с путём или
-        ключом и причиной: файлы подключает конфиг ключом prompts endpoint'а."""
-        place = tmp_path / "prompts" / folder
-        place.mkdir(parents=True)
-        described = f'description = "d"\n{text}'
-        (place / "broken.toml").write_text(described, encoding="utf-8")
-        config = tmp_path / "config.toml"
-        config.write_text(self.ENDPOINT, encoding="utf-8")
+        with pytest.raises(ValidationError):
+            PromptFile.model_validate(definition)
 
-        with pytest.raises(ConfigError, match=refusal) as refused:
-            self._endpoint(config)
-
-        assert "prompts" in str(refused.value)
-
-    @staticmethod
-    def _endpoint(config: Path) -> McpEndpoint:
-        return bind(ConfigLoader([config]).load(), "mcp.endpoints.all", McpEndpoint)
-
-    def test_prompt_files_are_read_from_app_config(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Промпты endpoint'а загружаются относительно конфига экземпляра."""
-        prompts = tmp_path / "prompts" / "all"
-        prompts.mkdir(parents=True)
-        (prompts / "sql_review.toml").write_text(
-            ServiceStand.PROMPT_FILE, encoding="utf-8"
+    def test_prompt_definitions_are_stored_on_the_endpoint(self) -> None:
+        endpoint = McpEndpoint.model_validate(
+            {
+                "id": uuid4(),
+                "prefix_url": "/all",
+                "title": "All tools",
+                "prompts": {
+                    "sql_review": {
+                        "description": "Review an SQL statement",
+                        "arguments": {
+                            "sql": {"description": "Statement", "required": True}
+                        },
+                        "messages": [{"role": "user", "text": "Review {sql}"}],
+                    }
+                },
+            }
         )
-        config = tmp_path / "config.toml"
-        config.write_text(self.ENDPOINT, encoding="utf-8")
-        overlay = tmp_path / "stand.toml"
-        overlay.write_text("", encoding="utf-8")
-        paths = os.pathsep.join((str(config), str(overlay)))
-        monkeypatch.setenv(StandConfigEnv.SERVICE, paths)
 
-        raw = StandApp.MCP.raw()
-        endpoint = bind(raw, "mcp.endpoints.all", McpEndpoint)
-
-        assert "sql_review" in endpoint.prompts
         assert endpoint.prompts["sql_review"].description == "Review an SQL statement"
 
     @staticmethod
@@ -367,16 +343,6 @@ class TestToolList:
 
             if CallFields.SCOPE in schemas[name].get("required", []):
                 raise AssertionError(f"the scope of {name} is optional")
-
-    async def test_weaker_role_sees_fewer_tools(
-        self, stand: ServiceStand, url: str, weak_token: str
-    ) -> None:
-        async with _client(url, weak_token) as client:
-            listed = await client.list_tools()
-
-        names = [tool.name for tool in listed]
-        if names != ["fake_echo", FileUploadTool.NAME]:
-            raise AssertionError(f"role weak is granted one tool: {names}")
 
     @pytest.mark.xfail(
         strict=True,
@@ -481,7 +447,7 @@ class TestCall:
         async with _client(url, dev_token) as client:
             result = await client.call_tool_mcp("fake_whoami", {})
 
-        if _text(result) != f"corporate:alice|dev|{PROFILE}":
+        if _text(result) != f"corporate:alice|dev|/{PROFILE}":
             raise AssertionError(f"the body is called as the token's caller: {result}")
 
     async def test_server_names_the_call_itself(
@@ -1293,8 +1259,8 @@ class TestFailures:
         if not _text(result):
             raise AssertionError(f"the plan refusal names its reason: {result}")
 
-    async def test_tool_outside_the_role_is_not_callable(
-        self, stand: ServiceStand, url: str, weak_token: str
+    async def test_tool_outside_the_endpoint_is_not_callable(
+        self, stand: ServiceStand, url: str
     ) -> None:
         arguments = {
             "prefix": "a",
@@ -1303,11 +1269,12 @@ class TestFailures:
             "fail_midway": False,
             "out": "c1",
         }
-        async with _client(url, weak_token) as client:
+        token = await stand.dev_token(NARROW)
+        async with _client(stand.url(NARROW), token) as client:
             result = await client.call_tool_mcp("fake_emit", arguments)
 
         if not result.is_error:
-            raise AssertionError(f"role weak has no fake_emit: {result}")
+            raise AssertionError(f"endpoint {NARROW!r} has no fake_emit: {result}")
 
     async def test_unknown_token_is_rejected(
         self, stand: ServiceStand, url: str
@@ -1496,7 +1463,7 @@ class TestProxySignIn:
         async with _client(url, token) as client:
             result = await client.call_tool_mcp("fake_whoami", {})
 
-        if _text(result) != f"corporate:ivanov|dev|{PROFILE}":
+        if _text(result) != f"corporate:ivanov|dev|/{PROFILE}":
             raise AssertionError(f"the body runs as the signed-in user: {result}")
 
     async def test_roles_of_the_sign_in_open_the_endpoints(
@@ -1725,7 +1692,7 @@ class TestHumanSignIn:
         async with _client(url, issued.json()["access_token"]) as client:
             result = await client.call_tool_mcp("fake_whoami", {})
 
-        expected = f"local-stand:{LOCAL_LOGIN}|dev|{PROFILE}"
+        expected = f"local-stand:{LOCAL_LOGIN}|dev|/{PROFILE}"
         if _text(result) != expected:
             raise AssertionError(f"the body runs as the signed-in user: {result}")
 
@@ -1766,6 +1733,9 @@ class TestHumanSignIn:
         self, stand: ServiceStand, url: str
     ) -> None:
         client_id, issued = await self._signed_in(stand)
+        # JWT iat — целые секунды; обновление в ту же секунду детерминированно
+        # вернуло бы тот же подписанный access token.
+        await asyncio.sleep(1.1)
         async with httpx.AsyncClient() as http:
             renewed = await http.post(
                 f"{self._public(stand)}/token",
@@ -1788,7 +1758,7 @@ class TestHumanSignIn:
         async with _client(url, pair["access_token"]) as client:
             result = await client.call_tool_mcp("fake_whoami", {})
 
-        expected = f"local-stand:{LOCAL_LOGIN}|dev|{PROFILE}"
+        expected = f"local-stand:{LOCAL_LOGIN}|dev|/{PROFILE}"
         if _text(result) != expected:
             raise AssertionError(f"the renewed token keeps the user: {result}")
 
@@ -2208,7 +2178,7 @@ class TestConnectionOffers:
         assert field["type"] == "string"
         assert "enum" not in field
 
-    async def test_nothing_offered_hides_the_tool(
+    async def test_endpoint_tools_remain_visible_without_connection_grants(
         self, stand: ServiceStand, offers: str
     ) -> None:
         token = await self._token(stand, False)
@@ -2216,8 +2186,11 @@ class TestConnectionOffers:
             listed = await client.list_tools()
 
         names = [tool.name for tool in listed]
-        if self.TOOL in names:
-            raise AssertionError(f"a tool with nothing to offer is hidden: {names}")
+        if self.TOOL not in names:
+            raise AssertionError(
+                "endpoint-selected tools stay visible without connection grants: "
+                f"{names}"
+            )
 
         if "fake_echo" not in names:
             raise AssertionError(f"tools without connections stay: {names}")
@@ -2232,7 +2205,11 @@ class TestConnectionOffers:
         if not result.is_error:
             raise AssertionError(f"a name outside the catalog was accepted: {result}")
 
-        if "connection catalog is unavailable" not in _text(result):
+        message = _text(result)
+        if (
+            "not among the connections" not in message
+            or "yours are: none" not in message
+        ):
             raise AssertionError(
                 f"the server resolves names from its catalog: {result}"
             )

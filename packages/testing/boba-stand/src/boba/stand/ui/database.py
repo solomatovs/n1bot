@@ -21,29 +21,28 @@ from psycopg import sql
 from psycopg.errors import InsufficientPrivilege
 from psycopg.types.json import Jsonb
 
-from boba.config import bind
-from boba.aid.infra.config import AppConfig
 from boba.access.grants import GrantSubject, GrantTarget
+from boba.aid.infra.config import AppConfig
+from boba.config import bind
+from boba.config.paths import PathsConfig, TlsConfig
+from boba.connections.base import ConnectionBase
+from boba.connections.manifest import ConnectionTypes
+from boba.connections.stored import StoredRole
 from boba.crypto import SecretCipher
 from boba.crypto.config import ValueCipherConfig
-from boba.mcp_server.connections.store import ConnectionStore
-from boba.mcp_server.connections.store import ConnectionTable
-from boba.mcp_server.app import McpAppConfig
-from boba.connections.manifest import ConnectionTypes
-from boba.connections.base import ConnectionBase
-from boba.connections.stored import StoredRole
 from boba.db.clickhouse.connection import ClickHouseConfig
 from boba.db.oracle.connection import OracleConfig
 from boba.db.postgres import AsyncPostgresPool, PgQuery, PgQueryBuilder, PostgresTable
 from boba.db.postgres.connection.config import PostgresConfig
 from boba.db.postgres.migrate import MigrationTarget, PostgresMigrations
+from boba.db.postgres.migration_cli import ApplicationMigrations
 from boba.ix_core.database import IxDatabase
 from boba.krb import KerberosWorkspaceConfig
-from boba.mcp_client.client import McpServerConfig, StdioCommand
-from boba.config.paths import PathsConfig, TlsConfig
-from boba.db.postgres.migration_cli import ApplicationMigrations
-from boba.mcp_server.migrations import PluginMigrations
 from boba.krb.layout import InstanceLayout
+from boba.mcp_client.client import McpServerConfig, StdioCommand
+from boba.mcp_server.app import McpAppConfig, McpHost
+from boba.mcp_server.connections.store import ConnectionStore, ConnectionTable
+from boba.mcp_server.migrations import PluginMigrations
 from boba.stand.database import TestDatabase
 from boba.stand.edm import EdmDataset, EdmSource, EdmSources
 from boba.stand.ix_index import IxPage, IxPages, SharedIndexers, StandIxStack
@@ -770,8 +769,6 @@ def seed_service_roles(config: ServiceStand) -> None:
         raw = config.app.config_files().loader(config.files.paths(config.app)).load()
         postgres = bind(raw, "postgres", PostgresConfig)
         app = bind(raw, "app", McpAppConfig)
-        from boba.mcp_server.app import McpHost
-
         exported = await McpHost(app, raw).tool_schemas()
         available = frozenset(exported)
         endpoints: dict[str, tuple[str, ...]] = {}
@@ -790,7 +787,7 @@ def seed_service_roles(config: ServiceStand) -> None:
             if config.seed_roles:
                 table = PostgresTable(pool, app.db_schema)
                 await RoleSeed(table).add(
-                    ("ADM", "DEV", "GST", "dev", "read", "wrt")
+                    ("ADM", "DEV", "GST", "analyst", "dev", "read", "wrt")
                 )
 
             async with pool.connection() as conn, conn.transaction():
@@ -812,7 +809,9 @@ def seed_service_roles(config: ServiceStand) -> None:
                     )
                     endpoint = await row.fetchone()
                     if endpoint is None:
-                        raise StandError(f"Seeding MCP endpoint /{name}: no id returned")
+                        raise StandError(
+                            f"Seeding MCP endpoint /{name}: no id returned"
+                        )
 
                     await conn.execute(
                         sql.SQL(

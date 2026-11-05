@@ -69,6 +69,11 @@ class MessageCodec:
     def command(self, raw: object) -> Command:
         return self._parse(raw, self._commands)
 
+    @property
+    def event_kinds(self) -> frozenset[str]:
+        """События, которые умеет читать этот экземпляр шины."""
+        return frozenset(self._events)
+
     def checked_event(self, message: Message) -> Message:
         return self.event(message.model_dump(mode="json"))
 

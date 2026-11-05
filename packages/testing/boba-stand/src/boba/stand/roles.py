@@ -44,12 +44,11 @@ class RoleSeed:
                 self._table._query()
                 .add(
                     """
-                insert into {schema}.users (id, identifier, realm, login)
-                values (%(id)s, %(identifier)s, %(realm)s, %(login)s)
+                insert into {schema}.users (id, realm, login)
+                values (%(id)s, %(realm)s, %(login)s)
                 on conflict (id) do nothing
                 """,
                     id=user_id,
-                    identifier=identity.identifier,
                     realm=identity.realm,
                     login=identity.login,
                 )

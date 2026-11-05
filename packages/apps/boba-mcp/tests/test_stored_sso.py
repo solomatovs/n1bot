@@ -64,9 +64,6 @@ class StoredSsoConfig(ServiceStand):
         kerberos["roles"] = {"principal": {"principal": {principal: ["ADM"]}}}
         document["stand_replaced"]["auth__kerberos"] = kerberos
         document["auth"]["kerberos"] = "${stand_replaced.auth__kerberos}"
-        endpoints = document["stand_replaced"]["mcp__endpoints"]
-        for endpoint in endpoints.values():
-            endpoint["connections"] = [{"roles": ["*"], "offer": ["stored"]}]
         self.files.overlay.write_text(TomlText.dumps(document))
 
 
@@ -347,4 +344,4 @@ async def test_other_sign_in_cannot_use_a_delegated_connection(
     assert not isinstance(service.claims(token).credential, DelegatedTicket)
     result = await service.query(token)
     assert result.is_error
-    assert "sign in through Kerberos SSO" in QueryReply().text(result)
+    assert "no delegated credentials" in QueryReply().text(result).lower()

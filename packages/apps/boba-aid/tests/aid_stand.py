@@ -436,7 +436,9 @@ class ToolService(ServerConfigs):
 
         return FixedServerConfigs.model_validate({"servers": servers})
 
-    async def catalog(self, pool: AsyncPostgresPool) -> ConnectionStore:
+    async def catalog(
+        self, pool: AsyncPostgresPool, source_users: UserRows | None = None
+    ) -> ConnectionStore:
         """Очищает только каталог изолированного сервера перед тестом."""
         schema = self._app.db_schema
         async with pool.connection() as conn:
@@ -452,6 +454,9 @@ class ToolService(ServerConfigs):
         self._signed.clear()
 
         cipher = SecretCipher(self._app.connection_store.cipher.get_secret_value())
+        if source_users is not None:
+            return MirroredUserConnectionStore(pool, schema, cipher, source_users)
+
         return ConnectionStore(pool, schema, cipher, ConnectionTypes.discover())
 
     def tickets(self) -> SsoTickets:
@@ -471,16 +476,17 @@ class ToolService(ServerConfigs):
             return cached
 
         authenticated = session.authenticated_session()
+        endpoint_path = f"/{self.ENDPOINT}"
         principal = authenticated.principal.model_copy(
             update={
                 "access": authenticated.principal.access.model_copy(
-                    update={"profiles": frozenset({self.ENDPOINT})}
+                    update={"profiles": frozenset({endpoint_path})}
                 )
             }
         )
         authenticated = authenticated.model_copy(update={"principal": principal})
         assert session.user_id is not None
-        resource = f"{self._app.server.public_url}/{self.ENDPOINT}"
+        resource = f"{self._app.server.public_url}{endpoint_path}"
         pool = AsyncPostgresPool(self._app.postgres)
         await pool.open()
         try:

@@ -8,7 +8,6 @@ import pytest
 from pydantic import BaseModel
 
 from boba.access import ProfileGrant, RoleConfig, ToolAccess
-from boba.toolrun.plugins import PluginMeta
 from boba.stand.refs import StandRefs
 from boba.stand.toolstand import ProbeTools
 from boba.tool_io.chain import CallAmbient
@@ -17,6 +16,7 @@ from boba.toolkit.ports import StreamSpecs
 from boba.toolkit.result import MarkdownResult, ToolResultBase
 from boba.toolrun.access import ToolAccessDeniedError, ToolAccessGuard
 from boba.toolrun.hosted import HostedTool
+from boba.toolrun.plugins import PluginMeta
 from boba.toolrun.registry import ToolRegistry
 
 

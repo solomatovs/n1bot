@@ -68,6 +68,8 @@ from boba.aid.agent.settings import (
     ProfileModelSpecs,
     SettingsFileBuilder,
 )
+from boba.aid.data.threads import ThreadsTable
+from boba.aid.data.users import UsersTable
 from boba.chat.profiles import (
     ChatProfiles,
     LocalChatProfileConfig,
@@ -86,10 +88,8 @@ from boba.kerberos import KeytabAuth
 from boba.krb.credentials import KerberosEnv
 from boba.llm.onnx import OnnxProvider
 from boba.mcp_client.client import FixedServerConfigs, McpServerConfig, McpServers
-from boba.aid.data.threads import ThreadsTable
-from boba.aid.data.users import UsersTable
-from boba.stand.names import StandNames
 from boba.stand.migrate import StandMigrations
+from boba.stand.names import StandNames
 from boba.stand.signin import SignInStand
 from boba.stand.site import Stand
 from boba.stand.ui.fake_llm import FailureName, ScenarioName

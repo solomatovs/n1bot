@@ -14,9 +14,9 @@ from psycopg import sql
 
 from boba.db.postgres import AsyncPostgresPool
 from boba.stand.collection import SuiteItems
+from boba.stand.migrate import StandMigrations
 from boba.stand.names import StandSuite
 from boba.stand.site import Stand
-from boba.stand.migrate import StandMigrations
 from boba.stand.ui.database import run_blocking
 
 

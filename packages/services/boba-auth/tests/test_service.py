@@ -13,12 +13,13 @@ from boba.identity.authentication import AccessGrant, RenewalKind
 from boba.identity.context import CredentialAbsence, NoUserCredential
 from boba.identity.errors import AuthenticationError
 from boba.identity.principal import UserIdentity
+from boba.identity.session import Login
 from boba.identity.signin import ProfileCatalog, SignInResult
 
 pytestmark = pytest.mark.anyio
 
 CREATED_AT = datetime(2026, 1, 1, tzinfo=UTC)
-IDENTITY = UserIdentity(realm="corporate", login="alice")
+IDENTITY = UserIdentity(realm="corporate", login=Login("alice"))
 
 
 class Profiles(ProfileCatalog):
@@ -89,7 +90,7 @@ async def test_accept_persists_identity_and_limits_session_to_stored_roles() -> 
     assert users.rows[IDENTITY].roles == {"read"}
 
 
-async def test_current_loads_updated_roles_and_preserves_only_granted_profiles() -> None:
+async def test_current_loads_updated_roles_and_preserves_granted_profiles() -> None:
     users = Users()
     service = SessionService(users, Profiles())
     initial = await service.accept(_result())

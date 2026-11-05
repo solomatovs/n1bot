@@ -12,21 +12,19 @@ from collections.abc import Sequence
 from omegaconf import DictConfig, OmegaConf
 from pydantic import BaseModel, ValidationError
 
-from boba.config import ConfigError, bind
+from boba.config import ConfigError, ConfigSchema, bind
 from boba.core.components import Components
 from boba.core.validation import ValidationText
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.migrate import MigrationPlan, MigrationTarget
 from boba.db.postgres.migration_cli import ApplicationMigrations, MigrationSources
+from boba.mcp_server.app import McpAppConfig
 from boba.toolrun.launchers import PluginLaunch, SectionLaunchers, ToolLaunchers
 from boba.toolrun.plugins import PluginSections
 
 
 def configured_migrations() -> ApplicationMigrations:
     """Compose MCP's SQL plan and enabled plugin plans for one migrate run."""
-    from boba.config import ConfigSchema
-    from boba.mcp_server.app import McpAppConfig
-
     return ApplicationMigrations(
         (PluginMigrations(McpAppConfig.LAUNCHER_BACKENDS),),
         schema=ConfigSchema(McpAppConfig, values=("auth",)),

@@ -12,11 +12,10 @@ from __future__ import annotations
 from collections.abc import Sequence
 from uuid import UUID
 
-from boba.mcp_server.connections.params import ConnectionParams
-from boba.connections.base import ConnectionBase
+ёfrom boba.access.grants import ConnectionFilter
+fъхзщшrom boba.connections.base import ConnectionBaseгне
 from boba.connections.catalog import CatalogEntry
 from boba.connections.credentials import CredentialSource
-from boba.mcp_server.connections.user_connections import ArmedConnections
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.stored import (
     ConnectionNotFoundError,
@@ -26,8 +25,9 @@ from boba.connections.stored import (
     StoredConnection,
     StoredRole,
 )
-from boba.access.grants import ConnectionFilter
 from boba.identity.context import CallContexts
+from boba.mcp_server.connections.params import ConnectionParams
+from boba.mcp_server.connections.user_connections import ArmedConnections
 from boba.toolrun.hosted import HostedTool
 from boba.toolrun.injected import StaticConfig
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import os
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -242,7 +243,7 @@ class Refresh:
         }
 
         refresh = SessionRefresh(
-            auth._urls, auth.auth, ChainlitSessions(StandTokens()), APP_ROOT
+            auth._urls, auth.auth, ChainlitSessions(auth.auth.tokens), APP_ROOT
         )
         response = await refresh.refresh(Request(scope))
         raw = [(key, value) for key, value in response.raw_headers]
@@ -298,7 +299,7 @@ async def test_sign_in_puts_principal_and_ticket_into_the_jwt(
     krb5_env: None,
 ) -> None:
     session = await _signed_in(kerberos_auth, tmp_path)
-    claims = StandTokens().read(session.token)
+    claims = kerberos_auth.auth.tokens.read(session.token)
     sso = claims.ticket()
     if sso is None:
         raise AssertionError("JWT of the sign-in must carry the ticket")
@@ -325,7 +326,7 @@ async def test_users_row_keeps_identity_while_ticket_stays_in_jwt(
     stored = await users.stored(session.user.identity)
     assert stored is not None, "sign-in must persist the users row"
     assert stored.identity == session.user.identity
-    claims = StandTokens().read(session.token)
+    claims = kerberos_auth.auth.tokens.read(session.token)
     assert claims.ticket() is not None
 
 
@@ -347,7 +348,7 @@ async def test_refresh_issues_a_new_jwt_with_a_fresh_ticket(
     """Билет входа на исходе, а сессия жива: обмен выдаёт новый JWT с новым билетом."""
     session = await _signed_in(kerberos_auth, tmp_path)
     token = session.token
-    before = ChainlitSessions(StandTokens()).ticket_of_token(token)
+    before = ChainlitSessions(kerberos_auth.auth.tokens).ticket_of_token(token)
     if before is None:
         raise AssertionError("JWT of the sign-in must carry the ticket")
 
@@ -359,7 +360,7 @@ async def test_refresh_issues_a_new_jwt_with_a_fresh_ticket(
     if not renewed:
         raise AssertionError("refresh must set a new session cookie")
 
-    after = ChainlitSessions(StandTokens()).ticket_of_token(renewed)
+    after = ChainlitSessions(kerberos_auth.auth.tokens).ticket_of_token(renewed)
     if after is None:
         raise AssertionError(f"the new JWT must carry a ticket: {len(renewed)} chars")
     if after.sealed == before.sealed:
@@ -402,7 +403,7 @@ async def test_refresh_of_another_principal_is_refused(
             )
         }
     )
-    stranger_token = StandTokens.issue(mismatched)
+    stranger_token = kerberos_auth.auth.tokens.issue(mismatched, int(time.time()))
     status, renewed = await Refresh.exchange(
         kerberos_auth, Browser.token(tmp_path), stranger_token
     )
@@ -417,7 +418,7 @@ async def test_page_script_knows_where_to_refresh(kerberos_auth: KerberosAuth) -
     refresh = SessionRefresh(
         kerberos_auth._urls,
         kerberos_auth.auth,
-        ChainlitSessions(StandTokens()),
+        ChainlitSessions(kerberos_auth.auth.tokens),
         APP_ROOT,
     )
     script = refresh.script()

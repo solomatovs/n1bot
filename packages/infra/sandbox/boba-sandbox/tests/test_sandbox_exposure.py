@@ -23,8 +23,8 @@ from test_sandbox_disguise import HostOwner
 
 from boba.config import bind
 from boba.config.paths import PathsConfig
-from boba.sandbox.paths import ProgramRoots
 from boba.sandbox import SandboxProfile
+from boba.sandbox.paths import ProgramRoots
 from boba.sandbox.zygote import (
     ZygoteState,
     ZygoteToolCaller,

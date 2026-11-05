@@ -25,8 +25,8 @@ from boba.db.pgvector.config import (
 )
 from boba.db.pgvector.schema import KbSchema
 from boba.db.postgres import AsyncPostgresPool
-from boba.stand.migrate import StandMigrations
 from boba.stand.database import TestDatabase
+from boba.stand.migrate import StandMigrations
 from boba.tool.kb.kb import PostgresKnowledgeBaseConfig
 from boba.tool.kb.search import KbSearch
 
@@ -67,8 +67,6 @@ async def bench(
         tables=schema_cfg,
         embedding=EmbeddingDimension(dim=DIM),
     )
-    await StandMigrations().storage(store.connection, KbSchema(store).migration())
-
     pool = AsyncPostgresPool(store.connection)
     await pool.open()
     try:
@@ -76,7 +74,9 @@ async def bench(
             await _execute(
                 conn, sql.SQL("drop schema if exists {} cascade").format(_schema())
             )
-            await _execute(conn, sql.SQL("create schema {}").format(_schema()))
+
+        await StandMigrations().storage(store.connection, KbSchema(store).migration())
+        async with pool.connection() as conn:
             await _fill(conn, schema_cfg)
 
         yield pool
@@ -186,7 +186,7 @@ class TestMigrationsBuildIndexes:
         expected = {
             "kb_chunks_collection_tsv_gin",
             "kb_chunks_collection_source_chunk",
-            f"kb_chunks_embedding_hnsw_{DIM}",
+            "kb_chunks_embedding_hnsw",
         }
         missing = expected - names
         if missing:
@@ -299,7 +299,7 @@ class TestVectorPlan:
                 },
             )
 
-        if f"kb_chunks_embedding_hnsw_{DIM}" not in plan:
+        if "kb_chunks_embedding_hnsw" not in plan:
             raise AssertionError(f"HNSW не выбран для большой коллекции:\n{plan}")
 
     async def test_index_scan_carries_no_extra_filter(

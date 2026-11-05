@@ -16,7 +16,7 @@ from __future__ import annotations
 import secrets as std_secrets
 import shutil
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
-from typing import Any, ClassVar
+from typing import Any
 from uuid import UUID
 
 import pytest
@@ -24,24 +24,28 @@ from omegaconf import DictConfig
 from psycopg import sql
 
 from boba.config import bind
-from boba.crypto import SecretCipher
-from boba.mcp_server.connections.store import ConnectionStore
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.stored import GrantTarget
+from boba.crypto import SecretCipher
 from boba.db.clickhouse.address import ChAddresses, ChTableColumnAddress
 from boba.db.clickhouse.connection import ClickHouseConfig
 from boba.db.clickhouse.connection import PasswordAuth as ChPasswordAuth
 from boba.db.clickhouse.payload import PayloadClickHouse
-from boba.db.postgres import AsyncPostgresPool, PostgresSchema
+from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.address import (
     PgAddresses,
     PgTableAddress,
     PgTableColumnAddress,
 )
 from boba.db.postgres.connection import PostgresConfig
+from boba.identity.principal import UserIdentity
+from boba.identity.session import Login
+from boba.mcp_server.connections.store import ConnectionStore
+from boba.mcp_server.connections.tools import ConnectionTools
 from boba.stand.migrate import StandMigrations
 from boba.stand.overlay import ConfigOverlay
 from boba.stand.refs import StandRefs
+from boba.stand.roles import RoleSeed
 from boba.stand.site import Stand
 from boba.stand.zygote import ROOTFS_IMAGE, SandboxCgroup
 from boba.stand_core.context import CallStand
@@ -149,20 +153,6 @@ class ScriptedTurn:
         return history
 
 
-class StoreHolder:
-    """Ссылка на хранилище соединений для загрузчика: реестр живёт на модуль,
-    хранилище пересоздаётся на тест."""
-
-    store: ClassVar[ConnectionStore | None] = None
-
-    @classmethod
-    def current(cls) -> ConnectionStore:
-        if cls.store is None:
-            raise AssertionError("the connection store is not set up for the test")
-
-        return cls.store
-
-
 class Expected:
     """Адреса сценария, собранные моделями адресов из профилей соединений."""
 
@@ -227,17 +217,21 @@ def flow_raw(service_overlay: ConfigOverlay, test_database: str) -> DictConfig:
     )
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 async def session_service(
     runtime_stand: StandRefs,
     call_stand: CallStand,
     flow_raw: DictConfig,
+    store: ConnectionStore,
 ) -> ToolServer:
     """Порт инструментов профиля: боевой загрузчик над хранилищем стенда,
     исполнитель и серверное разрешение имён соединений."""
-    refs = runtime_stand.execution(StoreHolder.current())
+    refs = runtime_stand.execution(store)
     grants = StandRefs.granted(PROFILE, ["*"])
-    registry = await runtime_stand.registry(flow_raw, refs, grants)
+    own_tools = ConnectionTools(store, call_stand.contexts).build()
+    registry = await runtime_stand.registry(
+        flow_raw, refs, grants, own_tools=own_tools
+    )
     tools = registry.for_session(frozenset(ROLES), PROFILE)
     return registry.server(tools, DirectCalls())
 
@@ -271,7 +265,9 @@ def ch_profile() -> ClickHouseConfig:
 
 
 @pytest.fixture
-async def store(pool: AsyncPostgresPool) -> AsyncIterator[ConnectionStore]:
+async def store(
+    pool: AsyncPostgresPool, test_postgres: PostgresConfig
+) -> ConnectionStore:
     async with pool.connection() as conn:
         await conn.execute(
             sql.SQL("drop schema if exists {} cascade").format(
@@ -279,24 +275,21 @@ async def store(pool: AsyncPostgresPool) -> AsyncIterator[ConnectionStore]:
             )
         )
 
-    async with pool.connection() as conn:
-        await PostgresSchema(CONNECTIONS_SCHEMA).apply_packages(
-            conn,
-            (
-                "boba.identity_postgres",
-                "boba.access_postgres",
-                "boba.mcp_server",
-            ),
-        )
+    await StandMigrations().application(
+        test_postgres, CONNECTIONS_SCHEMA, "boba.mcp_server"
+    )
 
     built = ConnectionStore(
         pool, CONNECTIONS_SCHEMA, _cipher(), ConnectionTypes.discover()
     )
-    StoreHolder.store = built
-    try:
-        yield built
-    finally:
-        StoreHolder.store = None
+    roles = RoleSeed(built)
+    await roles.add(ROLES)
+    await roles.user(
+        USER_ID,
+        UserIdentity(realm="corporate", login=Login(LOGIN)),
+        ROLES,
+    )
+    return built
 
 
 @pytest.fixture

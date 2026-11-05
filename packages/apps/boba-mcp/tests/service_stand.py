@@ -73,7 +73,7 @@ from boba.tool_io.chain import CallAmbient
 from boba.toolrun.callvalues import CallContextValues
 from boba.toolrun.hosted import PluginSection
 from boba.toolrun.injected import InjectedConfig, StaticConfig, StaticSection
-from boba.toolrun.stream_calls import StreamGroupsConfig
+from boba.toolrun.stream_calls import StreamGroupsConfig, WorkflowTool
 from boba.toolrun.streams import CallJournals
 
 PROFILE = "service"
@@ -151,8 +151,8 @@ class EndpointPrompts(BaseModel):
 
 class ServiceStand:
     """Сервер сервиса над фейками стенда: реестр собран цепочкой обвязок,
-    как его собирает загрузчик; роли dev и ADM (роль пользователя стенда
-    чата) видят всё, weak — один инструмент.
+    как его собирает загрузчик. Права выдаются endpoint'ам: /service
+    публикует полный список, /narrow — только fake_echo и file_upload.
     Вход — proxy сервиса входа: роли вошедшего называет доверенный клиент;
     dev_token(), weak_token() и analyst_token() входят так пользователями
     стенда alice, bob и dave. Вход формой — пользователь local. port — порт,
@@ -273,6 +273,7 @@ class ServiceStand:
 
         tools_for_all = list(names)
         tools_for_all.append(FileUploadTool.NAME)
+        tools_for_all.append(WorkflowTool.NAME)
         roles = frozenset({"dev", "ADM", self.ANALYST, "weak"})
         all_tools = tuple(tools_for_all)
         endpoints = (

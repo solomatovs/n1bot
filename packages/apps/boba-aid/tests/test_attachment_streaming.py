@@ -10,7 +10,6 @@ import hashlib
 import logging
 import tracemalloc
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
 from typing import Any, ClassVar, Self
@@ -29,7 +28,6 @@ from boba.canvas.keys import ObjectKey
 from boba.canvas.transfer import UploadPolicy
 from boba.identity.authentication import AccessGrant, AuthenticatedPrincipal
 from boba.identity.principal import UserIdentity
-from boba.identity.session import Login
 from boba.storage.client import LocalStorageClient
 
 pytestmark = pytest.mark.anyio

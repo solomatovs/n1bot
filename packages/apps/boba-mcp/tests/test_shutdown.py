@@ -25,9 +25,9 @@ import pytest
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 
-from boba.oauth.assertions import ProxyAssertions
 from boba.db.postgres.connection import PostgresConfig
 from boba.mcp_server.migrations import configured_migrations
+from boba.oauth.assertions import ProxyAssertions
 from boba.stand.database import TestDatabase
 from boba.stand.migrate import StandSchema
 from boba.stand.ui.database import run_blocking

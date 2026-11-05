@@ -17,9 +17,9 @@ from typing import ClassVar
 
 import httpx
 
-from boba.oauth.assertions import ProxyAssertions
 from boba.identity.principal import UserIdentity
 from boba.identity.session import Login
+from boba.oauth.assertions import ProxyAssertions
 
 __all__ = ["FakeServiceProcess", "ServiceSignIn", "ServiceSignInError"]
 

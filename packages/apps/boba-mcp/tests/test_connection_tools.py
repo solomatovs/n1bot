@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import secrets
 from collections.abc import Mapping, Sequence
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from psycopg import sql
@@ -19,7 +19,7 @@ from boba.access.grants import ConnectionFilter
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.stored import GrantTarget
 from boba.crypto import SecretCipher
-from boba.db.postgres import AsyncPostgresPool, PostgresSchema
+from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import (
     PasswordAuth,
     PostgresConfig,
@@ -27,8 +27,11 @@ from boba.db.postgres.connection import (
     PostgresPoolConfig,
 )
 from boba.identity.context import Subject
+from boba.identity.principal import UserIdentity
+from boba.identity.session import Login
 from boba.mcp_server.connections.store import ConnectionStore
 from boba.mcp_server.connections.tools import GrantedConnections
+from boba.stand.migrate import StandMigrations
 from boba.stand.roles import RoleSeed
 from boba.transport.http.connection import HttpConnection
 
@@ -39,22 +42,16 @@ ROLE = "analyst"
 
 
 @pytest.fixture
-async def store(pool: AsyncPostgresPool) -> ConnectionStore:
+async def store(
+    pool: AsyncPostgresPool, test_postgres: PostgresConfig
+) -> ConnectionStore:
     async with pool.connection() as conn:
         await conn.execute(
             sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
         )
 
     cipher = SecretCipher(secrets.token_bytes(32))
-    async with pool.connection() as conn:
-        await PostgresSchema(SCHEMA).apply_packages(
-            conn,
-            (
-                "boba.identity_postgres",
-                "boba.access_postgres",
-                "boba.mcp_server",
-            ),
-        )
+    await StandMigrations().application(test_postgres, SCHEMA, "boba.mcp_server")
 
     built = ConnectionStore(pool, SCHEMA, cipher, ConnectionTypes.discover())
     await RoleSeed(built).add([ROLE])
@@ -66,8 +63,18 @@ def catalog(store: ConnectionStore) -> GrantedConnections:
     return GrantedConnections(store)
 
 
-def _subject(roles: frozenset[str] = frozenset()) -> Subject:
-    return Subject(user_id=uuid4(), login="tester", roles=roles, profile="test")
+def _subject(
+    roles: frozenset[str] = frozenset(), login: str = "tester"
+) -> Subject:
+    identity = UserIdentity(realm="test", login=Login(login))
+    return Subject.of_user(uuid4(), identity, roles, "test")
+
+
+async def _grant_user(
+    store: ConnectionStore, connection_id: UUID, subject: Subject
+) -> None:
+    await RoleSeed(store).user(subject.user_id, subject.identity, subject.roles)
+    await store.grant(connection_id, GrantTarget.user(subject.user_id))
 
 
 def _pg(description: str, host: str = "db.example") -> PostgresConfig:
@@ -96,13 +103,13 @@ async def test_personal_and_role_grants_are_listed(
     role_id = (await store.roles())[0].id
 
     mine = await store.add("mine", _pg("personal"))
-    await store.grant(mine, GrantTarget.user(subject.user_id))
+    await _grant_user(store, mine, subject)
 
     shared = await store.add("shared", _pg("by role"))
     await store.grant(shared, GrantTarget.role(role_id))
 
     stranger = await store.add("stranger", _pg("someone else's"))
-    await store.grant(stranger, GrantTarget.user(uuid4()))
+    await _grant_user(store, stranger, _subject(login="stranger"))
 
     result = await catalog.rows(subject)
 
@@ -145,13 +152,13 @@ async def test_duplicate_name_within_a_kind_is_hidden(
     role_id = (await store.roles())[0].id
 
     personal = await store.add("main", _pg("mine"))
-    await store.grant(personal, GrantTarget.user(subject.user_id))
+    await _grant_user(store, personal, subject)
 
     by_role = await store.add("main", _pg("by role"))
     await store.grant(by_role, GrantTarget.role(role_id))
 
     other = await store.add("other", _pg("unique"))
-    await store.grant(other, GrantTarget.user(subject.user_id))
+    await _grant_user(store, other, subject)
 
     result = await catalog.rows(subject)
 
@@ -166,7 +173,7 @@ async def granted(store: ConnectionStore) -> Subject:
     role_id = (await store.roles())[0].id
 
     sales = await store.add("pg-sales", _pg("Хранилище продаж, витрины", "dwh01.corp"))
-    await store.grant(sales, GrantTarget.user(subject.user_id))
+    await _grant_user(store, sales, subject)
 
     crm = await store.add("pg-crm", _pg("CRM production, sales pipeline", "crm.corp"))
     await store.grant(crm, GrantTarget.role(role_id))
@@ -177,10 +184,10 @@ async def granted(store: ConnectionStore) -> Subject:
             host="wiki.corp", port=443, description="Confluence with sales docs"
         ),
     )
-    await store.grant(wiki, GrantTarget.user(subject.user_id))
+    await _grant_user(store, wiki, subject)
 
     hidden = await store.add("pg-hidden", _pg("sales, but not granted", "dwh01.corp"))
-    await store.grant(hidden, GrantTarget.user(uuid4()))
+    await _grant_user(store, hidden, _subject(login="hidden"))
 
     return subject
 
@@ -269,10 +276,10 @@ async def test_like_specials_in_filters_are_literal(
 ) -> None:
     subject = _subject()
     percent = await store.add("pct", _pg("100% coverage"))
-    await store.grant(percent, GrantTarget.user(subject.user_id))
+    await _grant_user(store, percent, subject)
 
     plain = await store.add("plain", _pg("100 percent"))
-    await store.grant(plain, GrantTarget.user(subject.user_id))
+    await _grant_user(store, plain, subject)
 
     result = await catalog.search(subject, ConnectionFilter(description="100%"))
 
@@ -291,7 +298,7 @@ async def test_duplicate_name_stays_hidden_when_a_filter_drops_its_twin(
     role_id = (await store.roles())[0].id
 
     personal = await store.add("main", _pg("sales warehouse"))
-    await store.grant(personal, GrantTarget.user(subject.user_id))
+    await _grant_user(store, personal, subject)
 
     by_role = await store.add("main", _pg("crm replica"))
     await store.grant(by_role, GrantTarget.role(role_id))

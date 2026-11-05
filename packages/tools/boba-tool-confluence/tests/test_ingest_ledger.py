@@ -141,8 +141,6 @@ async def store_cfg(raw_config: DictConfig) -> AsyncIterator[PostgresStoreConfig
         tables=tables,
         embedding=EmbeddingDimension(dim=DIM),
     )
-    await StandMigrations().storage(connection, KbSchema(migration).migration())
-
     pool = AsyncPostgresPool(cfg.connection)
     await pool.open()
     try:
@@ -150,6 +148,8 @@ async def store_cfg(raw_config: DictConfig) -> AsyncIterator[PostgresStoreConfig
             await _execute(
                 conn, sql.SQL("drop schema if exists {} cascade").format(_schema())
             )
+
+        await StandMigrations().storage(connection, KbSchema(migration).migration())
         yield cfg
     finally:
         async with pool.connection() as conn:

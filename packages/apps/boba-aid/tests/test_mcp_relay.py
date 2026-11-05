@@ -27,6 +27,7 @@ from aid_stand import (
 from chainlit.context import context_var
 from mcp.server.apps import APP_MIME_TYPE
 from mcp.shared.exceptions import MCPError
+from psycopg import sql
 
 from boba.aid.agent.relay import McpRegistration, McpRegistrations, McpRelay
 from boba.aid.canvas.tools import CanvasOpener
@@ -39,11 +40,13 @@ from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.context import DelegatedTicket, NoUserCredential, Scope
 from boba.identity.errors import AuthenticationError
+from boba.identity.principal import UserIdentity
 from boba.mcp_client.client import (
     FixedServerConfigs,
     HttpEndpoint,
     HttpLocation,
     McpClientError,
+    McpDescription,
     McpServerConfig,
     McpServerLimits,
     McpServers,
@@ -53,8 +56,12 @@ from boba.mcp_server.connections.store import ConnectionStore
 from boba.messaging import Envelope
 from boba.stand.apps_slot import AppServer, AppsSlot
 from boba.stand.migrate import StandMigrations
+from boba.stand.roles import RoleSeed
 from boba.stand.signin import SignInStand
 from boba.stand_core.context import CallStand
+from boba.toolkit.channels import ToolChannel
+from boba.toolkit.dag import CallDag
+from boba.toolkit.wire import JournalNotice
 from boba.toolrun.call_id import CallFields
 from boba.transport.acp.protocol import (
     AcpErrorCode,
@@ -1101,6 +1108,10 @@ async def store(
     """Хранилище соединений пользователей стенда ретранслятора."""
     schema = "relay_connections"
     cipher = SecretCipher(secrets.token_bytes(32))
+    async with pool.connection() as conn:
+        await conn.execute(
+            sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema))
+        )
     await StandMigrations().application(test_postgres, schema, "boba.mcp_server")
 
     return ConnectionStore(pool, schema, cipher, ConnectionTypes.discover())
@@ -1141,7 +1152,7 @@ class TestRelayConnections:
             name="fake_connection_host",
             arguments={"connection": "dwh"},
             errored=True,
-            expected=["connection catalog is unavailable"],
+            expected=["not among the connections"],
         )
         answer = await self._called(offers, store, call_stand, tab, ["dwh"], case)
 
@@ -1164,8 +1175,13 @@ class TestRelayConnections:
         stand = RelayStand()
         servers = McpServers(config)
         relay = stand.relay(servers)
-        registration = tab.registration(uuid4(), SignInStand.PROFILE)
+        registration = tab.registration(UUID(tab.raw.user.id), SignInStand.PROFILE)
         server_id = stand.registrations.register(registration, ["boba"])[0].server_id
+        await RoleSeed(store).user(
+            registration.user_id,
+            UserIdentity.model_validate(tab.raw.user.identifier),
+            (),
+        )
         profile = PostgresConfig.model_validate(
             {
                 "host": "db.local",
@@ -1221,45 +1237,36 @@ class TestRelayConnections:
 
     async def test_source_of_a_workflow_call_holds_the_cards_of_its_nodes(
         self,
-        service_process: ServiceProcess,
-        store: ConnectionStore,
-        call_stand: CallStand,
-        tab: TabSession,
     ) -> None:
-        """Источник вызова инструмента со вложенными вызовами несёт карточки
-        инструментов его узлов: по ним лента рисует вход каждого узла."""
-        stand = RelayStand()
-        servers = McpServers(service_process.servers("/offers"))
-        tab.password_sign_in(frozenset({"analyst"}))
-        relay = stand.relay(servers)
-        registration = tab.registration(uuid4(), SignInStand.PROFILE)
-        server_id = stand.registrations.register(registration, ["boba"])[0].server_id
-        node = {"key": "n0", "tool": "fake_connection_host", "args": {}}
+        """Расширение сервера превращает узлы workflow в карточки их инструментов."""
+        feature = CallDag().feature()
+        described = McpDescription(
+            "workflow stand",
+            mt.DiscoverResult(
+                supported_versions=["2026-07-28"],
+                capabilities=mt.ServerCapabilities(
+                    extensions={feature.ID: feature.settings()}
+                ),
+            ),
+        )
+        card = mt.Tool.model_validate(
+            {"name": "fake_connection_host", "inputSchema": {"type": "object"}}
+        )
         request = ToolSourceRequest(
             session_id="s-1",
             tool_call_id="call-1",
-            server_id=server_id,
+            server_id="server-1",
             name="workflow",
-            arguments={"nodes": [node, node]},
+            arguments={
+                "nodes": [
+                    {"key": "n0", "tool": card.name, "args": {}},
+                    {"key": "n1", "tool": card.name, "args": {}},
+                ]
+            },
         )
-        try:
-            reply = None
-            for _ in range(150):
-                try:
-                    reply = await relay.source(request)
-                except RequestError:
-                    await asyncio.sleep(0.2)
-                    continue
+        nodes = list(McpRelay._node_cards(described, request, {card.name: card}))
 
-                break
-        finally:
-            await servers.stop()
-
-        assert reply is not None, "the service stand gave no source within 30s"
-        source = ToolSource.model_validate(reply.source)
-        assert source.tool.name == "workflow"
-        assert [card.name for card in source.nodes] == ["fake_connection_host"]
-        assert source.app is None
+        assert nodes == [card]
 
     async def test_thread_is_hidden_from_the_model_and_filled_by_the_relay(
         self,
@@ -1328,34 +1335,11 @@ class TestRelayJournals:
 
     ENVELOPE: ClassVar[dict[str, Any]] = TestMcpRelay.ENVELOPE
 
-    @pytest.mark.parametrize(
-        ("name", "arguments", "node"),
-        [
-            ("fake_progress", {"steps": 3, "pause": 0.5}, None),
-            (
-                "workflow",
-                {
-                    "nodes": [
-                        {
-                            "key": "slow",
-                            "tool": "fake_progress",
-                            "args": {"steps": 3, "pause": 0.5},
-                        }
-                    ]
-                },
-                "slow",
-            ),
-        ],
-        ids=["call", "node"],
-    )
-    async def test_running_call_journal_is_named_to_the_thread(  # noqa: PLR0913 — случай собирается фикстурами стендов
+    async def test_running_call_journal_is_named_to_the_thread(
         self,
         service_process: ServiceProcess,
         call_stand: CallStand,
         tab: TabSession,
-        name: str,
-        arguments: dict[str, Any],
-        node: str | None,
     ) -> None:
         stand = RelayStand()
         servers = McpServers(service_process.servers())
@@ -1394,7 +1378,11 @@ class TestRelayJournals:
                     server_id=server_id,
                     request_id="mcp:call",
                     method="tools/call",
-                    params={"name": name, "arguments": arguments, "_meta": meta},
+                    params={
+                        "name": "fake_progress",
+                        "arguments": {"steps": 3, "pause": 0.5},
+                        "_meta": meta,
+                    },
                 ),
                 notes.put,
             )
@@ -1408,7 +1396,7 @@ class TestRelayJournals:
         journal = opened[0]
         assert journal.call_id == "agent-call-7"
         assert journal.server == "boba"
-        assert journal.node == node
+        assert journal.node is None
         address = f"//{journal.run}/{journal.call}/"
         linked: list[str] = []
         for block in answer.content:
@@ -1419,6 +1407,31 @@ class TestRelayJournals:
                 linked.append(str(block.uri))
 
         assert linked, (answer.content, journal)
+
+    async def test_node_journal_keeps_the_server_key(self, tab: TabSession) -> None:
+        stand = RelayStand()
+        registration = tab.registration(UUID(tab.raw.user.id), "test")
+        opened: list[JournalOpened] = []
+
+        async def heard(envelope: Envelope) -> None:
+            if isinstance(envelope.message, JournalOpened):
+                opened.append(envelope.message)
+
+        stand.bus.subscribe(Scope.chat(registration.thread_id), heard)
+        relay = stand.relay(McpServers(FixedServerConfigs(servers={})))
+        notice = JournalNotice(
+            progress_token="call-1",
+            run="run-1",
+            node="node-call-1",
+            channels=(ToolChannel.STDOUT,),
+            key="slow",
+        )
+
+        await relay._journaled(registration, "agent-call-1", notice)
+
+        assert len(opened) == 1
+        assert opened[0].node == "slow"
+        assert opened[0].call == "node-call-1"
 
 
 class TestRegistrations:

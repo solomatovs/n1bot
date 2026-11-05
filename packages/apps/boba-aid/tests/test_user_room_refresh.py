@@ -13,9 +13,9 @@ from aid_stand import StandTokens
 from boba.aid.infra.session import ChainlitSession, ChainlitSessions
 from boba.aid.infra.thread_room import ChatRoomSurface, UserRoom
 from boba.aid.rendering.renderer import SignalType
+from boba.chat.messages import SignInRefreshRequested
 from boba.identity.context import Scope
 from boba.messaging import Envelope
-from boba.chat.messages import SignInRefreshRequested
 
 pytestmark = pytest.mark.anyio
 

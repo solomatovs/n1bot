@@ -18,9 +18,11 @@ from boba.chat.threads import (
     ThreadCursors,
     ThreadUpsert,
 )
-from boba.db.postgres import AsyncPostgresPool, PostgresSchema
+from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres.connection import PostgresConfig
 from boba.identity.principal import UserIdentity
 from boba.identity.session import Login
+from boba.stand.migrate import StandMigrations
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -33,16 +35,13 @@ def _identity(login: str) -> UserIdentity:
 
 @pytest.fixture
 async def tables(
-    pool: AsyncPostgresPool,
+    pool: AsyncPostgresPool, test_postgres: PostgresConfig
 ) -> tuple[UsersTable, ThreadsTable]:
     async with pool.connection() as conn:
         await conn.execute(
             sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
         )
-    async with pool.connection() as conn:
-        await PostgresSchema(SCHEMA).apply_packages(
-            conn, ("boba.identity_postgres", "boba.aid")
-        )
+    await StandMigrations().application(test_postgres, SCHEMA, "boba.aid")
 
     return UsersTable(pool, SCHEMA), ThreadsTable(pool, SCHEMA)
 
@@ -100,7 +99,7 @@ async def test_user_rows(
     stored = await users.upsert(identity)
 
     assert (await users.stored_by_id(stored.id)) == stored
-    assert (await users.stored(identity.identifier)) == stored
+    assert (await users.stored(identity)) == stored
 
 
 async def test_activity_moves_forward_only(
@@ -178,7 +177,7 @@ async def test_pages_follow_activity_without_repeats_or_gaps(
     assert sorted(listed) == sorted([*ids, tied])
 
 
-def test_malformed_cursor_is_rejected() -> None:
+async def test_malformed_cursor_is_rejected() -> None:
     cursors = ThreadCursors()
 
     with pytest.raises(DataRejectedError, match="thread list cursor"):
@@ -216,13 +215,10 @@ async def test_threads_without_updated_at_are_migrated_in_place(
             (thread_id, created, "old"),
         )
 
+    config = runtime_config.postgres.model_copy(update={"dbname": test_database})
+    await StandMigrations().application(config, schema, "boba.aid")
+    await StandMigrations().application(config, schema, "boba.aid")
     async with pool.connection() as conn:
-        await PostgresSchema(schema).apply_packages(
-            conn, ("boba.identity_postgres", "boba.aid")
-        )
-        await PostgresSchema(schema).apply_packages(
-            conn, ("boba.identity_postgres", "boba.aid")
-        )
         cur = await conn.execute(
             sql.SQL(
                 "select is_nullable from information_schema.columns "

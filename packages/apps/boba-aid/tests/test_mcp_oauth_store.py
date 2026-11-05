@@ -29,8 +29,8 @@ from boba.mcp_client.client import (
     McpToolServer,
     UnattendedLogin,
 )
-from boba.stand.service_signin import FakeServiceProcess
 from boba.stand.migrate import StandMigrations
+from boba.stand.service_signin import FakeServiceProcess
 
 pytestmark = pytest.mark.anyio
 

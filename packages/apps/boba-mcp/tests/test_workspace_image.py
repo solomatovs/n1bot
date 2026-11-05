@@ -15,17 +15,11 @@ import pytest
 
 from boba.canvas.storage import StorageError, StorageNotFoundError
 from boba.config.paths import PathsConfig
-from boba.sandbox.paths import ProgramRoots
-from boba.sandbox.storage import ImageStorageClient, ImageStorageConfig
-from boba.storage.client import (
-    LocalStorageClient,
-    LocalStorageConfig,
-    StorageClient,
-    StorageFactory,
-)
 from boba.mcp_server.storage import StandardStorageBackends
+from boba.sandbox.paths import ProgramRoots
 from boba.sandbox.profile import SandboxProfile, WorkspaceSpec
 from boba.sandbox.runner import SandboxMountError
+from boba.sandbox.storage import ImageStorageClient, ImageStorageConfig
 from boba.stand.shell import ShellRun
 from boba.stand.storage import StorageSeed
 from boba.stand.zygote import (
@@ -35,6 +29,12 @@ from boba.stand.zygote import (
     SandboxCgroup,
     SandboxStand,
     ZygoteStand,
+)
+from boba.storage.client import (
+    LocalStorageClient,
+    LocalStorageConfig,
+    StorageClient,
+    StorageFactory,
 )
 from boba.tool.shell.tools import BashToolConfig
 from boba.toolkit.result import ShellResult

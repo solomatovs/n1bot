@@ -20,19 +20,21 @@ from uuid import UUID
 
 import krb5
 import pytest
+from aid_stand import AuthTestClaim as UserMetadataField
 from aid_stand import ChatSessionStand, ServiceTools, StandTokens, ToolService
 from chainlit.user import PersistedUser
 from gssapi import Credentials, Name, NameType, SecurityContext
 
 from boba.aid.auth.kerberos import KerberosAuth
 from boba.aid.data.data_layer import PostgresDataLayer
+from boba.aid.data.users import UsersTable
+from boba.aid.infra.config import AppConfig
 from boba.config import bind
-from boba.mcp_server.connections.store import ConnectionStore
 from boba.connections.stored import ConnectionBase, GrantTarget
 from boba.db.clickhouse.connection import ClickHouseConfig
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
-from aid_stand import AuthTestClaim as UserMetadataField
+from boba.identity.principal import UserIdentity
 from boba.kerberos import (
     AcceptConfig,
     ConstrainedDelegation,
@@ -40,6 +42,7 @@ from boba.kerberos import (
 )
 from boba.krb import SpnegoAcceptor, TicketCapture
 from boba.krb.seal import SsoTickets
+from boba.mcp_server.connections.store import ConnectionStore
 from boba.stand.roles import RoleSeed
 from boba.stand.site import Stand
 from boba.stand.toolsetup import Call
@@ -70,8 +73,14 @@ pytestmark = [
 
 
 @pytest.fixture
-async def store(pool: AsyncPostgresPool, tool_service: ToolService) -> ConnectionStore:
-    built = await tool_service.catalog(pool)
+async def store(
+    pool: AsyncPostgresPool,
+    tool_service: ToolService,
+    app_config: AppConfig,
+) -> ConnectionStore:
+    built = await tool_service.catalog(
+        pool, UsersTable(pool, app_config.db_schema)
+    )
     await RoleSeed(built).add([ROLE])
     return built
 
@@ -127,9 +136,12 @@ async def sso_login(
 
 
 @pytest.fixture
-async def session(
+async def session(  # noqa: PLR0913 — assembles the authenticated user projection
     chat_session: ChatSessionStand,
     layer: PostgresDataLayer,
+    pool: AsyncPostgresPool,
+    app_config: AppConfig,
+    store: ConnectionStore,
     sso_login: tuple[SsoTickets, str],
 ) -> PersistedUser:
     """Пользователь чата, вошедший этим SSO-входом: метки лежат в JWT сессии."""
@@ -139,8 +151,10 @@ async def session(
         UserMetadataField.PRINCIPAL: PRINCIPAL,
         UserMetadataField.TICKET: sso_login[1],
     }
+    identity = UserIdentity.model_validate("corporate:delegated-tools")
+    await UsersTable(pool, app_config.db_schema).upsert(identity)
     user = await layer.create_user(
-        StandTokens.user(identifier="corporate:delegated-tools", metadata=metadata)
+        StandTokens.user(identifier=identity.identifier, metadata=metadata)
     )
     if user is None:
         raise AssertionError("user was not created")

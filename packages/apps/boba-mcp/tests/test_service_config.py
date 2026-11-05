@@ -17,9 +17,9 @@ from omegaconf import DictConfig, OmegaConf
 from boba.config import ConfigError, bind
 from boba.mcp_server.app import McpAppConfig
 from boba.mcp_server.catalog import McpEndpoint
-from boba.toolrun.plugins import PluginMeta
 from boba.stand.overlay import ConfigOverlay
 from boba.stand.sandbox import section_profile
+from boba.toolrun.plugins import PluginMeta
 
 HEAVY_SECTIONS = ("tool.ingest", "tool.kb")
 """Секции с нативным инференсом: их душит квота базового профиля."""

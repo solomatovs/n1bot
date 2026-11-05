@@ -18,13 +18,13 @@ from psycopg import sql
 
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
-from boba.toolrun.plugins import PluginKits
 from boba.stand.migrate import StandMigrations
 from boba.stand.names import StandNames
 from boba.stand.overlay import ConfigOverlay
 from boba.stand.refs import StandRefs
 from boba.stand.toolsetup import ToolSetup
 from boba.stand.ui.stand import REPO_ROOT, ServiceStand, StandApp, StandPorts
+from boba.toolrun.plugins import PluginKits
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 

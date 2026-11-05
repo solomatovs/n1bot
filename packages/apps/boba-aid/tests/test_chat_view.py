@@ -33,8 +33,8 @@ from boba.aid.rendering.chat_view import (
     StepText,
     TurnPulse,
 )
-from boba.storage.client import LocalStorageClient
 from boba.stand.refs import StandRefs
+from boba.storage.client import LocalStorageClient
 from boba.toolkit.result import FieldLines
 
 APP_ROOT = Path(__file__).resolve().parents[1] / "assets"

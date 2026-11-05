@@ -24,11 +24,10 @@ from test_cli_acp_postgres import PostgresStand
 from test_cli_binary import ReleaseBin, ReleaseBinary
 from test_cli_serve import Connected, HistoryStand, Profile, StandTools
 
-from boba.cli.serve import ServeHistory, ServeMark
 from boba.aid.infra.config import AppConfig
+from boba.cli.serve import ServeHistory, ServeMark
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
-
 from boba.stand.agent import FakeServer
 from boba.stand.agent_service import (
     AgentServiceProcess,

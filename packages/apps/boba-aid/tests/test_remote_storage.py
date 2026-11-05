@@ -13,6 +13,7 @@ from uuid import UUID
 
 import mcp_types as mt
 import pytest
+from aid_stand import AuthTestClaim as UserMetadataField
 from aid_stand import FixedServers, NoTabs, OwnerRows, ServiceProcess
 
 from boba.aid.data.remote_storage import FileOwners, RemoteStorageClient
@@ -22,7 +23,6 @@ from boba.canvas.storage import StorageError, StorageNotFoundError
 from boba.identity.api import StoredUser
 from boba.identity.principal import UserIdentity
 from boba.identity.session import Login
-from aid_stand import AuthTestClaim as UserMetadataField
 from boba.mcp_client.client import McpCaller, McpServers, McpToolServer
 from boba.toolrun.call_id import CallFields
 from boba.workspace.launcher import ReadWindow

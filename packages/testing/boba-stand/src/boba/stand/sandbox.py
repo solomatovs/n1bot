@@ -14,13 +14,13 @@ from typing import Any
 import pytest
 from omegaconf import DictConfig
 
-from boba.toolrun.launchers import PluginLaunch
-from boba.toolrun.sandbox import SandboxCgroupConfig, ZygoteLaunchers
-from boba.toolrun.plugins import PluginSections
+from boba.config import bind
 from boba.sandbox import SandboxProfile
 from boba.sandbox.program import PluginEntry
-from boba.config import bind
 from boba.stand.zygote import ROOTFS_IMAGE, RUNTIME, SandboxCgroup
+from boba.toolrun.launchers import PluginLaunch
+from boba.toolrun.plugins import PluginSections
+from boba.toolrun.sandbox import SandboxCgroupConfig, ZygoteLaunchers
 
 REPO = Path(__file__).resolve().parents[6]
 """Код пакетов монтируется одним каталогом: точку /usr/src несёт rootfs."""

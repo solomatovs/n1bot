@@ -7,9 +7,9 @@ import pytest
 from pydantic import SecretStr
 
 from boba.auth.config import ProxyAuthConfig
+from boba.identity.principal import IdentityRule
 from boba.oauth.assertions import AssertionRejectedError, ProxyAssertions
 from boba.oauth.server.assertions import ProxyAssertionVerifier
-from boba.identity.principal import IdentityRule
 
 
 def test_verifier_uses_the_key_of_the_asserted_realm() -> None:

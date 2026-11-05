@@ -36,14 +36,15 @@ from boba.aid.agent.chat import (
 )
 from boba.aid.agent.client import AgentFailureKind, AgentProcessError
 from boba.aid.agent.config import AgentServiceConfig, AgentSettings, ServiceAgentConfig
+from boba.aid.data.threads import ThreadsTable
+from boba.aid.data.users import UsersTable
+from boba.aid.infra.config import AppConfig
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles, SelectedProfile
 from boba.chat.threads import StoredThread, ThreadUpsert
 from boba.cli.serve import ServeHistory
-from boba.aid.infra.config import AppConfig
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.principal import UserIdentity
-from boba.identity.session import Login
 from boba.mcp_client.client import (
     FixedServerConfigs,
     HttpLocation,
@@ -51,17 +52,14 @@ from boba.mcp_client.client import (
     McpServers,
     ProxyAuth,
 )
-
-from boba.aid.data.threads import ThreadsTable
-from boba.aid.data.users import UsersTable
 from boba.stand.agent_service import (
     AgentServiceStand,
     ServeAddress,
     ServeStandConfig,
     ServiceProfiles,
 )
-from boba.stand.names import StandNames
 from boba.stand.migrate import StandMigrations
+from boba.stand.names import StandNames
 from boba.stand.roles import RoleSeed
 from boba.stand.signin import SignInStand
 from boba.stand.site import Stand

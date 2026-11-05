@@ -5,11 +5,11 @@ from __future__ import annotations
 import pytest
 
 from boba.config import bind
-from boba.crypto import SecretCipher
-from boba.mcp_server.connections.store import ConnectionStore
 from boba.connections.manifest import ConnectionTypes
+from boba.crypto import SecretCipher
 from boba.db.postgres import AsyncPostgresPool
 from boba.mcp_server.app import McpAppConfig
+from boba.mcp_server.connections.store import ConnectionStore
 from boba.stand.ui.stand import StandApp
 from boba.tool.web.tools import WebToolsConfig, web_fetch_page, web_grep_page
 from boba.tool_io.entry import ToolMain

@@ -27,6 +27,8 @@ from test_acp_chat import BOOT_TIMEOUT_SEC, AgentProcesses, ChatSocket
 
 import boba.aid.agent
 from boba.aid.agent.client import AgentProcess
+from boba.aid.auth.config import SessionConfig
+from boba.aid.auth.http import RequestTokens
 from boba.aid.infra.config import AppConfig
 from boba.aid.rendering.chat_view import StepStatus
 from boba.canvas.canvas import CanvasAction, CanvasElement, CanvasKind
@@ -34,9 +36,7 @@ from boba.config import ConfigLoader, bind
 from boba.core.mcp_names import McpToolNames
 from boba.db.postgres.connection import PostgresConfig
 from boba.mcp_client.client import FixedServerConfigs, McpServerConfig
-from boba.aid.auth.config import SessionConfig
 from boba.oauth.server.config import TokenConfig
-from boba.aid.auth.http import RequestTokens
 from boba.stand.names import StandNames
 from boba.stand.site import Stand
 from boba.stand.ui.database import StandDatabase
@@ -541,7 +541,11 @@ class SiteSecrets:
     """Секреты конфига приложения стенда: config.toml отладки с наложением;
     model — модель его [session]: SessionConfig у чата, TokenConfig у сервиса."""
 
-    def __init__(self, paths: Sequence[Path], model: type[TokenConfig]) -> None:
+    def __init__(
+        self,
+        paths: Sequence[Path],
+        model: type[SessionConfig] | type[TokenConfig],
+    ) -> None:
         self._session = bind(ConfigLoader(paths).load(), "session", model)
 
     def auth_secret(self) -> str:

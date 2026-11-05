@@ -42,22 +42,22 @@ async def test_unparsed_pac_is_refused_when_sid_exclusions_are_configured(
 ) -> None:
     roles = PrincipalRolesConfig(sid_ex=RoleExcludeConfig(root=["S-1-5-21-1"]))
     config = _config(raw_config, roles)
-    sign_in = SignInStand.backends().sso(config)
+    admission = SignInStand.backends().sso(config)
 
     facts = PrincipalFacts(principal=_principal(config), pac_parsed=False)
 
     with pytest.raises(AuthorizationError):
-        await sign_in.roles_of(facts)
+        await admission.roles_of(facts)
 
 
 async def test_unparsed_pac_passes_without_sid_exclusions(raw_config: Any) -> None:
     config = _config(raw_config, PrincipalRolesConfig())
     principal = _principal(config)
     roles = PrincipalRolesConfig(principal=RoleMappingConfig(root={principal: ["DEV"]}))
-    sign_in = SignInStand.backends().sso(_config(raw_config, roles))
+    admission = SignInStand.backends().sso(_config(raw_config, roles))
 
     facts = PrincipalFacts(principal=principal, pac_parsed=False)
 
-    admitted = await sign_in.roles_of(facts)
+    admitted = await admission.roles_of(facts)
 
     assert "DEV" in admitted

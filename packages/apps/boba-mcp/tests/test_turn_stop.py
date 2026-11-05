@@ -15,9 +15,9 @@ from boba.cancellation import (
     ToolStopped,
     current_cancellation,
 )
-from boba.storage.journal import DirVault, StreamJournal
 from boba.stand.refs import StandRefs
 from boba.stand_core.context import CallStand, FakeTurn
+from boba.storage.journal import DirVault, StreamJournal
 from boba.toolkit.channels import CallOutcome, ToolChannel
 from boba.toolrun.streams import CallJournals
 

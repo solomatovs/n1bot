@@ -9,27 +9,30 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from uuid import UUID
 
 import pytest
+from aid_stand import AuthTestClaim as UserMetadataField
 from aid_stand import ChatSessionStand, ServiceTools, SsoStand, StandTokens, ToolService
 from chainlit.user import PersistedUser
 from pydantic import SecretStr
 
 from boba.aid.auth.kerberos import KerberosAuth
 from boba.aid.data.data_layer import PostgresDataLayer
+from boba.aid.data.users import UsersTable
+from boba.aid.infra.config import AppConfig
 from boba.config import bind
-from boba.mcp_server.connections.store import ConnectionStore
 from boba.connections.stored import GrantTarget, StoredRole
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PasswordAuth, PostgresConfig
 from boba.identity.context import ContextKind
 from boba.identity.errors import RefusalError
-from aid_stand import AuthTestClaim as UserMetadataField
+from boba.identity.principal import UserIdentity
 from boba.kerberos import DelegatedAuth, DelegationMode, KeytabAuth
 from boba.krb import KeytabCredentials
 from boba.krb.seal import SsoTickets
+from boba.mcp_server.connections.store import ConnectionStore
 from boba.stand.roles import RoleSeed
 from boba.stand.site import Stand
 from boba.stand.toolsetup import Call
@@ -48,8 +51,14 @@ pytestmark = [
 
 
 @pytest.fixture
-async def store(pool: AsyncPostgresPool, tool_service: ToolService) -> ConnectionStore:
-    built = await tool_service.catalog(pool)
+async def store(
+    pool: AsyncPostgresPool,
+    tool_service: ToolService,
+    app_config: AppConfig,
+) -> ConnectionStore:
+    built = await tool_service.catalog(
+        pool, UsersTable(pool, app_config.db_schema)
+    )
     await RoleSeed(built).add([ROLE])
     return built
 
@@ -95,18 +104,33 @@ async def tools(tool_service: ToolService) -> AsyncIterator[ServiceTools]:
 class Session:
     """Сессия chainlit от пользователя из таблицы users с его ролями."""
 
-    @staticmethod
-    async def user(layer: PostgresDataLayer, identifier: str) -> PersistedUser:
+    users: ClassVar[UsersTable | None] = None
+
+    @classmethod
+    async def user(
+        cls, layer: PostgresDataLayer, identifier: str
+    ) -> PersistedUser:
+        identity = UserIdentity.model_validate(
+            identifier if ":" in identifier else f"corporate:{identifier}"
+        )
+        if cls.users is None:
+            raise AssertionError("test user rows must be bound")
+        await cls.users.upsert(identity)
         roles = [ROLE]
         persisted = await layer.create_user(
             StandTokens.user(
-                identifier=identifier,
+                identifier=identity.identifier,
                 metadata={UserMetadataField.ROLES: roles},
             )
         )
         if persisted is None:
             raise AssertionError("user was not created")
         return persisted
+
+    @staticmethod
+    def login_metadata() -> dict[str, object]:
+        """Claims тестового входа: после auth-refactor роли не берутся из UI meta."""
+        return {UserMetadataField.ROLES: [ROLE]}
 
     @staticmethod
     def sso_metadata(principal: str, sealed: str) -> dict[str, object]:
@@ -117,6 +141,15 @@ class Session:
             UserMetadataField.PRINCIPAL: principal,
             UserMetadataField.TICKET: sealed,
         }
+
+
+@pytest.fixture(autouse=True)
+def bind_test_user_rows(
+    pool: AsyncPostgresPool,
+    app_config: AppConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(Session, "users", UsersTable(pool, app_config.db_schema))
 
 
 async def test_granted_connection_is_visible_and_works(  # noqa: PLR0913 — фикстуры теста
@@ -130,7 +163,7 @@ async def test_granted_connection_is_visible_and_works(  # noqa: PLR0913 — ф�
     user = await Session.user(layer, "conn-owner")
     connection_id = await store.add("main", service_pg)
     await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
-    chat_session.sign_in(user, user.metadata, THREAD, PROFILE)
+    chat_session.sign_in(user, Session.login_metadata(), THREAD, PROFILE)
 
     targets = await Call.ok(catalog)
     names = [row["name"] for row in tools.rows(targets)]
@@ -160,7 +193,7 @@ async def test_role_grant_reaches_every_role_holder(  # noqa: PLR0913 — фик
     roles = StoredRole.by_name(await store.roles())
     connection_id = await store.add("shared", service_pg)
     await store.grant(connection_id, GrantTarget.role(roles[ROLE]))
-    chat_session.sign_in(user, user.metadata, THREAD, PROFILE)
+    chat_session.sign_in(user, Session.login_metadata(), THREAD, PROFILE)
 
     targets = await Call.ok(catalog)
     names = [row["name"] for row in tools.rows(targets)]
@@ -180,7 +213,7 @@ async def test_stranger_sees_nothing(  # noqa: PLR0913 — фикстуры те
     stranger = await Session.user(layer, "conn-stranger")
     connection_id = await store.add("main", service_pg)
     await store.grant(connection_id, GrantTarget.user(UUID(owner.id)))
-    chat_session.sign_in(stranger, stranger.metadata, THREAD, PROFILE)
+    chat_session.sign_in(stranger, Session.login_metadata(), THREAD, PROFILE)
 
     targets = await Call.ok(catalog)
     if tools.rows(targets):
@@ -206,7 +239,7 @@ async def test_revoke_applies_to_the_next_call(  # noqa: PLR0913 — фикст�
     connection_id = await store.add("main", service_pg)
     target = GrantTarget.user(UUID(user.id))
     await store.grant(connection_id, target)
-    chat_session.sign_in(user, user.metadata, THREAD, PROFILE)
+    chat_session.sign_in(user, Session.login_metadata(), THREAD, PROFILE)
 
     before = await Call.ok(catalog)
     if not tools.rows(before):
@@ -232,7 +265,7 @@ async def test_ambiguous_name_is_refused(  # noqa: PLR0913 — фикстуры 
     second = await store.add("main", service_pg)
     await store.grant(first, GrantTarget.user(UUID(user.id)))
     await store.grant(second, GrantTarget.user(UUID(user.id)))
-    chat_session.sign_in(user, user.metadata, THREAD, PROFILE)
+    chat_session.sign_in(user, Session.login_metadata(), THREAD, PROFILE)
 
     targets = await Call.ok(catalog)
     if tools.rows(targets):
@@ -291,7 +324,7 @@ async def test_delegated_connection_refuses_local_login(
     )
     connection_id = await store.add("mine", delegated)
     await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
-    chat_session.sign_in(user, user.metadata, THREAD, PROFILE)
+    chat_session.sign_in(user, Session.login_metadata(), THREAD, PROFILE)
 
     refused = await Call.result(
         tools["pg_query"], connection="mine", sql="select 1", offset=0, limit=50
@@ -322,7 +355,7 @@ async def test_unreachable_database_is_reported_by_the_body(
     )
     connection_id = await store.add("dead", dead)
     await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
-    chat_session.sign_in(user, user.metadata, THREAD, PROFILE)
+    chat_session.sign_in(user, Session.login_metadata(), THREAD, PROFILE)
 
     refused = await Call.result(
         tools["pg_query"], connection="dead", sql="select 1", offset=0, limit=50

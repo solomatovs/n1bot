@@ -9,7 +9,9 @@ from psycopg import sql
 
 from boba.aid.data.feedbacks import FeedbacksTable
 from boba.chat.threads import StoredFeedback
-from boba.db.postgres import AsyncPostgresPool, PostgresSchema
+from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres.connection import PostgresConfig
+from boba.stand.migrate import StandMigrations
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -18,16 +20,13 @@ SCHEMA = "automation_elements_test"
 
 @pytest.fixture
 async def tables(
-    pool: AsyncPostgresPool,
+    pool: AsyncPostgresPool, test_postgres: PostgresConfig
 ) -> FeedbacksTable:
     async with pool.connection() as conn:
         await conn.execute(
             sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
         )
-    async with pool.connection() as conn:
-        await PostgresSchema(SCHEMA).apply_packages(
-            conn, ("boba.identity_postgres", "boba.aid")
-        )
+    await StandMigrations().application(test_postgres, SCHEMA, "boba.aid")
 
     return FeedbacksTable(pool, SCHEMA)
 

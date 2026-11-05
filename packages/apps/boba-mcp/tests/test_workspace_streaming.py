@@ -23,9 +23,9 @@ from typing import Any, ClassVar, Self
 import pytest
 
 from boba.canvas.storage import OpenedStream
+from boba.sandbox import WorkspaceSpec
 from boba.sandbox.paths import ProgramRoots
 from boba.sandbox.storage import ImageStorageClient, ImageStorageConfig
-from boba.sandbox import WorkspaceSpec
 from boba.stand.storage import StorageSeed
 from boba.stand.zygote import SandboxStand
 from boba.workspace.launcher import LayerPath, ReadWindow

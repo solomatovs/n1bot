@@ -33,7 +33,7 @@ SHELL           := /bin/bash
 # Nuitka: пик одной компиляции ~5 ГиБ, 4 × 8 заданий занимают 32 ядра
 PARALLEL        ?= 4
 JOBS            ?= 8
-MAKEFLAGS       += -j$(PARALLEL) --output-sync=target --no-print-directory
+MAKEFLAGS       += -j$(PARALLEL) --output-sync=none --no-print-directory
 
 VERSION         := $(shell sed -n 's/^version = "\(.*\)"$$/\1/p' $(ROOT)/packages/core/boba-core/pyproject.toml)
 TAG             ?= $(VERSION)

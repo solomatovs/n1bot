@@ -43,8 +43,8 @@ from boba.canvas.canvas import (
     OpenedCanvas,
 )
 from boba.canvas.keys import WorkspaceKey
-from boba.storage.client import LocalStorageClient, LocalStorageConfig
 from boba.stand_core.context import CallStand
+from boba.storage.client import LocalStorageClient, LocalStorageConfig
 from boba.toolkit.result import ContentMime, VisualResult
 
 THREAD = "11111111-1111-1111-1111-111111111111"

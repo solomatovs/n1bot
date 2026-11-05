@@ -34,6 +34,8 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.server.apps import APP_MIME_TYPE
 from mcp.shared._httpx_utils import create_mcp_http_client
 from mcp.shared.exceptions import MCPError
+from psycopg import sql
+from psycopg.types.json import Jsonb
 from pydantic import SecretStr, ValidationError
 from standard_server import StandardServer
 
@@ -43,7 +45,6 @@ from boba.canvas.storage import StorageNotFoundError
 from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool, PostgresTable
 from boba.db.postgres.connection import PostgresConfig
-from boba.mcp_server.migrations import configured_migrations
 from boba.mcp_client.client import (
     BearerAuth,
     FixedServerConfigs,
@@ -61,6 +62,8 @@ from boba.mcp_client.client import (
     ProxyAuth,
     StdioCommand,
 )
+from boba.mcp_server.app import McpAppConfig, McpHost
+from boba.mcp_server.migrations import configured_migrations
 from boba.oauth.server.clients import TrustedClient
 from boba.sandbox.paths import ProgramRoots
 from boba.stand.apps_slot import AppServer, AppsSlot
@@ -1008,13 +1011,21 @@ class TestWorkspaceFiles:
         """Каталог workspace сервера — часть его описания у порта: клиент не
         кладёт его в общую точку процесса, ключи файлов итогов разбирает тот,
         кто держит порт этого сервера."""
+        try:
+            process_mount = WorkspaceMount.path()
+        except RuntimeError:
+            process_mount = None
+
         workspace = await dag.workspace()
         files = await dag.files()
 
         assert workspace == "/workspace"
         assert files is not None
-        with pytest.raises(RuntimeError, match="not configured"):
-            WorkspaceMount.path()
+        if process_mount is None:
+            with pytest.raises(RuntimeError, match="not configured"):
+                WorkspaceMount.path()
+        else:
+            assert WorkspaceMount.path() == process_mount
 
     async def test_uploaded_stream_is_read_back_by_window(
         self, dag: McpToolServer
@@ -1503,11 +1514,11 @@ class TestSignInAsTheUser:
         assert isinstance(reply, mt.CallToolResult)
         assert not reply.is_error, reply
 
-    async def test_private_lists_of_two_users_stay_apart(
+    async def test_private_lists_follow_endpoint_configuration_for_each_user(
         self, boba_mcp_stand: BobaMcpStand
     ) -> None:
-        """Список инструментов зависит от ролей токена и приходит private: у
-        каждого пользователя свой порт и свой кэш, описание — public."""
+        """Список endpoint tools одинаков для допущенных пользователей и private;
+        роли разрешают endpoint целиком, а не отдельные инструменты."""
         servers = self._servers(boba_mcp_stand, self.SECRET, self.CLIENT_SECRET)
         wide = McpCaller(login="corporate:ivanov", roles=frozenset({"dev"}))
         weak = McpCaller(login="corporate:petrov", roles=frozenset({"weak"}))
@@ -1524,8 +1535,11 @@ class TestSignInAsTheUser:
         assert described.result.ttl_ms > 0
         assert wide_tools.cache_scope == "private"
         assert wide_tools.ttl_ms > 0
-        assert "fake_progress" in [tool.name for tool in wide_tools.tools]
-        assert "fake_progress" not in [tool.name for tool in weak_tools.tools]
+        wide_names = [tool.name for tool in wide_tools.tools]
+        weak_names = [tool.name for tool in weak_tools.tools]
+        assert "fake_progress" in wide_names
+        assert "fake_progress" in weak_names
+        assert wide_names == weak_names
 
     async def test_endpoint_gives_the_tools_of_its_profile(
         self, boba_mcp_stand: BobaMcpStand
@@ -1762,10 +1776,8 @@ class BobaMcpService:
     """Настоящий процесс сервиса на конфиге отладки boba-mcp и наложении теста
     в рабочем каталоге: `python -m boba.mcp_server serve --config <файлы
     сервиса из BOBA_MCP_CONFIG_PATH> --config <каталог>/overlay.toml`, данные
-    процесса — в каталоге данных отладки. Наложение меняет только тестовую базу
-    набора, порт, префикс, публичный адрес и способ запуска; вход — proxy, ключ
-    утверждений и клиент берутся из [auth.proxy] и [mcp.clients] того же
-    конфига."""
+    процесса — в каталоге данных отладки. Наложение задаёт тестовую базу,
+    порт, префикс и публичный адрес; endpoint /all и его grant создаются в БД."""
 
     HOST: str = "localhost"
     """Имя публичного адреса, который стенд задаёт сервису: издатель токена
@@ -1797,11 +1809,6 @@ class BobaMcpService:
             "tool_launcher": {"provider": "process"},
             "postgres": {"dbname": database},
             "app": {"schema": f"mcp_client_{uuid4().hex[:12]}"},
-            "mcp": {
-                "endpoints": {
-                    "all": {"connections": [{"roles": ["*"], "offer": ["stored"]}]}
-                }
-            },
         }
         overlay.write_text(TomlText.dumps(changed), encoding="utf-8")
 
@@ -1811,7 +1818,7 @@ class BobaMcpService:
             configured_migrations(),
         )
         run_blocking(self._storage.create())
-        run_blocking(self._seed_roles(database, changed["app"]["schema"]))
+        run_blocking(self._seed_roles(database, overlay))
         self._log = (workdir / "mcp.log").open("wb")
         self._process = subprocess.Popen(
             [
@@ -1829,16 +1836,44 @@ class BobaMcpService:
             stderr=subprocess.STDOUT,
         )
 
-    async def _seed_roles(self, database: str, schema: str) -> None:
-        """Подготовить роли и право на tools для OAuth-пользователя теста."""
-        raw = StandApp.MCP.config_files().loader(self._files).load()
+    async def _seed_roles(self, database: str, overlay: Path) -> None:
+        """Посеять роль wrt и endpoint со всеми загруженными tools."""
+        paths = (*self._files, overlay)
+        raw = StandApp.MCP.config_files().loader(paths).load()
+        app = bind(raw, "app", McpAppConfig)
         postgres = bind(raw, "postgres", PostgresConfig).model_copy(
             update={"dbname": database}
         )
+        tools = await McpHost(app, raw).tool_schemas()
         pool = AsyncPostgresPool(postgres)
         await pool.open()
         try:
-            await RoleSeed(PostgresTable(pool, schema)).add(("wrt",))
+            await RoleSeed(PostgresTable(pool, app.db_schema)).add(("wrt",))
+            async with pool.connection() as conn, conn.transaction():
+                inserted = await conn.execute(
+                    sql.SQL(
+                        "insert into {}.mcp_endpoints "
+                        "(id, prefix_url, title, tools) values (%s, '/all', 'all', %s) "
+                        "returning id"
+                    ).format(sql.Identifier(app.db_schema)),
+                    (uuid4(), Jsonb(sorted(tools))),
+                )
+                endpoint = await inserted.fetchone()
+                if endpoint is None:
+                    raise AssertionError("the all-tools endpoint is seeded")
+
+                await conn.execute(
+                    sql.SQL(
+                        "insert into {}.grants "
+                        "(src_kind, src_kind_id, tgt_kind, tgt_kind_id) "
+                        "select 'mcp_endpoints', %s, 'roles', id "
+                        "from {}.roles where role = 'wrt'"
+                    ).format(
+                        sql.Identifier(app.db_schema),
+                        sql.Identifier(app.db_schema),
+                    ),
+                    (endpoint[0],),
+                )
         finally:
             await pool.close()
 

@@ -18,13 +18,10 @@ from boba.aid.chat.feed import QuestionBody, TurnFeed
 from boba.aid.chat.ui_text import UiText
 from boba.aid.domain.fields import StepField
 from boba.aid.infra.config import AppConfig
+from boba.aid.infra.turns import StaleTurnCloser
 from boba.aid.rendering.acp_view import ToolMedia, UpdateView
 from boba.aid.rendering.chat_view import ChatView, StepRole
 from boba.aid.rendering.renderer import ChatRenderer, NoSurface, ThreadRewinds
-from boba.db.postgres import AsyncPostgresPool
-from boba.identity.context import Scope
-from boba.identity.locks import LockMode, LockPurpose
-from boba.messaging import Envelope, LockToken
 from boba.chat.messages import (
     ChatMessages,
     FeedbackChanged,
@@ -33,14 +30,17 @@ from boba.chat.messages import (
     TurnFinished,
     TurnOutcome,
 )
+from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.messaging.bus import PgMessageBus
-from boba.messaging.config import AppName
-from boba.identity_postgres.locks import PgLiveLocks
 from boba.db.postgres.messaging.payloads import PgPayloadStore
-from boba.storage.client import LocalStorageClient
-from boba.aid.infra.turns import StaleTurnCloser
-from boba.stand.refs import StandRefs
+from boba.identity.context import Scope
+from boba.identity.locks import LockMode, LockPurpose
+from boba.identity_postgres.locks import PgLiveLocks
+from boba.messaging import Envelope, LockToken
+from boba.messaging.config import AppName
 from boba.stand.migrate import StandMigrations
+from boba.stand.refs import StandRefs
+from boba.storage.client import LocalStorageClient
 from boba.toolkit.result import MarkdownResult
 
 SANDBOX_URL = "http://127.0.0.1:8123/"

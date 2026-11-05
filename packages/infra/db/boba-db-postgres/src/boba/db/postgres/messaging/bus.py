@@ -366,7 +366,21 @@ class PgMessageBus(PostgresTable, MessageBus):
         return sql.Literal(sql.Identifier(self.schema, sequence.value).as_string())
 
     async def start(self) -> None:
+        await self._drop_retired_events()
         await self._listener.start()
+
+    async def _drop_retired_events(self) -> None:
+        """Удаляет события, типы которых этот кодек больше не читает."""
+        query = (
+            self._query()
+            .add(
+                "delete from {schema}.live_events "
+                "where not (kind = any(%(kinds)s::text[]))",
+                kinds=sorted(self._codec.event_kinds),
+            )
+            .build()
+        )
+        await self._execute(query, "drop retired event kinds")
 
     async def stop(self) -> None:
         await self._listener.stop()

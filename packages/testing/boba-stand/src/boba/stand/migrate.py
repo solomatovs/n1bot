@@ -67,7 +67,8 @@ class StandSchema:
             ).fetchone()
         if row is not None and row[0]:
             raise RuntimeError(
-                f"stand schema {location.db_schema!r} already exists; refusing to migrate or drop it"
+                f"stand schema {location.db_schema!r} already exists; "
+                "refusing to migrate or drop it"
             )
 
         self._created = location

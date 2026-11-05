@@ -56,11 +56,12 @@ from boba.aid.agent.chat import (
     ThreadIdentity,
 )
 from boba.aid.agent.commands import CommandIcon, MenuCommand
+from boba.aid.data.threads import ThreadsTable
+from boba.aid.data.users import UsersTable
 from boba.chat.profiles import LocalChatProfileConfig, SelectedProfile
-from boba.crypto import SecretCipher
-from boba.mcp_server.connections.store import ConnectionStore
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.stored import GrantTarget, StoredRole
+from boba.crypto import SecretCipher
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.mcp_client.client import (
@@ -71,11 +72,10 @@ from boba.mcp_client.client import (
     McpServerLimits,
     McpServers,
 )
-from boba.aid.data.threads import ThreadsTable
-from boba.aid.data.users import UsersTable
+from boba.mcp_server.connections.store import ConnectionStore
+from boba.stand.migrate import StandMigrations
 from boba.stand.names import StandNames
 from boba.stand.roles import RoleSeed
-from boba.stand.migrate import StandMigrations
 from boba.stand.signin import SignInStand
 from boba.stand.site import Stand
 from boba.stand.ui.fake_llm import ScenarioName

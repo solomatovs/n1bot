@@ -23,11 +23,11 @@ from uuid import uuid4
 import pytest
 from launcher_layer import ResolvedLayout, ResolvedProbe
 
-from boba.sandbox.paths import ProgramRoots
-from boba.sandbox.storage import ImageStorageClient, ImageStorageConfig
 from boba.sandbox import WorkspaceSpec
 from boba.sandbox.argv import ZygoteArgv
+from boba.sandbox.paths import ProgramRoots
 from boba.sandbox.profile import SandboxMount, SandboxProfile
+from boba.sandbox.storage import ImageStorageClient, ImageStorageConfig
 from boba.sandbox.zygote import ZygoteToolCaller
 from boba.stand.shell import ShellRun
 from boba.stand.zygote import (

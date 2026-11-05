@@ -16,15 +16,15 @@ from omegaconf import DictConfig
 from boba.aid.data.data_layer import PostgresDataLayer
 from boba.aid.infra import providers, services
 from boba.aid.infra.config import AppConfig
-from boba.aid.infra.session import ChainlitSessions
+from boba.aid.infra.di import Container
 from boba.aid.infra.messaging_backends import StandardMessagingBackends
+from boba.aid.infra.session import ChainlitSessions
 from boba.aid.infra.turns import StaleTurnCloser
+from boba.chat.messages import ChatMessages
 from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import CallContexts
-from boba.chat.messages import ChatMessages
 from boba.messaging.config import AppName
-from boba.aid.infra.di import Container
 from boba.stand.migrate import StandMigrations
 from boba.stand.overlay import ConfigOverlay
 

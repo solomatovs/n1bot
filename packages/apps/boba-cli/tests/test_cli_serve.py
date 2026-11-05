@@ -36,12 +36,11 @@ from psycopg import sql
 from pydantic import AnyUrl
 from websockets.exceptions import InvalidStatus
 
-from boba.cli.serve import ServeHistory, ServeMark
 from boba.aid.infra.config import AppConfig
+from boba.cli.serve import ServeHistory, ServeMark
 from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
-
 from boba.stand.agent import FakeServer
 from boba.stand.agent_service import AgentServiceStand, ServeAddress, ServiceProfiles
 from boba.stand.database import TestDatabase

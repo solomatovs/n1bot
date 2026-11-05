@@ -13,19 +13,20 @@ from boba.connections.manifest import ConnectionTypes
 from boba.connections.stored import ConnectionRepository
 from boba.identity.context import CallContexts
 from boba.identity.run import Runs
-from boba.stand.connections import DisabledConnectionRepository, StandUserConnections
 from boba.krb.connections import KerberosCredentialSource
 from boba.mcp_server.connections import NoRefresh
+from boba.stand.connections import DisabledConnectionRepository, StandUserConnections
 from boba.stand.toolstand import ToolStand
 from boba.tool_io.chain import CallAmbient
 from boba.toolrun.hosted import HostedTool
-from boba.toolrun.injected import ParamSource
+from boba.toolrun.injected import InjectedConfig, ParamSource
 from boba.toolrun.launchers import SectionLaunchers, ToolLaunchers
 from boba.toolrun.plugins import PluginKits, ToolExecution, ToolLoader
 from boba.toolrun.registry import ToolRegistry
 from boba.toolrun.sandbox import StandardToolLaunchers
 from boba.toolrun.stream_calls import StreamGroupsConfig
 from boba.toolrun.streams import CallJournals
+from boba.toolrun.tickets import SectionTickets, ServiceTickets
 
 __all__ = ["StandRefs"]
 
@@ -89,12 +90,13 @@ class StandRefs:
         params = StandUserConnections(
             connections, credentials, types, self.contexts
         ).params()
+        config = InjectedConfig(SectionTickets(ServiceTickets(credentials), types))
 
         return ToolExecution(
             self.contexts,
             self.journals,
             self.ambient,
-            (params,),
+            (params, config),
             (params,),
         )
 

@@ -6,8 +6,8 @@ import pytest
 
 from boba.doc.config import DocConfig, OcrLanguage, RapidOcrConfig
 from boba.doc.document import DisabledOcr
-from boba.doc.ocr import RapidOcrEngine
 from boba.doc.formats import StandardDocuments
+from boba.doc.ocr import RapidOcrEngine
 from boba.doc.router import DocumentRouter
 from boba.stand.doc import DocStand
 

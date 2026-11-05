@@ -13,15 +13,15 @@ import pytest
 from omegaconf import DictConfig
 
 from boba.config import bind
-from boba.crypto import SecretCipher
-from boba.mcp_server.connections.store import ConnectionStore
 from boba.connections.manifest import ConnectionTypes
+from boba.crypto import SecretCipher
 from boba.db.pgvector.config import EmbeddingDimension, KnowledgeBaseSchemaConfig
 from boba.db.pgvector.schema import KbSchema
-from boba.stand.migrate import StandMigrations
 from boba.db.postgres import AsyncPostgresPool
 from boba.mcp_server.app import McpAppConfig
+from boba.mcp_server.connections.store import ConnectionStore
 from boba.stand.database import TestDatabase
+from boba.stand.migrate import StandMigrations
 from boba.stand.ui.stand import StandApp
 from boba.tool.confluence.ingest_tools import (
     IngestToolConfig,

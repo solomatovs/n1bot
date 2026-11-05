@@ -4,6 +4,7 @@ from uuid import UUID, uuid4
 
 from boba.identity.context import Scope, ScopeKind, Subject
 from boba.identity.principal import UserIdentity
+from boba.identity.session import Login
 
 
 class TestUserScope:
@@ -24,7 +25,7 @@ class TestSubjectOfUser:
         user_id = uuid4()
         subject = Subject.of_user(
             user_id,
-            UserIdentity(realm="corporate", login="ivanov"),
+            UserIdentity(realm="corporate", login=Login("ivanov")),
             ("DEV",),
             "general",
         )
