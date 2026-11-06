@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 from psycopg import sql
 
+from boba.aid.config.app import AppConfig
 from boba.aid.data.users import UsersTable
-from boba.aid.infra.config import AppConfig
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.principal import UserIdentity
 from boba.identity.session import Login
@@ -36,32 +36,32 @@ async def test_users_round_trip_keeps_identity_and_existing_roles(
     users: UsersTable,
 ) -> None:
     await RoleSeed(users).add(("DEV",))
-    identity = UserIdentity(realm="corporate", login=Login("Reader"))
+    identity = UserIdentity(login=Login("Reader"))
 
     created = await users.upsert(identity, frozenset({"DEV"}))
     found = await users.stored(identity)
 
     assert found == created
     assert found is not None
-    assert found.identity == UserIdentity(realm="corporate", login=Login("reader"))
+    assert found.identity == UserIdentity(login=Login("reader"))
     assert found.roles == {"DEV"}
     assert await users.stored_by_id(created.id) == created
 
 
-async def test_same_login_in_two_realms_is_two_users(users: UsersTable) -> None:
-    first = await users.upsert(UserIdentity(realm="office", login=Login("alice")))
-    second = await users.upsert(UserIdentity(realm="partner", login=Login("alice")))
+async def test_canonical_login_reuses_the_user(users: UsersTable) -> None:
+    first = await users.upsert(UserIdentity(login=Login("alice")))
+    second = await users.upsert(UserIdentity(login=Login(" ALICE ")))
 
-    assert first.id != second.id
-    assert first.identifier == "office:alice"
-    assert second.identifier == "partner:alice"
+    assert first.id == second.id
+    assert first.identifier == "alice"
+    assert second.identifier == "alice"
 
 
 async def test_automatic_role_sync_preserves_manual_membership(
     users: UsersTable, pool: AsyncPostgresPool
 ) -> None:
     await RoleSeed(users).add(("read", "admin", "writer"))
-    identity = UserIdentity(realm="corporate", login=Login("alice"))
+    identity = UserIdentity(login=Login("alice"))
     stored = await users.upsert(identity, frozenset({"read", "writer"}))
     async with pool.connection() as conn:
         await conn.execute(
@@ -83,7 +83,7 @@ async def test_empty_automatic_membership_removes_only_managed_roles(
     users: UsersTable,
 ) -> None:
     await RoleSeed(users).add(("read",))
-    identity = UserIdentity(realm="corporate", login=Login("alice"))
+    identity = UserIdentity(login=Login("alice"))
 
     first = await users.upsert(identity, frozenset({"read"}))
     cleared = await users.upsert(identity, frozenset())
@@ -103,5 +103,4 @@ async def test_users_schema_has_no_metadata_or_tags_columns(
         )
         columns = {row[0] for row in await cursor.fetchall()}
 
-    assert {"id", "created_at", "realm", "login"} <= columns
-    assert not {"metadata", "tags"} & columns
+    assert columns == {"id", "created_at", "login"}

@@ -46,12 +46,10 @@ class AuthStand(FakeServiceProcess):
     def local(self, login: str, password: str) -> LocalAuth:
         return LocalAuth(login=login, password=SecretStr(password))
 
-    def proxy(
-        self, login: str, roles: Sequence[str], realm: str = "corporate"
-    ) -> ProxyAuth:
+    def proxy(self, login: str, roles: Sequence[str]) -> ProxyAuth:
         identifier = ""
         if login:
-            identifier = UserIdentity(realm=realm, login=Login(login)).identifier
+            identifier = UserIdentity(login=Login(login)).identifier
 
         return ProxyAuth(
             issuer=HttpLocation(
@@ -181,7 +179,7 @@ class TestLocalAuth:
         await server.described(OWN)
         text = await stand.whoami(server)
 
-        assert text.startswith("local-stand:carol|dev|"), text
+        assert text.startswith("carol|dev|"), text
         assert requests.count("GET", "/authorize") == 1, requests.lines
         assert requests.count("POST", "/login") == 1, requests.lines
         assert requests.count("POST", "/register") == 1, requests.lines
@@ -229,8 +227,8 @@ class TestLocalAuth:
         await asyncio.sleep(brief.token_ttl_sec + 1.5)
         second = await brief.whoami(server)
 
-        assert first.startswith("local-stand:carol|dev|"), first
-        assert second.startswith("local-stand:carol|dev|"), second
+        assert first.startswith("carol|dev|"), first
+        assert second.startswith("carol|dev|"), second
         assert requests.count("POST", "/token") > issued, requests.lines
         assert requests.count("POST", "/login") == 1, requests.lines
 
@@ -240,21 +238,24 @@ class TestProxyAuth:
         self, stand: AuthStand, opened: list[McpToolServer]
     ) -> None:
         declared = stand.proxy("", [])
-        caller = McpCaller(login="local-stand:alice", roles=frozenset({"dev"}))
+        caller = McpCaller(login="alice", roles=frozenset({"dev"}))
         server = stand.server(declared.on_behalf_of(caller))
         opened.append(server)
 
         await server.described(OWN)
 
-        assert (await stand.whoami(server)).startswith("local-stand:alice|dev|")
+        assert (await stand.whoami(server)).startswith("alice|dev|")
 
-    async def test_client_cannot_assert_a_user_from_an_untrusted_realm(
+    async def test_proxy_assertion_with_the_wrong_signing_key_is_refused(
         self, stand: AuthStand, opened: list[McpToolServer]
     ) -> None:
-        server = stand.server(stand.proxy("alice", ["dev"], realm="restricted"))
+        entry = stand.proxy("alice", ["dev"]).model_copy(
+            update={"secret": SecretStr("wrong-signing-key")}
+        )
+        server = stand.server(entry)
         opened.append(server)
 
-        with pytest.raises(McpClientError, match="not trusted for realm"):
+        with pytest.raises(McpClientError, match="expected an HS256 JWT"):
             await server.described(OWN)
 
     async def test_login_and_roles_of_the_entry_reach_the_server(
@@ -266,20 +267,20 @@ class TestProxyAuth:
         await server.described(OWN)
         text = await stand.whoami(server)
 
-        assert text.startswith("corporate:ivanov|dev|"), text
+        assert text.startswith("ivanov|dev|"), text
 
     async def test_entry_takes_the_user_of_the_host(
         self, stand: AuthStand, opened: list[McpToolServer]
     ) -> None:
         declared = stand.proxy("", [])
-        caller = McpCaller(login="corporate:petrov", roles=frozenset({"dev", "ADM"}))
+        caller = McpCaller(login="petrov", roles=frozenset({"dev", "ADM"}))
         server = stand.server(declared.on_behalf_of(caller))
         opened.append(server)
 
         await server.described(OWN)
         text = await stand.whoami(server)
 
-        assert text.startswith("corporate:petrov|ADM,dev|"), text
+        assert text.startswith("petrov|ADM,dev|"), text
 
     async def test_entry_without_a_login_is_a_client_error(
         self, stand: AuthStand, opened: list[McpToolServer]
@@ -304,8 +305,8 @@ class TestProxyAuth:
         await asyncio.sleep(brief.token_ttl_sec + 1.5)
         second = await brief.whoami(server)
 
-        assert first.startswith("corporate:ivanov|dev|"), first
-        assert second.startswith("corporate:ivanov|dev|"), second
+        assert first.startswith("ivanov|dev|"), first
+        assert second.startswith("ivanov|dev|"), second
         assert requests.count("POST", "/token") > issued, requests.lines
         assert requests.count("POST", "/login") == 0, requests.lines
 

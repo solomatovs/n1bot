@@ -32,7 +32,7 @@ class Workspace:
     def __init__(self, tmp_path: Path) -> None:
         self.subject = Subject.of_user(
             uuid4(),
-            UserIdentity.model_validate("corporate:tester"),
+            UserIdentity.model_validate("tester"),
             (),
             "test",
         )

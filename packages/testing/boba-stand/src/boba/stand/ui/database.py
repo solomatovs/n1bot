@@ -13,6 +13,7 @@ from collections.abc import Coroutine, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from enum import StrEnum
+from pathlib import Path
 from typing import Any, ClassVar
 from uuid import UUID, uuid4
 
@@ -22,9 +23,8 @@ from psycopg.errors import InsufficientPrivilege
 from psycopg.types.json import Jsonb
 
 from boba.access.grants import GrantSubject, GrantTarget
-from boba.aid.infra.config import AppConfig
+from boba.aid.config.app import AppConfig
 from boba.config import bind
-from boba.config.paths import PathsConfig, TlsConfig
 from boba.connections.base import ConnectionBase
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.stored import StoredRole
@@ -36,13 +36,13 @@ from boba.db.postgres import AsyncPostgresPool, PgQuery, PgQueryBuilder, Postgre
 from boba.db.postgres.connection.config import PostgresConfig
 from boba.db.postgres.migrate import MigrationTarget, PostgresMigrations
 from boba.db.postgres.migration_cli import ApplicationMigrations
-from boba.identity.principal import IdentityRule, UserIdentity
-from boba.identity.session import Login
+from boba.identity.principal import UserIdentity
 from boba.ix_core.database import IxDatabase
 from boba.krb import KerberosWorkspaceConfig
 from boba.krb.layout import InstanceLayout
 from boba.mcp_client.client import McpServerConfig, StdioCommand
-from boba.mcp_server.app import McpAppConfig, McpHost
+from boba.mcp_server.app import McpHost
+from boba.mcp_server.config.models import McpAppConfig
 from boba.mcp_server.connections.store import ConnectionStore, ConnectionTable
 from boba.mcp_server.migrations import PluginMigrations
 from boba.stand.database import TestDatabase
@@ -169,7 +169,6 @@ class StandDatabase:
         pool = postgres.pool.model_copy(update=self.POOL_OVERRIDE)
         self._maintenance = postgres.model_copy(update={"pool": pool})
         self._postgres = postgres.model_copy(update={"dbname": name, "pool": pool})
-        self._local_identity = IdentityRule(realm=app.local_realm())
         if app is StandApp.AID:
             application = bind(self._built, path="app", model=AppConfig)
         else:
@@ -181,9 +180,11 @@ class StandDatabase:
             tool_config.connection_store.cipher.get_secret_value()
         )
         self._types = ConnectionTypes.discover()
-        instance = bind(self._built, path=PathsConfig.SECTION, model=PathsConfig)
-        tls = bind(self._built, path=TlsConfig.SECTION, model=TlsConfig)
-        layout = InstanceLayout(app.config_path().parent, instance, tls)
+        instance = application.paths
+        tls = application.tls
+        layout = InstanceLayout(
+            app.config_path().parent, Path(instance.data_dir), Path(tls.ca_file)
+        )
         self._krb: KerberosWorkspaceConfig = layout.kerberos()
 
     @property
@@ -220,8 +221,7 @@ class StandDatabase:
         OmegaConf.set_readonly(tools, False)
         OmegaConf.update(tools, "postgres.dbname", self._name)
         OmegaConf.update(tools, "tool_launcher.provider", "process")
-        plugin_config = bind(tools, "app", McpAppConfig)
-        plugin_sources = PluginMigrations(plugin_config.LAUNCHER_BACKENDS)
+        plugin_sources = PluginMigrations()
         tool_migrations = ApplicationMigrations((plugin_sources,))
         if self._app is StandApp.AID:
             targets.extend(await tool_migrations.targets(tools, "boba.mcp_server"))
@@ -352,10 +352,8 @@ class StandDatabase:
                 using {schema}.users u
                 where
                     t.user_id = u.id
-                    and u.realm = %(realm)s
                     and u.login = %(login)s
                 """,
-                realm=identity.realm,
                 login=identity.login,
             )
             .build()
@@ -380,15 +378,13 @@ class StandDatabase:
                 from
                     {schema}.users u
                 where
-                    u.realm = %(realm)s
-                    and u.login = %(login)s
+                    u.login = %(login)s
                 returning
                     id
                 """,
                 id=uuid4(),
                 at=at,
                 name=name,
-                realm=identity.realm,
                 login=identity.login,
             )
             .build()
@@ -403,8 +399,9 @@ class StandDatabase:
 
         return row[0]
 
-    def _identity_of(self, login: str) -> UserIdentity:
-        return self._local_identity.identity(Login(login))
+    @staticmethod
+    def _identity_of(login: str) -> UserIdentity:
+        return UserIdentity.model_validate(login)
 
     def backdate_thread(self, thread_id: str, at: datetime) -> None:
         """created_at и updated_at треда — at: тред выглядит начатым и

@@ -13,7 +13,7 @@ from boba.config import bind
 from boba.connections.manifest import ConnectionTypes
 from boba.crypto import SecretCipher
 from boba.db.postgres import AsyncPostgresPool
-from boba.mcp_server.app import McpAppConfig
+from boba.mcp_server.config.models import McpAppConfig
 from boba.mcp_server.connections.store import ConnectionStore
 from boba.stand.ui.stand import StandApp
 from boba.tool.confluence.tools import (

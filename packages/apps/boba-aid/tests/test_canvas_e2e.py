@@ -39,8 +39,8 @@ from playwright.async_api import TimeoutError as PlaywrightTimeout
 from pydantic import BaseModel, ConfigDict, SecretStr
 
 from boba.aid.canvas.panel import CanvasNote
+from boba.aid.config.app import AppConfig
 from boba.aid.data.users import UsersTable
-from boba.aid.infra.config import AppConfig
 from boba.aid.mcp_servers.sources import McpViewer, StoredServers
 from boba.aid.mcp_servers.store import McpServerStore
 from boba.config import ConfigError, bind
@@ -562,7 +562,7 @@ async def _user_row(config: AppConfig, identifier: str) -> StoredUser:
     await pool.open()
     try:
         user = await UsersTable(pool, config.db_schema).stored(
-            UserIdentity(realm="aid-debug-local", login=Login(identifier))
+            UserIdentity(login=Login(identifier))
         )
     finally:
         await pool.close()
@@ -1058,10 +1058,6 @@ async def panel(app_server: E2eProcesses) -> AsyncIterator[CanvasPage]:
         inputs = page.locator("form input")
         await inputs.nth(0).fill(LOGIN[0])
         await inputs.nth(1).fill(LOGIN[1])
-
-        realm = page.locator("form select#realm")
-        if await realm.count():
-            await realm.select_option("aid-debug-local")
 
         await page.locator('form button[type="submit"]').first.click()
 

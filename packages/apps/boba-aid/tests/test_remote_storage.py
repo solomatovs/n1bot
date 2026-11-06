@@ -74,7 +74,7 @@ def _storage(
         StoredUser(
             id=USER,
             created_at=datetime.now(UTC),
-            identity=UserIdentity(realm="corporate", login=Login("alice")),
+            identity=UserIdentity(login=Login("alice")),
             roles=frozenset(meta.get("roles", ())),
         )
     )
@@ -154,7 +154,7 @@ class TestRemoteStorage:
         storage = _storage(servers, granted, _signed_in())
         key = ObjectKey(user_id=str(USER), scope_id=THREAD, name="gone.bin")
         await storage.upload_stream(key.render(), _source(b"gone"))
-        caller = McpCaller(login="corporate:alice", roles=frozenset({"dev"}))
+        caller = McpCaller(login="alice", roles=frozenset({"dev"}))
         port = await servers.port("boba", caller)
         journals = service.journal_dir / ServiceProcess.OWNER
         own = await self._journaled(port, THREAD, journals)

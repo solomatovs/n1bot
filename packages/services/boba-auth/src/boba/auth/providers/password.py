@@ -21,7 +21,6 @@ from boba.auth.config import LdapAuthConfig, LocalAuthConfig
 from boba.auth.providers.profiles import ProfileProviders
 from boba.auth.providers.result import SignInDetails, SignInResultFactory
 from boba.auth.providers.roles import RoleProviders
-from boba.auth.realms import RealmSelection
 from boba.identity.admission import PrincipalFacts
 from boba.identity.directory import (
     DirectoryBinding,
@@ -54,16 +53,7 @@ class LocalSignIn(PasswordSignIn):
         self._config = config
         self._signed_in = SignInResultFactory(roles, profiles)
 
-    @property
-    def realms(self) -> frozenset[str]:
-        return frozenset({self._config.identity.realm})
-
-    async def sign_in(
-        self, username: str, password: str, realm: str = ""
-    ) -> SignInResult | None:
-        if realm not in ("", self._config.identity.realm):
-            return None
-
+    async def sign_in(self, username: str, password: str) -> SignInResult | None:
         if self._config.users.get(username) != password:
             return None
 
@@ -94,16 +84,7 @@ class LdapSignIn(PasswordSignIn):
         self._signed_in = SignInResultFactory(roles, profiles)
         self._logger = logging.getLogger(__name__)
 
-    @property
-    def realms(self) -> frozenset[str]:
-        return frozenset({self._config.identity.realm})
-
-    async def sign_in(
-        self, username: str, password: str, realm: str = ""
-    ) -> SignInResult | None:
-        if realm not in ("", self._config.identity.realm):
-            return None
-
+    async def sign_in(self, username: str, password: str) -> SignInResult | None:
         # личность подтверждаем bind'ом под пользователем
         bind_user = LoginTemplate.render(self._config.bind_dn_template, username)
         auth = SimpleBind(method="simple", user=bind_user, password=SecretStr(password))
@@ -188,32 +169,17 @@ class LdapSignIn(PasswordSignIn):
 
 
 class CompositeSignIn(PasswordSignIn):
-    """Провайдеры по порядку конфига: первый узнавший логин решает."""
+    """Провайдеры по порядку конфига: первый подтвердивший credentials решает."""
 
     def __init__(self, providers: Sequence[PasswordSignIn]) -> None:
         self._providers = list(providers)
-        self._selection = RealmSelection()
 
-    @property
-    def realms(self) -> frozenset[str]:
-        realms: set[str] = set()
-        for provider in self._providers:
-            realms.update(provider.realms)
-
-        return frozenset(realms)
-
-    async def sign_in(
-        self, username: str, password: str, realm: str = ""
-    ) -> SignInResult | None:
-        selected = self._selection.selected(realm, self.realms, "password sign-in")
+    async def sign_in(self, username: str, password: str) -> SignInResult | None:
         last_error: AuthenticationError | None = None
 
         for provider in self._providers:
-            if selected not in provider.realms:
-                continue
-
             try:
-                signed = await provider.sign_in(username, password, selected)
+                signed = await provider.sign_in(username, password)
             except AuthenticationError as exc:
                 last_error = exc
                 continue

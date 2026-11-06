@@ -21,7 +21,6 @@ from boba.aid.auth.preferences import SessionPreferences
 from boba.aid.auth.refresh import PageUrls, SessionRefresh
 from boba.aid.auth.session import BrowserSessions
 from boba.aid.rendering.failures import FailureReports
-from boba.auth.realms import RealmSelection
 from boba.auth.transport.http import SsoErrorCode, SsoRequests, SsoResponses
 from boba.identity.errors import (
     AuthorizationError,
@@ -46,15 +45,9 @@ class KerberosAuth:
         sso_path: str,
         urls: PageUrls,
         auth: BrowserSessions,
-        realms: frozenset[str] = frozenset(),
     ) -> None:
         # роут без префикса (root_path учтёт роутер), адреса страницы — с полным
         self._sso_path = sso_path
-        self._realms = realms
-        if not realms:
-            self._realms = frozenset(auth.providers().sso_realms)
-
-        self._selection = RealmSelection()
         self._urls = urls
         self.auth = auth
         self._requests = SsoRequests()
@@ -89,10 +82,7 @@ class KerberosAuth:
     async def auth_sso(self, request: Request) -> Response:
         """Вход: SPNEGO → строка users и токен сервисом входа → cookie → в чат."""
         try:
-            selected = self._selection.selected(
-                request.query_params.get("realm", ""), self._realms, "SPNEGO route"
-            )
-            outcome = await self.auth.by_spnego(self._requests.of(request), selected)
+            outcome = await self.auth.by_spnego(self._requests.of(request))
         except BaseError as exc:
             return self._login_redirect(exc)
 

@@ -9,7 +9,7 @@ import time
 import pytest
 from omegaconf import DictConfig
 
-from boba.aid.infra.config import AppConfig
+from boba.aid.config.app import AppConfig
 from boba.aid.infra.entry import AppEntry, ChainlitEnv
 from boba.auth.providers.backends import KerberosSessionTickets
 from boba.kerberos import DelegationMode, SignInTicket

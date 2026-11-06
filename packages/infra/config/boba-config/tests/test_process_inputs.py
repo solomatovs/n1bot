@@ -9,7 +9,6 @@ from pathlib import Path
 import pytest
 
 from boba.config.arguments import CommandSpec, ConfigArguments
-from boba.config.paths import PathsConfig
 
 
 def test_repeated_config_keeps_the_order_of_files(
@@ -62,8 +61,3 @@ def test_missing_config_stops_the_start(monkeypatch: pytest.MonkeyPatch) -> None
             argparse.ArgumentParser(prog="prog"),
             (CommandSpec("serve", "run service"),),
         ).call()
-
-
-def test_instance_paths_must_be_absolute() -> None:
-    with pytest.raises(ValueError, match="absolute"):
-        PathsConfig(data_dir="data")

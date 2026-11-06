@@ -6,7 +6,7 @@ The 2026-11-04 production changes were checked with Ruff and Pyright on the chan
 
 ## Summary
 
-Authentication is already partly shared. AID, boba-mcp and `boba serve` build providers through `SignInAssembly`, use the same identity and role models, and pass successful sign-ins to a common `AuthServer` or `AuthService`. User identity is represented as a realm and canonical login, independent of whether the identity came from local credentials, LDAP, Kerberos or a trusted proxy.
+Authentication is already partly shared. AID, boba-mcp and `boba serve` build providers through `SignInAssembly`, use the same identity and role models, and pass successful sign-ins to a common `AuthServer` or `AuthService`. User identity is represented as a canonical login, independent of whether the identity came from local credentials, LDAP, Kerberos or a trusted proxy.
 
 The first dependency boundary has now been corrected: SPNEGO acceptance and ticket handling live in the runtime infrastructure layer, connection credential issuance lives in the connection broker, and Kerberos sign-in policy remains in `boba-auth` behind verified facts. `boba-auth` no longer needs the concrete Kerberos runtime or connection packages. Session and resource access-token checks are now stateless: they validate signed claims locally and do not query users or roles. Database reads remain at sign-in and explicit token renewal, where current role assignments are used to issue the next token.
 
@@ -40,12 +40,12 @@ External JWT/OIDC bearer sign-in is deferred. Existing Boba OAuth bearer tokens 
 | Boba OAuth bearer | Not an identity-provider login method | Protects MCP resource calls | Protects agent service calls | Internal service access token |
 | External JWT/OIDC bearer | Deferred | Deferred; OAuth remains | Deferred | Deliberately out of the current refactoring scope |
 
-The `[app].auth` list is a discriminated list of enabled methods. Empty means no user sign-in methods are configured. Configuration rejects duplicate Kerberos or proxy backends for a realm; AID also rejects duplicate proxy routes and shared proxy secrets. The available methods are exposed through common `SignIns`, but each transport chooses which method can be invoked at a particular route. There is no generic transport-neutral “authenticate this credential” endpoint yet.
+The `[app].auth` list is a discriminated list of enabled methods. Empty means no user sign-in methods are configured. Configuration permits one Kerberos backend and one proxy backend. Local and LDAP password backends are tried in configuration order. The available methods are exposed through common `SignIns`, but each transport chooses which method can be invoked at a particular route. There is no generic transport-neutral “authenticate this credential” endpoint yet.
 
 ## Identity and authorization flow
 
 1. A configured provider verifies its credential and returns `SignedIn` with a `UserIdentity`.
-2. The identity rule maps the provider login into a realm and canonical login. Applications compare this identifier rather than treating the provider name as the user identity.
+2. The identity rule maps the provider login into a canonical login. Applications compare this identifier rather than treating the provider name as the user identity.
 3. Provider-specific role rules produce candidate role names. `RoleCatalog` resolves those against roles that exist in the database. Automatic assignment therefore cannot create a role absent from the DB.
 4. `require_roles` decides whether an authenticated user with no resolved roles may enter. AID, MCP and `boba serve` use the same admission logic.
 5. At sign-in, the service persists the user and role membership. AID session JWTs and MCP/agent OAuth tokens carry the user UUID, identity and granted roles/scopes. Token verification checks these signed claims locally without a user-table lookup.
@@ -102,7 +102,7 @@ The OAuth server depends on FastMCP/MCP and Starlette, which is appropriate for 
 
 ### External bearer trust requirements
 
-This is future guidance only; external JWT/OIDC bearer is deferred. Any later implementation must validate issuer, audience, expiry and not-before claims, pin accepted signing algorithms, select keys by `kid`, refresh JWKS safely, and reject tokens from unconfigured issuers. Identity must be namespaced by configured realm and derived from a stable subject. Role claims must be treated as candidates and intersected with the DB role catalog.
+This is future guidance only; external JWT/OIDC bearer is deferred. Any later implementation must validate issuer, audience, expiry and not-before claims, pin accepted signing algorithms, select keys by `kid`, refresh JWKS safely, and reject tokens from unconfigured issuers. The provider must explicitly map a verified stable subject to a canonical login. Role claims must be treated as candidates and intersected with the DB role catalog.
 
 ### Security findings and decisions
 
@@ -127,7 +127,7 @@ Prefer composition through provider interfaces. Use inheritance only where a fra
 ## Refactoring sequence
 
 1. **Authentication contract and audit:** document current flows and dependency edges; preserve the rule that only configured methods are enabled.
-2. **External bearer decisions:** choose whether external JWTs are exchanged for internal sessions or checked directly, and choose claim mapping defaults. Then define one provider config for issuer, audience, realm and allowed claims.
+2. **External bearer decisions:** choose whether external JWTs are exchanged for internal sessions or checked directly, and choose claim mapping defaults. Then define one provider config for issuer, audience, login mapping and allowed claims.
 3. **Shared provider contract:** add a transport-neutral bearer sign-in port and a common result/admission path. All role candidates continue through the DB role catalog.
 4. **Kerberos boundary:** keep SPNEGO acceptance and ticket sealing in the runtime infrastructure layer, and keep connection credential sourcing with the connection broker. Preserve the current encrypted-ticket-in-signed-JWT contract.
 5. **Service wiring:** have AID, MCP and `boba serve` build the same provider set from `[app].auth`; reject unknown or duplicate backends and ensure each transport exposes exactly the configured methods.

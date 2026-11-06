@@ -37,9 +37,8 @@ from boba.db.postgres.migrate import (
 from boba.identity.principal import UserIdentity
 from boba.identity.session import Login
 from boba.kerberos import DelegatedAuth, KeytabAuth
-from boba.mcp_server.app import McpAppConfig
+from boba.mcp_server.config.models import McpAppConfig, RunLimits
 from boba.mcp_server.connections.store import ConnectionStore
-from boba.mcp_server.server import RunLimits
 from boba.stand.overlay import ConfigOverlay
 from boba.stand.roles import RoleSeed
 from boba.stand.site import Stand
@@ -59,9 +58,9 @@ async def _grant_user(
 ) -> GrantTarget:
     """Создаёт пользователя-цель grant перед записью в каталог MCP."""
     if user_id is None:
-        user_id = uuid5(NAMESPACE_URL, f"boba-user:corporate:{login}")
+        user_id = uuid5(NAMESPACE_URL, f"boba-user:{login}")
 
-    identity = UserIdentity(realm="corporate", login=Login(login))
+    identity = UserIdentity(login=Login(login))
     await RoleSeed(store).user(user_id, identity, roles)
     target = GrantTarget.user(user_id)
     await store.grant(connection_id, target)

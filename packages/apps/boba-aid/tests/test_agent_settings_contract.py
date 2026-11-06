@@ -18,19 +18,16 @@ from acp_stand import AGENT_MODULE, AgentStand
 from jsonschema import Draft202012Validator
 from pydantic import SecretStr
 
-from boba.aid.agent.config import (
+from boba.aid.agent.settings import AgentWorkdirs, SettingsFileBuilder
+from boba.aid.config.models import (
     AgentHistoryKind,
+    AgentProviderKind,
+    McpFile,
     MemoryAgentHistory,
+    ModelFile,
     PostgresAgentHistory,
     ProcessAgentConfig,
-)
-from boba.aid.agent.settings import (
-    AgentProviderKind,
-    AgentWorkdirs,
-    McpFile,
-    ModelFile,
     ProviderFile,
-    SettingsFileBuilder,
 )
 from boba.chat.profiles import ReasoningReturn
 from boba.db.postgres.connection import PostgresConfig

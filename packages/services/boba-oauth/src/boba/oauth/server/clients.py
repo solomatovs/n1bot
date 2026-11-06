@@ -8,7 +8,6 @@ from typing import ClassVar
 from mcp.shared.auth import JWT_BEARER_GRANT_TYPE, OAuthClientInformationFull
 from pydantic import BaseModel, ConfigDict, SecretStr
 
-from boba.identity.principal import IdentityRealm, UserIdentity
 from boba.oauth.server.sealed import SealedValues
 
 
@@ -21,10 +20,6 @@ class TrustedClient(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     secret: SecretStr
-    realms: frozenset[IdentityRealm] = frozenset()
-
-    def permits(self, identity: UserIdentity) -> bool:
-        return identity.realm in self.realms
 
     def registered(self, client_id: str) -> OAuthClientInformationFull:
         return OAuthClientInformationFull(
@@ -52,17 +47,12 @@ class RegisteredClients:
         self, sealed: SealedValues, declared: Mapping[str, TrustedClient]
     ) -> None:
         self._sealed = sealed
-        self._trusted = dict(declared)
         self._declared: dict[str, OAuthClientInformationFull] = {}
         for client_id, config in declared.items():
             self._declared[client_id] = config.registered(client_id)
 
-    def permits(self, client_id: str, identity: UserIdentity) -> bool:
-        trusted = self._trusted.get(client_id)
-        if trusted is None:
-            return False
-
-        return trusted.permits(identity)
+    def permits(self, client_id: str) -> bool:
+        return client_id in self._declared
 
     def register(self, client: OAuthClientInformationFull) -> None:
         """Выдаёт клиенту идентификатор, несущий его же запись регистрации."""

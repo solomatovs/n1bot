@@ -64,7 +64,7 @@ class PostgresStand:
     async def prepare(self, pool: AsyncPostgresPool) -> None:
         users = UsersTable(pool, self._schema)
         for login in ("alice", "bob"):
-            identity = UserIdentity(realm="stand", login=Login(login))
+            identity = UserIdentity(login=Login(login))
             user = await users.upsert(identity)
             self._users[login] = user.id
 

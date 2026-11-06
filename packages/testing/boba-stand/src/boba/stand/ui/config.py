@@ -213,9 +213,6 @@ class StandApp(StrEnum):
     AID = "aid"
     MCP = "mcp"
 
-    def local_realm(self) -> str:
-        return f"{self.value}-local"
-
     def traits(self) -> StandAppTraits:
         known = {
             StandApp.AID: StandAppTraits(
@@ -665,7 +662,6 @@ class ServiceStand(StandService):
             {
                 self.CLIENT_ID: {
                     "secret": self.CLIENT_SECRET,
-                    "realms": ["corporate", "aid-local"],
                 }
             },
         )
@@ -673,7 +669,6 @@ class ServiceStand(StandService):
             ("auth", "proxy"),
             {
                 "type": "proxy",
-                "identity": {"realm": "corporate"},
                 "path": "/auth/proxy",
                 "secret": self.PROXY_SECRET,
                 "max_skew_sec": 60,
@@ -687,7 +682,6 @@ class ServiceStand(StandService):
             ("auth", "local"),
             {
                 "type": "local",
-                "identity": {"realm": "mcp-local"},
                 "users": {
                     self.LOCAL_LOGIN: self.LOCAL_PASSWORD,
                     self.AGENT_LOGIN: self.AGENT_PASSWORD,
@@ -703,17 +697,7 @@ class ServiceStand(StandService):
                 },
             },
         )
-        overlay.replace(
-            ("auth", "proxy_aid_local"),
-            {
-                "type": "proxy",
-                "identity": {"realm": "aid-local"},
-                "path": "/auth/proxy/aid-local",
-                "secret": self.PROXY_SECRET,
-                "roles": {"header": {"name": self.ROLES_HEADER}},
-            },
-        )
-        providers = ["${auth.proxy}", "${auth.proxy_aid_local}"]
+        providers = ["${auth.proxy}"]
         if self.local_sign_in:
             providers.insert(0, "${auth.local}")
 
@@ -1180,7 +1164,6 @@ class StandConfig(StandService, ServerSeedSpec):
                 ("auth", "local"),
                 {
                     "type": "local",
-                    "identity": {"realm": self.app.local_realm()},
                     "users": dict(self.STAND_USERS),
                     "roles": {"local": {"mapping": mapping}},
                     "require_roles": True,

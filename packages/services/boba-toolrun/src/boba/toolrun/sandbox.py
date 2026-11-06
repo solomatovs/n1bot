@@ -32,7 +32,6 @@ from pydantic import (
 
 from boba.canvas.keys import WorkspaceMount
 from boba.config import bind
-from boba.config.paths import PathsConfig, TlsConfig
 from boba.core.components import ComponentFactory, Components
 from boba.identity.context import CallContexts
 from boba.krb import KerberosWorkspace
@@ -286,19 +285,19 @@ class SandboxDefaults:
     def __init__(
         self,
         program: ProgramRoot,
-        instance: PathsConfig,
+        data_dir: Path,
         cgroup_base: str,
-        tls: TlsConfig | None = None,
+        ca_file: Path,
     ) -> None:
         self._program = program
-        self._instance = instance
-        self._tls = tls or TlsConfig()
+        self._data_dir = data_dir
+        self._ca_file = ca_file
         self._cgroup_base = cgroup_base
 
     def network_binds(self) -> list[str]:
         """Имена, krb5.conf процесса (если kerberos настроен файлом) и CA
         контура."""
-        binds = [*self.NETWORK_BINDS, f"{self._tls.ca_file}:{self.CA_FILE}"]
+        binds = [*self.NETWORK_BINDS, f"{self._ca_file}:{self.CA_FILE}"]
 
         krb5_conf = KerberosWorkspace.krb5_config()
         if Path(krb5_conf).is_file():
@@ -307,7 +306,7 @@ class SandboxDefaults:
         return binds
 
     def network_env(self) -> dict[str, str]:
-        return {TlsConfig.CA_ENV: self.CA_FILE}
+        return {"SSL_CERT_FILE": self.CA_FILE}
 
     def mounts(self, sandbox: PluginSandbox) -> list[str]:
         """Каталог программы плагина в /plugin и каталоги данных конфига —
@@ -343,7 +342,7 @@ class SandboxDefaults:
         }
 
     def workspace(self) -> WorkspaceSpec:
-        return self._program.workspace(self._instance.data(WorkspaceData.WORKSPACE))
+        return self._program.workspace(self._data_dir / WorkspaceData.WORKSPACE)
 
     def _isolation(self) -> dict[str, Any]:
         isolation = dict(self.ISOLATION)
@@ -404,13 +403,17 @@ class ZygoteLaunchers(SectionLaunchers):
     зигота — в профиле плагина. Зигота получает из секции только ключи
     прогревов манифеста (WarmupSection), тело вызова — секцию целиком."""
 
-    def __init__(self, raw: DictConfig, config: SandboxCgroupConfig) -> None:
+    def __init__(
+        self,
+        raw: DictConfig,
+        config: SandboxCgroupConfig,
+        data_dir: Path,
+        ca_file: Path,
+    ) -> None:
         self._raw = raw
         self._program = ProgramRoots().locate()
-        instance = bind(raw, PathsConfig.SECTION, PathsConfig)
-        tls = bind(raw, TlsConfig.SECTION, TlsConfig)
         self._defaults = SandboxDefaults(
-            self._program, instance, config.cgroup_base, tls
+            self._program, data_dir, config.cgroup_base, ca_file
         )
         self._zygotes = ZygoteRegistry(self._program.interpreter)
         self._cgroups = CgroupProbe(self._program.interpreter.probe)
@@ -662,7 +665,9 @@ class ProcessLaunchers(SectionLaunchers):
 class StandardToolLaunchers:
     """Фабрики запуска в песочнице и процессе хоста, подключаемые приложением."""
 
-    def __init__(self) -> None:
+    def __init__(self, data_dir: Path, ca_file: Path) -> None:
+        self._data_dir = data_dir
+        self._ca_file = ca_file
         self.registry: Components[BaseModel, DictConfig, SectionLaunchers] = Components(
             BaseModel,
             "provider",
@@ -675,10 +680,9 @@ class StandardToolLaunchers:
     def sandbox(
         self, config: SandboxLauncherConfig, raw: DictConfig
     ) -> SectionLaunchers:
-        return ZygoteLaunchers(raw, config)
+        return ZygoteLaunchers(raw, config, self._data_dir, self._ca_file)
 
     def process(
         self, config: ProcessLauncherConfig, raw: DictConfig
     ) -> SectionLaunchers:
-        instance = bind(raw, PathsConfig.SECTION, PathsConfig)
-        return ProcessLaunchers(config, instance.data(WorkspaceData.WORKSPACE))
+        return ProcessLaunchers(config, self._data_dir / WorkspaceData.WORKSPACE)

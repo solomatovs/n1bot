@@ -13,9 +13,9 @@ import pytest
 from aid_stand import StandTokens
 from omegaconf import DictConfig
 
+from boba.aid.config.app import AppConfig
 from boba.aid.data.data_layer import PostgresDataLayer
 from boba.aid.infra import providers, services
-from boba.aid.infra.config import AppConfig
 from boba.aid.infra.di import Container
 from boba.aid.infra.messaging_backends import StandardMessagingBackends
 from boba.aid.infra.session import ChainlitSessions

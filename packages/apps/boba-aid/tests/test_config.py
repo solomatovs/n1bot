@@ -9,18 +9,18 @@ BOBA_CONFIG_PATH, как и в остальных тестах. Правки с�
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
 from omegaconf import DictConfig, OmegaConf
 from pydantic import SecretStr, ValidationError
 
-from boba.aid.agent.config import AgentCommandConfig, ProcessAgentConfig
+from boba.aid.config.app import AppConfig
+from boba.aid.config.models import AgentCommandConfig, DataConfig, ProcessAgentConfig
 from boba.aid.infra.bootstrap import SandboxCors
-from boba.aid.infra.config import AppConfig
 from boba.auth.config import ProxyAuthConfig
 from boba.config import ConfigError, bind
-from boba.identity.principal import IdentityRule
 
 
 @pytest.fixture(autouse=True)
@@ -137,45 +137,31 @@ class TestSandboxCors:
         SandboxCors(["https://chat.invalid"]).check(config)
 
 
-class TestProxyRealms:
-    """Конфигурация AID исключает перенос HTTP-подписи в чужое пространство."""
-
-    @staticmethod
-    def _raw(raw_config: DictConfig) -> dict[str, Any]:
+class TestProxyBackend:
+    def test_duplicate_proxy_backends_are_refused(self, raw_config: DictConfig) -> None:
         raw = OmegaConf.to_container(OmegaConf.select(raw_config, "app"), resolve=True)
         assert isinstance(raw, dict)
-        office = ProxyAuthConfig(
-            identity=IdentityRule(realm="office"),
-            path="/auth/office",
-            secret=SecretStr("office-signing-key"),
-            require_roles=False,
-        )
-        partner = office.model_copy(
-            update={
-                "identity": IdentityRule(realm="partner"),
-                "path": "/auth/partner",
-                "secret": SecretStr("partner-signing-key"),
-            }
-        )
-        app = {str(key): value for key, value in raw.items()}
-        app["auth"] = [office, partner]
-
-        return app
-
-    def test_distinct_http_proxy_routes_and_keys_bind(
-        self, raw_config: DictConfig
-    ) -> None:
-        configured = AppConfig.model_validate(self._raw(raw_config))
-        assert len(configured.auth_entries(ProxyAuthConfig)) == 2
-
-    @pytest.mark.parametrize("field", ["path", "secret"])
-    def test_shared_http_proxy_route_or_key_is_refused(
-        self,
-        raw_config: DictConfig,
-        field: str,
-    ) -> None:
-        raw = self._raw(raw_config)
-        first, second = raw["auth"]
-        raw["auth"] = [first, second.model_copy(update={field: getattr(first, field)})]
-        with pytest.raises(ValidationError, match=r"\[auth\]"):
+        proxy = ProxyAuthConfig(secret=SecretStr("proxy-signing-key"))
+        raw["auth"] = [proxy, proxy.model_copy(update={"path": "/auth/other"})]
+        with pytest.raises(ValidationError, match="configured twice"):
             AppConfig.model_validate(raw)
+
+
+def test_scalar_data_path_builds_the_instance_paths() -> None:
+    raw = OmegaConf.create({"data": "/srv/boba/data"})
+
+    paths = bind(raw, "data", DataConfig)
+
+    assert paths.data("workspace") == Path("/srv/boba/data/workspace")
+
+
+def test_scalar_data_path_rejects_a_relative_directory() -> None:
+    raw = OmegaConf.create({"data": "relative/data"})
+
+    with pytest.raises(ConfigError, match="expected an absolute path"):
+        bind(raw, "data", DataConfig)
+
+
+def test_instance_paths_must_be_absolute() -> None:
+    with pytest.raises(ValueError, match="absolute"):
+        DataConfig(data_dir="data")

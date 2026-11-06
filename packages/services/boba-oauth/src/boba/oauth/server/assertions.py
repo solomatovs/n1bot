@@ -1,14 +1,9 @@
-"""Выбор проверяющего OAuth-утверждения по настроенному realm."""
-
-from __future__ import annotations
+"""Проверка OAuth-утверждений настроенным proxy-бэкендом."""
 
 from collections.abc import Sequence
 
-import jwt
-
 from boba.auth.config import ProxyAuthConfig
 from boba.oauth.assertions import (
-    AssertionClaim,
     AssertionRejectedError,
     ProxyAssertion,
     ProxyAssertions,
@@ -16,46 +11,24 @@ from boba.oauth.assertions import (
 
 
 class ProxyAssertionVerifier:
-    """Проверка утверждений нескольких пространств по настроенным proxy-бэкендам.
-
-    AuthServer выбирает ключ по публичному kid; личность и её пространство
-    принимаются только после проверки подписи и соответствия kid телу JWT.
-    """
+    """Ключ proxy подтверждает утверждение аутентифицированного OAuth-клиента."""
 
     def __init__(self, configs: Sequence[ProxyAuthConfig]) -> None:
-        self._assertions: dict[str, ProxyAssertions] = {}
-        for config in configs:
-            realm = config.identity.realm
-            if realm in self._assertions:
-                msg = f"proxy assertions: multiple backends for realm {realm!r}"
-                raise ValueError(msg)
-
-            self._assertions[realm] = ProxyAssertions(
-                config.secret.get_secret_value(), config.max_skew_sec
+        if len(configs) > 1:
+            raise ValueError("proxy assertions: multiple backends configured")
+        self._assertions = (
+            ProxyAssertions(
+                configs[0].secret.get_secret_value(), configs[0].max_skew_sec
             )
+            if configs
+            else None
+        )
 
     @property
     def configured(self) -> bool:
-        return bool(self._assertions)
+        return self._assertions is not None
 
     def read(self, assertion: str, client_id: str, audience: str) -> ProxyAssertion:
-        try:
-            header = jwt.get_unverified_header(assertion)
-        except jwt.PyJWTError as exc:
-            msg = f"identity assertion of client {client_id!r}: invalid JWT header"
-            raise AssertionRejectedError(msg) from exc
-
-        realm = header.get(AssertionClaim.KEY_ID.value)
-        if not isinstance(realm, str):
-            msg = f"identity assertion of client {client_id!r}: expected a realm in kid"
-            raise AssertionRejectedError(msg)
-
-        verifier = self._assertions.get(realm)
-        if verifier is None:
-            msg = (
-                f"identity assertion of client {client_id!r}: "
-                f"no proxy backend is configured for realm {realm!r}"
-            )
-            raise AssertionRejectedError(msg)
-
-        return verifier.read(assertion, client_id, audience)
+        if self._assertions is None:
+            raise AssertionRejectedError("no proxy backend is configured")
+        return self._assertions.read(assertion, client_id, audience)

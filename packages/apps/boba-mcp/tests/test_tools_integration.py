@@ -24,7 +24,7 @@ from boba.db.pgvector.schema import KbSchema
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.krb.connections import KerberosCredentialSource
-from boba.mcp_server.app import McpAppConfig
+from boba.mcp_server.config.models import McpAppConfig
 from boba.mcp_server.connections import NoRefresh
 from boba.mcp_server.connections.store import ConnectionStore
 from boba.stand.database import TestDatabase

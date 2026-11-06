@@ -39,9 +39,9 @@ from aid_look import (
 )
 from playwright.sync_api import Error, Locator, Page, Response, WebSocket, expect
 
-from boba.aid.infra.config import AppConfig
+from boba.aid.config.app import AppConfig
 from boba.aid.infra.paths import InstanceData
-from boba.cli.serve import ServeHistory
+from boba.cli.config.models import ServeHistory
 from boba.stand.agent_service import (
     AgentServiceStand,
     ServeAddress,
@@ -608,7 +608,7 @@ class ServiceStand:
             "limits": {"toolResultWindowShare": 0.25},
         }
         return AgentServiceStand(
-            self._instance,
+            self._instance.data_dir,
             self._history,
             settings,
             self._profiles,

@@ -13,8 +13,9 @@ from fastmcp.client.transports import StreamableHttpTransport
 from service_stand import PROFILE, ServiceStand
 
 from boba.mcp_server.catalog import EndpointCatalog
+from boba.mcp_server.config.models import RunLimits
 from boba.mcp_server.schemas import EndpointSchemas
-from boba.mcp_server.server import FileUploadSchema, FileUploadTool, RunLimits
+from boba.mcp_server.server import FileUploadSchema, FileUploadTool
 from boba.toolkit.wire import FilesFeature, JournalFeature
 
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]

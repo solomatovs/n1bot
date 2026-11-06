@@ -36,10 +36,9 @@ async def test_migration_creates_normalized_identity_schema(
             ).fetchall()
 
         columns = {row[0] for row in rows}
-        assert {"id", "created_at", "realm", "login"} <= columns
-        assert not {"identifier", "meta", "tags"} & columns
+        assert columns == {"id", "created_at", "login"}
 
-        identity = UserIdentity.model_validate("corporate:alice")
+        identity = UserIdentity.model_validate("alice")
         created = await UsersTable(pool, schema).upsert(identity)
         stored = await UsersTable(pool, schema).stored(identity)
 

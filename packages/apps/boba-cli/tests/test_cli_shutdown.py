@@ -24,8 +24,9 @@ from test_cli_acp_postgres import PostgresStand
 from test_cli_binary import ReleaseBin, ReleaseBinary
 from test_cli_serve import Connected, HistoryStand, Profile, StandTools
 
-from boba.aid.infra.config import AppConfig
-from boba.cli.serve import ServeHistory, ServeMark
+from boba.aid.config.app import AppConfig
+from boba.cli.config.models import ServeHistory
+from boba.cli.serve import ServeMark
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.stand.agent import FakeServer
@@ -351,7 +352,7 @@ class TestServe:
         )
         port = StandPorts().free()
         config = ServeStandConfig(
-            process_config.paths,
+            process_config.paths.data_dir,
             ServeHistory(schema=history.schema, postgres=history.postgres),
             history.layer(ServeRun.SESSIONS),
             profiles,

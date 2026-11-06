@@ -21,8 +21,8 @@ from typing import Literal
 from mcp.types import Tool as MtTool
 from pydantic import BaseModel, ConfigDict, Field
 
+from boba.aid.config.models import McpDefaultsConfig
 from boba.aid.mcp_servers import McpAppError, McpOrigin
-from boba.aid.mcp_servers.config import McpDefaultsConfig
 from boba.aid.mcp_servers.form import (
     McpForms,
     McpServerForm,

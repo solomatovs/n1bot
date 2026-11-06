@@ -99,11 +99,11 @@ class StandConfigPaths:
     def schema(self) -> ConfigSchema:
         """Та же модель конфигурации, которую использует вход приложения."""
         if self._env is StandConfigEnv.SERVICE:
-            from boba.mcp_server.app import McpAppConfig  # noqa: PLC0415
+            from boba.mcp_server.config.models import McpAppConfig  # noqa: PLC0415
 
             return ConfigSchema(McpAppConfig, values=("auth",))
 
-        from boba.aid.infra.config import AppConfig  # noqa: PLC0415
+        from boba.aid.config.app import AppConfig  # noqa: PLC0415
 
         return ConfigSchema(AppConfig, values=("auth",))
 

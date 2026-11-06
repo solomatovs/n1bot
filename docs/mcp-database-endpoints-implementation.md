@@ -49,7 +49,7 @@ Stores identities known to MCP.
 | `id uuid primary key` | Stable identity key |
 | `identifier text unique not null` | Canonical identity from the authentication layer |
 | `created_at timestamptz not null` | Creation time |
-| `realm text`, `login text` | Normalized identity parts where applicable |
+| `login text` | Unique canonical user login |
 
 Keep the current identity constraints and case-normalization rules. Do not
 store authentication-provider-specific identity logic in endpoint records.

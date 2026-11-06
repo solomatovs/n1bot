@@ -145,15 +145,8 @@ class ProxyRequest(BaseModel):
 class PasswordSignIn(Protocol):
     """Провайдер входа по логину и паролю; None — логин провайдеру неизвестен."""
 
-    @property
     @abstractmethod
-    def realms(self) -> frozenset[str]:
-        """Пространства пользователей, которые обслуживает этот вход."""
-
-    @abstractmethod
-    async def sign_in(
-        self, username: str, password: str, realm: str = ""
-    ) -> SignInResult | None: ...
+    async def sign_in(self, username: str, password: str) -> SignInResult | None: ...
 
 
 class ProxySignIn(Protocol):

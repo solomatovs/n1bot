@@ -17,7 +17,7 @@ from typing import Annotated
 
 import chainlit as cl
 import chainlit.auth as chainlit_auth
-from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, OAuth2PasswordRequestForm
 
@@ -115,21 +115,18 @@ class PasswordCallback:
         self,
         request: Request,
         form: Annotated[OAuth2PasswordRequestForm, Depends()],
-        realm: Annotated[str, Form()] = "",
     ) -> JSONResponse:
-        session = await self._session(form.username, form.password, realm)
+        session = await self._session(form.username, form.password)
         response = JSONResponse({"success": True})
         SessionCookie(self._auth.cookie()).put(response, request.cookies, session.token)
         SessionPreferences(self._auth.cookie()).put(response, session.preferred_profile)
 
         return response
 
-    async def _session(
-        self, username: str, password: str, realm: str = ""
-    ) -> IssuedSession:
+    async def _session(self, username: str, password: str) -> IssuedSession:
         """Сессия общего сервиса входа; отказ — HTTPException с кодом отказа."""
         try:
-            return await self._auth.by_password(username, password, realm)
+            return await self._auth.by_password(username, password)
         except AuthenticationError as exc:
             logger.info("password sign-in refused")
             raise SignInCode.CREDENTIALS.refusal() from exc

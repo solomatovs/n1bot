@@ -30,7 +30,7 @@ def _context(user_id: UUID) -> CallContext:
     return CallContext(
         subject=Subject.of_user(
             user_id,
-            UserIdentity.model_validate("corporate:maksimov.ma"),
+            UserIdentity.model_validate("maksimov.ma"),
             (),
             "general",
         ),

@@ -3,8 +3,8 @@
 import pytest
 from pydantic import SecretStr
 
+from boba.aid.config.models import McpDefaultsConfig
 from boba.aid.mcp_servers import McpAppError, McpAuthChoice
-from boba.aid.mcp_servers.config import McpDefaultsConfig
 from boba.aid.mcp_servers.form import HeaderField, McpForms, McpServerAdd, McpServerForm
 from boba.mcp_client.client import BearerAuth, BrowserOAuthAuth
 

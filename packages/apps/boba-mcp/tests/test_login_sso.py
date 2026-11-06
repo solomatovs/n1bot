@@ -253,12 +253,9 @@ async def test_ticket_signs_in_and_issues_a_token(
     identity = claims.get("identity") if claims is not None else None
     if (
         not isinstance(identity, dict)
-        or identity.get("realm") != "corporate"
         or str(identity.get("login", "")).lower() != login.lower()
     ):
-        raise AssertionError(
-            f"the token identifies the kerberos user corporate:{login}"
-        )
+        raise AssertionError(f"the token identifies the kerberos user {login}")
 
     if access.scopes != [f"/{ENDPOINT}"]:
         raise AssertionError(f"roles of the user open the endpoint: {access.scopes}")

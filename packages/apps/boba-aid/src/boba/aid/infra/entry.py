@@ -20,17 +20,17 @@ from typing import ClassVar
 
 from omegaconf import DictConfig
 
-from boba.aid.auth.config import SessionConfig
-from boba.aid.infra.config import AidSection, AppConfig
+from boba.aid.config.app import AppConfig
+from boba.aid.config.models import AidSection, DataConfig, SessionConfig, TlsConfig
 from boba.aid.infra.paths import InstanceData
 from boba.config import ConfigError, ConfigSchema, bind
 from boba.config.application import ConfigFiles
 from boba.config.arguments import CommandSpec, ConfigArguments, ProgramCall
-from boba.config.paths import PathsConfig
 from boba.core.package_data import PackageDataCheck, PackageDataError
 from boba.db.postgres.errors import PostgresError
 from boba.db.postgres.migration_options import MigrationArguments, MigrationOptions
 from boba.http_server import HealthCheckError, HealthProbe
+from boba.krb.layout import InstanceLayout
 from boba.sandbox.paths import ProgramDir, ProgramRoots
 
 __all__ = ["AppEntry", "ChainlitEnv", "ChainlitFiles", "cli"]
@@ -186,7 +186,7 @@ class AppEntry:
         )
 
         migrations = ApplicationMigrations(
-            schema=ConfigSchema(AppConfig, values=("auth",))
+            schema=ConfigSchema(AppConfig, values=("auth",)), prepare=prepare_migrations
         )
         try:
             asyncio.run(migrations.run(paths, "boba.aid", options=options))
@@ -219,7 +219,7 @@ class AppEntry:
 
     def attachments(self, raw: DictConfig) -> ChainlitFiles:
         """Каталог вложений — files/ данных экземпляра."""
-        instance = bind(raw, PathsConfig.SECTION, PathsConfig)
+        instance = bind(raw, DataConfig.SECTION, DataConfig)
         root = Path(os.environ[ChainlitEnv.APP_ROOT])
 
         return ChainlitFiles(root, instance.data(InstanceData.FILES))
@@ -243,3 +243,10 @@ def cli() -> None:
     """Консольная команда boba-aid."""
     entry = AppEntry()
     entry.run()
+
+
+def prepare_migrations(raw: DictConfig, conf_dir: Path) -> None:
+    """Подготовить окружение команды migrate из моделей приложения."""
+    paths = bind(raw, "app.data", DataConfig)
+    tls = bind(raw, "app.tls", TlsConfig)
+    InstanceLayout(conf_dir, Path(paths.data_dir), Path(tls.ca_file)).apply()

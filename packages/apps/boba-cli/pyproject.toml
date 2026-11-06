@@ -30,6 +30,7 @@ dependencies = [
     "boba-oauth[server]==0.0.33.dev2",
     "fastmcp-slim[server]>=4.1.4,<5",
     "httpx>=0.28,<1",
+    "omegaconf>=2.3,<3",
     "mcp>=2.3,<3",
     "mcp-types>=2.3,<3",
     "psycopg>=3.3,<4",
@@ -47,7 +48,6 @@ dev = [
     "boba-stand==0.0.33.dev2",
     "boba-krb==0.0.33.dev2",
     "httpx2>=2.10,<3",
-    "omegaconf>=2.3,<3",
     "pytest>=9.1,<10",
     "boba-aid==0.0.33.dev2",
 ]

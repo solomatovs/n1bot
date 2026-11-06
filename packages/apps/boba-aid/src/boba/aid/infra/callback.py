@@ -51,9 +51,9 @@ from boba.aid.canvas.panel import PanelStorage, StreamActions
 from boba.aid.canvas.remote import RemoteJournals, RemoteStreams
 from boba.aid.canvas.tools import CanvasOpener
 from boba.aid.chat.ui_text import UiText
+from boba.aid.config.app import AppConfig
 from boba.aid.domain.fields import ThreadField, ThreadMetaField
 from boba.aid.infra import services
-from boba.aid.infra.config import AppConfig
 from boba.aid.infra.di import Depends, di_inject
 from boba.aid.infra.notices import FailureText, TabAction, TabEvent, TabNotices
 from boba.aid.infra.providers import (

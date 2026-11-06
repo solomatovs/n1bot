@@ -24,7 +24,6 @@ class AssertionClaim(StrEnum):
     ALGORITHM = "HS256"
     ROLES = "roles"
     IDENTITY = "identity"
-    KEY_ID = "kid"
 
 
 class ProxyAssertion(BaseModel):
@@ -96,7 +95,6 @@ class ProxyAssertions:
             algorithm=AssertionClaim.ALGORITHM.value,
             headers={
                 "typ": AssertionClaim.TYPE.value,
-                AssertionClaim.KEY_ID.value: identity.realm,
             },
         )
 
@@ -127,13 +125,6 @@ class ProxyAssertions:
             msg = (
                 f"identity assertion of client {client_id!r}: header typ expects "
                 f"{AssertionClaim.TYPE.value!r}, got {header.get('typ')!r}"
-            )
-            raise AssertionRejectedError(msg)
-
-        if header.get(AssertionClaim.KEY_ID.value) != claims.identity.realm:
-            msg = (
-                f"identity assertion of {claims.sub!r}: key id does not "
-                "match the verified identity realm"
             )
             raise AssertionRejectedError(msg)
 

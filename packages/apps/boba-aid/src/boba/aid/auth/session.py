@@ -86,23 +86,19 @@ class BrowserSessions(Authenticator):
     def jar(self) -> CookieJar:
         return CookieJar(self._cookie.name)
 
-    async def by_password(
-        self, username: str, password: str, realm: str = ""
-    ) -> IssuedSession:
-        signed = await self._sign_ins.by_password(username, password, realm)
+    async def by_password(self, username: str, password: str) -> IssuedSession:
+        signed = await self._sign_ins.by_password(username, password)
 
         return await self.issue(signed)
 
-    async def by_proxy(self, request: ProxyRequest, realm: str = "") -> IssuedSession:
+    async def by_proxy(self, request: ProxyRequest) -> IssuedSession:
         """Вход по подписанному заголовку доверенного бэкенда."""
-        signed = await self._sign_ins.by_proxy(request, realm)
+        signed = await self._sign_ins.by_proxy(request)
 
         return await self.issue(signed)
 
-    async def by_spnego(
-        self, request: SsoRequest, realm: str = ""
-    ) -> SsoChallenge | IssuedSession:
-        outcome = await self._exchange(realm).handshake(request)
+    async def by_spnego(self, request: SsoRequest) -> SsoChallenge | IssuedSession:
+        outcome = await self._exchange().handshake(request)
         if isinstance(outcome, SsoChallenge):
             return outcome
 
@@ -225,5 +221,5 @@ class BrowserSessions(Authenticator):
         token = self._tokens.issue(session, now, auth_time=claims.auth_time)
         return IssuedSession(session=session, token=token)
 
-    def _exchange(self, realm: str = "") -> SpnegoExchange:
-        return self._sign_ins.exchange(realm)
+    def _exchange(self) -> SpnegoExchange:
+        return self._sign_ins.exchange()

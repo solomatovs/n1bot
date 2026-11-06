@@ -4,7 +4,7 @@ import pytest
 from starlette.requests import Request
 from starlette.responses import Response
 
-from boba.aid.infra.config import AppConfig
+from boba.aid.config.app import AppConfig
 
 pytestmark = pytest.mark.anyio
 

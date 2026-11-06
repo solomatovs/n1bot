@@ -8,26 +8,29 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Sequence
+from pathlib import Path
 
 from omegaconf import DictConfig, OmegaConf
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 
 from boba.config import ConfigError, ConfigSchema, bind
-from boba.core.components import Components
 from boba.core.validation import ValidationText
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.migrate import MigrationPlan, MigrationTarget
 from boba.db.postgres.migration_cli import ApplicationMigrations, MigrationSources
-from boba.mcp_server.app import McpAppConfig
-from boba.toolrun.launchers import PluginLaunch, SectionLaunchers, ToolLaunchers
+from boba.krb.layout import InstanceLayout
+from boba.mcp_server.config.models import DataConfig, McpAppConfig, TlsConfig
+from boba.toolrun.launchers import PluginLaunch, ToolLaunchers
 from boba.toolrun.plugins import PluginSections
+from boba.toolrun.sandbox import StandardToolLaunchers
 
 
 def configured_migrations() -> ApplicationMigrations:
     """Compose MCP's SQL plan and enabled plugin plans for one migrate run."""
     return ApplicationMigrations(
-        (PluginMigrations(McpAppConfig.LAUNCHER_BACKENDS),),
+        (PluginMigrations(),),
         schema=ConfigSchema(McpAppConfig, values=("auth",)),
+        prepare=prepare_migrations,
     )
 
 
@@ -40,15 +43,13 @@ class PluginMigrations(MigrationSources):
     не подключают.
     """
 
-    def __init__(
-        self, backends: Components[BaseModel, DictConfig, SectionLaunchers]
-    ) -> None:
-        self._backends = backends
-
     async def targets(self, raw: DictConfig) -> Sequence[MigrationTarget]:
         targets: list[MigrationTarget] = []
         sections = PluginSections(raw)
-        factory = ToolLaunchers(raw, self._backends)
+        paths = bind(raw, "data", DataConfig)
+        tls = bind(raw, "tls", TlsConfig)
+        backends = StandardToolLaunchers(Path(paths.data_dir), Path(tls.ca_file))
+        factory = ToolLaunchers(raw, backends.registry)
         launchers = factory.build()
         try:
             launchers.probe()
@@ -84,3 +85,10 @@ class PluginMigrations(MigrationSources):
         finally:
             launchers.stop()
         return targets
+
+
+def prepare_migrations(raw: DictConfig, conf_dir: Path) -> None:
+    """Подготовить окружение команды migrate из моделей приложения."""
+    paths = bind(raw, "app.data", DataConfig)
+    tls = bind(raw, "app.tls", TlsConfig)
+    InstanceLayout(conf_dir, Path(paths.data_dir), Path(tls.ca_file)).apply()

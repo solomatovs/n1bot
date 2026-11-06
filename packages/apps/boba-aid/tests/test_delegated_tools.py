@@ -26,9 +26,9 @@ from chainlit.user import PersistedUser
 from gssapi import Credentials, Name, NameType, SecurityContext
 
 from boba.aid.auth.kerberos import KerberosAuth
+from boba.aid.config.app import AppConfig
 from boba.aid.data.data_layer import PostgresDataLayer
 from boba.aid.data.users import UsersTable
-from boba.aid.infra.config import AppConfig
 from boba.config import bind
 from boba.connections.stored import ConnectionBase, GrantTarget
 from boba.db.clickhouse.connection import ClickHouseConfig
@@ -149,7 +149,7 @@ async def session(  # noqa: PLR0913 — assembles the authenticated user project
         UserMetadataField.PRINCIPAL: PRINCIPAL,
         UserMetadataField.TICKET: sso_login[1],
     }
-    identity = UserIdentity.model_validate("corporate:delegated-tools")
+    identity = UserIdentity.model_validate("delegated-tools")
     await UsersTable(pool, app_config.db_schema).upsert(identity)
     user = await layer.create_user(
         StandTokens.user(identifier=identity.identifier, metadata=metadata)

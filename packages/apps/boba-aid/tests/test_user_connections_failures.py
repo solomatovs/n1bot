@@ -25,9 +25,9 @@ from psycopg import sql
 from psycopg.types.json import Jsonb
 from pydantic import SecretStr, create_model
 
+from boba.aid.config.app import AppConfig
 from boba.aid.data.data_layer import PostgresDataLayer
 from boba.aid.data.users import UsersTable
-from boba.aid.infra.config import AppConfig
 from boba.aid.infra.refresh import BusRefreshSignal
 from boba.config import bind
 from boba.connections.manifest import ConnectionTypes
@@ -251,9 +251,7 @@ class Session:
         identifier: str,
         metadata: dict[str, object],
     ) -> PersistedUser:
-        identity = UserIdentity.model_validate(
-            identifier if ":" in identifier else f"corporate:{identifier}"
-        )
+        identity = UserIdentity.model_validate(identifier)
         if cls.users is None:
             raise AssertionError("test user rows must be bound")
         await cls.users.upsert(identity)

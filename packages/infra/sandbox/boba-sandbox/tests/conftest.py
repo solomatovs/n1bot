@@ -4,7 +4,7 @@ boba-mcp — он исполняет инструменты в песочниц�
 import pytest
 from omegaconf import DictConfig
 
-from boba.mcp_server.app import McpAppConfig
+from boba.mcp_server.config.models import McpAppConfig
 from boba.stand.overlay import ConfigOverlay
 
 

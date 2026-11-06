@@ -182,9 +182,6 @@ from boba.agent.records import (
     TurnOutcome,
 )
 from boba.agent.session import SessionState
-from boba.agent.settings import (
-    McpClientJson,
-)
 from boba.agent.tags import AgentTag, LocalCommandText
 from boba.agent.template import AgentTemplate, AgentTemplateFile, ModelTroubleTexts
 from boba.agent.tools import (
@@ -199,6 +196,7 @@ from boba.agent.tools import (
 from boba.agent.turn import ContextUsage
 from boba.agent.writer import ClientCommand, CommandBook
 from boba.cancellation import StopReason as CoreStopReason
+from boba.cli.config.settings import McpClientJson
 from boba.cli.threads import LoopCall, LoopThread, SessionLimitError, SessionThreads
 from boba.core.commands import (
     CommandAction,

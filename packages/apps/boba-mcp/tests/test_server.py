@@ -53,12 +53,9 @@ from boba.identity.lifetime import SessionLifetime
 from boba.identity.principal import IdentityRule
 from boba.mcp_server.auth import ServiceMark
 from boba.mcp_server.catalog import EndpointCatalog, PromptFile
+from boba.mcp_server.config.models import RunLimits
 from boba.mcp_server.files import JournalRoutes
-from boba.mcp_server.server import (
-    FileUploadTool,
-    McpEndpoint,
-    RunLimits,
-)
+from boba.mcp_server.server import FileUploadTool, McpEndpoint
 from boba.mcp_server.tool_adapter import JournalUris
 from boba.oauth.assertions import ProxyAssertions
 from boba.oauth.server.assertions import ProxyAssertionVerifier
@@ -447,7 +444,7 @@ class TestCall:
         async with _client(url, dev_token) as client:
             result = await client.call_tool_mcp("fake_whoami", {})
 
-        if _text(result) != f"corporate:alice|dev|/{PROFILE}":
+        if _text(result) != f"alice|dev|/{PROFILE}":
             raise AssertionError(f"the body is called as the token's caller: {result}")
 
     async def test_server_names_the_call_itself(
@@ -487,7 +484,7 @@ class TestCall:
         async with _client(url, dev_token) as client:
             result = await client.call_tool_mcp("fake_scope", {})
 
-        own = str(uuid5(NAMESPACE_URL, "boba-user:corporate:alice"))
+        own = str(uuid5(NAMESPACE_URL, "boba-user:alice"))
         if _text(result) != own:
             raise AssertionError(f"the default scope is the user's own: {result}")
 
@@ -1440,7 +1437,7 @@ class TestProxySignIn:
     ) -> httpx.Response:
         public = self._public(stand)
         assertion = ProxyAssertions(secret, 0).issue(
-            CLIENT_ID, f"corporate:{login}", roles, public, stand.url(profile)
+            CLIENT_ID, f"{login}", roles, public, stand.url(profile)
         )
         form = {
             "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
@@ -1463,7 +1460,7 @@ class TestProxySignIn:
         async with _client(url, token) as client:
             result = await client.call_tool_mcp("fake_whoami", {})
 
-        if _text(result) != f"corporate:ivanov|dev|/{PROFILE}":
+        if _text(result) != f"ivanov|dev|/{PROFILE}":
             raise AssertionError(f"the body runs as the signed-in user: {result}")
 
     async def test_roles_of_the_sign_in_open_the_endpoints(
@@ -1494,7 +1491,7 @@ class TestProxySignIn:
     ) -> None:
         public = self._public(stand)
         assertion = ProxyAssertions(PROXY_SECRET, 0).issue(
-            CLIENT_ID, "corporate:ivanov", "dev", public, stand.url(PROFILE)
+            CLIENT_ID, "ivanov", "dev", public, stand.url(PROFILE)
         )
         form = {
             "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
@@ -1524,15 +1521,11 @@ class TestProxySignIn:
         resource = f"{public}/{PROFILE}"
         catalog = EndpointCatalog(())
         sealed = SealedValues("stand-session-secret", ServiceMark.SEALED_SALT)
-        proxy = ProxyAuthConfig(
-            identity=IdentityRule(realm="corporate"), secret=SecretStr(PROXY_SECRET)
-        )
-        declared = TrustedClient(
-            secret=SecretStr(CLIENT_SECRET), realms=frozenset({"corporate"})
-        )
+        proxy = ProxyAuthConfig(identity=IdentityRule(), secret=SecretStr(PROXY_SECRET))
+        declared = TrustedClient(secret=SecretStr(CLIENT_SECRET))
         server = AuthServer(
             public,
-            SignIns(None, {}, {}),
+            SignIns(None, None, None),
             ServiceTokens(
                 public,
                 "stand-session-secret",
@@ -1547,7 +1540,7 @@ class TestProxySignIn:
             SessionService(MemoryUserRows(), catalog),
         )
         assertion = ProxyAssertions(PROXY_SECRET, 0).issue(
-            CLIENT_ID, "corporate:ivanov", "dev", public, resource
+            CLIENT_ID, "ivanov", "dev", public, resource
         )
         client = OAuthClientInformationFull(
             client_id=CLIENT_ID, redirect_uris=[AnyUrl(f"{public}/callback")]
@@ -1692,7 +1685,7 @@ class TestHumanSignIn:
         async with _client(url, issued.json()["access_token"]) as client:
             result = await client.call_tool_mcp("fake_whoami", {})
 
-        expected = f"local-stand:{LOCAL_LOGIN}|dev|/{PROFILE}"
+        expected = f"{LOCAL_LOGIN}|dev|/{PROFILE}"
         if _text(result) != expected:
             raise AssertionError(f"the body runs as the signed-in user: {result}")
 
@@ -1758,7 +1751,7 @@ class TestHumanSignIn:
         async with _client(url, pair["access_token"]) as client:
             result = await client.call_tool_mcp("fake_whoami", {})
 
-        expected = f"local-stand:{LOCAL_LOGIN}|dev|/{PROFILE}"
+        expected = f"{LOCAL_LOGIN}|dev|/{PROFILE}"
         if _text(result) != expected:
             raise AssertionError(f"the renewed token keeps the user: {result}")
 

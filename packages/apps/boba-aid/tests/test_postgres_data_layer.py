@@ -19,13 +19,13 @@ from boba.aid.auth.chainlit_user import SessionUser
 from boba.aid.auth.composite import SessionCallback
 from boba.aid.auth.policy import SessionRenewal
 from boba.aid.auth.session import BrowserSessions
+from boba.aid.config.app import AppConfig
 from boba.aid.data.data_layer import PostgresDataLayer
 from boba.aid.data.feedbacks import FeedbacksTable
 from boba.aid.data.remote_storage import FileOwners, RemoteStorageClient
 from boba.aid.data.threads import ThreadsTable
 from boba.aid.data.users import UsersTable
 from boba.aid.domain.fields import ThreadMetaField
-from boba.aid.infra.config import AppConfig
 from boba.aid.infra.session import ChainlitSession, ChainlitSessions
 from boba.auth import SessionService, SignIns
 from boba.canvas.keys import ObjectKey, ScopeDir
@@ -65,7 +65,7 @@ def session_callback(
 
     session = app_config.session
     auth = BrowserSessions(
-        sign_ins=SignIns(None, {}, {}),
+        sign_ins=SignIns(None, None, None),
         tokens=StandTokens.tokens(),
         cookie=session.cookie_spec(),
         sessions=SessionService(
@@ -88,22 +88,22 @@ async def test_create_and_get_user(
     created = await _project_signed_in_user(
         layer,
         UsersTable(pool, app_config.db_schema),
-        StandTokens.user(identifier="corporate:alice", metadata={"k": "v"}),
+        StandTokens.user(identifier="alice", metadata={"k": "v"}),
     )
-    if created.identifier != "corporate:alice":
-        raise AssertionError('created.identifier == "corporate:alice"')
+    if created.identifier != "alice":
+        raise AssertionError('created.identifier == "alice"')
 
-    fetched = await layer.get_user("corporate:alice")
+    fetched = await layer.get_user("alice")
     if fetched is None:
         raise AssertionError("fetched is not None")
     if fetched.id != created.id:
         raise AssertionError("fetched.id == created.id")
 
-    if fetched.identifier != "corporate:alice":
-        raise AssertionError('fetched.identifier == "corporate:alice"')
+    if fetched.identifier != "alice":
+        raise AssertionError('fetched.identifier == "alice"')
 
-    if await layer.get_user("corporate:does-not-exist") is not None:
-        raise AssertionError('await layer.get_user("corporate:does-not-exist") is None')
+    if await layer.get_user("does-not-exist") is not None:
+        raise AssertionError('await layer.get_user("does-not-exist") is None')
 
 
 async def test_identifier_case_cannot_split_a_user(
@@ -120,24 +120,22 @@ async def test_identifier_case_cannot_split_a_user(
     # Identity storage canonicalizes the login during sign-in; Chainlit only
     # projects the already registered row for either spelling.
     users = UsersTable(pool, app_config.db_schema)
-    await users.upsert(UserIdentity.model_validate("corporate:maksimov.ma"))
-    created = await layer.create_user(StandTokens.user("corporate:maksimov.ma"))
+    await users.upsert(UserIdentity.model_validate("maksimov.ma"))
+    created = await layer.create_user(StandTokens.user("maksimov.ma"))
     if created is None:
         raise AssertionError("registered identity has a Chainlit projection")
 
-    again = await layer.create_user(
-        StandTokens.user(identifier="corporate:Maksimov.MA")
-    )
+    again = await layer.create_user(StandTokens.user(identifier="Maksimov.MA"))
     if again is None:
         raise AssertionError("second spelling is created")
 
     if again.id != created.id:
         raise AssertionError("second spelling merges into the same users row")
 
-    if again.identifier != "corporate:maksimov.ma":
+    if again.identifier != "maksimov.ma":
         raise AssertionError(f"persisted identifier is canonical: {again.identifier}")
 
-    fetched = await layer.get_user("corporate:MAKSIMOV.MA")
+    fetched = await layer.get_user("MAKSIMOV.MA")
     if fetched is None:
         raise AssertionError("lookup by another spelling finds the row")
 
@@ -157,19 +155,17 @@ async def test_signed_session_uses_the_canonical_user_row(
     first = await _project_signed_in_user(
         layer,
         UsersTable(pool, app_config.db_schema),
-        StandTokens.user(identifier="corporate:ivanov.ii"),
+        StandTokens.user(identifier="ivanov.ii"),
     )
 
-    partner_token = StandTokens.issue(
-        StandTokens.session("corporate:Ivanov.II", UUID(first.id))
-    )
+    partner_token = StandTokens.issue(StandTokens.session("Ivanov.II", UUID(first.id)))
     user = await authenticate_user(partner_token)
 
     assert isinstance(user, PersistedUser)
     if user.id != first.id:
         raise AssertionError("signed identity resolves to the same users row")
 
-    if user.identifier != "corporate:ivanov.ii":
+    if user.identifier != "ivanov.ii":
         raise AssertionError(f"session identifier is canonical: {user.identifier}")
 
 
@@ -184,7 +180,7 @@ async def test_create_user_keeps_the_sign_in_label_on_the_caller(
     без делегированных кредов, хотя тикет уже захвачен.
     """
     user = StandTokens.user(
-        identifier="corporate:krb-label",
+        identifier="krb-label",
         metadata={
             UserMetadataField.PROVIDER: "KerberosAuth",
             UserMetadataField.PRINCIPAL: "user@EXAMPLE.COM",
@@ -486,7 +482,7 @@ async def test_delete_thread_of_a_user_without_file_storage(
         storage=RemoteStorageClient("/workspace", owners, lambda: servers),
         bus=data_bus,
     )
-    identity = UserIdentity.model_validate("corporate:bare-user")
+    identity = UserIdentity.model_validate("bare-user")
     await users.upsert(identity)
     user = await bare.create_user(
         StandTokens.user(
@@ -603,7 +599,7 @@ async def test_chainlit_keeps_the_signed_role_snapshot_without_database_reads(
         "profile": "general",
     }
     transient = StandTokens.user(
-        identifier="corporate:session-fields",
+        identifier="session-fields",
         metadata=metadata,
     )
     await users.upsert(UserIdentity.model_validate(transient.identifier))
@@ -623,7 +619,7 @@ async def test_chainlit_keeps_the_signed_role_snapshot_without_database_reads(
     await users._execute(query, "administrator assigns role")
     token = StandTokens.issue(
         StandTokens.session_from_metadata(
-            "corporate:session-fields",
+            "session-fields",
             UUID(created.id),
             metadata,
             profiles={"general"},
@@ -673,11 +669,9 @@ async def test_chainlit_accepts_a_valid_token_without_reading_or_creating_a_user
     pool: AsyncPostgresPool,
     session_callback: SessionCallback,
 ) -> None:
-    token = StandTokens.issue(
-        StandTokens.session("corporate:missing-user", UUID(int=99))
-    )
+    token = StandTokens.issue(StandTokens.session("missing-user", UUID(int=99)))
     claims = StandTokens.tokens().read(token)
-    assert claims.identifier == "corporate:missing-user"
+    assert claims.identifier == "missing-user"
     assert claims.user_id == UUID(int=99)
     users = UsersTable(pool, app_config.db_schema)
     assert await users.stored_by_id(UUID(int=99)) is None
@@ -689,7 +683,7 @@ async def test_auth_jwt_route_checks_and_reuses_the_session_token(
     pool: AsyncPostgresPool,
     app_config: AppConfig,
 ) -> None:
-    user = StandTokens.user("corporate:jwt-exchange")
+    user = StandTokens.user("jwt-exchange")
     created = await _project_signed_in_user(
         layer, UsersTable(pool, app_config.db_schema), user
     )

@@ -75,7 +75,7 @@ class Users(UserRows):
 
 def _config() -> ProxyAuthConfig:
     return ProxyAuthConfig(
-        identity=IdentityRule(realm="corporate"),
+        identity=IdentityRule(),
         secret=SecretStr(SECRET),
         allowed_clients=["172.18.0.0/24"],
         roles=ProxyRoleProviders(
@@ -92,8 +92,8 @@ def _route(config: ProxyAuthConfig) -> ProxyAuth:
     backends = SignInStand.backends(profiles=profiles)
     sign_ins = SignIns(
         password=None,
-        sso={},
-        proxy={config.identity.realm: backends.proxy(config)},
+        sso=None,
+        proxy=backends.proxy(config),
     )
     auth = BrowserSessions(
         sign_ins=sign_ins,
@@ -142,7 +142,7 @@ async def test_signed_headers_yield_a_session_cookie() -> None:
     set_cookie = response.headers.get("set-cookie", "")
     token = set_cookie.split(f"{COOKIE}=", 1)[1].split(";", 1)[0]
     claims = StandTokens.tokens().read(token)
-    assert claims.identifier == "corporate:maksimov.ma"
+    assert claims.identifier == "maksimov.ma"
     assert claims.principal().roles == {"read", "wrt"}
     assert claims.principal().profiles == {SignInStand.PROFILE}
 

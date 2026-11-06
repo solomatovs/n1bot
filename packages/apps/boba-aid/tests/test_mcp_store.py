@@ -11,11 +11,11 @@ from aid_stand import StandTokens
 from psycopg import sql
 from pydantic import SecretStr
 
+from boba.aid.config.app import AppConfig
+from boba.aid.config.models import McpDefaultsConfig
 from boba.aid.data.data_layer import PostgresDataLayer
 from boba.aid.data.users import UsersTable
-from boba.aid.infra.config import AppConfig
 from boba.aid.mcp_servers import McpAppError, McpAuthChoice, McpOrigin
-from boba.aid.mcp_servers.config import McpDefaultsConfig
 from boba.aid.mcp_servers.directory import McpDirectory, McpState
 from boba.aid.mcp_servers.form import HeaderField, McpForms, McpServerForm
 from boba.aid.mcp_servers.sources import McpViewer, StoredServers
@@ -61,11 +61,11 @@ async def stored(
 ) -> StoreStand:
     schema = app_config.db_schema
     users = UsersTable(pool, schema)
-    await users.upsert(UserIdentity.model_validate("corporate:mcp-owner"))
-    await users.upsert(UserIdentity.model_validate("corporate:mcp-other"))
+    await users.upsert(UserIdentity.model_validate("mcp-owner"))
+    await users.upsert(UserIdentity.model_validate("mcp-other"))
 
-    owner = await layer.create_user(StandTokens.user(identifier="corporate:mcp-owner"))
-    other = await layer.create_user(StandTokens.user(identifier="corporate:mcp-other"))
+    owner = await layer.create_user(StandTokens.user(identifier="mcp-owner"))
+    other = await layer.create_user(StandTokens.user(identifier="mcp-other"))
     assert owner is not None
     assert other is not None
     cipher = SecretCipher(app_config.mcp_servers.cipher.get_secret_value())

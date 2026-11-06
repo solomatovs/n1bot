@@ -6,7 +6,6 @@ from collections.abc import Mapping
 
 from pydantic import BaseModel, ConfigDict
 
-from boba.auth.realms import RealmSelection
 from boba.identity.authentication import AuthenticatedSession
 from boba.identity.errors import AuthenticationError, ExternalServiceError
 from boba.identity.signin import PasswordSignIn, ProxyRequest, ProxySignIn, SignInResult
@@ -28,8 +27,6 @@ class SignInProviders(BaseModel):
     password: bool
     sso: bool
     proxy: bool
-    password_realms: tuple[str, ...] = ()
-    sso_realms: tuple[str, ...] = ()
 
 
 class SignIns:
@@ -45,37 +42,28 @@ class SignIns:
     def __init__(
         self,
         password: PasswordSignIn | None,
-        sso: Mapping[str, SpnegoExchange],
-        proxy: Mapping[str, ProxySignIn],
-        renewals: Mapping[tuple[str, str], SessionRefresh] | None = None,
+        sso: SpnegoExchange | None,
+        proxy: ProxySignIn | None,
+        renewals: Mapping[str, SessionRefresh] | None = None,
     ) -> None:
         self._password = password
-        self._sso = dict(sso)
-        self._proxy = dict(proxy)
-        self._selection = RealmSelection()
-        self._renewals: dict[tuple[str, str], SessionRefresh] = {}
+        self._sso = sso
+        self._proxy = proxy
+        self._renewals: dict[str, SessionRefresh] = {}
         if renewals is not None:
             self._renewals.update(renewals)
 
     def providers(self) -> SignInProviders:
-        realms: tuple[str, ...] = ()
-        if self._password is not None:
-            realms = tuple(sorted(self._password.realms))
-
         return SignInProviders(
             password=self._password is not None,
             sso=bool(self._sso),
             proxy=bool(self._proxy),
-            password_realms=realms,
-            sso_realms=tuple(sorted(self._sso)),
         )
 
     def has_sso(self) -> bool:
         return bool(self._sso)
 
-    async def by_password(
-        self, username: str, password: str, realm: str = ""
-    ) -> SignInResult:
+    async def by_password(self, username: str, password: str) -> SignInResult:
         if self._password is None:
             message = (
                 f"password sign-in of {username!r}: [auth] has no local or ldap "
@@ -83,7 +71,7 @@ class SignIns:
             )
             raise ExternalServiceError("auth", message)
 
-        signed = await self._password.sign_in(username, password, realm)
+        signed = await self._password.sign_in(username, password)
         if signed is None:
             message = (
                 f"Invalid username or password: no [auth] provider accepted "
@@ -93,7 +81,7 @@ class SignIns:
 
         return signed
 
-    async def by_proxy(self, request: ProxyRequest, realm: str = "") -> SignInResult:
+    async def by_proxy(self, request: ProxyRequest) -> SignInResult:
         """Вход по подписанному заголовку доверенного бэкенда."""
         if not self._proxy:
             message = (
@@ -102,11 +90,9 @@ class SignIns:
             )
             raise ExternalServiceError("auth", message)
 
-        selected = self._selection.selected(realm, self._proxy, "proxy sign-in")
+        return await self._proxy.sign_in(request)
 
-        return await self._proxy[selected].sign_in(request)
-
-    async def admit_proxy(self, request: ProxyRequest, realm: str = "") -> SignInResult:
+    async def admit_proxy(self, request: ProxyRequest) -> SignInResult:
         """Допуск по утверждению доверенного бэкенда, которое вызывающий уже
         проверил (обмен утверждения на токен у сервиса boba-mcp)."""
         if not self._proxy:
@@ -116,11 +102,9 @@ class SignIns:
             )
             raise ExternalServiceError("auth", message)
 
-        selected = self._selection.selected(realm, self._proxy, "proxy admission")
+        return await self._proxy.admit(request)
 
-        return await self._proxy[selected].admit(request)
-
-    def exchange(self, realm: str = "") -> SpnegoExchange:
+    def exchange(self) -> SpnegoExchange:
         """SPNEGO-обмен процесса; без kerberos в [auth] — ExternalServiceError."""
         if not self._sso:
             message = (
@@ -129,15 +113,13 @@ class SignIns:
             )
             raise ExternalServiceError("auth", message)
 
-        selected = self._selection.selected(realm, self._sso, "SPNEGO exchange")
-
-        return self._sso[selected]
+        return self._sso
 
     async def renew(
         self, request: SsoRequest, session: AuthenticatedSession
     ) -> SsoChallenge | SsoRefused | SsoSigned:
         identity = session.principal.identity
-        key = (session.renewal.value, identity.realm)
+        key = session.renewal.value
         refresh = self._renewals.get(key)
         if refresh is None:
             return SsoRefused(

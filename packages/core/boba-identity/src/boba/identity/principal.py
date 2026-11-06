@@ -1,33 +1,30 @@
-"""Личность входа: пространство имён и канонический логин.
+"""Личность входа: единый канонический логин.
 
 Ошибки:
-ValueError — идентификатор не содержит пространства имён и логина.
+ValueError — логин пуст.
 ValidationError — поля личности не соответствуют wire-контракту.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Annotated, Self
+from typing import Self
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    StringConstraints,
     field_validator,
     model_validator,
 )
 
 from boba.identity.session import Login
 
-__all__ = ["IdentityRealm", "IdentityRule", "UserIdentity"]
-
-IdentityRealm = Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9._-]*$")]
+__all__ = ["IdentityRule", "UserIdentity"]
 
 
 class UserIdentity(BaseModel):
-    """Подтверждённая личность для токенов и users: пространство и логин.
+    """Подтверждённая личность для токенов и users: канонический логин.
 
     Провайдер входа создаёт её по IdentityRule; адаптеры передают тот же
     идентификатор между AID и MCP, независимо от способа доставки токена.
@@ -35,7 +32,6 @@ class UserIdentity(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    realm: IdentityRealm
     login: Login
 
     @model_validator(mode="before")
@@ -44,34 +40,25 @@ class UserIdentity(BaseModel):
         if not isinstance(value, str):
             return value
 
-        realm, separator, login = value.partition(":")
-        if not separator:
-            msg = (
-                f"user identity {value!r}: expected realm:login; "
-                "a bare login carries no identity origin"
-            )
-            raise ValueError(msg)
-
-        return {"realm": realm, "login": login}
+        return {"login": value}
 
     @property
     def identifier(self) -> Login:
-        return Login(f"{self.realm}:{self.login}")
+        return self.login
 
     def matches(self, identifier: str) -> bool:
         return self.identifier == identifier
 
 
 class IdentityRule(BaseModel):
-    """Правило провайдера входа: пространство имён и явные псевдонимы логинов.
+    """Правило провайдера входа: явные псевдонимы канонических логинов.
 
-    Администратор связывает бэкенды одинаковым realm и псевдонимами;
+    Администратор сопоставляет внешние имена каноническим логинам;
     приложение получает общий идентификатор без типа бэкенда.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    realm: IdentityRealm
     aliases: Mapping[Login, Login] = Field(default_factory=dict)
 
     @field_validator("aliases", mode="before")
@@ -102,7 +89,7 @@ class IdentityRule(BaseModel):
 
             if target in self.aliases:
                 msg = (
-                    f"identity realm {self.realm!r}: alias {source!r} points "
+                    f"identity alias {source!r} points "
                     f"to another alias {target!r}; expected a canonical login"
                 )
                 raise ValueError(msg)
@@ -112,4 +99,4 @@ class IdentityRule(BaseModel):
     def identity(self, login: Login) -> UserIdentity:
         canonical = self.aliases.get(login, login)
 
-        return UserIdentity(realm=self.realm, login=canonical)
+        return UserIdentity(login=canonical)

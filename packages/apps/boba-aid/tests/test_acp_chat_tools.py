@@ -27,9 +27,9 @@ from test_acp_chat import BOOT_TIMEOUT_SEC, AgentProcesses, ChatSocket
 
 import boba.aid.agent
 from boba.aid.agent.client import AgentProcess
-from boba.aid.auth.config import SessionConfig
 from boba.aid.auth.http import RequestTokens
-from boba.aid.infra.config import AppConfig
+from boba.aid.config.app import AppConfig
+from boba.aid.config.models import SessionConfig
 from boba.aid.rendering.chat_view import StepStatus
 from boba.canvas.canvas import CanvasAction, CanvasElement, CanvasKind
 from boba.config import ConfigLoader, bind
@@ -645,7 +645,7 @@ class TestSignInOfTheAgent:
         assert not step.get("isError"), (step, companion.tail(60))
         assert "one" in str(step.get("output")), step
         log = companion.log_path.read_text(encoding="utf-8", errors="replace")
-        assert f"proxy sign-in [user=aid-local:{ADMIN}]" in log, log[-2000:]
+        assert f"proxy sign-in [user={ADMIN}]" in log, log[-2000:]
         assert f"[user={ServiceStand.AGENT_LOGIN}]" not in log
 
     async def test_local_signs_in_the_account_of_the_agent(
@@ -659,7 +659,7 @@ class TestSignInOfTheAgent:
         assert not step.get("isError"), (step, companion.tail(60))
         assert "one" in str(step.get("output")), step
         log = companion.log_path.read_text(encoding="utf-8", errors="replace")
-        assert f"sign-in [user=mcp-local:{ServiceStand.AGENT_LOGIN}] [provider=" in log
+        assert f"sign-in [user={ServiceStand.AGENT_LOGIN}] [provider=" in log
         assert "proxy sign-in" not in log, log[-2000:]
 
     async def test_chat_renews_the_expired_token_of_the_service(

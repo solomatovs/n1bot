@@ -18,7 +18,7 @@ from boba.crypto import SecretCipher
 from boba.db.pgvector.config import EmbeddingDimension, KnowledgeBaseSchemaConfig
 from boba.db.pgvector.schema import KbSchema
 from boba.db.postgres import AsyncPostgresPool
-from boba.mcp_server.app import McpAppConfig
+from boba.mcp_server.config.models import McpAppConfig
 from boba.mcp_server.connections.store import ConnectionStore
 from boba.stand.database import TestDatabase
 from boba.stand.migrate import StandMigrations

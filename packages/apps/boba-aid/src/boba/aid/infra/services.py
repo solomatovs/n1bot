@@ -13,10 +13,10 @@ from omegaconf import DictConfig
 
 from boba.aid.auth.session import BrowserSessions
 from boba.aid.auth.tokens import JwtTokens
+from boba.aid.config.app import AppConfig
 from boba.aid.data.threads import ThreadsTable
 from boba.aid.data.users import UsersTable
 from boba.aid.infra.commands import CommandRunner
-from boba.aid.infra.config import AppConfig
 from boba.aid.infra.di import Container, Depends
 from boba.aid.infra.messaging import (
     MessagingRuntime,

@@ -105,7 +105,7 @@ def _run(
 
 def _token(generation: str) -> str:
     issued_at = int(time.time())
-    user_id = uuid5(NAMESPACE_URL, "stale-session:corporate:alice")
+    user_id = uuid5(NAMESPACE_URL, "stale-session:alice")
     tokens = JwtTokens(
         SECRET,
         SessionLifetime(ttl_sec=60, max_sec=3600),
@@ -113,7 +113,7 @@ def _token(generation: str) -> str:
         issuer=StandTokens.ISSUER,
         audience=StandTokens.ISSUER,
     )
-    session = StandTokens.session("corporate:alice", user_id)
+    session = StandTokens.session("alice", user_id)
     return tokens.issue(session, issued_at)
 
 
@@ -154,7 +154,7 @@ def test_no_cookie_reaches_the_app() -> None:
     assert outcome.reached_app
 
 
-@pytest.mark.parametrize("identifier", ["alice", "corporate:alice"])
+@pytest.mark.parametrize("identifier", ["alice", "bob"])
 @pytest.mark.parametrize("connection", ["http", "websocket"])
 def test_legacy_identity_is_dropped(identifier: str, connection: str) -> None:
     token = jwt.encode(
@@ -174,7 +174,7 @@ def test_legacy_identity_is_dropped(identifier: str, connection: str) -> None:
 def test_lowercase_bearer_cannot_bypass_identity_check() -> None:
     token = jwt.encode(
         {
-            "identifier": "corporate:alice",
+            "identifier": "alice",
             "metadata": {"generation": "gen-a"},
             "exp": 4102444800,
         },
@@ -195,7 +195,7 @@ def test_websocket_keeps_current_identity() -> None:
 def test_invalid_claims_cannot_bypass_identity_validation(connection: str) -> None:
     token = jwt.encode(
         {
-            "identifier": "corporate:alice",
+            "identifier": "alice",
             "metadata": {"generation": "gen-a"},
             "exp": 4102444800,
             "since": "invalid",

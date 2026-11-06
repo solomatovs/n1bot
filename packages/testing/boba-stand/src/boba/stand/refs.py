@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from pathlib import Path
 from typing import ClassVar
 
 from omegaconf import DictConfig
 
 from boba.access import GrantCheck, ProfileGrant, ToolGrant, ToolGrants
+from boba.config import bind
 from boba.connections.credentials import CredentialSource
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.stored import ConnectionRepository
 from boba.identity.context import CallContexts
 from boba.identity.run import Runs
 from boba.krb.connections import KerberosCredentialSource
+from boba.mcp_server.config.models import DataConfig, TlsConfig
 from boba.mcp_server.connections import NoRefresh
 from boba.stand.connections import DisabledConnectionRepository, StandUserConnections
 from boba.stand.toolstand import ToolStand
@@ -60,7 +63,6 @@ class StandRefs:
             if credentials is not None
             else KerberosCredentialSource(None, NoRefresh())
         )
-        self._backends = StandardToolLaunchers().registry
 
         self._launchers: list[SectionLaunchers] = []
 
@@ -70,7 +72,10 @@ class StandRefs:
         )
 
     def launchers(self, raw: DictConfig) -> SectionLaunchers:
-        launchers = ToolLaunchers(raw, self._backends).build()
+        paths = bind(raw, "data", DataConfig)
+        tls = bind(raw, "tls", TlsConfig)
+        backends = StandardToolLaunchers(Path(paths.data_dir), Path(tls.ca_file))
+        launchers = ToolLaunchers(raw, backends.registry).build()
         self._launchers.append(launchers)
 
         return launchers

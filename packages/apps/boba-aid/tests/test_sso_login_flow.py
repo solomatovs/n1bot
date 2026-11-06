@@ -26,8 +26,8 @@ from boba.aid.auth.policy import SessionRenewal
 from boba.aid.auth.refresh import PageUrls, SessionRefresh
 from boba.aid.auth.session import BrowserSessions, IssuedSession
 from boba.aid.auth.tokens import JwtTokens
+from boba.aid.config.app import AppConfig
 from boba.aid.data.users import UsersTable
-from boba.aid.infra.config import AppConfig
 from boba.aid.infra.session import ChainlitSessions
 from boba.auth import SessionService
 from boba.auth.config import (
@@ -42,9 +42,7 @@ from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.admission import RoleExcludeConfig
 from boba.identity.context import DelegatedTicket
-from boba.identity.errors import AuthorizationError
-from boba.identity.principal import IdentityRule
-from boba.identity.sso import SsoChallenge, SsoRequest, SsoSigned
+from boba.identity.sso import SsoChallenge
 from boba.krb import KerberosEnv, ServiceTicketIssuer
 from boba.krb.seal import SsoTickets, TicketSealer
 from boba.stand.migrate import StandMigrations
@@ -334,7 +332,7 @@ async def test_stale_jwt_without_ticket_is_refused(
     kerberos_auth: KerberosAuth,
 ) -> None:
     """JWT прошлой версии приложения: провайдер есть, билета нет."""
-    stale = StandTokens.issue(StandTokens.session("corporate:readonly"))
+    stale = StandTokens.issue(StandTokens.session("readonly"))
     if ChainlitSessions(StandTokens()).ticket_of_token(stale) is not None:
         raise AssertionError("a sign-in without a ticket must not resolve")
 
@@ -460,28 +458,12 @@ async def test_refresh_of_an_excluded_principal_is_refused(
         raise AssertionError(f"an excluded principal must be refused: {status}")
 
 
-async def test_multiple_spnego_realms_use_the_selected_identity_rule(
+async def test_duplicate_spnego_backends_are_refused(
     raw_config: Any,
     runtime_config: AppConfig,
-    krb5_env: None,
-    tmp_path: Path,
 ) -> None:
     configured = bind(raw_config, path="auth.kerberos", model=KerberosAuthConfig)
-    office = configured.model_copy(update={"identity": IdentityRule(realm="office")})
-    partner = configured.model_copy(update={"identity": IdentityRule(realm="partner")})
-    providers = SignInStand.backends().build(
-        [office, partner],
-        runtime_config.session.auth_secret,
-    )
-    with pytest.raises(AuthorizationError, match="select an identity realm"):
-        providers.exchange()
-
-    for realm in ("office", "partner"):
-        token = Browser.token(tmp_path)
-        request = SsoRequest(
-            authorization="Negotiate " + base64.b64encode(token).decode()
+    with pytest.raises(ValueError, match="configured twice"):
+        SignInStand.backends().build(
+            [configured, configured], runtime_config.session.auth_secret
         )
-        outcome = await providers.exchange(realm).handshake(request)
-        assert isinstance(outcome, SsoSigned)
-        login, _, _ = USER_PRINCIPAL.partition("@")
-        assert outcome.signed.identifier == f"{realm}:{login.lower()}"

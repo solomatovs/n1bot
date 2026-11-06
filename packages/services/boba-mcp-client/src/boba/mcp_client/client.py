@@ -538,13 +538,10 @@ class UnattendedLogin:
     BODY_SHOWN: ClassVar[int] = 600
     """Сколько знаков ответа сервера входит в текст ошибки."""
 
-    def __init__(
-        self, login: str, password: SecretStr, resource: str, realm: str = ""
-    ) -> None:
+    def __init__(self, login: str, password: SecretStr, resource: str) -> None:
         self._login = login
         self._password = password
         self._resource = resource
-        self._realm = realm
         self._granted: AuthorizationCodeResult | None = None
 
     def client(self) -> OAuthClientMetadata:
@@ -624,7 +621,6 @@ class UnattendedLogin:
             LoginField.PROOF.value: proof,
             LoginField.LOGIN.value: self._login,
             LoginField.PASSWORD.value: self._password.get_secret_value(),
-            LoginField.REALM.value: self._realm,
         }
         returned = self._next(
             await http.post(login_url, data=form),
@@ -683,10 +679,9 @@ class LocalAuth(McpAuthEntry):
     auth: Literal["local"] = "local"
     login: str = Field(min_length=1)
     password: SecretStr
-    realm: str = ""
 
     def httpx_auth(self, resource: str) -> httpx2.Auth | None:
-        login = UnattendedLogin(self.login, self.password, resource, self.realm)
+        login = UnattendedLogin(self.login, self.password, resource)
 
         provider = RefreshingProvider(
             server_url=resource,
@@ -740,7 +735,7 @@ class ProxyAuth(McpAuthEntry):
         except ValidationError as exc:
             msg = (
                 f"mcp auth proxy for {resource}: login must be the verified "
-                "realm:login identifier issued by the authentication backend"
+                "canonical login issued by the authentication backend"
             )
             raise McpClientError(msg) from exc
 

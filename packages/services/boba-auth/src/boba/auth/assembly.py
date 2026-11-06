@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TypeVar
 
 from pydantic import BaseModel
 
@@ -22,8 +21,6 @@ from boba.identity.directory import UserDirectory
 from boba.identity.errors import BaseError, InternalServiceError
 from boba.identity.signin import PasswordSignIn, ProfileCatalog, ProxySignIn
 from boba.identity.sso import SessionRefresh, SpnegoExchange
-
-PortT = TypeVar("PortT")
 
 
 @dataclass(frozen=True)
@@ -61,40 +58,40 @@ class AuthBackends:
         return self._components.parse(raw)
 
     def validate(self, configs: Sequence[AuthConfig]) -> None:
-        unique: set[tuple[str, str]] = set()
+        unique: set[str] = set()
         for config in configs:
-            if not config.unique_per_realm:
+            if not config.unique:
                 continue
 
-            key = (config.type, config.identity.realm)
+            key = config.type
             if key in unique:
-                raise ValueError(
-                    f"auth backend {config.type!r} is configured twice "
-                    f"for realm {config.identity.realm!r}"
-                )
+                raise ValueError(f"auth backend {config.type!r} is configured twice")
 
             unique.add(key)
 
     def build(self, configs: Sequence[AuthConfig], services: AuthServices) -> SignIns:
         self.validate(configs)
         passwords: list[PasswordSignIn] = []
-        sso: dict[str, SpnegoExchange] = {}
-        proxy: dict[str, ProxySignIn] = {}
-        renewals: dict[tuple[str, str], SessionRefresh] = {}
+        sso: SpnegoExchange | None = None
+        proxy: ProxySignIn | None = None
+        renewals: dict[str, SessionRefresh] = {}
         for config in configs:
             contribution = self._build_one(config, services)
-            realm = config.identity.realm
             if contribution.password is not None:
                 passwords.append(contribution.password)
 
             if contribution.sso is not None:
-                self._put(sso, realm, contribution.sso, "SPNEGO")
+                if sso is not None:
+                    raise ValueError("auth has multiple SPNEGO handlers")
+                sso = contribution.sso
 
             if contribution.proxy is not None:
-                self._put(proxy, realm, contribution.proxy, "proxy")
+                if proxy is not None:
+                    raise ValueError("auth has multiple proxy handlers")
+                proxy = contribution.proxy
 
             if contribution.renewal is not None:
-                key = (config.type, realm)
+                key = config.type
                 if key in renewals:
                     raise ValueError(f"auth has multiple refresh handlers for {key!r}")
 
@@ -116,17 +113,7 @@ class AuthBackends:
         except Exception as exc:
             raise InternalServiceError(
                 internal_detail=(
-                    f"building auth backend {config.type!r} "
-                    f"for realm {config.identity.realm!r} failed: {exc}"
+                    f"building auth backend {config.type!r} failed: {exc}"
                 ),
                 user_detail=None,
             ) from exc
-
-    @staticmethod
-    def _put(table: dict[str, PortT], realm: str, port: PortT, channel: str) -> None:
-        if realm in table:
-            raise ValueError(
-                f"auth has multiple {channel} handlers for realm {realm!r}"
-            )
-
-        table[realm] = port

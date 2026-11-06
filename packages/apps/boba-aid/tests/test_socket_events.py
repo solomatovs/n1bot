@@ -84,12 +84,12 @@ async def session() -> AsyncIterator[EmittedEvents]:
         thread_id=THREAD,
         user=PersistedUser(
             id=USER_ID,
-            identifier="corporate:tester",
+            identifier="tester",
             createdAt="2026-01-01T00:00:00+00:00",
             metadata={},
         ),
     )
-    session.token = StandTokens.issue_for("corporate:tester", UUID(USER_ID))
+    session.token = StandTokens.issue_for("tester", UUID(USER_ID))
     # ветки chainlit вокруг on_chat_start в тесте не нужны: проверяется реконнект
     session.restored = True
     session.has_first_interaction = True

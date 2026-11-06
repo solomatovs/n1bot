@@ -105,13 +105,6 @@ class HmacProxySignIn(ProxySignIn):
             )
             raise AuthenticationError(msg)
 
-        if identity.realm != self._config.identity.realm:
-            msg = (
-                f"proxy admission of {identity.identifier!r}: backend belongs "
-                f"to realm {self._config.identity.realm!r}"
-            )
-            raise AuthenticationError(msg)
-
         return identity
 
     def _check_client(self, request: ProxyRequest) -> None:

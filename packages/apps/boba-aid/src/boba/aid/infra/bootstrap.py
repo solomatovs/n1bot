@@ -28,12 +28,10 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from boba.aid.auth.http import DomainErrorMiddleware, StaleSessionMiddleware
 from boba.aid.auth.installer import ChainlitAuthInstaller
 from boba.aid.auth.session import BrowserSessions
+from boba.aid.config.app import AppConfig
+from boba.aid.config.models import AidSection
 from boba.aid.domain.keys import AppPrefix
 from boba.aid.infra import providers, services
-from boba.aid.infra.config import (
-    AidSection,
-    AppConfig,
-)
 from boba.aid.infra.di import Container
 from boba.aid.infra.log_context import RequestUserMiddleware, UserLogContext
 from boba.aid.infra.sandbox import AidListeners
@@ -60,7 +58,7 @@ def run_app(raw: DictConfig, conf_dir: Path):
     """Запуск приложения по загруженному дереву конфига; env chainlit к этому
     моменту выставлен AppEntry. conf_dir — каталог главного файла конфига."""
     c = bind(raw, "app", AppConfig)
-    layout = InstanceLayout(conf_dir, c.paths, c.tls)
+    layout = InstanceLayout(conf_dir, Path(c.paths.data_dir), Path(c.tls.ca_file))
     layout.apply()
     cors = SandboxCors(chainlit_config.project.allow_origins)
     cors.check(c)

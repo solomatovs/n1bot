@@ -59,23 +59,23 @@ from boba.aid.agent.commands import (
     CommandMenus,
     ExecutedCommand,
 )
-from boba.aid.agent.config import (
-    AgentServiceConfig,
-    AgentSettings,
-    ProcessAgentConfig,
-    ServiceAgentConfig,
-)
 from boba.aid.agent.relay import McpRegistration, McpRegistrations, McpRelay
 from boba.aid.agent.settings import (
     AgentSettingsError,
     AgentWorkdirs,
     HistoryEnvironment,
-    McpFile,
-    ModelFile,
     ProfileModelSpecs,
     SettingsFileBuilder,
 )
 from boba.aid.chat.feed import QuestionBody
+from boba.aid.config.models import (
+    AgentServiceConfig,
+    AgentSettings,
+    McpFile,
+    ModelFile,
+    ProcessAgentConfig,
+    ServiceAgentConfig,
+)
 from boba.aid.data.data_layer import ThreadDeletionListener
 from boba.aid.data.threads import ThreadsTable
 from boba.aid.domain.fields import ThreadMetaField

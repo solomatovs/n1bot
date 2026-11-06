@@ -133,7 +133,7 @@ class ServedUser:
     """Пользователь сессии: роуту нужны только identifier и id."""
 
     def __init__(self) -> None:
-        self.identifier = "corporate:ivanov"
+        self.identifier = "ivanov"
         self.id = USER_ID
 
 

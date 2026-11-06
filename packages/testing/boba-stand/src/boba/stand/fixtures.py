@@ -8,18 +8,19 @@
 import asyncio
 from collections.abc import AsyncIterator, Iterator
 from enum import StrEnum
+from pathlib import Path
 
 import pytest
 from omegaconf import DictConfig
 
-from boba.aid.infra.config import AppConfig
+from boba.aid.config.app import AppConfig
 from boba.config import bind
 from boba.config.application import ConfigFiles
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.krb.layout import InstanceLayout
 from boba.llm.providers import LlmProviderTypes
-from boba.mcp_server.app import McpAppConfig
+from boba.mcp_server.config.models import McpAppConfig
 from boba.stand.apps_slot import AppsDocker, AppsSlot
 from boba.stand.database import TestDatabase
 from boba.stand.overlay import ConfigOverlay
@@ -200,7 +201,7 @@ def kerberos_workspace(
 
     conf_dir = StandConfigPaths(StandConfigEnv.RUN).main().resolve().parent
     krb5_conf = InstanceLayout(
-        conf_dir, process_config.paths, process_config.tls
+        conf_dir, Path(process_config.paths.data_dir), Path(process_config.tls.ca_file)
     ).krb5_conf()
     cache = tmp_path_factory.mktemp("krb-cache")
     KerberosWorkspace.configure(str(krb5_conf), str(cache))

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import html
 import secrets
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from importlib.resources import files
 from typing import ClassVar
@@ -135,9 +135,8 @@ class LoginPages:
 
         login = str(fields.get(LoginField.LOGIN.value, ""))
         password = str(fields.get(LoginField.PASSWORD.value, ""))
-        realm = str(fields.get(LoginField.REALM.value, ""))
         try:
-            signed = await self._sign_ins.by_password(login, password, realm)
+            signed = await self._sign_ins.by_password(login, password)
         except AuthenticationError as exc:
             return await self._page(visit, str(exc), 401)
         except AuthorizationError as exc:
@@ -157,8 +156,7 @@ class LoginPages:
             return await self._page(visit, self.UNCONFIRMED, 403)
 
         try:
-            realm = query.get(LoginField.REALM.value, "")
-            outcome = await self._sign_ins.exchange(realm).handshake(
+            outcome = await self._sign_ins.exchange().handshake(
                 self._requests.of(request)
             )
         except AuthorizationError as exc:
@@ -210,32 +208,17 @@ class LoginPages:
                 action=html.escape(f"{self._public_url}{AuthServer.LOGIN_PATH}"),
                 txn=html.escape(visit.txn),
                 proof=html.escape(proof),
-                realms=self._realm_options(providers.password_realms),
             )
 
         sso = ""
         if providers.sso:
-            links: list[str] = []
-            for realm in providers.sso_realms:
-                query = urlencode(
-                    {
-                        AuthServer.TXN: visit.txn,
-                        LoginField.PROOF.value: proof,
-                        LoginField.REALM.value: realm,
-                    }
-                )
-                url = f"{self._public_url}{LoginField.SSO.value}?{query}"
-                label = "Sign in with Kerberos"
-                if len(providers.sso_realms) > 1:
-                    label = f"Sign in with {realm}"
-
-                links.append(
-                    self._templates.sso.format(
-                        url=html.escape(url), label=html.escape(label)
-                    )
-                )
-
-            sso = "".join(links)
+            query = urlencode(
+                {AuthServer.TXN: visit.txn, LoginField.PROOF.value: proof}
+            )
+            url = f"{self._public_url}{LoginField.SSO.value}?{query}"
+            sso = self._templates.sso.format(
+                url=html.escape(url), label="Sign in with Kerberos"
+            )
 
         sent = dict(self.HEADERS)
         if headers is not None:
@@ -264,22 +247,6 @@ class LoginPages:
         )
 
         return response
-
-    @staticmethod
-    def _realm_options(realms: Sequence[str]) -> str:
-        if len(realms) <= 1:
-            return ""
-
-        options = ['<option value="">Select a realm</option>']
-        for realm in realms:
-            escaped = html.escape(realm, quote=True)
-            options.append(f'<option value="{escaped}">{escaped}</option>')
-
-        return (
-            '<p><label>Realm <select name="realm" required>'
-            + "".join(options)
-            + "</select></label></p>"
-        )
 
     async def _client(self, held: PendingLogin) -> str:
         """Кто просит вход и куда вернётся браузер: по этой строке человек

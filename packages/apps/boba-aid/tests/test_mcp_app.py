@@ -24,7 +24,7 @@ from acp_stand import REPO_ROOT, StandPorts
 from aid_stand import FixedServers
 from pydantic import SecretStr
 
-from boba.aid.mcp_servers.config import McpDefaultsConfig
+from boba.aid.config.models import McpDefaultsConfig
 from boba.aid.mcp_servers.directory import (
     McpAppError,
     McpDirectory,

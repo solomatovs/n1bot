@@ -4,7 +4,8 @@
 StorageError — конфигурация или ресурсы выбранного хранилища недоступны.
 """
 
-from boba.config.paths import PathsConfig
+from pathlib import Path
+
 from boba.core.components import ComponentFactory, Components
 from boba.sandbox.paths import ProgramRoots, WorkspaceData
 from boba.sandbox.storage import ImageStorageClient, ImageStorageConfig
@@ -21,21 +22,19 @@ class StandardStorageBackends:
 
     def __init__(self) -> None:
         self._programs = ProgramRoots()
-        self.registry: Components[StorageConfig, PathsConfig, StorageClient] = (
-            Components(
-                StorageConfig,
-                "kind",
-                (
-                    ComponentFactory(LocalStorageConfig, self.local),
-                    ComponentFactory(ImageStorageConfig, self.image),
-                ),
-            )
+        self.registry: Components[StorageConfig, str, StorageClient] = Components(
+            StorageConfig,
+            "kind",
+            (
+                ComponentFactory(LocalStorageConfig, self.local),
+                ComponentFactory(ImageStorageConfig, self.image),
+            ),
         )
 
-    def local(self, config: LocalStorageConfig, paths: PathsConfig) -> StorageClient:
+    def local(self, config: LocalStorageConfig, data_dir: str) -> StorageClient:
         return LocalStorageClient(config)
 
-    def image(self, config: ImageStorageConfig, paths: PathsConfig) -> StorageClient:
+    def image(self, config: ImageStorageConfig, data_dir: str) -> StorageClient:
         program = self._programs.locate()
-        images = paths.data(WorkspaceData.WORKSPACE)
+        images = Path(data_dir) / WorkspaceData.WORKSPACE
         return ImageStorageClient(config, program.workspace(images), program)

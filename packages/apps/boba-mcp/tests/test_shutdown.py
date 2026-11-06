@@ -124,7 +124,7 @@ def _token(public: str) -> str:
     """Токен пользователя стенда обменом утверждения доверенного клиента."""
     resource = f"{public}/{ENDPOINT}"
     assertion = ProxyAssertions(ServiceStand.PROXY_SECRET, 0).issue(
-        ServiceStand.CLIENT_ID, "corporate:ivanov", "ADM", public, resource
+        ServiceStand.CLIENT_ID, "ivanov", "ADM", public, resource
     )
     reply = httpx.post(
         f"{public}/token",

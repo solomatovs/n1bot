@@ -557,7 +557,7 @@ boba.mcp_server serve --config ...` (раздел 8).
 Отладка своего конфига не имеет: она берёт конфиг дерева compose и кладёт
 поверх него наложение (раздел 8). Пишет конфиг администратор; образца и шаблона в
 репозитории нет, значения, одинаковые для нескольких программ (адрес базы,
-realm, секреты, которые должны совпадать), повторяются в каждом файле.
+секреты, которые должны совпадать), повторяются в каждом файле.
 
 В git остаются примеры файлов плагинов сервиса
 `compose/mcp/conf/plugins/<инструмент>.conf`: администратор размещает их
@@ -1024,63 +1024,47 @@ Web-профиль (`HttpConnection`) хранит `auth` в той же стр�
 описанные секциями: список собирается автоматически. Убрать способ — убрать
 его секцию. Явный `[app] auth = []` отключает список способов для приложения.
 
-Каждый бэкенд обязательно задаёт `identity.realm` — пространство идентификаторов.
-После входа приложение использует ключ `realm:login`, а не тип бэкенда.
-Одинаковые realm и канонический логин связывают LDAP, Kerberos и доверенный
-proxy в одну личность. Разные realm разделяют даже одноимённые записи.
-Локальным учёткам независимых приложений задавайте разные пространства,
-например `aid-local`, `mcp-local`, `boba-local`; специального типа личности
-«local» внутри модели пользователя нет.
+Все бэкенды (`local`, LDAP, Kerberos, proxy) выдают единый канонический
+логин. Одинаковый логин означает одного пользователя независимо от способа
+входа. Local — обычный бэкенд проверки пароля. В форме нужны только логин
+и пароль; парольные бэкенды проверяются по порядку конфигурации до первого
+успеха. Отказ в допуске по ролям или ошибка доступности прекращает вход.
+
+Необязательные `identity.aliases` сопоставляют внешнее имя каноническому
+логину. Без этой секции используется сам логин, приведённый к нижнему
+регистру и очищенный от пробелов по краям. Цепочки псевдонимов запрещены.
 
 ```toml
-[auth.office_ldap]
+[auth.ldap]
     type = "ldap"
-    identity = { realm = "office", aliases = { "a.smith" = "alice" } }
+    identity = { aliases = { "a.smith" = "alice" } }
     server = "ldaps://dc.office.example:636"
     base_dn = "DC=office,DC=example"
     bind_dn_template = "{username}@OFFICE.EXAMPLE"
 
-[auth.partner_ldap]
-    type = "ldap"
-    identity = { realm = "partner" }
-    server = "ldaps://dc.partner.example:636"
-    base_dn = "DC=partner,DC=example"
-    bind_dn_template = "{username}@PARTNER.EXAMPLE"
+[auth.local]
+    type = "local"
+    users = { alice = "${keys.alice_password}" }
 ```
 
-Это фрагмент правил идентификации: роли, фильтры и параметры LDAP задаются
-обычными полями бэкенда. `aliases` связывает входное имя с каноническим
-логином; цепочки псевдонимов и дубли после приведения регистра запрещены.
-Один парольный realm выбирается автоматически. При нескольких форма AID
-и OAuth-форма MCP/службы агента требуют выбор; неверный пароль выбранного
-realm не запускает поиск в других пространствах.
+Это фрагмент правил идентификации; роли и допуск задаются обычными полями
+бэкенда. Для приложения допускается один Kerberos-бэкенд и один
+proxy-бэкенд. Для Kerberos задаются acceptor/keytab, `principal_format`
+и `sso_path`; неподходящий принципал получает отказ до чтения ролей.
 
-Для Kerberos допускается по одному бэкенду на realm. Администратор задаёт
-его acceptor/keytab, `principal_format` и правила допуска. Несколько realm
-могут обслуживаться одним `sso_path`: форма показывает отдельные ссылки
-с параметром `realm`. При единственном пространстве дополнительного
-выбора нет. Принципал, не подходящий под настроенный шаблон, получает отказ
-до чтения ролей.
-
-Proxy также допускает несколько realm. В AID HTTP-маршруты `path` и ключи
-HMAC разных realm должны отличаться: подпись прежнего HTTP-формата сама
-пространство не содержит. Для утверждений AID → MCP/служба агента realm
-передаётся в подписанных claims и заголовке `kid`; принимающий сервер
-выбирает соответствующий настроенный ключ и проверяет разрешённые
-`realms` доверенного клиента:
+Proxy принимает подписанный логин. При обмене AID → MCP/служба агента
+сервер проверяет подпись настроенным ключом proxy, издателя, получателя
+и совпадение subject с каноническим логином. Обмен разрешён только
+доверенным клиентам, объявленным в конфигурации:
 
 ```toml
 [mcp.clients.boba-chat]
     secret = "${keys.mcp_client}"
-    realms = ["office", "aid-local"]
 ```
 
-Без списка `realms` proxy-обмен этому клиенту запрещён. Динамически
-зарегистрированные OAuth-клиенты не получают такого доверия. Передача
-локальной личности AID через proxy сохраняет `aid-local:login`; она не
-превращается в корпоративную. Для каждого разрешённого realm у принимающей
-стороны нужен `[auth.<имя>] type = "proxy"` с тем же realm и согласованным
-ключом подписи.
+Динамическая OAuth-регистрация такого доверия не даёт. Local-вход в AID
+и последующий proxy-вход в MCP сохраняют один логин; отдельного proxy
+для local не требуется. У клиента и сервера должен совпадать ключ подписи.
 
 AID, MCP и служба Boba используют общую реализацию users/roles/user_roles
 пакета `boba-identity-postgres` в независимых схемах. У MCP схема —
@@ -1382,9 +1366,9 @@ MCP кладёт зашифрованный SSO-билет в metadata свое�
 а состав инструментов хранится в `mcp_endpoints.tools`. Профили чата
 сохраняют свои настройки интерфейса и не ограничивают инструменты MCP.
 
-В `users` хранятся `id`, `created_at`, `realm`, `login`; пара `(realm, login)`
-уникальна и оба поля обязательны. Строковый `identifier = realm:login`
-вычисляется из личности и отдельно в таблицу не записывается. UUID остаётся
+В `users` хранятся `id`, `created_at`, обязательный уникальный `login`.
+Строковый `identifier` равен каноническому логину и отдельно в таблицу
+не записывается. UUID остаётся
 ключом истории и персональных прав. Членство находится в `user_roles`.
 Metadata Chainlit собирается адаптером, а сведения о провайдере,
 профилях и SSO-билет остаются в JWT сессии. Произвольные пользовательские
@@ -2367,8 +2351,25 @@ BOBA_RUNTIME=$R/runtime BOBA_TOOL_LAUNCHER=process \
 BOBA_CGROUP_BASE=<каталог sandbox юнита boba-sandbox@debug> \
 BOBA_CONFIG_PATH=$R/compose/aid/conf/config.toml:$R/.vscode/boba/aid.toml:$R/.vscode/boba/aid-process.toml:$R/.dev/stand.toml \
 BOBA_MCP_CONFIG_PATH=$R/compose/mcp/conf/config.toml:$R/.vscode/boba/mcp.toml:$R/.dev/stand.toml \
-    $R/.venv/bin/pytest $R/packages/apps/boba-mcp/tests
+    $R/.vscode/python-debug-slice.sh -m pytest $R/packages/apps/boba-mcp/tests
 ```
+
+Для проверок песочницы запуск через обёртку обязателен: одного
+`BOBA_CGROUP_BASE` недостаточно, сам pytest должен находиться в
+`boba-debug.slice`. Путь базы можно получить после запуска юнита:
+
+```sh
+systemctl --user start boba-sandbox@debug.service
+export BOBA_CGROUP_BASE="/sys/fs/cgroup$(systemctl --user show boba-sandbox@debug.service --property=ControlGroup --value)/sandbox"
+```
+
+Наложение `.vscode/boba/mcp.toml` также должно задавать
+`[tool_launcher] cgroup_base` этим путём: значение
+`/cgroup/boba-sandbox-mcp` из compose-конфига является точкой монтирования
+в контейнере и не подходит для запуска на хосте. Таким образом,
+`BOBA_CGROUP_BASE` настраивает самостоятельные песочницы тестов,
+`tool_launcher.cgroup_base` — запуск плагинов из конфигурации MCP,
+а обёртка помещает процесс в нужный срез systemd.
 
 `stand.toml` — наложение стенда тестов, один файл на разработчика с режимом
 `0600`: в нём учётки стенда. В его секции `[stand]` лежат значения,
@@ -3572,7 +3573,7 @@ python3 -c "import base64,secrets; print(base64.b64encode(secrets.token_bytes(32
 
 | Поле | Что значит |
 |---|---|
-| `identifier` | строковый ключ `realm:login`, вычисляемый из личности |
+| `identifier` | канонический логин пользователя |
 | `display_name` | логин как набран, для интерфейса |
 | `metadata` | всё, что вход знает о себе (таблица ниже) |
 | `exp` | до какого момента токен годен, unix-время |
@@ -3596,11 +3597,11 @@ python3 -c "import base64,secrets; print(base64.b64encode(secrets.token_bytes(32
 
 ```json
 {
-  "identifier": "corporate:ivanov",
+  "identifier": "ivanov",
   "display_name": "Ivanov",
   "metadata": {
     "provider": "KerberosAuth",
-    "identity": {"realm": "corporate", "login": "ivanov"},
+    "identity": {"login": "ivanov"},
     "principal": "ivanov@EXAMPLE.COM",
     "roles": ["analyst"],
     "managed_roles": ["analyst"],

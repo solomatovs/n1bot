@@ -22,20 +22,20 @@ from boba.aid.agent.chat import (
     ThreadDeleter,
 )
 from boba.aid.agent.commands import CommandMenus
-from boba.aid.agent.config import AgentConfig, AgentSettings
 from boba.aid.agent.feed import AgentFeeds, BusParts
 from boba.aid.agent.relay import McpRegistrations, McpRelay
 from boba.aid.auth.tokens import JwtTokens
 from boba.aid.canvas.remote import RemoteJournals
 from boba.aid.canvas.tools import CanvasOpener
 from boba.aid.chat.ui_text import UiText
+from boba.aid.config.app import AppConfig
+from boba.aid.config.models import AgentConfig, AgentSettings
 from boba.aid.data import PostgresDataLayer
 from boba.aid.data.feedbacks import FeedbacksTable
 from boba.aid.data.remote_storage import FileOwners, RemoteStorageClient
 from boba.aid.data.threads import ThreadsTable
 from boba.aid.data.users import UsersTable
 from boba.aid.infra import services
-from boba.aid.infra.config import AppConfig
 from boba.aid.infra.di import Container, Depends
 from boba.aid.infra.paths import InstanceData
 from boba.aid.infra.sandbox import SandboxLinks

@@ -49,9 +49,9 @@ from acp.transports import spawn_stdio_transport
 from mcp.client.auth.exceptions import OAuthFlowError
 from pydantic import AnyUrl, BaseModel, ValidationError
 
-from boba.aid.agent.config import AgentServiceConfig
 from boba.aid.agent.relay import ClientName, McpRelay
 from boba.aid.agent.settings import AgentWorkdir, WorkdirFile
+from boba.aid.config.models import AgentServiceConfig
 from boba.aid.rendering.acp_view import SessionUpdate
 from boba.mcp_client.client import McpCaller, McpClientError
 from boba.transport.acp.protocol import (

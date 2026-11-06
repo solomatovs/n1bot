@@ -29,8 +29,7 @@ class StandIdentity(StrEnum):
 
     TURN = "test-turn"
     PROFILE = "test"
-    REALM = "corporate"
-    LOGIN = "corporate:tester"
+    LOGIN = "tester"
 
 
 class StandContexts(CallContexts):
@@ -88,12 +87,10 @@ class CallStand:
         if cancellation is None:
             cancellation = RunCancellation()
 
-        identity = login if ":" in login else f"{StandIdentity.REALM}:{login}"
-
         return CallContext(
             subject=Subject(
                 user_id=user_id,
-                identity=UserIdentity.model_validate(identity),
+                identity=UserIdentity.model_validate(login),
                 roles=frozenset(roles),
                 profile=profile,
             ),

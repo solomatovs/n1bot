@@ -15,22 +15,17 @@ from pydantic import SecretStr
 from boba.agent.history import HistoryError, MemoryHistoryStore, SessionId
 from boba.agent.queue import QueueEntry, QueueKind
 from boba.agent.records import PermissionMode, UserRecord
-from boba.agent.settings import (
+from boba.cli.config.settings import (
+    Arguments,
     HistoryKind,
     HistoryPoolSettings,
     JsonlHistorySettings,
     MemoryHistorySettings,
     PostgresHistorySettings,
-)
-from boba.cli.settings import (
-    Arguments,
-    EnvName,
-    PostgresBuilder,
-    ProfileBuilder,
-    Settings,
     SettingsError,
     SettingsSource,
 )
+from boba.cli.settings import EnvName, PostgresBuilder, ProfileBuilder, Settings
 from boba.stand.agent import Collected, FakeServer, Protocol, Served, StandAgents
 from boba.stand.ui.fake_llm import ScenarioName
 

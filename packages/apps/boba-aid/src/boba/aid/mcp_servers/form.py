@@ -19,8 +19,8 @@ from pydantic import (
     ValidationError,
 )
 
+from boba.aid.config.models import McpDefaultsConfig
 from boba.aid.mcp_servers import McpAppError, McpAuthChoice, ReservedHeader
-from boba.aid.mcp_servers.config import McpDefaultsConfig
 from boba.aid.mcp_servers.store import StoredServer
 from boba.core.mcp_names import McpToolNames
 from boba.mcp_client.client import (

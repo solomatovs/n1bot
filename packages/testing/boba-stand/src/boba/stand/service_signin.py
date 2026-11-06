@@ -51,11 +51,9 @@ class ServiceSignIn:
         self._client_secret = client_secret
         self._assertions = ProxyAssertions(proxy_secret, 0)
 
-    def token(
-        self, login: str, roles: str, resource: str, realm: str = "corporate"
-    ) -> str:
+    def token(self, login: str, roles: str, resource: str) -> str:
         """Токен пользователя login с ролями roles для endpoint'а resource."""
-        identity = UserIdentity(realm=realm, login=Login(login))
+        identity = UserIdentity(login=Login(login))
         form = {
             "grant_type": self.GRANT,
             "assertion": self._assertions.issue(

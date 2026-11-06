@@ -19,7 +19,7 @@ from boba.identity.signin import ProfileCatalog, SignInResult
 pytestmark = pytest.mark.anyio
 
 CREATED_AT = datetime(2026, 1, 1, tzinfo=UTC)
-IDENTITY = UserIdentity(realm="corporate", login=Login("alice"))
+IDENTITY = UserIdentity(login=Login("alice"))
 
 
 class Profiles(ProfileCatalog):

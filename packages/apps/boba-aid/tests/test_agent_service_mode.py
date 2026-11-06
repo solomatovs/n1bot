@@ -35,13 +35,13 @@ from boba.aid.agent.chat import (
     ThreadIdentity,
 )
 from boba.aid.agent.client import AgentFailureKind, AgentProcessError
-from boba.aid.agent.config import AgentServiceConfig, AgentSettings, ServiceAgentConfig
+from boba.aid.config.app import AppConfig
+from boba.aid.config.models import AgentServiceConfig, AgentSettings, ServiceAgentConfig
 from boba.aid.data.threads import ThreadsTable
 from boba.aid.data.users import UsersTable
-from boba.aid.infra.config import AppConfig
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles, SelectedProfile
 from boba.chat.threads import StoredThread, ThreadUpsert
-from boba.cli.serve import ServeHistory
+from boba.cli.config.models import ServeHistory
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.principal import UserIdentity
@@ -127,7 +127,7 @@ async def service(
     )
     port = StandPorts().free()
     served = AgentServiceStand(
-        process_config.paths,
+        process_config.paths.data_dir,
         ServeHistory(schema=history.schema(), postgres=history.postgres()),
         layer,
         profiles,

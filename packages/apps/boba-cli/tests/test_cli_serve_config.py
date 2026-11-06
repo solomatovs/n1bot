@@ -12,8 +12,13 @@ import pytest
 from omegaconf import DictConfig, OmegaConf
 from pydantic import ValidationError
 
-from boba.cli.serve import AgentServerConfig, ServeConfig, ServeSection
-from boba.config import bind
+from boba.cli.config.models import (
+    AgentServerConfig,
+    DataConfig,
+    ServeConfig,
+    ServeSection,
+)
+from boba.config import ConfigError, bind
 from boba.config.application import ConfigFiles
 
 INSTANCE = r"""
@@ -120,9 +125,6 @@ base_dn = "DC=example,DC=com"
 user_filter = "(sAMAccountName={username})"
 bind_dn_template = "EXAMPLE\\{username}"
 
-[auth.identity]
-realm = "corporate"
-
 [auth.roles.directory]
 
 [auth.roles.directory.member_of]
@@ -131,9 +133,6 @@ realm = "corporate"
 [[auth]]
 type = "local"
 require_roles = true
-
-[auth.identity]
-realm = "boba-local"
 
 [auth.users]
 admin = "admin-password"
@@ -146,9 +145,6 @@ type = "proxy"
 secret = "${keys.agent_proxy}"
 max_skew_sec = 60
 require_roles = true
-
-[auth.identity]
-realm = "corporate"
 
 [auth.roles.header]
 name = "X-Remote-Roles"
@@ -279,3 +275,23 @@ class TestConfig:
 
         with pytest.raises(ValidationError, match=refusal):
             ServeSection.model_validate(section)
+
+
+def test_scalar_data_path_builds_the_instance_paths() -> None:
+    raw = OmegaConf.create({"data": "/srv/boba/data"})
+
+    paths = bind(raw, "data", DataConfig)
+
+    assert paths.data("workspace") == Path("/srv/boba/data/workspace")
+
+
+def test_scalar_data_path_rejects_a_relative_directory() -> None:
+    raw = OmegaConf.create({"data": "relative/data"})
+
+    with pytest.raises(ConfigError, match="expected an absolute path"):
+        bind(raw, "data", DataConfig)
+
+
+def test_instance_paths_must_be_absolute() -> None:
+    with pytest.raises(ValueError, match="absolute"):
+        DataConfig(data_dir="data")

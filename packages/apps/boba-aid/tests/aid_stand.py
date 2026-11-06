@@ -47,12 +47,12 @@ from boba.aid.auth.tokens import JwtTokens
 from boba.aid.canvas.remote import RemoteJournals, RemoteStreams
 from boba.aid.canvas.tools import CanvasOpener
 from boba.aid.chat.ui_text import UiText
+from boba.aid.config.app import AppConfig
 from boba.aid.data.data_layer import PostgresDataLayer
 from boba.aid.data.feedbacks import FeedbacksTable
 from boba.aid.data.threads import ThreadsTable
 from boba.aid.data.users import UsersTable
 from boba.aid.domain.keys import AppPrefix
-from boba.aid.infra.config import AppConfig
 from boba.aid.infra.session import (
     ChainlitSession,
     ChainlitSessions,
@@ -110,8 +110,8 @@ from boba.mcp_client.client import (
     McpServers,
     ServerConfigs,
 )
-from boba.mcp_server.app import McpAppConfig
 from boba.mcp_server.auth import ServiceMark
+from boba.mcp_server.config.models import McpAppConfig
 from boba.mcp_server.connections.store import ConnectionStore
 from boba.mcp_server.connections.tools import ConnectionTools
 from boba.mcp_server.migrations import configured_migrations
@@ -165,7 +165,7 @@ class AuthTestClaim(StrEnum):
 
 from boba.workspace.launcher import ReadWindow
 
-AUTH_USER = "corporate:test-user"
+AUTH_USER = "test-user"
 
 
 class MirroredUserConnectionStore(ConnectionStore):
@@ -191,13 +191,13 @@ class MirroredUserConnectionStore(ConnectionStore):
             user = await self._source_users.stored_by_id(target.id)
             if user is not None:
                 statement = sql.SQL(
-                    "insert into {}.users (id, realm, login) "
-                    "values (%s, %s, %s) on conflict (id) do nothing"
+                    "insert into {}.users (id, login) "
+                    "values (%s, %s) on conflict (id) do nothing"
                 ).format(sql.Identifier(self.schema))
                 async with self._stand_pool.connection() as conn:
                     await conn.execute(
                         statement,
-                        (user.id, user.identity.realm, user.identity.login),
+                        (user.id, user.identity.login),
                     )
 
         return await super().grant(connection_id, target)
@@ -207,7 +207,7 @@ class TabSession:
     """Сессия вкладки в объёме, который читает регистрация сервера: объект с
     токеном входа, который обновление сессии заменяет на месте."""
 
-    LOGIN: ClassVar[str] = "corporate:ivanov"
+    LOGIN: ClassVar[str] = "ivanov"
     PRINCIPAL: ClassVar[str] = "ivanov@STAND.LOCAL"
     SERVER: ClassVar[str] = "aid_all"
 
@@ -267,7 +267,7 @@ class ServiceProcess:
     )
     SECRET: ClassVar[str] = "stand-proxy-secret"
 
-    OWNER: ClassVar[str] = str(uuid5(NAMESPACE_URL, "boba-user:corporate:alice"))
+    OWNER: ClassVar[str] = str(uuid5(NAMESPACE_URL, "boba-user:alice"))
     """Под этим id сервис держит журналы и файлы пользователя alice, чьим
     токеном входит token_servers()."""
 
@@ -1143,7 +1143,7 @@ async def seeded(
     pool: AsyncPostgresPool,
     app_config: AppConfig,
 ) -> Seed:
-    identity = UserIdentity.model_validate("corporate:user-1")
+    identity = UserIdentity.model_validate("user-1")
     await UsersTable(pool, app_config.db_schema).upsert(identity)
     user = await layer.create_user(StandTokens.user(identity.identifier))
     if user is None:
@@ -1330,9 +1330,6 @@ class SessionStub:
         name = identifier
         if name is None:
             name = f"user-{user_id}"
-
-        if ":" not in name:
-            name = f"corporate:{name}"
 
         self.user = PersistedUser(
             id=user_id or str(UUID(int=0)),

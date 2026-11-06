@@ -46,19 +46,16 @@ class RoleSeed:
                     """
                 insert into {schema}.users (
                     id,
-                    realm,
                     login
                 )
                 values (
                     %(id)s,
-                    %(realm)s,
                     %(login)s
                 )
                 on conflict (id)
                 do nothing
                 """,
                     id=user_id,
-                    realm=identity.realm,
                     login=identity.login,
                 )
                 .build()

@@ -38,7 +38,7 @@ class RefusingAuth(BrowserSessions):
         # от сервиса входа колбэку нужен только sign_in
         self._error = error
 
-    async def by_password(self, username: str, password: str, realm: str = ""):
+    async def by_password(self, username: str, password: str):
         raise self._error
 
 

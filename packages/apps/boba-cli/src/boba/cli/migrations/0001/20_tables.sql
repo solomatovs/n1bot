@@ -1,15 +1,10 @@
 create temporary table pg_temp.users (
     id         uuid primary key default gen_random_uuid(),
-    identifier text not null unique,
     created_at timestamptz not null default now(),
-    realm      text,
-    login      text,
+    login      text not null,
+    constraint users_login_key unique (login),
     constraint users_identity check (
-        (realm is null and login is null)
-        or (realm is not null and login is not null
-            and realm ~ '^[a-z0-9][a-z0-9._-]*$'
-            and length(login) > 0 and login = lower(btrim(login))
-            and identifier = realm || ':' || login)
+        length(login) > 0 and login = lower(btrim(login))
     )
 );
 
@@ -25,9 +20,6 @@ create temporary table pg_temp.user_roles (
     managed boolean not null default false,
     primary key (user_id, role_id)
 );
-
-create unique index if not exists idx_users_identifier_lower
-    on pg_temp.users (lower(identifier));
 
 create index if not exists idx_user_roles_role on pg_temp.user_roles (role_id);
 

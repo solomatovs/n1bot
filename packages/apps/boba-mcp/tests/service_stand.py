@@ -46,21 +46,16 @@ from boba.identity.principal import IdentityRule, UserIdentity
 from boba.identity.run import Runs
 from boba.krb.connections import KerberosCredentialSource
 from boba.ldap import Ldap3Directory
-from boba.mcp_server.app import McpAppConfig
 from boba.mcp_server.auth import ServiceMark
 from boba.mcp_server.catalog import EndpointCatalog, McpEndpoint
+from boba.mcp_server.config.models import McpAppConfig, RunLimits
 from boba.mcp_server.connections import NoRefresh
 from boba.mcp_server.connections.params import ConnectionParams
 from boba.mcp_server.connections.store import ConnectionStore
 from boba.mcp_server.connections.tools import ConnectionTools
 from boba.mcp_server.connections.user_connections import ArmedConnections
 from boba.mcp_server.prompts import PromptFile
-from boba.mcp_server.server import (
-    FileUploadTool,
-    McpEndpoints,
-    RunLimitMiddleware,
-    RunLimits,
-)
+from boba.mcp_server.server import FileUploadTool, McpEndpoints, RunLimitMiddleware
 from boba.oauth.server.assertions import ProxyAssertionVerifier
 from boba.oauth.server.clients import RegisteredClients, TrustedClient
 from boba.oauth.server.provider import AuthServer
@@ -327,7 +322,7 @@ class ServiceStand:
 
         self.registry = replace(stand.registry(access, (params,)), own=frozenset(own))
         proxy = ProxyAuthConfig(
-            identity=IdentityRule(realm="corporate"),
+            identity=IdentityRule(),
             secret=SecretStr(PROXY_SECRET),
             roles=ProxyRoleProviders(header=HeaderRolesConfig()),
         )
@@ -335,7 +330,7 @@ class ServiceStand:
             mapping=RoleMappingConfig(root={LOCAL_LOGIN: ["dev"]})
         )
         local = LocalAuthConfig(
-            identity=IdentityRule(realm="local-stand"),
+            identity=IdentityRule(),
             users={
                 LOCAL_LOGIN: LOCAL_PASSWORD,
                 ROLELESS_LOGIN: ROLELESS_PASSWORD,
@@ -343,16 +338,6 @@ class ServiceStand:
             roles=LocalRoleProviders(local=local_roles),
         )
         proxies = [proxy]
-        for realm in ("local-stand", "aid-local", "restricted"):
-            proxies.append(
-                ProxyAuthConfig(
-                    identity=IdentityRule(realm=realm),
-                    path=f"/auth/proxy/{realm}",
-                    secret=proxy.secret,
-                    roles=proxy.roles,
-                )
-            )
-
         auth_services = AuthServices(
             Ldap3Directory(),
             catalog,
@@ -415,7 +400,6 @@ class ServiceStand:
         sealed = SealedValues("stand-session-secret", ServiceMark.SEALED_SALT)
         declared = TrustedClient(
             secret=SecretStr(CLIENT_SECRET),
-            realms=frozenset({"corporate", "local-stand", "aid-local"}),
         )
         resources = catalog.resources(public_url)
         server = AuthServer(

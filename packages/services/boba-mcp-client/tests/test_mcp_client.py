@@ -62,7 +62,8 @@ from boba.mcp_client.client import (
     ProxyAuth,
     StdioCommand,
 )
-from boba.mcp_server.app import McpAppConfig, McpHost
+from boba.mcp_server.app import McpHost
+from boba.mcp_server.config.models import McpAppConfig
 from boba.mcp_server.migrations import configured_migrations
 from boba.oauth.server.clients import TrustedClient
 from boba.sandbox.paths import ProgramRoots
@@ -133,7 +134,7 @@ def _legacy(slot: AppsSlot, server: AppServer) -> HttpEndpoint:
     )
 
 
-CALLER = McpCaller(login="corporate:alice", roles=frozenset({"dev"}))
+CALLER = McpCaller(login="alice", roles=frozenset({"dev"}))
 OWN = McpServers.OWN
 
 
@@ -1341,8 +1342,8 @@ class TestSignInAsTheUser:
         вызывал. Чужому пользователю, подписке на канал без записи и на uri
         не журнала сервер отказывает до подтверждения."""
         servers = self._servers(boba_mcp_stand, self.SECRET, self.CLIENT_SECRET)
-        owner = McpCaller(login="corporate:ivanov", roles=frozenset({"dev"}))
-        stranger = McpCaller(login="corporate:petrov", roles=frozenset({"dev"}))
+        owner = McpCaller(login="ivanov", roles=frozenset({"dev"}))
+        stranger = McpCaller(login="petrov", roles=frozenset({"dev"}))
         heard = HeardCall()
         journals = HeardJournals(TcpPeers(boba_mcp_stand.port))
         events: list[str] = []
@@ -1418,7 +1419,7 @@ class TestSignInAsTheUser:
         self, boba_mcp_stand: BobaMcpStand
     ) -> None:
         servers = self._servers(boba_mcp_stand, self.SECRET, self.CLIENT_SECRET)
-        caller = McpCaller(login="corporate:ivanov", roles=frozenset({"dev"}))
+        caller = McpCaller(login="ivanov", roles=frozenset({"dev"}))
         try:
             port = await self._port(servers, caller, "boba")
             reply = await port.call(OWN, _call("fake_whoami"), None, None, None, None)
@@ -1426,7 +1427,7 @@ class TestSignInAsTheUser:
             await servers.stop()
 
         text = McpResults().result("fake_whoami", "c1", reply).llm_view()
-        if not text.startswith("corporate:ivanov|dev|"):
+        if not text.startswith("ivanov|dev|"):
             raise AssertionError(f"the body sees the user and the roles: {text}")
 
     async def test_evicted_port_lets_its_call_finish(
@@ -1441,8 +1442,8 @@ class TestSignInAsTheUser:
         auth = self._auth(boba_mcp_stand, self.SECRET, self.CLIENT_SECRET)
         endpoint = boba_mcp_stand.endpoint().model_copy(update={"auth": auth})
         servers = Few(FixedServerConfigs(servers={"boba": _config(endpoint)}))
-        owner = McpCaller(login="corporate:ivanov", roles=frozenset({"dev"}))
-        other = McpCaller(login="corporate:petrov", roles=frozenset({"dev"}))
+        owner = McpCaller(login="ivanov", roles=frozenset({"dev"}))
+        other = McpCaller(login="petrov", roles=frozenset({"dev"}))
         try:
             port = await self._port(servers, owner, "boba")
             slow = _call("fake_progress", steps=6, pause=0.5)
@@ -1463,7 +1464,7 @@ class TestSignInAsTheUser:
         запрос панели того же пользователя отвечает сразу, а не после
         вызова — токен входа выдаётся без замка провайдера OAuth."""
         servers = self._servers(boba_mcp_stand, self.SECRET, self.CLIENT_SECRET)
-        caller = McpCaller(login="corporate:ivanov", roles=frozenset({"dev"}))
+        caller = McpCaller(login="ivanov", roles=frozenset({"dev"}))
         marker = tmp_path / "sleep.pid"
         try:
             port = await self._port(servers, caller, "boba")
@@ -1491,7 +1492,7 @@ class TestSignInAsTheUser:
         освобождается в задаче вызова, и следующие запросы того же
         подключения идут как прежде."""
         servers = self._servers(boba_mcp_stand, self.SECRET, self.CLIENT_SECRET)
-        caller = McpCaller(login="corporate:ivanov", roles=frozenset({"dev"}))
+        caller = McpCaller(login="ivanov", roles=frozenset({"dev"}))
         marker = tmp_path / "sleep.pid"
         try:
             port = await self._port(servers, caller, "boba")
@@ -1520,8 +1521,8 @@ class TestSignInAsTheUser:
         """Список endpoint tools одинаков для допущенных пользователей и private;
         роли разрешают endpoint целиком, а не отдельные инструменты."""
         servers = self._servers(boba_mcp_stand, self.SECRET, self.CLIENT_SECRET)
-        wide = McpCaller(login="corporate:ivanov", roles=frozenset({"dev"}))
-        weak = McpCaller(login="corporate:petrov", roles=frozenset({"weak"}))
+        wide = McpCaller(login="ivanov", roles=frozenset({"dev"}))
+        weak = McpCaller(login="petrov", roles=frozenset({"weak"}))
         try:
             wide_port = await self._port(servers, wide, "boba")
             described = await wide_port.described(OWN)
@@ -1545,7 +1546,7 @@ class TestSignInAsTheUser:
         self, boba_mcp_stand: BobaMcpStand
     ) -> None:
         servers = self._servers(boba_mcp_stand, self.SECRET, self.CLIENT_SECRET)
-        caller = McpCaller(login="corporate:ivanov", roles=frozenset({"dev"}))
+        caller = McpCaller(login="ivanov", roles=frozenset({"dev"}))
         try:
             await self._port(servers, caller, "boba")
             port = await servers.port("narrow", caller)
@@ -1560,7 +1561,7 @@ class TestSignInAsTheUser:
         self, boba_mcp_stand: BobaMcpStand
     ) -> None:
         servers = self._servers(boba_mcp_stand, self.SECRET, self.CLIENT_SECRET)
-        weak = McpCaller(login="corporate:petrov", roles=frozenset({"weak"}))
+        weak = McpCaller(login="petrov", roles=frozenset({"weak"}))
         try:
             await self._port(servers, weak, "boba")
             narrow = await servers.port("narrow", weak)
@@ -1576,7 +1577,7 @@ class TestSignInAsTheUser:
         утверждения сервер отвергает и называет секрет, который не сошёлся."""
         honest = self._servers(boba_mcp_stand, self.SECRET, self.CLIENT_SECRET)
         forged = self._servers(boba_mcp_stand, SecretStr("forged"), self.CLIENT_SECRET)
-        caller = McpCaller(login="corporate:ivanov", roles=frozenset({"dev"}))
+        caller = McpCaller(login="ivanov", roles=frozenset({"dev"}))
         try:
             await self._port(honest, caller, "boba")
             port = await forged.port("boba", caller)
@@ -1602,7 +1603,7 @@ class TestSignInAsTheUser:
         foreign = self._servers(
             boba_mcp_stand, self.SECRET, SecretStr("not-the-client-secret")
         )
-        caller = McpCaller(login="corporate:ivanov", roles=frozenset({"dev"}))
+        caller = McpCaller(login="ivanov", roles=frozenset({"dev"}))
         try:
             await self._port(honest, caller, "boba")
             port = await foreign.port("boba", caller)
@@ -1911,9 +1912,7 @@ class TestBobaMcpService:
     """Приёмка двумя процессами: сервис со всеми плагинами своего конфига,
     клиент чата входит через proxy и ходит к нему по сети."""
 
-    CALLER: ClassVar[McpCaller] = McpCaller(
-        login="corporate:tester", roles=frozenset({"wrt"})
-    )
+    CALLER: ClassVar[McpCaller] = McpCaller(login="tester", roles=frozenset({"wrt"}))
 
     @pytest.fixture
     def process(self, tmp_path: Path, test_database: str) -> Iterator[BobaMcpService]:

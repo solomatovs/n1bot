@@ -58,9 +58,6 @@ from boba.aid.agent.client import (
     AgentProcess,
     AgentProcessError,
 )
-from boba.aid.agent.config import (
-    PostgresAgentHistory,
-)
 from boba.aid.agent.settings import (
     AgentSettingsError,
     AgentWorkdirs,
@@ -68,6 +65,7 @@ from boba.aid.agent.settings import (
     ProfileModelSpecs,
     SettingsFileBuilder,
 )
+from boba.aid.config.models import PostgresAgentHistory
 from boba.aid.data.threads import ThreadsTable
 from boba.aid.data.users import UsersTable
 from boba.chat.profiles import (

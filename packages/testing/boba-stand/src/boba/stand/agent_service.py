@@ -23,8 +23,8 @@ from typing import Any, ClassVar
 import httpx
 import uvicorn
 
-from boba.cli.serve import ServeConfig, ServeHistory, ServeHost, ServeMark
-from boba.config.paths import PathsConfig
+from boba.cli.config.models import ServeConfig, ServeHistory
+from boba.cli.serve import ServeHost, ServeMark
 from boba.core.secrets import SecretReveal
 from boba.db.postgres import AsyncPostgresPool, PostgresTable
 from boba.db.postgres.connection.auth import KeytabAuth
@@ -111,7 +111,7 @@ class ServeStandConfig:
 
     def __init__(  # noqa: PLR0913 — служба собирается всеми частями стенда
         self,
-        instance: PathsConfig,
+        data_dir: str,
         history: ServeHistory,
         settings: Mapping[str, Any],
         profiles: ServiceProfiles,
@@ -121,7 +121,7 @@ class ServeStandConfig:
         self.port = address.listen
         self.public_port = address.public
         self.public_url = f"http://127.0.0.1:{address.public}{self.PREFIX}"
-        self._instance = instance
+        self._data_dir = data_dir
         self._history = history
         self._settings = dict(settings)
         self._profiles = profiles
@@ -166,18 +166,10 @@ class ServeStandConfig:
         return {
             "schema": location["schema"],
             "postgres": location["postgres"],
-            "data": self._instance.data_dir,
+            "data": self._data_dir,
             "auth": [
                 {
                     "type": "proxy",
-                    "identity": {"realm": "corporate"},
-                    "secret": self.PROXY_SECRET,
-                    "roles": {"header": {}},
-                },
-                {
-                    "type": "proxy",
-                    "identity": {"realm": "aid-local"},
-                    "path": "/auth/proxy/aid-local",
                     "secret": self.PROXY_SECRET,
                     "roles": {"header": {}},
                 },
@@ -203,7 +195,6 @@ class ServeStandConfig:
                 "clients": {
                     self.CLIENT_ID: {
                         "secret": self.CLIENT_SECRET,
-                        "realms": ["corporate", "aid-local"],
                     }
                 },
             },
@@ -246,7 +237,7 @@ class AgentServiceStand:
 
     def __init__(  # noqa: PLR0913 — служба собирается всеми частями стенда
         self,
-        instance: PathsConfig,
+        data_dir: str,
         history: ServeHistory,
         settings: Mapping[str, Any],
         profiles: ServiceProfiles,
@@ -254,7 +245,7 @@ class AgentServiceStand:
         address: ServeAddress,
     ) -> None:
         self._config = ServeStandConfig(
-            instance, history, settings, profiles, idle_sec, address
+            data_dir, history, settings, profiles, idle_sec, address
         )
         self.port = self._config.port
         self.public_url = self._config.public_url

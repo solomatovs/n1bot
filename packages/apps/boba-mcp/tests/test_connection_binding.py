@@ -48,12 +48,11 @@ async def store(
     identity = call_stand.context("binding", login="alice", roles=("reader",))
     async with pool.connection() as conn:
         await conn.execute(
-            sql.SQL(
-                "insert into {}.users (id, realm, login) values (%s, %s, %s)"
-            ).format(sql.Identifier(schema)),
+            sql.SQL("insert into {}.users (id, login) values (%s, %s)").format(
+                sql.Identifier(schema)
+            ),
             (
                 identity.subject.user_id,
-                identity.subject.identity.realm,
                 identity.subject.identity.login,
             ),
         )

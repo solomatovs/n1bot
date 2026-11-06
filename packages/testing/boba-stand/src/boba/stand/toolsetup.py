@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from pathlib import Path
 from typing import Any
 
 from boba.config import bind
@@ -15,6 +16,7 @@ from boba.db.postgres.connection import PostgresConfig
 from boba.identity.context import CallContexts
 from boba.kerberos import KeytabAuth
 from boba.krb import KeytabCredentials, ServiceTicketIssuer
+from boba.mcp_server.config.models import DataConfig, TlsConfig
 from boba.sandbox.program import PluginEntry
 from boba.sandbox.zygote import ZygotePolicy, ZygoteToolCaller
 from boba.stand.refs import StandRefs
@@ -98,7 +100,10 @@ class ToolSetup:
         конфиг в режиме песочницы (фикстура sandbox_raw_config)."""
         launch = plugin_launch(raw, section)
         profile = ZygoteLaunchers(
-            raw, bind(raw, "tool_launcher", SandboxCgroupConfig)
+            raw,
+            bind(raw, "tool_launcher", SandboxCgroupConfig),
+            Path(bind(raw, "data", DataConfig).data_dir),
+            Path(bind(raw, "tls", TlsConfig).ca_file),
         ).profile_of(launch)
         refs = [PluginEntry().ref(section)]
 

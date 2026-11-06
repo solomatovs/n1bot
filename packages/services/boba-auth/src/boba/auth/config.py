@@ -222,12 +222,12 @@ class ProxyProfileProviders(BaseModel):
 class AuthConfig(BaseModel):
     """Общие поля конфигурации входа; конкретную модель задаёт фабрика приложения."""
 
-    unique_per_realm: ClassVar[bool] = False
+    unique: ClassVar[bool] = False
 
     model_config = ConfigDict(extra="forbid")
 
     type: str = Field(min_length=1)
-    identity: IdentityRule
+    identity: IdentityRule = Field(default_factory=IdentityRule)
 
 
 class LocalAuthConfig(AuthConfig):
@@ -238,7 +238,6 @@ class LocalAuthConfig(AuthConfig):
     model_config = ConfigDict(extra="forbid")
 
     type: Literal["local"] = "local"
-    identity: IdentityRule
 
     users: dict[str, str] = Field(
         default_factory=dict,
@@ -262,7 +261,6 @@ class LdapAuthConfig(AuthConfig):
     model_config = ConfigDict(extra="forbid")
 
     type: Literal["ldap"] = "ldap"
-    identity: IdentityRule
     server: str = Field(
         description="URI контроллера домена, напр. ldaps://dc.corp.example.com:636.",
     )
@@ -296,13 +294,12 @@ class KerberosAuthConfig(AuthConfig):
     """SSO через Kerberos/SPNEGO: тикет валидирует middleware, роли — провайдерами
     principal и ldap."""
 
-    unique_per_realm: ClassVar[bool] = True
+    unique: ClassVar[bool] = True
     PROVIDER: ClassVar[str] = "KerberosAuth"
 
     model_config = ConfigDict(extra="forbid")
 
     type: Literal["kerberos"] = "kerberos"
-    identity: IdentityRule
 
     accept: AcceptConfig = Field(
         description=(
@@ -348,13 +345,12 @@ class ProxyAuthConfig(AuthConfig):
     """Вход по доверенному заголовку: логин ставит свой бэкенд и подписывает
     запрос общим секретом; роли и профили — провайдерами roles.* и profiles.*."""
 
-    unique_per_realm: ClassVar[bool] = True
+    unique: ClassVar[bool] = True
     PROVIDER: ClassVar[str] = "ProxyAuth"
 
     model_config = ConfigDict(extra="forbid")
 
     type: Literal["proxy"] = "proxy"
-    identity: IdentityRule
 
     path: str = Field(default="/auth/proxy")
     secret: SecretStr = Field(

@@ -227,10 +227,10 @@ class AuthServer(OAuthProvider):
             raise TokenError("invalid_grant", str(exc)) from exc
 
         resource = self._resource(claims.resource, TokenError)
-        if not self._clients.permits(client_id, claims.identity):
+        if not self._clients.permits(client_id):
             msg = (
                 f"identity assertion of {claims.sub!r}: client {client_id!r} "
-                f"is not trusted for realm {claims.identity.realm!r}"
+                "is not a trusted assertion client"
             )
             raise TokenError("invalid_grant", msg)
 
@@ -241,7 +241,7 @@ class AuthServer(OAuthProvider):
             identity=claims.identity,
         )
         try:
-            signed = await self._sign_ins.admit_proxy(request, claims.identity.realm)
+            signed = await self._sign_ins.admit_proxy(request)
         except (AuthenticationError, AuthorizationError) as exc:
             logger.warning("%s", exc)
             raise TokenError("invalid_grant", str(exc)) from exc

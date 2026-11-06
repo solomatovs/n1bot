@@ -174,9 +174,7 @@ class NetworkServer:
     async def token(self, user: str, role: str, path: str = "/service") -> str:
         public = self.urls[0]
         resource = public + path
-        assertion = self._assertions.issue(
-            CLIENT_ID, f"corporate:{user}", role, public, resource
-        )
+        assertion = self._assertions.issue(CLIENT_ID, f"{user}", role, public, resource)
         response = await self.http.post(
             public + "/token",
             data={

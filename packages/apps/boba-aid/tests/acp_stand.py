@@ -49,16 +49,13 @@ from boba.aid.agent.client import (
     ElicitationReply,
 )
 from boba.aid.agent.commands import MenuCommand
-from boba.aid.agent.config import (
+from boba.aid.agent.settings import AgentWorkdirs, SettingsFileBuilder
+from boba.aid.config.models import (
+    AgentProviderKind,
+    ModelFile,
     PostgresAgentHistory,
     ProcessAgentConfig,
-)
-from boba.aid.agent.settings import (
-    AgentProviderKind,
-    AgentWorkdirs,
-    ModelFile,
     ProviderFile,
-    SettingsFileBuilder,
 )
 from boba.aid.rendering.acp_view import SessionUpdate
 from boba.chat.profiles import ReasoningReturn

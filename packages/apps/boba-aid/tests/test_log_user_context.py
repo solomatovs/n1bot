@@ -44,8 +44,8 @@ class TestUserInEveryRecord:
         self,
         chat_session: ChatSessionStand,
     ) -> None:
-        chat_session.use(user_id=str(UUID(int=7)), identifier="corporate:ivanov")
-        if getattr(self._record(), UserLogContext.ATTRIBUTE) != "corporate:ivanov":
+        chat_session.use(user_id=str(UUID(int=7)), identifier="ivanov")
+        if getattr(self._record(), UserLogContext.ATTRIBUTE) != "ivanov":
             raise AssertionError("getattr(self._record(), UserLogContext.ATTRIBUTE) =…")
 
     def test_broken_session_does_not_break_logging(
@@ -71,9 +71,9 @@ class TestUserInEveryRecord:
         self,
         chat_session: ChatSessionStand,
     ) -> None:
-        chat_session.use(user_id=str(UUID(int=7)), identifier="corporate:petrov")
+        chat_session.use(user_id=str(UUID(int=7)), identifier="petrov")
         formatter = logging.Formatter("[%(user)s] %(message)s")
-        if formatter.format(self._record()) != "[corporate:petrov] сообщение":
+        if formatter.format(self._record()) != "[petrov] сообщение":
             raise AssertionError('formatter.format(self._record()) == "[petrov] сообщ…')
 
     def test_request_context_used_without_session(self) -> None:
@@ -88,10 +88,10 @@ class TestUserInEveryRecord:
         self,
         chat_session: ChatSessionStand,
     ) -> None:
-        chat_session.use(user_id=str(UUID(int=7)), identifier="corporate:ivanov")
+        chat_session.use(user_id=str(UUID(int=7)), identifier="ivanov")
         token = RequestUserContext.set("sidorov")
         try:
-            if getattr(self._record(), UserLogContext.ATTRIBUTE) != "corporate:ivanov":
+            if getattr(self._record(), UserLogContext.ATTRIBUTE) != "ivanov":
                 raise AssertionError("getattr(self._record(), UserLogContext.ATTRIBUT…")
         finally:
             RequestUserContext.reset(token)
@@ -127,14 +127,14 @@ class TestRequestUserMiddleware:
             seen.append(RequestUserContext.get())
 
         session = StandTokens.session(
-            "corporate:sidorov",
+            "sidorov",
             UUID(int=7),
             profiles={"general"},
         )
         token = StandTokens.issue(session)
         scope = self._scope([(b"authorization", f"Bearer {token}".encode())])
         self._run(self._middleware(app), scope)
-        assert seen == ["corporate:sidorov"], seen
+        assert seen == ["sidorov"], seen
         if RequestUserContext.get() != "":
             raise AssertionError('RequestUserContext.get() == ""')
 

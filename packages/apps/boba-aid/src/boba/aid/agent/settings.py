@@ -29,34 +29,38 @@ import tempfile
 from collections.abc import Mapping, Sequence
 from enum import IntEnum, StrEnum
 from pathlib import Path
-from typing import Any, ClassVar, Literal
+from typing import ClassVar
 
 from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    SecretStr,
     ValidationError,
 )
-from pydantic.alias_generators import to_camel
 
-from boba.aid.agent.config import (
+from boba.aid.config.models import (
     AgentHistoryConfig,
     AgentHistoryKind,
+    AgentProviderKind,
+    HistoryPoolFile,
+    LimitsFile,
+    McpFile,
     MemoryAgentHistory,
+    MemoryHistoryFile,
+    ModelFile,
+    PermissionsFile,
     PostgresAgentHistory,
+    PostgresHistoryFile,
     ProcessAgentConfig,
+    ProviderFile,
+    RemoteProviderView,
+    SettingsFile,
+    ToolsFile,
 )
 from boba.aid.mcp_servers.sources import ServerRecord
 from boba.chat.profiles import (
     ChatProfileConfig,
     LocalChatProfileConfig,
-    ReasoningReturn,
 )
-from boba.core.secrets import SecretReveal
 from boba.db.postgres.connection import LibpqConnection
-from boba.transport.http import HttpTransportConfig
-from boba.transport.http.connection import HttpConnection, NegotiateAuth, WebAuth
+from boba.transport.http.connection import NegotiateAuth
 
 __all__ = [
     "AgentProviderKind",
@@ -97,136 +101,6 @@ class PrivateMode(IntEnum):
 
     DIR = 0o700
     FILE = 0o600
-
-
-class AgentProviderKind(StrEnum):
-    """Виды провайдеров модели, которые чат отдаёт агенту: удалённые по http."""
-
-    OPENAI = "openai"
-    OLLAMA = "ollama"
-
-
-class FileModel(BaseModel):
-    """Основа моделей файла настроек агента: ключи файла — camelCase по
-    договору запуска, чат строит модели именами полей. document() даёт дамп
-    ключами файла с открытыми секретами: обычный дамп пишет SecretStr
-    звёздочками, под ключом контекста SecretReveal поле отдаёт значение."""
-
-    model_config = ConfigDict(
-        alias_generator=to_camel, populate_by_name=True, extra="forbid", frozen=True
-    )
-
-    def document(self) -> dict[str, object]:
-        dump = self.model_dump(
-            mode="json", by_alias=True, context={SecretReveal.REVEAL_CONTEXT: True}
-        )
-        SecretReveal.apply(self, dump)
-
-        return dump
-
-
-class ProviderFile(FileModel):
-    """Ключ `provider` профиля модели: вид, адрес, вход соединения провайдера
-    и поведение запросов — срок, проверка TLS, повторы и таблица транспорта
-    процесса ключами HttpTransportConfig."""
-
-    kind: AgentProviderKind
-    base_url: str = Field(min_length=1)
-    auth: WebAuth
-    timeout_sec: float = Field(gt=0)
-    ssl_verify: bool
-    retry_attempts: int = Field(ge=1)
-    retry_backoff_sec: float = Field(ge=0)
-    retry_statuses: Mapping[int, int]
-    retry_after_max_sec: float = Field(ge=0)
-    transport: Mapping[str, Any]
-
-
-class ModelFile(FileModel):
-    """Ключ `models.<имя>`: профиль модели агента, собранный из профиля чата
-    и его пределов модели."""
-
-    provider: ProviderFile
-    model: str = Field(min_length=1)
-    sampling: Mapping[str, Any]
-    context_window: int = Field(gt=0)
-    max_output_tokens: int = Field(gt=0)
-    reasoning_return: ReasoningReturn
-
-
-class PermissionsFile(FileModel):
-    """Ключ `permissions`: потолок режимов разрешений процесса — право
-    включить bypassPermissions. Сам режим сессии идёт по ACP."""
-
-    allow_bypass: bool
-
-
-class HistoryPoolFile(FileModel):
-    """Ключ `history.pool`: пул соединений истории процесса агента — из
-    пула подключения истории [agent.history.postgres.pool]."""
-
-    min_size: int = Field(ge=1)
-    max_size: int = Field(ge=1)
-    timeout_sec: float = Field(gt=0)
-
-
-class PostgresHistoryFile(FileModel):
-    """Ключ `history` вида postgres: строка libpq, схема журнала и пул."""
-
-    kind: Literal[AgentHistoryKind.POSTGRES]
-    dsn: SecretStr
-    db_schema: str = Field(alias="schema", min_length=1)
-    pool: HistoryPoolFile
-
-
-class MemoryHistoryFile(FileModel):
-    """Ключ `history` вида memory: журнал только в памяти процесса."""
-
-    kind: Literal[AgentHistoryKind.MEMORY]
-
-
-class McpFile(FileModel):
-    """Ключ `mcp`: срок одного вызова tools/call серверов сессии."""
-
-    call_timeout_sec: float = Field(gt=0)
-
-
-class ToolsFile(FileModel):
-    """Ключ `tools`: инструменты, которые модель получает полным определением
-    с первого запроса, — из [agent.tools]; остальные отложены до ToolSearch."""
-
-    always_load: Sequence[str]
-
-
-class LimitsFile(FileModel):
-    """Ключ `limits`: пределы хода из [agent.limits]."""
-
-    tool_result_window_share: float
-
-
-class SettingsFile(FileModel):
-    """Файл настроек процесса агента целиком, как его пишет чат."""
-
-    model: str = Field(min_length=1)
-    models: Mapping[str, ModelFile]
-    permissions: PermissionsFile
-    history: PostgresHistoryFile | MemoryHistoryFile = Field(discriminator="kind")
-    mcp: McpFile | None
-    tools: ToolsFile
-    limits: LimitsFile
-    env: Mapping[str, str]
-    system_prompt_file: str = Field(min_length=1)
-
-
-class RemoteProviderView(BaseModel):
-    """Удалённый провайдер профиля чата глазами агента: вид, соединение и
-    транспорт процесса."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    kind: AgentProviderKind
-    connection: HttpConnection
-    transport: HttpTransportConfig
 
 
 class ProfileModelSpecs:

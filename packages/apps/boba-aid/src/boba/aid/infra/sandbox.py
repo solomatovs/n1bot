@@ -22,7 +22,8 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from boba.aid.infra.config import AidSection, AppConfig
+from boba.aid.config.app import AppConfig
+from boba.aid.config.models import AidSection
 from boba.config import ConfigError
 from boba.http_server import ServerStartError
 

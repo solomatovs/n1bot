@@ -22,13 +22,13 @@ class TestUserDict:
         stored = StoredUser(
             id=UUID(int=7),
             created_at=datetime.now(UTC),
-            identity=UserIdentity(realm="corporate", login=Login("boba")),
+            identity=UserIdentity(login=Login("boba")),
         )
 
         persisted = ThreadDicts.user(stored)
 
         assert persisted.id == str(UUID(int=7))
-        assert persisted.identifier == "corporate:boba"
+        assert persisted.identifier == "boba"
 
 
 class TestThreadDict:

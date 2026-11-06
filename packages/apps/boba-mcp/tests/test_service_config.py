@@ -9,14 +9,15 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
 from omegaconf import DictConfig, OmegaConf
 
 from boba.config import ConfigError, bind
-from boba.mcp_server.app import McpAppConfig
 from boba.mcp_server.catalog import McpEndpoint
+from boba.mcp_server.config.models import DataConfig, McpAppConfig
 from boba.stand.overlay import ConfigOverlay
 from boba.stand.sandbox import section_profile
 from boba.toolrun.plugins import PluginMeta
@@ -99,3 +100,23 @@ class TestDatabaseEndpointCatalog:
     def test_endpoint_rejects_wildcard_tools(self) -> None:
         with pytest.raises(ValueError, match="exact exported tools"):
             McpEndpoint(id=uuid4(), prefix_url="/all", title="All", tools=("*",))
+
+
+def test_scalar_data_path_builds_the_instance_paths() -> None:
+    raw = OmegaConf.create({"data": "/srv/boba/data"})
+
+    paths = bind(raw, "data", DataConfig)
+
+    assert paths.data("workspace") == Path("/srv/boba/data/workspace")
+
+
+def test_scalar_data_path_rejects_a_relative_directory() -> None:
+    raw = OmegaConf.create({"data": "relative/data"})
+
+    with pytest.raises(ConfigError, match="expected an absolute path"):
+        bind(raw, "data", DataConfig)
+
+
+def test_instance_paths_must_be_absolute() -> None:
+    with pytest.raises(ValueError, match="absolute"):
+        DataConfig(data_dir="data")

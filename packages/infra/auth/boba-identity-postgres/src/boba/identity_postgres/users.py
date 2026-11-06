@@ -1,4 +1,4 @@
-"""Пользователи и роли: только подтверждённые пары realm/login.
+"""Пользователи и роли: только подтверждённые канонические логины.
 
 Пустое чтение возвращает None. Конфликты данных — IdentityConflictError,
 отказ PostgreSQL — ошибка доступности, дефекты схемы/строк — внутренняя ошибка.
@@ -29,7 +29,6 @@ __all__ = ["UsersTable"]
 class UsersColumn(StrEnum):
     ID = "id"
     CREATED_AT = "created_at"
-    REALM = "realm"
     LOGIN = "login"
     ROLES = "roles"
 
@@ -41,7 +40,6 @@ class UsersTable(IdentityTable, UserRows, RoleCatalog):
         select
             u.id,
             u.created_at,
-            u.realm,
             u.login,
             array(
                 select
@@ -62,7 +60,6 @@ class UsersTable(IdentityTable, UserRows, RoleCatalog):
                 id=row[UsersColumn.ID],
                 created_at=row[UsersColumn.CREATED_AT],
                 identity=UserIdentity(
-                    realm=row[UsersColumn.REALM],
                     login=row[UsersColumn.LOGIN],
                 ),
                 roles=frozenset(row[UsersColumn.ROLES]),
@@ -74,14 +71,7 @@ class UsersTable(IdentityTable, UserRows, RoleCatalog):
         query = (
             self._query()
             .add(self.SELECT)
-            .add(
-                """where 1=1
-                   and u.realm = %(realm)s
-                   and u.login = %(login)s
-                """,
-                realm=identity.realm,
-                login=identity.login,
-            )
+            .add("where u.login = %(login)s", login=identity.login)
             .build()
         )
         row = await self._row(query, "get user")
@@ -114,17 +104,14 @@ class UsersTable(IdentityTable, UserRows, RoleCatalog):
                 .add(
                     """
                     insert into {schema}.users (
-                        realm,
                         login
                     )
                     values (
-                        %(realm)s,
                         %(login)s
                     )
-                    on conflict (realm, login)
+                    on conflict (login)
                     do nothing
                     """,
-                    realm=identity.realm,
                     login=identity.login,
                 )
                 .build()
@@ -140,12 +127,10 @@ class UsersTable(IdentityTable, UserRows, RoleCatalog):
                         id
                     from
                         {schema}.users
-                    where 1=1
-                        and realm = %(realm)s
-                        and login = %(login)s
+                    where
+                        login = %(login)s
                     for update
                     """,
-                    realm=identity.realm,
                     login=identity.login,
                 )
                 .build()
@@ -253,12 +238,10 @@ class UsersTable(IdentityTable, UserRows, RoleCatalog):
                     join {schema}.user_roles as m on m.user_id = u.id
                     join {schema}.roles as r on r.id = m.role_id
                 where 1=1
-                    and u.realm = %(realm)s
                     and u.login = %(login)s
                     and not m.managed
                 """,
                 roles=list(candidates),
-                realm=identity.realm,
                 login=identity.login,
             )
             .build()

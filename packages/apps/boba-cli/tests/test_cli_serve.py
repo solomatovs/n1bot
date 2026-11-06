@@ -36,8 +36,9 @@ from psycopg import sql
 from pydantic import AnyUrl
 from websockets.exceptions import InvalidStatus
 
-from boba.aid.infra.config import AppConfig
-from boba.cli.serve import ServeHistory, ServeMark
+from boba.aid.config.app import AppConfig
+from boba.cli.config.models import ServeHistory
+from boba.cli.serve import ServeMark
 from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
@@ -330,7 +331,7 @@ class Stands:
     ) -> AgentServiceStand:
         port = StandPorts().free()
         stand = AgentServiceStand(
-            self._process.paths,
+            self._process.paths.data_dir,
             ServeHistory(schema=self._history.schema, postgres=self._history.postgres),
             self._history.layer(max_sessions),
             self._profiles,
@@ -530,18 +531,18 @@ class TestOwners:
             await again.close()
 
         query = sql.SQL("""
-            select u.realm || ':' || u.login as identifier, r.role, count(records.seq)
+            select u.login as identifier, r.role, count(records.seq)
             from {schema}.session as s
             join {schema}.users as u on u.id = s.user_id
             join {schema}.user_roles as m on m.user_id = u.id
             join {schema}.roles as r on r.id = m.role_id
             join {schema}.session_records as records on records.session_id = s.id
-            where s.id = %s group by u.realm, u.login, r.role
+            where s.id = %s group by u.login, r.role
         """).format(schema=sql.Identifier(history.schema))
         async with pool.connection() as conn:
             rows = await (await conn.execute(query, (opened.session_id,))).fetchall()
         assert len(rows) == 1
-        assert rows[0][0:2] == ("corporate:alice", "dev")
+        assert rows[0][0:2] == ("alice", "dev")
         assert rows[0][2] > 0
 
 

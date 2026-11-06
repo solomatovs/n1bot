@@ -9,7 +9,6 @@ import pytest
 from omegaconf import DictConfig, OmegaConf
 
 from boba.config import ConfigError
-from boba.config.paths import PathsConfig, TlsConfig
 from boba.sandbox.paths import ProgramRoots
 from boba.stand.fake_toolmod import PLUGIN
 from boba.stand_core.context import CallStand
@@ -54,7 +53,9 @@ def _process_section(data_dir: Path) -> dict[str, object]:
 
 def _build(raw: DictConfig):
     """Выбор запуска с фабриками, подключаемыми приложением."""
-    return ToolLaunchers(raw, StandardToolLaunchers().registry).build()
+    data_dir = Path(str(OmegaConf.select(raw, "data", default="/unused")))
+    ca_file = Path("/etc/ssl/certs/ca-certificates.crt")
+    return ToolLaunchers(raw, StandardToolLaunchers(data_dir, ca_file).registry).build()
 
 
 def test_process_without_the_section_launches_no_tool_sections(
@@ -108,12 +109,12 @@ def test_sandbox_provider_builds_zygote_launchers(
 def test_sandbox_network_uses_the_configured_ca_bundle(
     program: Path, tmp_path: Path, ca_file: str | None
 ) -> None:
-    tls = TlsConfig() if ca_file is None else TlsConfig(ca_file=ca_file)
+    ca_path = Path(ca_file or "/etc/ssl/certs/ca-certificates.crt")
     defaults = SandboxDefaults(
-        ProgramRoots().locate(), PathsConfig(data_dir=str(tmp_path)), str(tmp_path), tls
+        ProgramRoots().locate(), tmp_path, str(tmp_path), ca_path
     )
 
-    assert f"{tls.ca_file}:{SandboxDefaults.CA_FILE}" in defaults.network_binds()
+    assert f"{ca_path}:{SandboxDefaults.CA_FILE}" in defaults.network_binds()
     assert defaults.network_env() == {"SSL_CERT_FILE": SandboxDefaults.CA_FILE}
 
 

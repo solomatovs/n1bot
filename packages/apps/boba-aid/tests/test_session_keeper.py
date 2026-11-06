@@ -57,23 +57,23 @@ async def test_sweep_signals_each_expiring_user_once() -> None:
         [
             LiveToken(
                 user_id=soon,
-                login="corporate:soon",
-                token=_token("corporate:soon", soon, 100),
+                login="soon",
+                token=_token("soon", soon, 100),
             ),
             LiveToken(
                 user_id=soon,
-                login="corporate:soon",
-                token=_token("corporate:soon", soon, 120),
+                login="soon",
+                token=_token("soon", soon, 120),
             ),
             LiveToken(
                 user_id=fresh,
-                login="corporate:fresh",
-                token=_token("corporate:fresh", fresh, 3000),
+                login="fresh",
+                token=_token("fresh", fresh, 3000),
             ),
             LiveToken(
                 user_id=dead,
-                login="corporate:dead",
-                token=_token("corporate:dead", dead, -100),
+                login="dead",
+                token=_token("dead", dead, -100),
             ),
         ]
     )
@@ -106,4 +106,4 @@ async def test_sweep_signals_each_expiring_user_once() -> None:
     assert seen[0].scope == Scope.user(soon)
     message = seen[0].message
     assert isinstance(message, SignInRefreshRequested)
-    assert message.principal == "corporate:soon"
+    assert message.principal == "soon"

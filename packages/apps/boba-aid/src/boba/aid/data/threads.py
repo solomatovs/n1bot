@@ -235,7 +235,7 @@ class ThreadsTable(PgTable, ChatThreads):
             .add(
                 """
                 select
-                    u.realm || ':' || u.login as identifier
+                    u.login as identifier
                 from
                     {schema}.threads t
                     inner join {schema}.users u on

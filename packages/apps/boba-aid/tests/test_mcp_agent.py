@@ -19,9 +19,9 @@ from test_acp_chat import second as second
 from test_acp_chat import tab as tab
 
 from boba.agent.records import DeferredToolsDeltaAttachment
-from boba.aid.agent.config import PostgresAgentHistory, ProcessAgentConfig
+from boba.aid.config.app import AppConfig
+from boba.aid.config.models import PostgresAgentHistory, ProcessAgentConfig
 from boba.aid.domain.fields import ThreadMetaField
-from boba.aid.infra.config import AppConfig
 from boba.aid.mcp_servers.store import StoredServer
 from boba.config import bind
 from boba.crypto import SecretCipher

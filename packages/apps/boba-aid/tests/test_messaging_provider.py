@@ -8,13 +8,11 @@ from uuid import uuid4
 
 import pytest
 
+from boba.aid.config.app import AppConfig
+from boba.aid.config.models import LocalMessagingConfig
 from boba.aid.infra import services
-from boba.aid.infra.config import AppConfig
 from boba.aid.infra.di import Container
-from boba.aid.infra.messaging_backends import (
-    LocalMessagingConfig,
-    StandardMessagingBackends,
-)
+from boba.aid.infra.messaging_backends import StandardMessagingBackends
 from boba.aid.infra.turns import StaleTurnCloser
 from boba.chat.messages import ChatMessages, Notice, NoticeLevel
 from boba.db.postgres import AsyncPostgresPool

@@ -1341,7 +1341,7 @@ class TestStreamDownload:
         app.add_api_route(StreamUrl.ROUTE, serving.serve, methods=["GET"])
         user = AuthenticatedPrincipal(
             id=UUID(USER),
-            identity=UserIdentity(realm="corporate", login=Login("tester")),
+            identity=UserIdentity(login=Login("tester")),
             access=AccessGrant(roles=frozenset({"read"}), profiles=frozenset()),
         )
         app.dependency_overrides[authenticated_user] = lambda: user

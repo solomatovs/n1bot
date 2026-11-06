@@ -78,8 +78,7 @@ async def test_oauth_credentials_are_encrypted_and_private(
     async with pool.connection() as conn:
         await conn.execute(
             sql.SQL(
-                "insert into {}.users (id, realm, login) "
-                "values (%s, 'corporate', %s), (%s, 'corporate', %s)"
+                "insert into {}.users (id, login) values (%s, %s), (%s, %s)"
             ).format(schema.ident),
             (
                 first_user,
@@ -148,10 +147,9 @@ async def test_browser_authorization_round_trips_to_mcp(
         user_id = uuid4()
         async with pool.connection() as conn:
             await conn.execute(
-                sql.SQL(
-                    "insert into {}.users (id, realm, login) "
-                    "values (%s, 'corporate', %s)"
-                ).format(schema.ident),
+                sql.SQL("insert into {}.users (id, login) values (%s, %s)").format(
+                    schema.ident
+                ),
                 (user_id, f"oauth-{user_id.hex}"),
             )
         store = McpOAuthStore(pool, oauth_schema, SecretCipher(secrets.token_bytes(32)))

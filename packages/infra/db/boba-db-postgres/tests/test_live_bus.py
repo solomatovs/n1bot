@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 import pytest
 from psycopg import sql
 
-from boba.aid.infra.config import AppConfig
+from boba.aid.config.app import AppConfig
 from boba.chat.messages import (
     ChatMessages,
     MessageKind,

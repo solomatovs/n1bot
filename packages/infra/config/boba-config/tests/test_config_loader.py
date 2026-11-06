@@ -18,7 +18,6 @@ from boba.config import (
     ConfigSchema,
     bind,
 )
-from boba.config.paths import PathsConfig
 
 MAIN = """
 tool = "${toml_dir:plugins}"
@@ -255,21 +254,6 @@ def test_file_sections_work_without_an_application_model(glob_config: Path) -> N
     raw = ConfigLoader([glob_config], file_sections=_FileApp.CONFIG_FILES).load()
 
     assert raw.tool.doc.enable is True
-
-
-def test_scalar_data_path_builds_the_instance_paths() -> None:
-    raw = OmegaConf.create({"data": "/srv/boba/data"})
-
-    paths = bind(raw, "data", PathsConfig)
-
-    assert paths.data("workspace") == Path("/srv/boba/data/workspace")
-
-
-def test_scalar_data_path_rejects_a_relative_directory() -> None:
-    raw = OmegaConf.create({"data": "relative/data"})
-
-    with pytest.raises(ConfigError, match="expected an absolute path"):
-        bind(raw, "data", PathsConfig)
 
 
 def test_broken_toml_names_the_file(tmp_path: Path) -> None:

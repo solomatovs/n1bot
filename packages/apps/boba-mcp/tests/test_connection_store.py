@@ -80,7 +80,7 @@ def _web(token: str) -> HttpConnection:
 def _subject(user_id: UUID, roles: list[str]) -> Subject:
     return Subject.of_user(
         user_id,
-        UserIdentity.model_validate(f"corporate:user-{user_id}"),
+        UserIdentity.model_validate(f"user-{user_id}"),
         roles,
         "test",
     )
@@ -97,13 +97,13 @@ async def store(
 
     await StandMigrations().application(test_postgres, SCHEMA, "boba.mcp_server")
     async with pool.connection() as conn:
-        statement = sql.SQL(
-            "insert into {}.users (id, realm, login) values (%s, %s, %s)"
-        ).format(sql.Identifier(SCHEMA))
+        statement = sql.SQL("insert into {}.users (id, login) values (%s, %s)").format(
+            sql.Identifier(SCHEMA)
+        )
         for value in (1, 2, 5):
             await conn.execute(
                 statement,
-                (UUID(int=value), "corporate", f"test-{value}"),
+                (UUID(int=value), f"test-{value}"),
             )
 
     try:

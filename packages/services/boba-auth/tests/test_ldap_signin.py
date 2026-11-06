@@ -12,10 +12,9 @@ from typing import Any
 import pytest
 from omegaconf import DictConfig
 
-from boba.auth.config import LdapAuthConfig
+from boba.auth.config import LdapAuthConfig, LocalAuthConfig
 from boba.config import bind
-from boba.identity.errors import AuthenticationError, AuthorizationError
-from boba.identity.principal import IdentityRule
+from boba.identity.errors import AuthenticationError
 from boba.identity.session import UserLogin
 from boba.identity.signin import PasswordSignIn
 from boba.stand.signin import SignInStand
@@ -73,19 +72,21 @@ async def test_unknown_login_is_refused(raw_config: Any) -> None:
         await _ldap_sign_in(raw_config).sign_in("nobody-here", "x")
 
 
-async def test_two_directories_are_separate_realms(raw_config: DictConfig) -> None:
-    office = _ldap_config(raw_config).model_copy(
-        update={"identity": IdentityRule(realm="office")}
+async def test_directory_and_local_sign_in_share_the_same_identity(
+    raw_config: DictConfig,
+) -> None:
+    directory = _ldap_config(raw_config)
+    local = LocalAuthConfig(
+        users={_reader_login(): "local-password"}, require_roles=False
     )
-    partner = office.model_copy(update={"identity": IdentityRule(realm="partner")})
-    providers = SignInStand.backends().password([office, partner])
+    providers = SignInStand.backends().password([local, directory])
     assert providers is not None
-    password = STAND.reader_bind.password.get_secret_value()
-    with pytest.raises(AuthorizationError, match="select an identity realm"):
-        await providers.sign_in(_reader_login(), password)
-    first = await providers.sign_in(_reader_login(), password, "office")
-    second = await providers.sign_in(_reader_login(), password, "partner")
+    first = await providers.sign_in(_reader_login(), "local-password")
+    second = await providers.sign_in(
+        _reader_login(), STAND.reader_bind.password.get_secret_value()
+    )
     assert first is not None
     assert second is not None
-    assert first.identifier == f"office:{_reader_login().lower()}"
-    assert second.identifier == f"partner:{_reader_login().lower()}"
+    assert first.identity == second.identity
+    assert first.provider == LocalAuthConfig.PROVIDER
+    assert second.provider == LdapAuthConfig.PROVIDER

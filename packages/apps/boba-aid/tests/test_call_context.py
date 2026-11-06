@@ -51,7 +51,7 @@ class TestCurrent:
         with call_stand.contexts.applied(context):
             if call_stand.contexts.current() is not context:
                 raise AssertionError("context inside the block")
-            if LogUserMark.current() != f"corporate:ivanov {THREAD[:8]}":
+            if LogUserMark.current() != f"ivanov {THREAD[:8]}":
                 raise AssertionError(LogUserMark.current())
 
         if call_stand.contexts.peek() is not None:
@@ -127,7 +127,7 @@ class TestExpiredSignIn:
         session = chat_session.use(
             user_id=str(UUID(int=5)),
             thread_id="thread-hydrated-user",
-            identifier="corporate:alice",
+            identifier="alice",
         )
         stub = session.raw
         assert stub is not None
@@ -136,7 +136,7 @@ class TestExpiredSignIn:
 
         claims = session.signed_in()
 
-        assert claims.identifier == "corporate:alice"
+        assert claims.identifier == "alice"
         assert claims.identity.login == "alice"
         assert session.identifier == claims.identifier
         assert session.user_id == str(claims.user_id)

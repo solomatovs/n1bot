@@ -1,12 +1,10 @@
 create table if not exists {schema}.users (
     id         uuid primary key default gen_random_uuid(),
     created_at timestamptz not null default now(),
-    realm      text not null,
     login      text not null,
-    constraint users_realm_login_key unique (realm, login),
+    constraint users_login_key unique (login),
     constraint users_identity check (
-        realm ~ '^[a-z0-9][a-z0-9._-]*$'
-        and length(login) > 0 and login = lower(btrim(login))
+        length(login) > 0 and login = lower(btrim(login))
     )
 );
 

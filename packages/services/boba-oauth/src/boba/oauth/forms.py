@@ -14,6 +14,5 @@ class LoginField(StrEnum):
     LOGIN = "login"
     PASSWORD = "password"  # noqa: S105 — имя поля формы
     PROOF = "proof"
-    REALM = "realm"
     COOKIE = "boba_mcp_login"
     SSO = "/login/sso"

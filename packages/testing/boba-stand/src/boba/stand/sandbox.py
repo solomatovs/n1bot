@@ -15,12 +15,16 @@ import pytest
 from omegaconf import DictConfig
 
 from boba.config import bind
+from boba.mcp_server.config.models import DataConfig, TlsConfig
 from boba.sandbox import SandboxProfile
 from boba.sandbox.program import PluginEntry
 from boba.stand.zygote import ROOTFS_IMAGE, RUNTIME, SandboxCgroup
 from boba.toolrun.launchers import PluginLaunch
 from boba.toolrun.plugins import PluginSections
-from boba.toolrun.sandbox import SandboxCgroupConfig, ZygoteLaunchers
+from boba.toolrun.sandbox import (
+    SandboxCgroupConfig,
+    ZygoteLaunchers,
+)
 
 REPO = Path(__file__).resolve().parents[6]
 """Код пакетов монтируется одним каталогом: точку /usr/src несёт rootfs."""
@@ -213,5 +217,8 @@ def section_profile(raw: DictConfig, plugin_id: str) -> SandboxProfile:
     (BOBA_RUNTIME), каталог данных — из параметра data конфига.
     """
     return ZygoteLaunchers(
-        raw, bind(raw, "tool_launcher", SandboxCgroupConfig)
+        raw,
+        bind(raw, "tool_launcher", SandboxCgroupConfig),
+        Path(bind(raw, "data", DataConfig).data_dir),
+        Path(bind(raw, "tls", TlsConfig).ca_file),
     ).profile_of(plugin_launch(raw, plugin_id))

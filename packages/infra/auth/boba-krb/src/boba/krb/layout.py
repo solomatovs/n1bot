@@ -12,7 +12,6 @@ from enum import StrEnum
 from pathlib import Path
 
 from boba.config import ConfigError
-from boba.config.paths import PathsConfig, TlsConfig
 from boba.krb import KerberosWorkspaceConfig
 
 
@@ -25,8 +24,8 @@ class InstanceLayout:
     """
 
     conf_dir: Path
-    paths: PathsConfig
-    tls: TlsConfig
+    data_dir: Path
+    ca_file: Path
 
     def krb5_conf(self) -> Path:
         return self.conf_dir / InstanceConf.KRB5_CONF.value
@@ -34,13 +33,13 @@ class InstanceLayout:
     def kerberos(self) -> KerberosWorkspaceConfig:
         return KerberosWorkspaceConfig(
             config=str(self.krb5_conf()),
-            ccache_dir=str(self.paths.data("krb/cache")),
+            ccache_dir=str(self.data_dir / "krb/cache"),
         )
 
     def apply(self) -> None:
         """Рабочий каталог kerberos и KRB5_CONFIG, CA-файл контура в
         SSL_CERT_FILE; CA-файла нет — ConfigError."""
-        ca_file = Path(self.tls.ca_file)
+        ca_file = self.ca_file
         if not ca_file.is_file():
             msg = (
                 f"[tls]: ca_file must name the CA file of the network "
@@ -49,7 +48,7 @@ class InstanceLayout:
             raise ConfigError(msg)
 
         self.kerberos().apply()
-        os.environ[TlsConfig.CA_ENV] = str(ca_file)
+        os.environ["SSL_CERT_FILE"] = str(ca_file)
 
 
 class InstanceConf(StrEnum):

@@ -25,7 +25,7 @@ class TestSubjectOfUser:
         user_id = uuid4()
         subject = Subject.of_user(
             user_id,
-            UserIdentity(realm="corporate", login=Login("ivanov")),
+            UserIdentity(login=Login("ivanov")),
             ("DEV",),
             "general",
         )

@@ -16,7 +16,6 @@ from boba.db.postgres.migrate import (
 )
 from boba.db.postgres.migration_cli import (
     ApplicationMigrations,
-    MigrationConfig,
     MigrationLocation,
 )
 
@@ -54,7 +53,7 @@ class StandSchema:
         self._paths = tuple(paths)
         self._package = package
         self._migrations = migrations
-        self._config = ConfigLoader(paths, schema=ConfigSchema(MigrationConfig))
+        self._config = ConfigLoader(paths, schema=ConfigSchema(MigrationLocation))
         self._created: MigrationLocation | None = None
 
     async def create(self) -> None:

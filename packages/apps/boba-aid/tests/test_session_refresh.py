@@ -70,7 +70,7 @@ def _refresh() -> SessionRefresh:
     profiles = SignInStand.profiles()
     backends = SignInStand.backends(profiles=profiles)
     config = LocalAuthConfig(
-        identity=IdentityRule(realm="local-stand"),
+        identity=IdentityRule(),
         users={"alice": "pw"},
         roles=LocalRoleProviders(
             local=LocalRolesConfig(mapping=RoleMappingConfig(root={"alice": ["DEV"]}))
@@ -78,8 +78,8 @@ def _refresh() -> SessionRefresh:
     )
     sign_ins = SignIns(
         password=backends.password([config]),
-        sso={},
-        proxy={},
+        sso=None,
+        proxy=None,
     )
     auth = BrowserSessions(
         sign_ins=sign_ins,
@@ -122,7 +122,7 @@ async def test_password_session_is_renewed_with_a_new_cookie() -> None:
     assert COOKIE in set_cookie
     renewed = set_cookie.split(f"{COOKIE}=", 1)[1].split(";", 1)[0]
     claims = StandTokens.tokens().read(renewed)
-    assert claims.identifier == "local-stand:alice"
+    assert claims.identifier == "alice"
 
 
 async def test_refresh_without_its_own_mark_is_refused() -> None:

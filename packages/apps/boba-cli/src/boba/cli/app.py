@@ -60,11 +60,6 @@ from boba.agent.permissions import PermissionModeError
 from boba.agent.profile import ModelProfile, ProfileError
 from boba.agent.records import ChainRecord, EnvironmentSnapshot
 from boba.agent.session import SessionError
-from boba.agent.settings import (
-    MemoryHistorySettings,
-    PostgresHistorySettings,
-    SettingsSchema,
-)
 from boba.agent.skills import Skill, SkillsDir, SkillsError
 from boba.agent.template import AgentTemplate
 from boba.agent.tools import McpServerSet, ToolsError, ToolServer
@@ -80,16 +75,16 @@ from boba.cli.acp_server import (
     SessionRefusedError,
     SessionSummary,
 )
-from boba.cli.settings import (
+from boba.cli.config.settings import (
     Arguments,
     EffectiveSettings,
-    EnvName,
-    PostgresBuilder,
-    ProfileBuilder,
-    Settings,
+    MemoryHistorySettings,
+    PostgresHistorySettings,
     SettingsError,
+    SettingsSchema,
     SettingsSource,
 )
+from boba.cli.settings import EnvName, PostgresBuilder, ProfileBuilder, Settings
 from boba.cli.threads import LoopThread, SessionThreads, ThreadedHistoryStore
 from boba.config.arguments import CommandSpec, ConfigArguments
 from boba.core.package_data import PackageDataCheck, PackageDataError
@@ -1013,7 +1008,8 @@ async def main(argv: Sequence[str] | None = None) -> None:
     invocation = parser.parse(argv)
     if isinstance(invocation, ServeInvocation):
         if invocation.command is Command.MIGRATE:
-            from boba.cli.serve import ServeConfig  # noqa: PLC0415
+            from boba.cli.config.models import ServeConfig  # noqa: PLC0415
+            from boba.cli.serve import prepare_migrations  # noqa: PLC0415
             from boba.config import ConfigSchema  # noqa: PLC0415
             from boba.db.postgres.migration_cli import (  # noqa: PLC0415
                 ApplicationMigrations,
@@ -1021,7 +1017,8 @@ async def main(argv: Sequence[str] | None = None) -> None:
 
             try:
                 migrations = ApplicationMigrations(
-                    schema=ConfigSchema(ServeConfig, values=("auth",))
+                    schema=ConfigSchema(ServeConfig, values=("auth",)),
+                    prepare=prepare_migrations,
                 )
                 await migrations.run(
                     invocation.config,

@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 from boba.canvas.storage import StorageError, StorageNotFoundError
-from boba.config.paths import PathsConfig
+from boba.mcp_server.config.models import DataConfig
 from boba.mcp_server.storage import StandardStorageBackends
 from boba.sandbox.paths import ProgramRoots
 from boba.sandbox.profile import SandboxProfile, WorkspaceSpec
@@ -65,8 +65,8 @@ def _bin_dirs() -> list[str]:
     return dirs
 
 
-def _instance(data_dir: Path) -> PathsConfig:
-    return PathsConfig(data_dir=str(data_dir))
+def _instance(data_dir: Path) -> DataConfig:
+    return DataConfig(data_dir=str(data_dir))
 
 
 def _trusted() -> TrustedBinaries:
@@ -298,7 +298,7 @@ class TestConfig:
         """Образы пользователей — workspace/ каталога данных экземпляра,
         шаблон — каталога программы."""
         factory = StorageFactory(
-            _instance(tmp_path), StandardStorageBackends().registry
+            _instance(tmp_path).data_dir, StandardStorageBackends().registry
         )
         client = factory.create(_image_cfg())
         if not (isinstance(client, ImageStorageClient)):
@@ -311,7 +311,7 @@ class TestConfig:
     def test_factory_picks_local_client(self, tmp_path: Path) -> None:
         cfg = LocalStorageConfig(files_dir="/srv/files")
         client = StorageFactory(
-            _instance(tmp_path), StandardStorageBackends().registry
+            _instance(tmp_path).data_dir, StandardStorageBackends().registry
         ).create(cfg)
         if type(client) is not LocalStorageClient:
             raise AssertionError(f"local storage expected, got {type(client)}")

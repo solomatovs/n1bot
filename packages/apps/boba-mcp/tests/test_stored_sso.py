@@ -36,8 +36,8 @@ from boba.identity.context import DelegatedTicket
 from boba.kerberos import DelegatedAuth, KerberosPasswordAuth
 from boba.krb import PasswordCredentials
 from boba.krb.spnego import SpnegoNegotiate
-from boba.mcp_server.app import McpAppConfig
 from boba.mcp_server.auth import ServiceMark
+from boba.mcp_server.config.models import McpAppConfig
 from boba.mcp_server.connections.store import ConnectionStore
 from boba.mcp_server.migrations import configured_migrations
 from boba.oauth.claims import TokenClaims

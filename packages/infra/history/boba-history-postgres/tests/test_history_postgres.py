@@ -262,7 +262,7 @@ async def stores(
     users = UsersTable(pool, schema)
     owners: dict[str, uuid.UUID] = {}
     for login in ("alice", "bob"):
-        identity = UserIdentity(realm="stand", login=Login(login))
+        identity = UserIdentity(login=Login(login))
         user = await users.upsert(identity)
         owners[login] = user.id
     return Stores(postgres, schema, pool, owners)
@@ -1016,7 +1016,7 @@ async def test_history_links_records_to_the_users_uuid(
 ) -> None:
     await written(stores.owned("alice"), SESSION, "owned history")
     query = sql.SQL("""
-        select s.user_id, u.realm || ':' || u.login
+        select s.user_id, u.login
         from {}.session_records as r
         join {}.session as s on s.id = r.session_id
         join {}.users as u on u.id = s.user_id
@@ -1024,7 +1024,7 @@ async def test_history_links_records_to_the_users_uuid(
     """).format(sql.Identifier(schema), sql.Identifier(schema), sql.Identifier(schema))
     async with pool.connection() as conn:
         row = await (await conn.execute(query, (SESSION.value,))).fetchone()
-    assert row == (stores.user_id("alice"), "stand:alice")
+    assert row == (stores.user_id("alice"), "alice")
 
 
 async def test_history_refuses_a_uuid_without_a_users_row(

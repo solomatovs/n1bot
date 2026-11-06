@@ -25,7 +25,6 @@ from boba.canvas.storage import (
     StorageOp,
     StorageUrl,
 )
-from boba.config.paths import PathsConfig
 from boba.core.components import Components
 from boba.toolkit.result import ContentMime
 
@@ -209,15 +208,15 @@ class StorageFactory:
 
     def __init__(
         self,
-        instance: PathsConfig,
-        backends: Components[StorageConfig, PathsConfig, StorageClient],
+        data_dir: str,
+        backends: Components[StorageConfig, str, StorageClient],
     ) -> None:
-        self._instance = instance
+        self._data_dir = data_dir
         self._backends = backends
 
     def create(self, config: StorageConfig) -> StorageClient:
         try:
-            return self._backends.build(config, self._instance)
+            return self._backends.build(config, self._data_dir)
         except StorageError:
             raise
         except Exception as exc:

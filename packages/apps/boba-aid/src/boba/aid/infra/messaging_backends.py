@@ -13,8 +13,9 @@ import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from functools import partial
-from typing import ClassVar, Literal
+from typing import ClassVar
 
+from boba.aid.config.models import LocalMessagingConfig, PostgresMessagingConfig
 from boba.aid.infra.messaging import MessagingRuntime, MessagingServices, StaleObserver
 from boba.core.components import ComponentFactory, Components
 from boba.db.postgres import AsyncPostgresPool
@@ -26,18 +27,6 @@ from boba.messaging import MemoryMessageBus, MemoryPayloadStore, MessageBusError
 from boba.messaging.config import ClusterConfig, MessagingConfig
 
 logger = logging.getLogger(__name__)
-
-
-class LocalMessagingConfig(MessagingConfig):
-    """Настройки обмена в памяти одного процесса."""
-
-    provider: Literal["local"] = "local"
-
-
-class PostgresMessagingConfig(MessagingConfig):
-    """Настройки обмена через таблицы и LISTEN/NOTIFY PostgreSQL."""
-
-    provider: Literal["postgres"] = "postgres"
 
 
 class StandardMessagingBackends:

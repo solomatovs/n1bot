@@ -16,39 +16,37 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, ClassVar
 
 import uvicorn
 from fastmcp.tools import Tool
 from omegaconf import DictConfig
-from pydantic import BaseModel, ConfigDict, Field, SerializeAsAny, field_validator
 
 from boba.auth import SessionService, SignIns
-from boba.auth.assembly import AuthBackends, AuthServices
-from boba.auth.config import AuthConfig, ProxyAuthConfig
-from boba.auth.providers.backends import KerberosSessionTickets, StandardAuthBackends
-from boba.auth.settings import SignInSettings
+from boba.auth.assembly import AuthServices
+from boba.auth.config import ProxyAuthConfig
+from boba.auth.providers.backends import KerberosSessionTickets
 from boba.cancellation import ProcessStop, StopReason
-from boba.config import ConfigVariant, bind
+from boba.config import bind
 from boba.config.application import ConfigFiles
 from boba.config.arguments import CommandSpec, ConfigArguments
-from boba.config.paths import PathsConfig, TlsConfig
 from boba.connections.manifest import ConnectionTypes
 from boba.crypto import SecretCipher
-from boba.crypto.config import ValueCipherConfig
 from boba.db.postgres import AsyncPostgresPool
-from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.migration_options import MigrationArguments, MigrationOptions
-from boba.http_server import HealthProbe, ProcessLogging, ServerConfig, SignalledServer
+from boba.http_server import HealthProbe, SignalledServer
 from boba.identity.context import CallContexts
 from boba.identity.run import Runs
-from boba.identity.service import ServiceAddress
 from boba.identity_postgres import UsersTable
 from boba.krb.connections import KerberosCredentialSource
 from boba.krb.layout import InstanceLayout
 from boba.ldap import Ldap3Directory
 from boba.mcp_server.auth import ServiceMark
 from boba.mcp_server.catalog import EndpointCatalog
+from boba.mcp_server.config.models import (
+    McpAppConfig,
+    McpSection,
+    McpServerConfig,
+)
 from boba.mcp_server.connections import NoRefresh
 from boba.mcp_server.connections.params import ConnectionParams
 from boba.mcp_server.connections.store import ConnectionStore
@@ -57,29 +55,22 @@ from boba.mcp_server.connections.user_connections import ArmedConnections
 from boba.mcp_server.endpoints import McpEndpointStore
 from boba.mcp_server.reload import ReloadableMcp
 from boba.mcp_server.schemas import EndpointSchemas
-from boba.mcp_server.server import (
-    FileUploadSchema,
-    McpEndpoints,
-    RunLimitMiddleware,
-    RunLimits,
-)
-from boba.mcp_server.storage import StandardStorageBackends
+from boba.mcp_server.server import FileUploadSchema, McpEndpoints, RunLimitMiddleware
 from boba.mcp_server.tool_adapter import McpTool
 from boba.oauth.server.assertions import ProxyAssertionVerifier
-from boba.oauth.server.clients import RegisteredClients, TrustedClient
-from boba.oauth.server.config import TokenConfig
+from boba.oauth.server.clients import RegisteredClients
 from boba.oauth.server.provider import AuthServer
 from boba.oauth.server.resources import ServiceAuth
 from boba.oauth.server.sealed import SealedValues
 from boba.oauth.server.tokens import ServiceTokens
-from boba.storage.client import StorageConfig, StorageFactory
+from boba.storage.client import StorageFactory
 from boba.storage.journal import DirVault, StreamJournal
 from boba.storage.journal_config import StreamJournalConfig
 from boba.tool_io.chain import CallAmbient
 from boba.toolrun.hosted import DirectCalls
 from boba.toolrun.injected import InjectedConfig
 from boba.toolrun.launchers import ToolLaunchers
-from boba.toolrun.plugins import PluginKits, PluginSections, ToolExecution, ToolLoader
+from boba.toolrun.plugins import PluginKits, ToolExecution, ToolLoader
 from boba.toolrun.registry import ToolRegistry
 from boba.toolrun.sandbox import StandardToolLaunchers
 from boba.toolrun.streams import CallJournals
@@ -88,59 +79,6 @@ from boba.toolrun.tickets import SectionTickets, ServiceTickets
 __all__ = ["McpAppConfig", "McpEntry", "McpHost", "McpSection"]
 
 logger = logging.getLogger(__name__)
-
-
-class McpSection(BaseModel):
-    """Пределы запусков MCP и доверенные OAuth-клиенты из конфига процесса."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    limits: RunLimits
-    clients: dict[str, TrustedClient] = Field(default_factory=dict)
-    """Доверенные клиенты OAuth по client_id: им разрешён вход proxy."""
-
-
-class McpServerConfig(ServerConfig, ServiceAddress):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-    port: int = Field(default=8650, gt=0, lt=65536)
-
-
-class McpAppConfig(SignInSettings):
-    """Секции процесса сервиса: секции процесса, [mcp], хранилище workspace и
-    каталоги соединений и пользователей."""
-
-    db_schema: str = Field(alias="schema", min_length=1)
-    plugins: str = ""
-    paths: PathsConfig = Field(alias="data")
-    tls: TlsConfig = Field(default_factory=TlsConfig)
-    session: TokenConfig
-    logger: dict[str, Any] = Field(default_factory=ProcessLogging().default)
-
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
-
-    AUTH_BACKENDS: ClassVar[AuthBackends] = StandardAuthBackends().registry
-    LAUNCHER_BACKENDS: ClassVar = StandardToolLaunchers().registry
-    CONFIG_FILES: ClassVar = PluginSections.FILE_SECTIONS
-
-    server: McpServerConfig
-    mcp: McpSection
-    postgres: PostgresConfig
-    connection_store: ValueCipherConfig
-    """Ключ шифрования секретов каталога MCP, отдельный от подписи токенов."""
-    STORAGE_BACKENDS: ClassVar = StandardStorageBackends().registry
-    CONFIG_VARIANTS: ClassVar = {
-        AuthConfig: ConfigVariant("type", AUTH_BACKENDS.model_for),
-        StorageConfig: ConfigVariant("kind", STORAGE_BACKENDS.model_for),
-    }
-
-    storage: SerializeAsAny[StorageConfig]
-    """Хранилище workspace: туда пишут маршруты файлов и оттуда читают
-    инструменты."""
-
-    @field_validator("storage", mode="before")
-    @classmethod
-    def _storage_backend(cls, raw: object) -> StorageConfig:
-        return cls.STORAGE_BACKENDS.parse(raw)
 
 
 class StoppedRuns:
@@ -208,8 +146,13 @@ class McpHost:
         self._directory = Ldap3Directory()
         self._contexts = CallContexts()
         self._ambient = CallAmbient()
-        self._launchers = ToolLaunchers(raw, config.LAUNCHER_BACKENDS)
-        self._storage = StorageFactory(config.paths, config.STORAGE_BACKENDS)
+        self._launchers = ToolLaunchers(
+            raw,
+            StandardToolLaunchers(
+                Path(config.paths.data_dir), Path(config.tls.ca_file)
+            ).registry,
+        )
+        self._storage = StorageFactory(config.paths.data_dir, config.STORAGE_BACKENDS)
         self._schemas = EndpointSchemas()
         self._upload_schema = FileUploadSchema()
         self._tickets = KerberosSessionTickets()
@@ -220,17 +163,25 @@ class McpHost:
         async with AsyncExitStack() as cleanup:
             pool = await AsyncPostgresPool.get(self._config.postgres)
             cleanup.push_async_callback(pool.close)
+
             users = UsersTable(pool, self._config.db_schema)
             store = ConnectionStore(
-                pool, self._config.db_schema, self._cipher, self._types
+                pool,
+                self._config.db_schema,
+                self._cipher,
+                self._types,
             )
             endpoints = McpEndpointStore(pool, self._config.db_schema)
             catalog = EndpointCatalog(())
             auth_services = AuthServices(
-                self._directory, catalog, users, self._config.session.auth_secret
+                self._directory,
+                catalog,
+                users,
+                self._config.session.auth_secret,
             )
             sign_ins = self._config.AUTH_BACKENDS.build(
-                self._config.auth, auth_services
+                self._config.auth,
+                auth_services,
             )
             runs = Runs(self._contexts)
             journals = self._journals(runs)
@@ -442,7 +393,11 @@ class McpEntry:
     async def tools(self, paths: Sequence[Path]) -> None:
         loaded = self._configs.load(paths)
         config = loaded.value
-        layout = InstanceLayout(paths[0].resolve().parent, config.paths, config.tls)
+        layout = InstanceLayout(
+            paths[0].resolve().parent,
+            Path(config.paths.data_dir),
+            Path(config.tls.ca_file),
+        )
         layout.apply()
         logging.config.dictConfig(config.logger)
 
@@ -459,7 +414,11 @@ class McpEntry:
     async def serve(self, paths: Sequence[Path]) -> None:
         loaded = self._configs.load(paths)
         config = loaded.value
-        layout = InstanceLayout(paths[0].resolve().parent, config.paths, config.tls)
+        layout = InstanceLayout(
+            paths[0].resolve().parent,
+            Path(config.paths.data_dir),
+            Path(config.tls.ca_file),
+        )
         layout.apply()
         logging.config.dictConfig(config.logger)
 

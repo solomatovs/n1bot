@@ -33,9 +33,7 @@ class IdentityTable(PostgresTable):
         if isinstance(
             exc, psycopg.errors.UniqueViolation
         ) and exc.diag.constraint_name in {
-            "users_realm_login_key",
-            "users_identifier_key",
-            "idx_users_identifier_lower",
+            "users_login_key",
         }:
             return self._conflict(
                 action, "the requested identity already belongs to another user"

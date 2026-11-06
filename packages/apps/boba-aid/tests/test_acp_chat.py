@@ -36,8 +36,8 @@ from psycopg import sql
 
 from boba.aid.agent.settings import WorkdirFile
 from boba.aid.chat.ui_text import UiText
+from boba.aid.config.app import AppConfig
 from boba.aid.domain.fields import ThreadMetaField
-from boba.aid.infra.config import AppConfig
 from boba.aid.infra.paths import InstanceData
 from boba.aid.rendering.chat_view import StepMeta, StepText
 from boba.aid.rendering.renderer import SignalType

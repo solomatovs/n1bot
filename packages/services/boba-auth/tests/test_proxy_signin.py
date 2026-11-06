@@ -50,7 +50,7 @@ def _providers(**update: object) -> ProxyRoleProviders:
 
 def _config(**update: object) -> ProxyAuthConfig:
     base = ProxyAuthConfig(
-        identity=IdentityRule(realm="corporate"),
+        identity=IdentityRule(),
         secret=SecretStr(SECRET),
         roles=_providers(),
     )
@@ -101,7 +101,7 @@ def _signed(unsigned: ProxyRequest, secret: str) -> ProxyRequest:
 async def test_signed_login_is_canonical_with_table_roles() -> None:
     signed = await _sign_in(_config()).sign_in(_request())
 
-    assert signed.identifier == "corporate:maksimov.ma"
+    assert signed.identifier == "maksimov.ma"
     assert signed.provider == ProxyAuthConfig.PROVIDER
     assert signed.access.roles == frozenset({"read"})
 
@@ -163,7 +163,7 @@ async def test_client_inside_allowed_networks_passes() -> None:
     config = _config(allowed_clients=["172.18.0.0/24"])
     signed = await _sign_in(config).sign_in(_request(client="172.18.0.20"))
 
-    assert signed.identifier == "corporate:maksimov.ma"
+    assert signed.identifier == "maksimov.ma"
 
 
 async def test_excluded_login_is_refused_even_with_header_roles() -> None:
@@ -186,7 +186,7 @@ async def test_require_roles_off_admits_without_roles() -> None:
 def test_config_rejects_bad_network() -> None:
     with pytest.raises(ValueError, match="not a CIDR network"):
         ProxyAuthConfig(
-            identity=IdentityRule(realm="corporate"),
+            identity=IdentityRule(),
             secret=SecretStr("x"),
             allowed_clients=["not-an-ip"],
         )
@@ -194,9 +194,7 @@ def test_config_rejects_bad_network() -> None:
 
 def test_config_rejects_blank_secret() -> None:
     with pytest.raises(ValueError, match="non-empty signing key"):
-        ProxyAuthConfig(
-            identity=IdentityRule(realm="corporate"), secret=SecretStr("  ")
-        )
+        ProxyAuthConfig(identity=IdentityRule(), secret=SecretStr("  "))
 
 
 @pytest.mark.integration
@@ -209,7 +207,7 @@ async def test_directory_roles_by_sam_account_name(raw_config: Any) -> None:
 
     signed = await _sign_in(config).sign_in(_request(login=reader))
 
-    assert signed.identifier == f"corporate:{reader.lower()}"
+    assert signed.identifier == f"{reader.lower()}"
     assert isinstance(signed.access.roles, frozenset)
 
 

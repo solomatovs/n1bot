@@ -11,7 +11,7 @@ import pytest
 from fastmcp.server.auth import AccessToken
 from mcp.server.auth.provider import RefreshToken, TokenError
 from mcp.shared.auth import OAuthClientInformationFull
-from pydantic import AnyUrl
+from pydantic import AnyUrl, SecretStr
 
 from boba.auth import SessionService, SignIns
 from boba.identity.api import StoredUser, UserRows
@@ -21,7 +21,7 @@ from boba.identity.lifetime import SessionLifetime
 from boba.identity.principal import UserIdentity
 from boba.oauth.claims import TokenClaims
 from boba.oauth.server.assertions import ProxyAssertionVerifier
-from boba.oauth.server.clients import RegisteredClients
+from boba.oauth.server.clients import RegisteredClients, TrustedClient
 from boba.oauth.server.provider import AuthServer
 from boba.oauth.server.resources import ResourceTokens
 from boba.oauth.server.sealed import SealedValues
@@ -77,7 +77,7 @@ class TestSessionGeneration:
     PUBLIC = "http://127.0.0.1:8650"
     SECRET = "stand-session-secret"
     USER_ID = UUID("2bf9ba29-177a-4ddb-8912-e555dd90cf37")
-    LOGIN = UserIdentity.model_validate("corporate:ivanov")
+    LOGIN = UserIdentity.model_validate("ivanov")
     RESOURCE = f"{PUBLIC}/acp"
     CLIENT_ID = "stand-client"
 
@@ -196,6 +196,19 @@ class TestRegisteredClients:
         assert clients.find(str(client.client_id)) is None
         assert clients.find("f625f2db-d8a0-4146-958f-94c6bf9ef636") is None
 
+    def test_dynamic_clients_cannot_submit_identity_assertions(self) -> None:
+        clients = RegisteredClients(
+            SealedValues(self.SECRET, Salt.SEALED),
+            {"trusted": TrustedClient(secret=SecretStr("client-secret"))},
+        )
+        assert clients.permits("trusted")
+        assert not clients.permits("unknown")
+        dynamic = self._client()
+        clients.register(dynamic)
+        assert dynamic.client_id is not None
+        assert clients.find(dynamic.client_id) is not None
+        assert not clients.permits(dynamic.client_id)
+
 
 class TestRefresh:
     """Refresh resolves current roles from users and retains sign-in credentials."""
@@ -219,7 +232,7 @@ class TestRefresh:
         sealed = SealedValues(case.SECRET, Salt.SEALED)
         return AuthServer(
             case.PUBLIC,
-            SignIns(None, {}, {}),
+            SignIns(None, None, None),
             tokens,
             ProxyAssertionVerifier(()),
             RegisteredClients(sealed, {}),

@@ -9,7 +9,7 @@ RuntimeError — программа плагина не отдала план с
 from __future__ import annotations
 
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Protocol
 
@@ -17,7 +17,6 @@ from omegaconf import DictConfig
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.config import ConfigLoader, ConfigSchema, bind
-from boba.config.paths import PathsConfig, TlsConfig
 from boba.db.postgres.connection import PostgresConfig
 from boba.db.postgres.migrate import (
     MigrationScripts,
@@ -25,7 +24,6 @@ from boba.db.postgres.migrate import (
     PostgresMigrations,
 )
 from boba.db.postgres.migration_options import MigrationOptions
-from boba.krb.layout import InstanceLayout
 
 
 class MigrationLocation(BaseModel):
@@ -43,13 +41,6 @@ class MigrationSources(Protocol):
     async def targets(self, raw: DictConfig) -> Sequence[MigrationTarget]: ...
 
 
-class MigrationConfig(MigrationLocation):
-    """Минимальные секции команды migrate, включая окружение Kerberos."""
-
-    paths: PathsConfig = Field(alias="data")
-    tls: TlsConfig = Field(default_factory=TlsConfig)
-
-
 class ApplicationMigrations:
     """Собирает планы по конфигу и мигрирует хранилища без запуска приложения.
 
@@ -62,12 +53,14 @@ class ApplicationMigrations:
         sources: Sequence[MigrationSources] = (),
         *,
         schema: ConfigSchema | None = None,
+        prepare: Callable[[DictConfig, Path], None] | None = None,
     ) -> None:
         self._migrations = PostgresMigrations()
         self._sources = tuple(sources)
+        self._prepare = prepare
         self._schema = schema
         if self._schema is None:
-            self._schema = ConfigSchema(MigrationConfig)
+            self._schema = ConfigSchema(MigrationLocation)
 
     async def run(
         self,
@@ -81,9 +74,8 @@ class ApplicationMigrations:
             options = MigrationOptions()
 
         raw = ConfigLoader(paths, schema=self._schema).load()
-        instance = bind(raw, "app.data", PathsConfig)
-        tls = bind(raw, "app.tls", TlsConfig)
-        InstanceLayout(paths[0].resolve().parent, instance, tls).apply()
+        if self._prepare is not None:
+            self._prepare(raw, paths[0].resolve().parent)
         targets = await self.targets(
             raw, package, section=section, version=options.version
         )

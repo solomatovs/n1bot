@@ -20,9 +20,9 @@ from boba.http_server import SignalledServer
 from boba.krb import KerberosWorkspace
 from boba.krb.layout import InstanceConf
 from boba.mcp_server.app import EndedSubscriptions, StoppedRuns
+from boba.mcp_server.config.models import RunLimits
 from boba.mcp_server.endpoints import McpEndpointStore
 from boba.mcp_server.reload import ReloadableMcp
-from boba.mcp_server.server import RunLimits
 from boba.stand.site import StandConfigEnv, StandConfigPaths
 
 

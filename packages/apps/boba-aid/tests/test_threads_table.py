@@ -9,9 +9,9 @@ from uuid import UUID, uuid4
 import pytest
 from psycopg import sql
 
+from boba.aid.config.app import AppConfig
 from boba.aid.data.threads import ThreadsTable
 from boba.aid.data.users import UsersTable
-from boba.aid.infra.config import AppConfig
 from boba.chat.threads import (
     DataRejectedError,
     ThreadCursor,
@@ -30,7 +30,7 @@ SCHEMA = "automation_threads_test"
 
 
 def _identity(login: str) -> UserIdentity:
-    return UserIdentity(realm="test", login=Login(login))
+    return UserIdentity(login=Login(login))
 
 
 @pytest.fixture
@@ -75,7 +75,7 @@ async def test_upsert_get_list_and_author(
     assert [t.id for t in listed] == [thread_id]
     assert listed[0].updated_at == listed[0].created_at
 
-    assert await threads.get_thread_author(str(thread_id)) == "test:owner"
+    assert await threads.get_thread_author(str(thread_id)) == "owner"
 
     assert await threads.delete(thread_id) == owner.id
     assert await threads.get(thread_id) is None
@@ -95,7 +95,7 @@ async def test_user_rows(
     tables: tuple[UsersTable, ThreadsTable],
 ) -> None:
     users, _ = tables
-    identity = UserIdentity(realm="test", login=Login("reader"))
+    identity = UserIdentity(login=Login("reader"))
     stored = await users.upsert(identity)
 
     assert (await users.stored_by_id(stored.id)) == stored

@@ -40,9 +40,7 @@ def signed_user(user: FakeUser) -> AuthenticatedPrincipal:
 class FakeUser:
     """Пользователь сессии: роуту нужны только identifier и id."""
 
-    def __init__(
-        self, identifier: str = "corporate:ivanov", user_id: UUID = UUID(int=7)
-    ) -> None:
+    def __init__(self, identifier: str = "ivanov", user_id: UUID = UUID(int=7)) -> None:
         self.identifier = identifier
         self.id = user_id
 
@@ -463,7 +461,7 @@ async def test_foreign_session_is_rejected(
     session: FakeSession,
 ):
     client_app.dependency_overrides[authenticated_user] = lambda: signed_user(
-        FakeUser("corporate:petrov", UUID(int=8))
+        FakeUser("petrov", UUID(int=8))
     )
 
     async with transport(client_app) as client:

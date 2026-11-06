@@ -16,8 +16,8 @@ from aid_stand import RecordingSink
 from boba.aid.canvas.remote import RemoteJournals
 from boba.aid.chat.feed import QuestionBody, TurnFeed
 from boba.aid.chat.ui_text import UiText
+from boba.aid.config.app import AppConfig
 from boba.aid.domain.fields import StepField
-from boba.aid.infra.config import AppConfig
 from boba.aid.infra.turns import StaleTurnCloser
 from boba.aid.rendering.acp_view import ToolMedia, UpdateView
 from boba.aid.rendering.chat_view import ChatView, StepRole

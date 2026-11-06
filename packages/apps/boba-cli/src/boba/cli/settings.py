@@ -36,8 +36,6 @@ import httpx
 import psycopg
 from psycopg.conninfo import conninfo_to_dict
 from pydantic import (
-    BaseModel,
-    ConfigDict,
     SecretStr,
     ValidationError,
 )
@@ -47,13 +45,12 @@ from boba.agent.profile import (
     ModelProfile,
     TurnLimits,
 )
-from boba.agent.records import PermissionMode
-from boba.agent.settings import (
+from boba.cli.config.settings import (
+    Arguments,
+    EffectiveSettings,
     HistoryKind,
     JsonlHistorySettings,
-    LimitsJson,
     McpClientJson,
-    MemoryHistorySettings,
     ModelSettings,
     PermissionSettings,
     PostgresHistorySettings,
@@ -62,7 +59,9 @@ from boba.agent.settings import (
     ProviderSettings,
     SecretKey,
     SessionsJson,
+    SettingsError,
     SettingsLayer,
+    SettingsSource,
     ToolsJson,
 )
 from boba.db.postgres.connection import PostgresConfig
@@ -80,10 +79,6 @@ __all__ = [
 ]
 
 
-class SettingsError(Exception):
-    """Настройки не прочитаны, не разобраны или их не хватает для запуска."""
-
-
 class SettingsFile(StrEnum):
     """Файлы настроек относительно дома и каталога проекта."""
 
@@ -91,14 +86,6 @@ class SettingsFile(StrEnum):
     PROJECT = ".boba/settings.json"
     LOCAL = ".boba/settings.local.json"
     ENCODING = "utf-8"
-
-
-class SettingsSource(StrEnum):
-    """Источники файловых слоёв, которые можно включить `--setting-sources`."""
-
-    USER = "user"
-    PROJECT = "project"
-    LOCAL = "local"
 
 
 class EnvName(StrEnum):
@@ -199,45 +186,6 @@ class SecretsGuard:
         raise SettingsError(msg)
 
 
-@dataclass(frozen=True)
-class Arguments:
-    """Параметры запуска после разбора командной строки (план, раздел 5.21):
-    то, что меняется от запуска к запуску и секретов не несёт."""
-
-    model: str | None = None
-    system_prompt: str | None = None
-    system_prompt_file: str | None = None
-    append_system_prompt: str | None = None
-    append_system_prompt_file: str | None = None
-    skills_dir: str | None = None
-    max_turns: int | None = None
-    settings: Sequence[str] = ()
-    setting_sources: Sequence[SettingsSource] = tuple(SettingsSource)
-    policy: str | None = None
-    history_root: str | None = None
-    record_requests: bool = False
-
-    def layer(self) -> SettingsLayer:
-        """Аргументы как слой настроек: то, что в них перекрывает файлы."""
-        history: JsonlHistorySettings | None = None
-        if self.history_root is not None:
-            history = JsonlHistorySettings(
-                kind=HistoryKind.JSONL, root=self.history_root
-            )
-
-        limits: LimitsJson | None = None
-        if self.max_turns is not None:
-            limits = LimitsJson(max_turns=self.max_turns)
-
-        return SettingsLayer(
-            model=self.model,
-            history=history,
-            limits=limits,
-            system_prompt_file=self.system_prompt_file,
-            skills_dir=self.skills_dir,
-        )
-
-
 class LayerMerge:
     """Слияние слоёв: поле побеждает полем, таблицы — по ключам, списки
     объединяются без повторов. Секция с дискриминатором `kind` (история)
@@ -332,80 +280,6 @@ class JsonText:
             kind = type(document).__name__
             msg = f"{what} at {source} must be a JSON object, got {kind}"
             raise SettingsError(msg)
-
-        return document
-
-
-class EffectiveSettings(BaseModel):
-    """Действующие настройки после слияния: то, из чего собирается ядро."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    DEFAULT_AGENT_NAME: ClassVar[str] = "Boba"
-
-    model: str
-    models: Mapping[str, ModelSettings]
-    permissions: PermissionSettings
-    history: JsonlHistorySettings | PostgresHistorySettings | MemoryHistorySettings
-    compaction: CompactionSettings
-    limits: TurnLimits
-    mcp: McpClientJson
-    tools: ToolsJson
-    sessions: SessionsJson
-    env: Mapping[str, str]
-    system_prompt: Sequence[str]
-    """Секции промпта настроек: промпт аргумента или файла и дополнения."""
-    appended_prompt: Sequence[str]
-    """Дополнения промпта из аргументов: они идут и за промптом профиля."""
-    argument_prompt: bool
-    """Промпт задан аргументом --system-prompt: он сильнее промпта профиля."""
-    skills_dir: str | None
-    agent_name: str
-    record_requests: bool
-
-    @property
-    def permission_mode(self) -> PermissionMode:
-        mode = self.permissions.default_mode
-        if mode is None:
-            return PermissionMode.DEFAULT
-
-        return mode
-
-    @property
-    def allow_bypass(self) -> bool:
-        return bool(self.permissions.allow_bypass)
-
-    def selected_model(self) -> ModelSettings:
-        found = self.models.get(self.model)
-        if found is None:
-            known = sorted(self.models)
-            msg = (
-                f"The model profile '{self.model}' is not defined. Known profiles: "
-                f"{known}. Add it under 'models' in settings.json or pick another "
-                "with --model."
-            )
-            raise SettingsError(msg)
-
-        return found
-
-    def system_prompt_of(self, name: str) -> Sequence[str]:
-        """Секции системного промпта сессии на профиле name: свой промпт
-        профиля с дополнениями, иначе промпт настроек; промпт аргумента
-        сильнее промпта профиля."""
-        own = self.models[name].system_prompt
-        if own is None:
-            return self.system_prompt
-
-        if self.argument_prompt:
-            return self.system_prompt
-
-        return [own, *self.appended_prompt]
-
-    def public(self) -> dict[str, Any]:
-        """Настройки для события `init`: без значений окружения;
-        секреты выходят маской SecretStr."""
-        document = self.model_dump(mode="json", by_alias=True)
-        document["env"] = sorted(self.env)
 
         return document
 

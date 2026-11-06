@@ -15,22 +15,6 @@ COPY build/conf/  /tmp/conf/
 RUN if [ -f /tmp/conf/npmrc ]; then cp /tmp/conf/npmrc /npmrc; else : > /npmrc; fi
 
 
-FROM ${BUILD_IMAGE} AS login
-
-ARG CHAINLIT_VERSION
-
-COPY build/src/chainlit-${CHAINLIT_VERSION}.tar.gz /tmp/chainlit.tar.gz
-COPY packages/apps/boba-aid/web/chainlit-ui/overlay/boba-login-realms.patch /tmp/login.patch
-
-WORKDIR /tmp/ui
-RUN root=$(tar -tzf /tmp/chainlit.tar.gz | head -1 | cut -d/ -f1) \
-    && tar -xzf /tmp/chainlit.tar.gz --strip-components=1 \
-        "$root/frontend/src/components/LoginForm.tsx" \
-        "$root/frontend/src/pages/Login.tsx" \
-        "$root/libs/react-client/src/types/config.ts" \
-    && patch --batch --fuzz=0 -p1 < /tmp/login.patch
-
-
 # store pnpm: слой зависит только от тарболла тега и манифестов overlay, поэтому
 # правка исходников overlay его не перекачивает
 FROM ${NODE_IMAGE} AS store
@@ -67,7 +51,6 @@ FROM store AS ui
 COPY packages/apps/boba-aid/web/chainlit-ui/overlay/  /tmp/overlay/
 COPY packages/apps/boba-aid/assets/public/elements/   /tmp/elements/
 COPY build/ui.Dockerfile                              /tmp/ui.Dockerfile
-COPY --from=login /tmp/ui/                            /tmp/login/
 
 WORKDIR /tmp/ui
 RUN root=$(tar -tzf /tmp/chainlit.tar.gz | head -1 | cut -d/ -f1) \
@@ -75,7 +58,6 @@ RUN root=$(tar -tzf /tmp/chainlit.tar.gz | head -1 | cut -d/ -f1) \
         "$root/frontend" "$root/libs" "$root/package.json" "$root/pnpm-lock.yaml" \
         "$root/pnpm-workspace.yaml" "$root/.npmrc" \
     && cp -a /tmp/overlay/. /tmp/ui/ \
-    && cp -a /tmp/login/. /tmp/ui/ \
     && pnpm install --store-dir /pnpm-store $PNPM_OPTS \
     && mkdir -p frontend/elements && cp -a /tmp/elements/. frontend/elements/
 RUN pnpm --filter @chainlit/react-client run build \

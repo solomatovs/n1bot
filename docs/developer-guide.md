@@ -2132,9 +2132,16 @@ reads spec 1 only», и плагин пересобирается под сер�
 
 ### Общие настройки приложений
 
-Сетевые поля принадлежат `[server]`, каталог данных — `data`, исходящие
-CA — `[tls]`. `ProcessConfig` предоставляет эти общие модели; приложение
-расширяет модель сервера своими полями. `ServiceAddress` в boba-identity
+Модели принадлежат приложениям: `boba.mcp_server.config.models`,
+`boba.aid.config.app` / `boba.aid.config.models` и
+`boba.cli.config.models` / `boba.cli.config.settings`.
+Каждое приложение объявляет собственные `DataConfig` и `TlsConfig`;
+`boba-config` отвечает за загрузку, слияние и проверку переданных моделей.
+Библиотеки получают пути данных и CA значениями.
+Текущий TOML сохраняет `[server]`, `data` и `[tls]`; целевая перегруппировка
+всех разделов, включая TLS внутри серверной модели, описана в
+[плане перегруппировки конфигураций](configuration-regrouping.md).
+`ServiceAddress` в boba-identity
 проверяет согласованность OAuth public_url/url_prefix и используется OAuth,
 MCP и Boba без зависимости общего runtime от инфраструктуры OAuth.
 

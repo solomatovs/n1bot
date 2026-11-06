@@ -49,13 +49,10 @@ from fastmcp.server.auth import AccessToken
 from fastmcp.server.auth.middleware import RequireAuthMiddleware
 from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
 from mcp.server.auth.routes import build_resource_metadata_url
+from omegaconf import DictConfig
 from pydantic import (
     AnyHttpUrl,
-    BaseModel,
-    ConfigDict,
-    Field,
     ValidationError,
-    field_validator,
 )
 from starlette.applications import Starlette
 from starlette.requests import HTTPConnection, Request
@@ -64,19 +61,9 @@ from starlette.routing import BaseRoute, Route, WebSocketRoute
 from starlette.types import Receive, Scope, Send
 from starlette.websockets import WebSocket
 
-from boba.access import RoleVisibility
-from boba.agent.settings import (
-    HistoryKind,
-    HistoryPoolSettings,
-    ModelSettings,
-    PostgresHistorySettings,
-    SettingsLayer,
-)
 from boba.auth import SessionService, SignIns
-from boba.auth.assembly import AuthBackends, AuthServices
-from boba.auth.config import AuthConfig, ProxyAuthConfig
-from boba.auth.providers.backends import StandardAuthBackends
-from boba.auth.settings import SignInSettings
+from boba.auth.assembly import AuthServices
+from boba.auth.config import ProxyAuthConfig
 from boba.cancellation import ProcessStop
 from boba.cli.acp_server import AcpAgent
 from boba.cli.app import (
@@ -86,24 +73,39 @@ from boba.cli.app import (
     ModelCatalog,
     OpenedStore,
 )
-from boba.cli.settings import Arguments, EffectiveSettings, Settings, SettingsError
+from boba.cli.config.models import (
+    AgentProfile,
+    AgentServerConfig,
+    DataConfig,
+    ServeConfig,
+    ServeHistory,
+    ServeSection,
+    TlsConfig,
+)
+from boba.cli.config.settings import (
+    Arguments,
+    EffectiveSettings,
+    HistoryKind,
+    HistoryPoolSettings,
+    ModelSettings,
+    PostgresHistorySettings,
+    SettingsError,
+    SettingsLayer,
+)
+from boba.cli.settings import Settings
 from boba.cli.threads import LoopThread, SessionThreads, ThreadedHistoryStore
-from boba.config import ConfigError, ConfigVariant, bind
+from boba.config import ConfigError, bind
 from boba.config.application import ConfigFiles
-from boba.config.paths import PathsConfig, TlsConfig
 from boba.db.postgres import AsyncPostgresPool
-from boba.db.postgres.connection import LibpqConnection, PostgresConfig
+from boba.db.postgres.connection import LibpqConnection
 from boba.history.postgres import PostgresHistoryStore, SessionLocks
 from boba.http_server import (
     HealthCheckError,
     HealthProbe,
-    ProcessLogging,
-    ServerConfig,
     SignalledServer,
 )
 from boba.identity.api import RoleCatalog, StoredUser, UserRows
 from boba.identity.principal import UserIdentity
-from boba.identity.service import ServiceAddress
 from boba.identity.signin import ProfileCatalog
 from boba.identity_postgres import UsersTable
 from boba.krb.layout import InstanceLayout
@@ -114,8 +116,7 @@ from boba.llm.onnx.chat import MANIFEST as ONNX
 from boba.llm.providers import LlmProviders, LlmProviderTypes
 from boba.oauth.claims import TokenClaims
 from boba.oauth.server.assertions import ProxyAssertionVerifier
-from boba.oauth.server.clients import RegisteredClients, TrustedClient
-from boba.oauth.server.config import TokenConfig
+from boba.oauth.server.clients import RegisteredClients
 from boba.oauth.server.provider import AuthServer
 from boba.oauth.server.resources import ServiceAuth
 from boba.oauth.server.sealed import SealedValues
@@ -161,101 +162,6 @@ class Caller:
     user_id: UUID
     login: str
     profiles: frozenset[str]
-
-
-class AgentProfile(RoleVisibility):
-    """Профиль агента [agent.profiles.<имя>]: роли, которым он выдан, и
-    профиль модели агента — модель, её пределы и свой системный промпт."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    model: ModelSettings
-
-
-class ServeHistory(BaseModel):
-    """Секция [agent.history]: схема истории и подключение истории
-    ([postgres] целиком, со своей ролью и пулом)."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
-
-    db_schema: str = Field(alias="schema", min_length=1)
-    postgres: PostgresConfig
-
-
-class ServeSection(BaseModel):
-    """Секция [agent]: адрес службы и путь ACP, публичный адрес и префикс
-    (ServiceAddress), история, слой настроек
-    агента без истории и моделей, профили агента и доверенные клиенты
-    OAuth."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    path: str = Field(default="/acp", min_length=1, pattern=r"^/")
-    idle_sec: float = Field(default=1800, gt=0)
-    """Подключение HTTP без запросов и ходов дольше idle_sec закрывается
-    вместе с сессиями: клиент ушёл, не закрыв его."""
-    settings: SettingsLayer = Field(default_factory=SettingsLayer)
-    """Слой настроек агента: права, лимиты, сессии, серверы MCP, промпт.
-    Историю, профили моделей и профиль по умолчанию задаёт служба."""
-    profiles: dict[str, AgentProfile] = Field(min_length=1)
-    clients: dict[str, TrustedClient] = Field(default_factory=dict)
-    """Доверенные клиенты OAuth по client_id: им разрешён вход proxy."""
-
-    @field_validator("settings")
-    @classmethod
-    def _service_layer(cls, value: SettingsLayer) -> SettingsLayer:
-        if value.history is not None:
-            msg = (
-                "[agent.settings]: the history is [agent.history] of the service, "
-                f"remove history of kind {value.history.kind!r}"
-            )
-            raise ValueError(msg)
-
-        if value.models:
-            msg = (
-                "[agent.settings]: model profiles live in [agent.profiles.<name>], "
-                f"remove models {sorted(value.models)}"
-            )
-            raise ValueError(msg)
-
-        if value.model is not None:
-            msg = (
-                "[agent.settings]: the default model is the first profile granted "
-                f"to the user, remove model = {value.model!r}"
-            )
-            raise ValueError(msg)
-
-        return value
-
-
-class AgentServerConfig(ServerConfig, ServiceAddress):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-    port: int = Field(default=8660, gt=0, lt=65536)
-
-
-class ServeConfig(SignInSettings):
-    """Секции службы агента и подключения её инфраструктуры."""
-
-    model_config = ConfigDict(extra="ignore", populate_by_name=True)
-
-    db_schema: str = Field(alias="schema", min_length=1)
-    paths: PathsConfig = Field(alias="data")
-    tls: TlsConfig = Field(default_factory=TlsConfig)
-    session: TokenConfig
-    logger: dict[str, Any] = Field(default_factory=ProcessLogging().default)
-
-    AUTH_BACKENDS: ClassVar[AuthBackends] = StandardAuthBackends().registry
-    CONFIG_VARIANTS: ClassVar = {
-        AuthConfig: ConfigVariant("type", AUTH_BACKENDS.model_for),
-    }
-
-    server: AgentServerConfig
-    postgres: PostgresConfig
-    agent: ServeSection
-
-    @property
-    def history(self) -> ServeHistory:
-        return ServeHistory(schema=self.db_schema, postgres=self.postgres)
 
 
 class AgentProfiles(ProfileCatalog):
@@ -962,7 +868,9 @@ class ServeEntry:
         try:
             config = self._configs.load(self._paths).value
             layout = InstanceLayout(
-                self._paths[0].resolve().parent, config.paths, config.tls
+                self._paths[0].resolve().parent,
+                Path(config.paths.data_dir),
+                Path(config.tls.ca_file),
             )
             layout.apply()
         except (ConfigError, ValueError, OSError) as exc:
@@ -993,3 +901,10 @@ class ServeEntry:
             raise SystemExit(f"boba health: {exc}") from exc
 
         sys.stdout.write(f"{checked}\n")
+
+
+def prepare_migrations(raw: DictConfig, conf_dir: Path) -> None:
+    """Подготовить окружение команды migrate из моделей приложения."""
+    paths = bind(raw, "app.data", DataConfig)
+    tls = bind(raw, "app.tls", TlsConfig)
+    InstanceLayout(conf_dir, Path(paths.data_dir), Path(tls.ca_file)).apply()

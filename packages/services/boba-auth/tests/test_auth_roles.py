@@ -90,23 +90,21 @@ def test_sid_exclusions_need_a_parsed_pac() -> None:
 
 async def test_local_auth_allows_user_with_roles() -> None:
     config = LocalAuthConfig(
-        identity=IdentityRule(realm="local-stand"),
+        identity=IdentityRule(),
         users={"alice": "pw"},
         roles=_local_roles(mapping={"alice": ["admin"]}),
     )
     user = await _local_sign_in(config).sign_in("alice", "pw")
     if user is None:
         raise AssertionError("user is not None")
-    if user.identifier != "local-stand:alice":
-        raise AssertionError('user.identifier == "local-stand:alice"')
+    if user.identifier != "alice":
+        raise AssertionError('user.identifier == "alice"')
     if user.access.roles != frozenset({"admin"}):
         raise AssertionError('user.access.roles == {"admin"}')
 
 
 async def test_local_auth_rejects_wrong_password() -> None:
-    config = LocalAuthConfig(
-        identity=IdentityRule(realm="local-stand"), users={"alice": "pw"}
-    )
+    config = LocalAuthConfig(identity=IdentityRule(), users={"alice": "pw"})
     user = await _local_sign_in(config).sign_in("alice", "nope")
     if user is not None:
         raise AssertionError("user is None")
@@ -114,7 +112,7 @@ async def test_local_auth_rejects_wrong_password() -> None:
 
 async def test_local_auth_rejects_excluded_user() -> None:
     config = LocalAuthConfig(
-        identity=IdentityRule(realm="local-stand"),
+        identity=IdentityRule(),
         users={"alice": "pw"},
         roles=_local_roles(exclude=["alice"]),
     )
@@ -123,16 +121,14 @@ async def test_local_auth_rejects_excluded_user() -> None:
 
 
 async def test_local_auth_rejects_no_roles_when_required() -> None:
-    config = LocalAuthConfig(
-        identity=IdentityRule(realm="local-stand"), users={"alice": "pw"}
-    )
+    config = LocalAuthConfig(identity=IdentityRule(), users={"alice": "pw"})
     with pytest.raises(AuthorizationError):
         await _local_sign_in(config).sign_in("alice", "pw")
 
 
 async def test_local_auth_allows_no_roles_when_not_required() -> None:
     config = LocalAuthConfig(
-        identity=IdentityRule(realm="local-stand"),
+        identity=IdentityRule(),
         users={"alice": "pw"},
         require_roles=False,
     )
@@ -200,7 +196,7 @@ async def test_kerberos_providers_join_principal_and_directory_roles() -> None:
 
     by_principal = await RoleProviders(
         [PrincipalRoles(principal)], True, MemoryRoles({"adm"})
-    ).admit(facts, UserIdentity(realm="test", login=Login("alice")))
+    ).admit(facts, UserIdentity(login=Login("alice")))
     if by_principal != ["adm"]:
         raise AssertionError(f'principal provider alone gives ["adm"]: {by_principal}')
 
@@ -218,7 +214,7 @@ async def test_no_providers_with_require_roles_refuses() -> None:
     with pytest.raises(AuthorizationError, match="no role came"):
         await providers.admit(
             PrincipalFacts(login=Login("alice")),
-            UserIdentity(realm="test", login=Login("alice")),
+            UserIdentity(login=Login("alice")),
         )
 
 
@@ -246,7 +242,7 @@ class TestLocalSignInIdentifier:
 
     async def test_identifier_is_the_canonical_login(self) -> None:
         config = LocalAuthConfig(
-            identity=IdentityRule(realm="local-stand"),
+            identity=IdentityRule(),
             users={"Maksimov.MA": "pw"},
             roles=_local_roles(mapping={"Maksimov.MA": ["admin"]}),
         )
@@ -256,7 +252,7 @@ class TestLocalSignInIdentifier:
         if user is None:
             raise AssertionError("user is not None")
 
-        if user.identifier != "local-stand:maksimov.ma":
+        if user.identifier != "maksimov.ma":
             raise AssertionError(f"identifier канонизирован, дано {user.identifier!r}")
 
         if user.identity.login != "maksimov.ma":

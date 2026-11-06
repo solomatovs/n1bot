@@ -19,9 +19,9 @@ from chainlit.user import PersistedUser
 from pydantic import SecretStr
 
 from boba.aid.auth.kerberos import KerberosAuth
+from boba.aid.config.app import AppConfig
 from boba.aid.data.data_layer import PostgresDataLayer
 from boba.aid.data.users import UsersTable
-from boba.aid.infra.config import AppConfig
 from boba.config import bind
 from boba.connections.stored import GrantTarget, StoredRole
 from boba.db.postgres import AsyncPostgresPool
@@ -106,9 +106,7 @@ class Session:
 
     @classmethod
     async def user(cls, layer: PostgresDataLayer, identifier: str) -> PersistedUser:
-        identity = UserIdentity.model_validate(
-            identifier if ":" in identifier else f"corporate:{identifier}"
-        )
+        identity = UserIdentity.model_validate(identifier)
         if cls.users is None:
             raise AssertionError("test user rows must be bound")
         await cls.users.upsert(identity)

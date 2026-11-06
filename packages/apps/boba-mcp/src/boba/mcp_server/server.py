@@ -86,6 +86,7 @@ from boba.mcp_server.auth import (
     TokenSubjects,
 )
 from boba.mcp_server.catalog import EndpointConfigError, McpEndpoint
+from boba.mcp_server.config.models import RunLimits
 from boba.mcp_server.connections.params import ConnectionParams
 from boba.mcp_server.files import (
     CallerBus,
@@ -778,19 +779,6 @@ class CallContextMiddleware(Middleware):
             channels = self._journals.recorded_channels(user, run_id, node)
             for channel in channels:
                 yield JournalRead(run=run_id, node=node, channel=channel)
-
-
-class RunLimits(BaseModel):
-    """Пределы одновременных вызовов инструментов сервиса.
-
-    max_runs — сколько вызовов исполняется разом; max_waiting — сколько
-    ещё ждут места в памяти. Вызов сверх обоих получает отказ результатом.
-    """
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    max_runs: int = Field(gt=0)
-    max_waiting: int = Field(ge=0)
 
 
 class RunLimitMiddleware(Middleware):

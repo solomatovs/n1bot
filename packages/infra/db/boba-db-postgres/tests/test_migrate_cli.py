@@ -11,7 +11,7 @@ from uuid import uuid4
 import pytest
 from psycopg import sql
 
-from boba.aid.infra.config import AppConfig
+from boba.aid.config.app import AppConfig
 from boba.db.postgres import AsyncPostgresPool, PostgresSchema
 from boba.db.postgres.connection import PostgresConfig
 from boba.krb import KerberosWorkspace
