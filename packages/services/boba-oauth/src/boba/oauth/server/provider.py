@@ -29,6 +29,7 @@ from pydantic import AnyHttpUrl
 from starlette.routing import Route
 
 from boba.auth import SessionService, SignIns
+from boba.auth.config import ProxyAuthConfig
 from boba.identity.authentication import AccessGrant
 from boba.identity.errors import (
     AuthenticationError,
@@ -41,6 +42,7 @@ from boba.oauth.assertions import AssertionRejectedError
 from boba.oauth.server.assertions import ProxyAssertionVerifier
 from boba.oauth.server.clients import RegisteredClients
 from boba.oauth.server.codes import GrantedLogin, PendingLogin
+from boba.oauth.server.proxy import ProxyLogin
 from boba.oauth.server.sealed import SealedValues
 from boba.oauth.server.tokens import ServiceTokens, TokenHolder
 
@@ -57,9 +59,9 @@ class AuthServer(OAuthProvider):
     корень хоста (ServiceAuth.app_routes), страницы входа — LoginPages. Вход человека:
     authorize() отдаёт адрес страницы входа с начатым входом, та зовёт
     signed_in() и получает адрес возврата с кодом. Вход proxy:
-    exchange_identity_assertion(). Вход человека продлевается токеном
-    обновления до потолка [session].session_max_sec; вход proxy токена
-    обновления не получает — клиент повторяет обмен утверждения сам.
+    exchange_identity_assertion() либо exchange_proxy_headers(). Вход человека
+    продлевается токеном обновления до потолка [session].session_max_sec.
+    Вход proxy токена обновления не получает — клиент повторяет обмен сам.
 
     Состояния между запросами нет: начатый вход и код авторизации —
     запечатанные значения (SealedValues), рестарт посреди входа его не рвёт.
@@ -80,7 +82,7 @@ class AuthServer(OAuthProvider):
         public_url: str,
         sign_ins: SignIns,
         tokens: ServiceTokens,
-        assertions: ProxyAssertionVerifier,
+        proxies: Sequence[ProxyAuthConfig],
         clients: RegisteredClients,
         sealed: SealedValues,
         resources: Sequence[str],
@@ -94,7 +96,8 @@ class AuthServer(OAuthProvider):
         self._public_url = public_url.rstrip("/")
         self._sign_ins = sign_ins
         self._tokens = tokens
-        self._assertions = assertions
+        self._proxies = tuple(proxies)
+        self._assertions = ProxyAssertionVerifier(self._proxies)
         self._resources = frozenset(resources)
         self._clients = clients
         self._sealed = sealed
@@ -227,12 +230,7 @@ class AuthServer(OAuthProvider):
             raise TokenError("invalid_grant", str(exc)) from exc
 
         resource = self._resource(claims.resource, TokenError)
-        if not self._clients.permits(client_id):
-            msg = (
-                f"identity assertion of {claims.sub!r}: client {client_id!r} "
-                "is not a trusted assertion client"
-            )
-            raise TokenError("invalid_grant", msg)
+        self._require_proxy_client(client_id)
 
         request = ProxyRequest(
             login=claims.identity.login,
@@ -253,6 +251,31 @@ class AuthServer(OAuthProvider):
             )
             raise TokenError("invalid_grant", message) from exc
 
+        return await self._proxy_token(signed, resource, client_id)
+
+    async def exchange_proxy_headers(
+        self,
+        client: OAuthClientInformationFull,
+        request: ProxyRequest,
+        resource: str,
+    ) -> OAuthToken:
+        """Общий proxy-вход по заголовкам; клиент уже проверен HTTP-адаптером."""
+        client_id = str(client.client_id)
+        self._require_proxy_client(client_id)
+        resource = self._resource(resource, TokenError)
+        signed = await self._sign_ins.by_proxy(request)
+        return await self._proxy_token(signed, resource, client_id)
+
+    def _require_proxy_client(self, client_id: str) -> None:
+        if not self._clients.permits(client_id):
+            raise TokenError(
+                "invalid_grant",
+                f"client {client_id!r} is not a trusted assertion client",
+            )
+
+    async def _proxy_token(
+        self, signed: SignInResult, resource: str, client_id: str
+    ) -> OAuthToken:
         logger.info(
             "proxy sign-in [user=%s] [client=%s] [roles=%s]",
             signed.identifier,
@@ -352,6 +375,20 @@ class AuthServer(OAuthProvider):
                 continue
 
             routes.append(route)
+
+        for config in self._proxies:
+            if config.path == self.LOGIN_PATH or any(
+                route.path == config.path for route in routes
+            ):
+                msg = f"proxy path {config.path!r} conflicts with auth routes"
+                raise ValueError(msg)
+            routes.append(
+                Route(
+                    config.path,
+                    endpoint=ProxyLogin(self, config).handle,
+                    methods=["POST"],
+                )
+            )
 
         return routes
 

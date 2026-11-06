@@ -12,12 +12,13 @@ from fastapi import FastAPI
 from starlette.requests import Request
 from starlette.responses import Response
 
-from boba.aid.auth.http import ProxyRequests, SessionCookie
+from boba.aid.auth.http import SessionCookie
 from boba.aid.auth.kerberos import KerberosAuth
 from boba.aid.auth.preferences import SessionPreferences
 from boba.aid.auth.refresh import SessionRefresh
 from boba.aid.auth.session import BrowserSessions
 from boba.auth.config import ProxyAuthConfig
+from boba.auth.transport.http import ProxyRequests
 
 __all__ = ["ProxyAuth"]
 

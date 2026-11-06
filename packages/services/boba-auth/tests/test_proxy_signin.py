@@ -131,6 +131,12 @@ async def test_foreign_secret_is_refused() -> None:
         await _sign_in(_config()).sign_in(_request(secret="other"))
 
 
+async def test_non_ascii_signature_is_refused_as_authentication_error() -> None:
+    request = _request().model_copy(update={"signature": "не-hex"})
+    with pytest.raises(AuthenticationError, match="signature does not match"):
+        await _sign_in(_config()).sign_in(request)
+
+
 async def test_stale_timestamp_is_refused() -> None:
     old = int(time.time()) - 600
 

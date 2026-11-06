@@ -115,7 +115,6 @@ from boba.llm.http.openai import MANIFEST as OPENAI
 from boba.llm.onnx.chat import MANIFEST as ONNX
 from boba.llm.providers import LlmProviders, LlmProviderTypes
 from boba.oauth.claims import TokenClaims
-from boba.oauth.server.assertions import ProxyAssertionVerifier
 from boba.oauth.server.clients import RegisteredClients
 from boba.oauth.server.provider import AuthServer
 from boba.oauth.server.resources import ServiceAuth
@@ -805,14 +804,12 @@ class ServeHost:
             session.session_generation(),
             ServeMark.TOKEN_SALT,
         )
-        assertions = ProxyAssertionVerifier(self._config.auth_entries(ProxyAuthConfig))
-
         sealed = SealedValues(session.auth_secret, ServeMark.SEALED_SALT)
         server = AuthServer(
             public_url,
             self._sign_ins,
             tokens,
-            assertions,
+            self._config.auth_entries(ProxyAuthConfig),
             RegisteredClients(sealed, section.clients),
             sealed,
             [self.resource()],

@@ -38,7 +38,6 @@ from boba.krb import KerberosEnv
 from boba.ldap import Ldap3Directory
 from boba.mcp_server.auth import ServiceMark
 from boba.mcp_server.catalog import EndpointCatalog, McpEndpoint
-from boba.oauth.server.assertions import ProxyAssertionVerifier
 from boba.oauth.server.clients import RegisteredClients
 from boba.oauth.server.pages import LoginPages
 from boba.oauth.server.provider import AuthServer
@@ -118,7 +117,7 @@ def server(chat_config: DictConfig, krb5_env: None) -> AuthServer:
             "stand",
             ServiceMark.TOKEN_SALT,
         ),
-        ProxyAssertionVerifier(()),
+        (),
         RegisteredClients(SealedValues(SECRET, ServiceMark.SEALED_SALT), {}),
         SealedValues(SECRET, ServiceMark.SEALED_SALT),
         [f"{PUBLIC}/mcp/{ENDPOINT}"],

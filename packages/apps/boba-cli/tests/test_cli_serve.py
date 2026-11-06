@@ -37,13 +37,20 @@ from pydantic import AnyUrl
 from websockets.exceptions import InvalidStatus
 
 from boba.aid.config.app import AppConfig
+from boba.auth.providers.proxy import ProxySignature
 from boba.cli.config.models import ServeHistory
 from boba.cli.serve import ServeMark
 from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
+from boba.identity.signin import ProxyRequest
 from boba.stand.agent import FakeServer
-from boba.stand.agent_service import AgentServiceStand, ServeAddress, ServiceProfiles
+from boba.stand.agent_service import (
+    AgentServiceStand,
+    ServeAddress,
+    ServeStandConfig,
+    ServiceProfiles,
+)
 from boba.stand.database import TestDatabase
 from boba.stand.migrate import StandMigrations
 from boba.stand.ui.fake_llm import FailureName, ScenarioName
@@ -401,6 +408,36 @@ def model_choice(response: schema.NewSessionResponse) -> tuple[str, list[str]]:
 
 
 class TestTurns:
+    async def test_signed_proxy_headers_open_acp(self, stands: Stands) -> None:
+        stand = await stands.start()
+        request = ProxyRequest(
+            login="alice", roles="dev", timestamp=str(int(time.time()))
+        )
+        async with httpx2.AsyncClient() as client:
+            reply = await client.post(
+                f"{stand.public_url}/auth/proxy",
+                headers={
+                    "X-Remote-User": request.login,
+                    "X-Remote-Roles": request.roles,
+                    "X-Boba-Timestamp": request.timestamp,
+                    "X-Boba-Signature": ProxySignature(
+                        ServeStandConfig.PROXY_SECRET
+                    ).sign(request),
+                },
+                data={
+                    "client_id": ServeStandConfig.CLIENT_ID,
+                    "client_secret": ServeStandConfig.CLIENT_SECRET,
+                    "resource": stand.url(),
+                },
+            )
+        assert reply.status_code == 200, reply.text
+        connected = http(stand, reply.json()["access_token"])
+        try:
+            initialized = await connected.initialize()
+            assert initialized.auth_methods is not None
+        finally:
+            await connected.close()
+
     async def test_websocket_turn_with_profile_and_tool(
         self, stands: Stands, model: FakeServer, tmp_path: Path
     ) -> None:

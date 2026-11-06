@@ -7,17 +7,15 @@ import logging
 from collections.abc import Mapping
 from typing import ClassVar
 
-from starlette.requests import HTTPConnection, Request
+from starlette.requests import HTTPConnection
 from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from boba.aid.auth.claims import TokenReader, TokenRejectedError, TokenRejection
 from boba.aid.auth.cookies import CookieJar, CookieSpec
 from boba.aid.rendering.failures import FailureReports
-from boba.auth.transport.http import SsoRequests
 from boba.identity.errors import BaseError
 from boba.identity.session import LogLine
-from boba.identity.signin import ProxyHeaderNames, ProxyRequest
 
 
 class SessionCookie:
@@ -68,38 +66,6 @@ class SessionCookie:
             path=self._spec.path,
             secure=self._spec.secure,
             samesite=self._spec.samesite,
-        )
-
-
-class ProxyRequests:
-    """Запрос proxy-входа из запроса starlette: заголовки по именам из
-    ProxyHeaderNames и адрес клиента. Создаётся маршрутом входа proxy
-    приложения и лежит у него полем."""
-
-    def __init__(self) -> None:
-        self._requests = SsoRequests()
-
-    def of(self, request: Request, names: ProxyHeaderNames) -> ProxyRequest:
-        roles = ""
-        if names.roles:
-            roles = request.headers.get(names.roles, "")
-
-        profiles = ""
-        if names.profiles:
-            profiles = request.headers.get(names.profiles, "")
-
-        profile = ""
-        if names.profile:
-            profile = request.headers.get(names.profile, "")
-
-        return ProxyRequest(
-            login=request.headers.get(names.user, ""),
-            timestamp=request.headers.get(names.timestamp, ""),
-            signature=request.headers.get(names.signature, ""),
-            roles=roles,
-            profiles=profiles,
-            profile=profile,
-            client=self._requests.client_of(request),
         )
 
 

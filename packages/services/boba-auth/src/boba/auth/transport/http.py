@@ -1,7 +1,7 @@
-"""HTTP-адаптеры SPNEGO для маршрутов OAuth и чата.
+"""Общие HTTP-адаптеры proxy и SPNEGO для служб и чата.
 
-Запрос Starlette становится моделью SsoRequest; ответы сообщают браузеру,
-что нужен билет Kerberos, и при необходимости ведут на страницу входа.
+Запрос Starlette становится ProxyRequest либо SsoRequest. Ответы SPNEGO
+сообщают браузеру, что нужен билет Kerberos, и ведут на страницу входа.
 """
 
 import html
@@ -11,9 +11,17 @@ from typing import ClassVar
 from starlette.requests import Request
 from starlette.responses import Response
 
+from boba.identity.signin import ProxyHeaderNames, ProxyRequest
 from boba.identity.sso import SsoRequest
 
-__all__ = ["OwnRequest", "RequestHeader", "SsoErrorCode", "SsoRequests", "SsoResponses"]
+__all__ = [
+    "OwnRequest",
+    "ProxyRequests",
+    "RequestHeader",
+    "SsoErrorCode",
+    "SsoRequests",
+    "SsoResponses",
+]
 
 
 class RequestHeader(StrEnum):
@@ -79,6 +87,28 @@ class SsoRequests:
             return request.client.host
 
         return SsoRequest.UNKNOWN_CLIENT
+
+
+class ProxyRequests:
+    """Подписанные proxy-заголовки: одинаковое чтение в AID, MCP и BOBA.
+
+    Неизвестные конфигу заголовки ролей и профилей не читаются. Проверку
+    подписи, срока и адреса выполняет общий SignIns.by_proxy.
+    """
+
+    def __init__(self) -> None:
+        self._requests = SsoRequests()
+
+    def of(self, request: Request, names: ProxyHeaderNames) -> ProxyRequest:
+        return ProxyRequest(
+            login=request.headers.get(names.user, ""),
+            timestamp=request.headers.get(names.timestamp, ""),
+            signature=request.headers.get(names.signature, ""),
+            roles=request.headers.get(names.roles, "") if names.roles else "",
+            profiles=request.headers.get(names.profiles, "") if names.profiles else "",
+            profile=request.headers.get(names.profile, "") if names.profile else "",
+            client=self._requests.client_of(request),
+        )
 
 
 class SsoResponses:

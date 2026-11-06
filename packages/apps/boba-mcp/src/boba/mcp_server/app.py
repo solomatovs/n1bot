@@ -57,7 +57,6 @@ from boba.mcp_server.reload import ReloadableMcp
 from boba.mcp_server.schemas import EndpointSchemas
 from boba.mcp_server.server import FileUploadSchema, McpEndpoints, RunLimitMiddleware
 from boba.mcp_server.tool_adapter import McpTool
-from boba.oauth.server.assertions import ProxyAssertionVerifier
 from boba.oauth.server.clients import RegisteredClients
 from boba.oauth.server.provider import AuthServer
 from boba.oauth.server.resources import ServiceAuth
@@ -306,8 +305,6 @@ class McpHost:
             generation,
             ServiceMark.TOKEN_SALT,
         )
-        assertions = ProxyAssertionVerifier(self._config.auth_entries(ProxyAuthConfig))
-
         sealed = SealedValues(session.auth_secret, ServiceMark.SEALED_SALT)
         resources = catalog.resources(public_url)
 
@@ -315,7 +312,7 @@ class McpHost:
             public_url,
             runtime.sign_ins,
             tokens,
-            assertions,
+            self._config.auth_entries(ProxyAuthConfig),
             self._clients(section, sealed),
             sealed,
             list(resources.values()),

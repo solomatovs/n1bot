@@ -14,13 +14,17 @@ from pydantic import SecretStr
 
 from boba.aid.auth.cookies import CookieSpec
 from boba.aid.auth.policy import SessionRenewal
+from boba.aid.auth.preferences import SessionPreferences
 from boba.aid.auth.proxy import ProxyAuth
 from boba.aid.auth.session import BrowserSessions
 from boba.auth import SessionService, SignIns
 from boba.auth.config import (
+    HeaderProfilesConfig,
     HeaderRolesConfig,
     LocalRolesConfig,
     ProxyAuthConfig,
+    ProxyHeaders,
+    ProxyProfileProviders,
     ProxyRoleProviders,
 )
 from boba.auth.providers.proxy import ProxySignature
@@ -166,3 +170,63 @@ async def test_route_is_mounted_first_on_the_configured_path() -> None:
     first = app.router.routes[0]
     assert getattr(first, "path", "") == "/auth/proxy"
     assert getattr(first, "methods", set()) == {"POST"}
+
+
+async def test_custom_proxy_headers_carry_roles_and_selected_profile() -> None:
+    config = _config().model_copy(
+        update={
+            "path": "/trusted/proxy",
+            "headers": ProxyHeaders(
+                user="X-Identity", timestamp="X-Time", signature="X-Signature"
+            ),
+            "roles": ProxyRoleProviders(header=HeaderRolesConfig(name="X-Group-List")),
+            "profiles": ProxyProfileProviders(
+                header=HeaderProfilesConfig(
+                    name="X-Profile-List", selected="X-Selected-Profile"
+                )
+            ),
+        }
+    )
+    proxy = ProxyRequest(
+        login="Alice",
+        timestamp=str(int(time.time())),
+        roles="read,wrt",
+        profiles=SignInStand.PROFILE,
+        profile=SignInStand.PROFILE,
+    )
+    headers = {
+        "x-identity": proxy.login,
+        "x-time": proxy.timestamp,
+        "x-signature": ProxySignature(SECRET).sign(proxy),
+        "x-group-list": proxy.roles,
+        "x-profile-list": proxy.profiles,
+        "x-selected-profile": proxy.profile,
+    }
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": config.path,
+            "query_string": b"",
+            "client": ("172.18.0.20", 1234),
+            "headers": [
+                (key.encode(), value.encode()) for key, value in headers.items()
+            ],
+        }
+    )
+    route = _route(config)
+    app = FastAPI()
+    route.install(app)
+    assert getattr(app.router.routes[0], "path", "") == config.path
+    response = await route.auth_proxy(request)
+    assert response.status_code == 204
+    cookies = response.headers.getlist("set-cookie")
+    token = cookies[0].split(f"{COOKIE}=", 1)[1].split(";", 1)[0]
+    claims = StandTokens.tokens().read(token)
+    assert claims.identifier == "alice"
+    assert claims.principal().roles == {"read", "wrt"}
+    assert claims.principal().profiles == {SignInStand.PROFILE}
+    assert any(
+        f"{SessionPreferences.PROFILE}={SignInStand.PROFILE};" in cookie
+        for cookie in cookies
+    )

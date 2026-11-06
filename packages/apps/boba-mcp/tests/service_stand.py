@@ -56,7 +56,6 @@ from boba.mcp_server.connections.tools import ConnectionTools
 from boba.mcp_server.connections.user_connections import ArmedConnections
 from boba.mcp_server.prompts import PromptFile
 from boba.mcp_server.server import FileUploadTool, McpEndpoints, RunLimitMiddleware
-from boba.oauth.server.assertions import ProxyAssertionVerifier
 from boba.oauth.server.clients import RegisteredClients, TrustedClient
 from boba.oauth.server.provider import AuthServer
 from boba.oauth.server.resources import ServiceAuth
@@ -406,7 +405,7 @@ class ServiceStand:
             public_url,
             sign_ins,
             tokens,
-            ProxyAssertionVerifier(proxies),
+            proxies,
             RegisteredClients(sealed, {CLIENT_ID: declared}),
             sealed,
             list(resources.values()),

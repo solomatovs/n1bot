@@ -14,6 +14,7 @@ import html
 import re
 import secrets
 import socket
+import time
 from collections.abc import AsyncIterator
 from contextlib import suppress
 from pathlib import Path
@@ -48,9 +49,11 @@ from service_stand import (
 
 from boba.auth import SessionService, SignIns
 from boba.auth.config import ProxyAuthConfig
+from boba.auth.providers.proxy import ProxySignature
 from boba.canvas.journal import StreamSlice
 from boba.identity.lifetime import SessionLifetime
 from boba.identity.principal import IdentityRule
+from boba.identity.signin import ProxyRequest
 from boba.mcp_server.auth import ServiceMark
 from boba.mcp_server.catalog import EndpointCatalog, PromptFile
 from boba.mcp_server.config.models import RunLimits
@@ -58,7 +61,6 @@ from boba.mcp_server.files import JournalRoutes
 from boba.mcp_server.server import FileUploadTool, McpEndpoint
 from boba.mcp_server.tool_adapter import JournalUris
 from boba.oauth.assertions import ProxyAssertions
-from boba.oauth.server.assertions import ProxyAssertionVerifier
 from boba.oauth.server.clients import RegisteredClients, TrustedClient
 from boba.oauth.server.provider import AuthServer
 from boba.oauth.server.sealed import SealedValues
@@ -1424,6 +1426,30 @@ class TestProxySignIn:
     """Вход proxy: доверенный клиент меняет подписанное утверждение о
     пользователе на токен сервиса штатным обменом OAuth (grant jwt-bearer)."""
 
+    async def test_signed_headers_open_mcp(self, stand: ServiceStand, url: str) -> None:
+        request = ProxyRequest(
+            login="ivanov", roles="dev", timestamp=str(int(time.time()))
+        )
+        async with httpx.AsyncClient() as http:
+            reply = await http.post(
+                f"{stand.public_url}/auth/proxy",
+                headers={
+                    "X-Remote-User": request.login,
+                    "X-Remote-Roles": request.roles,
+                    "X-Boba-Timestamp": request.timestamp,
+                    "X-Boba-Signature": ProxySignature(PROXY_SECRET).sign(request),
+                },
+                data={
+                    "client_id": CLIENT_ID,
+                    "client_secret": CLIENT_SECRET,
+                    "resource": url,
+                },
+            )
+        assert reply.status_code == 200, reply.text
+        async with _client(url, reply.json()["access_token"]) as client:
+            tools = await client.list_tools()
+        assert "fake_echo" in {tool.name for tool in tools}
+
     def _public(self, stand: ServiceStand) -> str:
         return f"http://127.0.0.1:{stand.port}"
 
@@ -1533,7 +1559,7 @@ class TestProxySignIn:
                 "stand",
                 ServiceMark.TOKEN_SALT,
             ),
-            ProxyAssertionVerifier((proxy,)),
+            (proxy,),
             RegisteredClients(sealed, {CLIENT_ID: declared}),
             sealed,
             [resource],

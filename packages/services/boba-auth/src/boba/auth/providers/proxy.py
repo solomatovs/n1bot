@@ -42,7 +42,9 @@ class ProxySignature:
         return digest.hexdigest()
 
     def matches(self, request: ProxyRequest) -> bool:
-        return hmac.compare_digest(self.sign(request), request.signature.lower())
+        return request.signature.isascii() and hmac.compare_digest(
+            self.sign(request), request.signature.lower()
+        )
 
 
 class HmacProxySignIn(ProxySignIn):
