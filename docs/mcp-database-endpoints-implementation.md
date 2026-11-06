@@ -21,7 +21,7 @@ behavior or merging AID, Boba, and MCP application data.
    endpoints.
 3. MCP authenticates each request locally from the signed token. User roles
    are loaded from the database at sign-in/refresh; endpoint grants come from
-   the catalog loaded at startup. Connection grants are queried on each use.
+   the in-memory catalog loaded at startup and on SIGHUP. Connection grants are queried on each use.
 4. An endpoint defines its tool names. MCP returns only those tools for which
    the caller is authorized and enforces the same decision on `tools/call`.
 5. AID consumes the resulting MCP tool list. It must not apply role-based or
@@ -110,13 +110,14 @@ One row describes one published MCP URL. The endpoint path is stored in
 `prefix_url`; it is separate from MCP's service-level `url_prefix` in
 configuration. The route is the concatenation of the service prefix and the
 endpoint path. For example, service `url_prefix = "/mcp"` plus endpoint
-`prefix_url = "/dq/all"` gives `/mcp/dq/all`. The same endpoint path appended
+`prefix_url = "/dq/all"` gives `/mcp/dq/all`. `prefix_url = "/"` publishes
+the endpoint at `/mcp/`. The same endpoint path appended
 to the configured `public_url` gives the public OAuth resource URL.
 
 | Column | Type / default | Meaning |
 |---|---|---|
 | `id` | `uuid primary key` | Endpoint identity used by grants |
-| `prefix_url` | `text unique not null` | Endpoint path relative to the service prefix, e.g. `/all` or `/dq/all` |
+| `prefix_url` | `text unique not null` | Endpoint path relative to the service prefix, e.g. `/`, `/all`, or `/dq/all` |
 | `title` | `text not null` | Human-readable name |
 | `description` | `text not null default ''` | Description exposed to MCP clients |
 | `instructions` | `text not null default ''` | MCP server instructions for this endpoint |
@@ -133,10 +134,11 @@ and override keys in the application layer. Override keys must be a subset of
 `tools`. Do not add a separate `mcp_endpoint_tools` table.
 
 `prefix_url` must be a canonical absolute path within the MCP service: it must
-start with `/`, contain one or more non-empty path segments, have no trailing
-slash, query, fragment, scheme, or `.`/`..` segment, and be unique in the MCP
-schema. Nested paths are valid. Do not store the service-level `url_prefix`
-inside this column. Join paths without a duplicate or missing slash:
+be `/` or start with `/` and contain one or more non-empty path segments. Other
+paths have no trailing slash, query, fragment, scheme, or `.`/`..` segment.
+The path must be unique in the MCP schema. Nested paths are valid. Do not
+store the service-level `url_prefix` inside this column. Join paths without a
+duplicate or missing slash:
 `effective_path = server.url_prefix.rstrip("/") + endpoint.prefix_url`;
 build the public resource URL from `server.public_url.rstrip("/")` in the
 same way. There is no separate endpoint `name` field: `id` is the database
@@ -222,10 +224,37 @@ TOML after the database catalog is in use.
 
 The plugin registry is built even when `mcp_endpoints` is empty. No endpoint
 rows means no MCP endpoint URLs are published. Creating an enabled row and its
-role grants publishes the configured endpoint. Endpoint changes may take
-effect after MCP reload/restart in the first implementation; do not claim
-live-reload behavior unless route, OAuth-resource, and MCP tool-list refresh
-behavior are implemented together.
+role grants publishes the configured endpoint after SIGHUP. Startup and
+SIGHUP use the same reload operation: read the catalog and grants, prepare
+HTTP/OAuth routes and MCP servers, then replace the in-memory catalog.
+A failed reload retains the last working catalog and logs the error. There
+is no periodic polling, notification listener, or separate reload CLI command.
+
+Verification handoff for signal-driven reload (not executed in this code phase):
+
+- Empty startup, then SQL insert + commit + SIGHUP: health, MCP route and OAuth
+  discovery expose the endpoint; authenticated tool listing uses its grants.
+- Update/delete/disable endpoints and grants, including prompts and overrides:
+  subsequent requests use the replacement cache and removed access is denied.
+- Invalid tool/schema or failed SQL: log the failure, preserve the working
+  catalog and allow a later successful reload.
+- Repeated HUP while loading: serialize reloads and coalesce pending requests;
+  TERM/INT during reload: cancel preparation without publishing a partial cache.
+- Calls in flight survive reload, subscriptions close, old lifespan resources
+  drain, and the process-wide concurrency limit is not reset by reload.
+- Existing OAuth tokens/registrations remain usable for retained resources;
+  clients explicitly refresh their tool lists after changes.
+- TERM/INT and repeated stop signals in MCP, AID, Boba HTTP and Boba stdio;
+  previous signal handlers are restored after the owning context closes.
+- Overlapping signal owners and re-entry are rejected without overwriting
+  installed handlers. Replacement by another owner during the context is
+  reported on exit without restoring over that owner's handler. Queued events
+  are ignored after the owning receiver is detached.
+- Shutdown during catalog read or endpoint preparation: discard the candidate
+  instead of publishing it after shutdown has begun. Calls from another event
+  loop are rejected. Preparation cancellation preserves cleanup failures.
+- Adapt test assembly to `McpEndpoints` accepting the shared
+  `RunLimitMiddleware`, and to `McpRuntime` owning an endpoint repository.
 
 Preserve existing prompt behavior by transferring prompt definitions into the
 endpoint's `prompts` JSON field. Do not preserve the old endpoint-level role
@@ -562,13 +591,18 @@ has no role/tool ACL, so its audience/scope adaptation was retained.
 
 ### Operational details for the next agent
 
-- `prefix_url` is a relative service route starting with `/`, such as
-  `/dq/all`. `[server].url_prefix` remains the service prefix. OAuth scopes
+- `prefix_url` is a relative service route starting with `/`, such as `/`
+  for the service root or `/dq/all` for a nested route. `[server].url_prefix`
+  remains the service prefix. OAuth scopes
   now use endpoint paths, so old OAuth sessions need reauthentication.
-- Endpoint catalog and grants are loaded at startup. Updating them requires
-  an MCP restart. User-role changes take effect at sign-in/refresh; there are
-  no DB reads during JWT verification. Connection grants remain per-call DB
-  checks. Do not reintroduce users/roles queries into token verification.
+- Endpoint catalog and grants are loaded at startup and on SIGHUP. Reload
+  updates HTTP routes, OAuth resources/discovery, tool schemas and prompts.
+  Existing requests drain on the previous application; subscriptions are
+  ended, and subsequent requests use the new catalog. Clients must request
+  their tool list again; reload does not push new tools into agent context.
+  User-role changes still take effect at sign-in/refresh; there are no DB
+  reads during JWT verification. Connection grants remain per-call DB checks.
+  Process configuration, loaded plugins and model weights are not reloaded.
 - Overrides contain a full model-facing inputSchema. This version allows
   changes only to annotations (`title`, `description`, `examples`, `$comment`,
   `deprecated`, `readOnly`, `writeOnly`). Validation keywords, defaults and
@@ -704,3 +738,65 @@ config and malformed plugin plans are `ConfigError`; plugin process
 failures retain the launcher's `RuntimeError`. CLI returns nonzero on failure.
 Static-check logs for this source phase: `/tmp/boba-sql-migrate-20261104-code/`.
 Static analysis is not evidence that migration SQL has passed execution tests.
+
+## 16. Signal and reload contract tests (2026-11-05)
+
+The following suites exercise the signal/reload implementation. They do not
+replace migration coverage or a deployment acceptance run.
+
+| Contract | Executable checks |
+|---|---|
+| `ProcessSignals.on/on_async` | Registration before activation only; KILL/STOP and worker-thread registration rejected; sync actions run in registration order; distinct owners may own distinct signals. |
+| `ProcessSignals.__aenter__/__aexit__` | Conflicting owners rejected without partial installation; failed installation restores handlers; replaced external handlers are not overwritten; reuse rejected; queued delivery after exit ignored; callback failures preserve their original causes. |
+| `ProcessSignals.cancel_pending` | Async actions are cancelled with their `finally` completed; repeated cancellation is harmless; further async deliveries are disabled; a foreign thread cannot cancel the owner's work. |
+| Async signal delivery | A burst during a running action becomes one further pass; the same signal's actions never overlap. |
+| `ProcessStop.run/on_stop` | Actions run once for repeated TERM/INT; one failing action does not skip other actions or task cleanup; external task cancellation propagates. |
+| `ReloadableMcp.app/reload` | Stable app identity; one startup read; no catalog reads per request; serialized reload; read/validation/startup failures preserve the published cache and routes; retry succeeds. |
+| Initial catalog failure | Read, validation or lifespan preparation errors escape initial startup as `McpReloadError`; no snapshot is published and prepared resources close. A failed lifespan requires a new owner. |
+| Invalid catalog across process restart | Reserved `/token` and `/token/admin`, unknown tool exports and malformed tool names reject reload without changing persisted rows, old routes or old access grants. Restart against that same database and work directory exits with code 1, reports the cause and leaves both TCP ports closed. Repairing the record permits a fresh start and an actual call on the newly added endpoint. |
+| Retrying a rejected SIGHUP | Repeated rejection preserves the current PID and catalog; after repairing the reserved route, SIGHUP publishes all pending changes without restarting. |
+| Reload cancellation and shutdown | Cancellation during read/startup closes candidates; shutdown prevents later publication; requests already admitted drain on their old generation; other requests use the new generation. |
+| Generation cleanup | Every generation is awaited even if another fails; cleanup errors reach the owner as `McpShutdownError` with an exception group as the cause. |
+| `SignalledServer.serve_until_stopped` | Real TERM/INT stop two TCP listeners, active tool calls, keep-alive and incomplete HTTP connections; tool subprocesses exit. Existing server tests also cover repeated stop signals. |
+| `McpEndpointStore.list` and SIGHUP | Real PostgreSQL rows/grants become routes and permissions after SIGHUP; bad tool exports or an unavailable table preserve service; repaired catalogs reload successfully. |
+| Auth and concurrency across reload | Two users retain separate identities; revoked endpoint grants deny an existing token; deleted routes disappear; both listeners and old/new generations share the running-call limit. |
+| `AuthConnection.cancel_safe` | Stopping while catalog SQL waits on an exclusive table lock finishes before that lock is released, including a Kerberos/GSSAPI connection. |
+
+Test files:
+
+- `packages/core/boba-core/tests/test_process_signals.py`
+- `packages/core/boba-cancellation/tests/test_stop_contract.py`
+- `packages/apps/boba-mcp/tests/test_endpoint_reload.py`
+- `packages/apps/boba-mcp/tests/test_reload_network.py`
+- Existing regression suites: `test_process_stop.py`, `test_signalled_server.py`
+  and the tool-list, calls, limits, endpoints and proxy-login groups in
+  `packages/apps/boba-mcp/tests/test_server.py`.
+
+Network tests start `reload_process.py` with two already-bound sockets. They
+use the production reload component, endpoint builder, OAuth implementation,
+PostgreSQL repository, signal handlers and HTTP server. Tool bodies run in
+separate processes. The fixture uses in-memory user rows and role-provider
+fixtures; it does not test corporate identity provisioning or sandbox isolation.
+The test config selects PostgreSQL authentication; the run on 2026-11-05 used
+Kerberos with GSSAPI encryption. Each test creates and removes a unique schema
+in the stand's test database, not the deployed application's schema.
+
+Concurrency is synchronized using events and explicit file gates in tool
+processes. Deadlines detect hangs; tool completion does not depend on choosing
+a sleep longer than reload. Fixture teardown stops the server even on failure.
+
+Use the repository's test environment (`BOBA_RUNTIME`, `BOBA_CONFIG_PATH`,
+`BOBA_MCP_CONFIG_PATH` and native-library paths, as configured in
+`.vscode/launch.json`). Run through tmux per `.codex/AGENTS.md`:
+
+```sh
+.venv/bin/pytest -q \
+  packages/core/boba-core/tests/test_process_signals.py \
+  packages/core/boba-cancellation/tests/test_stop_contract.py \
+  packages/core/boba-cancellation/tests/test_process_stop.py \
+  packages/infra/transport/boba-http-server/tests/test_signalled_server.py \
+  packages/apps/boba-mcp/tests/test_endpoint_reload.py
+
+.venv/bin/pytest -v -m integration \
+  packages/apps/boba-mcp/tests/test_reload_network.py
+```

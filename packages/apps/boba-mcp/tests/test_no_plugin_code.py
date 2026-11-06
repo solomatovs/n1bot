@@ -10,6 +10,8 @@ from __future__ import annotations
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from uuid import uuid4
 
@@ -21,13 +23,12 @@ from boba.mcp_server.migrations import configured_migrations
 from boba.stand.database import TestDatabase
 from boba.stand.migrate import StandSchema
 from boba.stand.ui.database import run_blocking
-from boba.stand.ui.stand import REPO_ROOT, ServiceStand, StandPorts
+from boba.stand.ui.stand import REPO_ROOT, ServiceStand, StandPorts, StandUrl
 
 pytestmark = pytest.mark.integration
 
 PROBE = Path(__file__).resolve().parent / "mcp_import_probe.py"
 BOOT_SEC = 180.0
-LISTENS = "boba-mcp listens on"
 PLUGINS = ("bash", "doc", "pg", "ch", "web")
 
 
@@ -77,13 +78,24 @@ class ProbedService:
 
     def _await_ready(self, process: subprocess.Popen[bytes]) -> None:
         deadline = time.monotonic() + BOOT_SEC
-        while LISTENS not in self._log():
+        path = self._config.url_prefix + self._config.app.ready_path
+        url = StandUrl.of(self._config.app_port, path)
+        while True:
             if process.poll() is not None:
                 msg = f"boba-mcp exited with {process.returncode}:\n{self._tail()}"
                 raise AssertionError(msg)
 
+            try:
+                with urllib.request.urlopen(url, timeout=1.0) as response:  # noqa: S310 — адрес локального тестового стенда
+                    if response.status == 200:
+                        return
+            except (urllib.error.URLError, OSError):
+                pass
+
             if time.monotonic() > deadline:
-                msg = f"boba-mcp did not listen in {BOOT_SEC}s:\n{self._tail()}"
+                msg = (
+                    f"boba-mcp did not answer GET {url} in {BOOT_SEC}s:\n{self._tail()}"
+                )
                 raise AssertionError(msg)
 
             time.sleep(0.2)

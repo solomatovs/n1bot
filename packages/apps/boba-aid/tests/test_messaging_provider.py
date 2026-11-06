@@ -47,9 +47,7 @@ async def test_local_messaging_builds_the_memory_stack(
     container.provide(services.app_name, AppName("aid"))
     container.provide(services.postgres_pool, pool)
     container.provide(services.message_codec, ChatMessages().codec)
-    container.provide(
-        services.messaging_backends, StandardMessagingBackends().registry
-    )
+    container.provide(services.messaging_backends, StandardMessagingBackends().registry)
     container.provide(services.stale_observer, StaleTurnCloser)
     container.provide(services.call_contexts, CallContexts())
     container.eager(services.message_bus)
@@ -84,9 +82,7 @@ async def test_local_bus_delivers_between_container_consumers(
     container.provide(services.app_name, AppName("aid"))
     container.provide(services.postgres_pool, pool)
     container.provide(services.message_codec, ChatMessages().codec)
-    container.provide(
-        services.messaging_backends, StandardMessagingBackends().registry
-    )
+    container.provide(services.messaging_backends, StandardMessagingBackends().registry)
     container.provide(services.stale_observer, StaleTurnCloser)
     container.provide(services.call_contexts, CallContexts())
     container.eager(services.message_bus)

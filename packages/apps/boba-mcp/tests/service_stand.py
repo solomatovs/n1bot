@@ -24,7 +24,7 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 import uvicorn
 from pydantic import BaseModel, ConfigDict, SecretStr
 
-from boba.access import ProfileGrant, RoleConfig, ToolAccess
+from boba.access import ProfileGrant, RoleConfig, ToolAccess, ToolPolicy
 from boba.auth import SessionService, SignIns
 from boba.auth.assembly import AuthServices
 from boba.auth.config import (
@@ -55,7 +55,12 @@ from boba.mcp_server.connections.store import ConnectionStore
 from boba.mcp_server.connections.tools import ConnectionTools
 from boba.mcp_server.connections.user_connections import ArmedConnections
 from boba.mcp_server.prompts import PromptFile
-from boba.mcp_server.server import FileUploadTool, McpEndpoints, RunLimits
+from boba.mcp_server.server import (
+    FileUploadTool,
+    McpEndpoints,
+    RunLimitMiddleware,
+    RunLimits,
+)
 from boba.oauth.server.assertions import ProxyAssertionVerifier
 from boba.oauth.server.clients import RegisteredClients, TrustedClient
 from boba.oauth.server.provider import AuthServer
@@ -203,7 +208,7 @@ class ServiceStand:
         pipe_bytes_max=1 << 30,
     )
 
-    def __init__(  # noqa: PLR0913 — конфиг реального HTTP-стенда
+    def __init__(  # noqa: PLR0913, PLR0915 — сборка HTTP-стенда
         self,
         workdir: Path,
         limits: RunLimits,
@@ -211,6 +216,8 @@ class ServiceStand:
         prefix: str,
         token_ttl_sec: int = TOKEN_TTL_SEC,
         connections: ConnectionStore | None = None,
+        dynamic: bool = False,
+        journaled: bool = True,
     ) -> None:
         self.port = port
         self.public_url = f"http://127.0.0.1:{port}{prefix}"
@@ -229,9 +236,12 @@ class ServiceStand:
             StaticConfig(),
             resolver,
         )
-        journals = CallJournals(
-            StreamJournal(DirVault(str(workdir / "journal")), 0), runs
-        )
+        journal_store: StreamJournal | None = None
+        if journaled:
+            vault = DirVault(str(workdir / "journal"))
+            journal_store = StreamJournal(vault, 0)
+
+        journals = CallJournals(journal_store, runs)
         stand = ToolStand(
             self.STREAM,
             contexts,
@@ -243,18 +253,22 @@ class ServiceStand:
                 InjectedConfig(StaticSection()),
             ),
         )
+        exported = [
+            fake_toolmod.fake_echo,
+            fake_toolmod.fake_emit,
+            fake_toolmod.fake_collect,
+            fake_caller.fake_whoami,
+            fake_caller.fake_scope,
+            fake_caller.fake_progress,
+            fake_caller.fake_sleep,
+            fake_caller.fake_query,
+            fake_connection.fake_connection_host,
+        ]
+        if dynamic:
+            exported.append(fake_caller.fake_gate)
+
         tools = stand.launch(
-            (
-                fake_toolmod.fake_echo,
-                fake_toolmod.fake_emit,
-                fake_toolmod.fake_collect,
-                fake_caller.fake_whoami,
-                fake_caller.fake_scope,
-                fake_caller.fake_progress,
-                fake_caller.fake_sleep,
-                fake_caller.fake_query,
-                fake_connection.fake_connection_host,
-            ),
+            exported,
             stand.process_launcher("dag-service", workdir, 60.0, self.PLUGINS),
             PluginSection(values={"token": "t0ken", "limit": 5}),
         )
@@ -287,7 +301,18 @@ class ServiceStand:
             self._endpoint(self.OFFERS, all_tools, roles, {}),
             self._endpoint(self.STORED, all_tools, roles, {}),
         )
+        if prefix:
+            endpoints += (
+                McpEndpoint(
+                    id=uuid4(),
+                    prefix_url="/",
+                    title="root",
+                    tools=all_tools,
+                    roles=roles,
+                ),
+            )
         catalog = EndpointCatalog(endpoints)
+        self.catalog = catalog
         role_access = {}
         for role in roles:
             role_access[role] = RoleConfig(tools=["*"])
@@ -296,7 +321,10 @@ class ServiceStand:
         for endpoint in endpoints:
             profile_access[endpoint.prefix_url] = ProfileGrant(tools=["*"], roles=["*"])
 
-        access = ToolAccess(names, role_access, profile_access)
+        access: ToolPolicy = ToolAccess(names, role_access, profile_access)
+        if dynamic:
+            access = catalog
+
         self.registry = replace(stand.registry(access, (params,)), own=frozenset(own))
         proxy = ProxyAuthConfig(
             identity=IdentityRule(realm="corporate"),
@@ -342,27 +370,42 @@ class ServiceStand:
             "stand",
             ServiceMark.TOKEN_SALT,
         )
-        auth = self._service_auth(public_url, catalog, sign_ins, tokens, proxies)
+        self._sign_ins = sign_ins
+        self._tokens = tokens
+        self._proxies = proxies
+        self._users = MemoryUserRows()
         self._sign_in = ServiceSignIn(
             public_url, CLIENT_ID, CLIENT_SECRET, PROXY_SECRET
         )
         storage = LocalStorageConfig(
             files_dir=str(workdir / "files"),
         )
-        self.endpoints = McpEndpoints(
+        self.runs = runs
+        self._journals = journals
+        self._params = params
+        self._limits = RunLimitMiddleware(limits, McpEndpoints.OPERATIONS)
+        self._storage = storage
+        self._files = LocalStorageClient(storage)
+        self.endpoints = self.build(catalog)
+
+    def build(self, snapshot: EndpointCatalog) -> McpEndpoints:
+        auth = self._service_auth(
+            self.public_url, snapshot, self._sign_ins, self._tokens, self._proxies
+        )
+        return McpEndpoints(
             self.registry,
-            runs,
-            journals,
+            self.runs,
+            self._journals,
             auth,
-            endpoints,
-            params,
-            limits,
-            storage,
-            LocalStorageClient(storage),
+            snapshot.endpoints(),
+            self._params,
+            self._limits,
+            self._storage,
+            self._files,
         )
 
-    @staticmethod
     def _service_auth(
+        self,
         public_url: str,
         catalog: EndpointCatalog,
         sign_ins: SignIns,
@@ -383,9 +426,16 @@ class ServiceStand:
             RegisteredClients(sealed, {CLIENT_ID: declared}),
             sealed,
             list(resources.values()),
-            SessionService(MemoryUserRows(), catalog),
+            SessionService(self._users, self.catalog),
         )
-        return ServiceAuth(public_url, server, tokens, ServiceMark.NAME, resources)
+        return ServiceAuth(
+            public_url,
+            server,
+            tokens,
+            ServiceMark.NAME,
+            resources,
+            profiles=self.catalog,
+        )
 
     @staticmethod
     def _endpoint(

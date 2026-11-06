@@ -1974,6 +1974,43 @@ class TestServicePrefix:
         if outside.status_code != httpx.codes.NOT_FOUND:
             raise AssertionError(f"the probe is not served outside: {outside}")
 
+        paths = inside.json()["endpoints"]
+        if f"{self.PREFIX}/" not in paths or f"{self.PREFIX}/{PROFILE}" not in paths:
+            raise AssertionError(f"health must publish full MCP paths: {paths}")
+
+    async def test_root_endpoint_uses_the_service_prefix(
+        self, prefixed: ServiceStand
+    ) -> None:
+        async with httpx.AsyncClient(follow_redirects=True) as http:
+            refused = await http.post(prefixed.public_url, json={})
+            challenge = refused.headers.get("www-authenticate", "")
+            if 'resource_metadata="' not in challenge:
+                raise AssertionError(
+                    f"root MCP must advertise OAuth discovery: {challenge}"
+                )
+
+            address = challenge.split('resource_metadata="', 1)[1].split('"', 1)[0]
+            resource = await http.get(address)
+
+        if refused.status_code != httpx.codes.UNAUTHORIZED:
+            raise AssertionError(
+                f"POST to the service prefix must reach root MCP: {refused}"
+            )
+
+        if str(refused.url) != f"{prefixed.public_url}/":
+            raise AssertionError(
+                f"the root MCP endpoint must be at the prefix: {refused.url}"
+            )
+
+        if resource.status_code != httpx.codes.OK:
+            raise AssertionError(f"root MCP OAuth discovery must resolve: {resource}")
+
+        described = resource.json()
+        if str(described["resource"]).rstrip("/") != prefixed.public_url:
+            raise AssertionError(
+                f"root MCP discovery names wrong resource: {described}"
+            )
+
     async def test_discovery_leads_to_the_prefixed_sign_in(
         self, prefixed: ServiceStand
     ) -> None:
@@ -2217,9 +2254,8 @@ class TestConnectionOffers:
     async def test_plain_client_sees_catalog_names_and_the_scope(
         self, stand: ServiceStand, offers: str
     ) -> None:
-        """Схема параметра имени не раскрывает профили и сохраняет scope_id,
-        а список инструментов помечен личным со сроком свежести: он зависит
-        от ролей токена и возможностей запроса, а реестр собран на старте."""
+        """Схема сохраняет scope_id без раскрытия профилей; список личный,
+        без кеширования клиентом, чтобы следующий запрос отражал reload."""
         token = await self._token(stand, True)
         async with self._client(offers, token) as client:
             listed = await client.list_tools_mcp()
@@ -2227,8 +2263,10 @@ class TestConnectionOffers:
         if listed.cache_scope != "private":
             raise AssertionError(f"the list is private: {listed}")
 
-        if listed.ttl_ms <= 0:
-            raise AssertionError(f"the list is fresh for a while: {listed}")
+        if listed.ttl_ms != 0:
+            raise AssertionError(
+                f"the list must be fetched again after reload: {listed}"
+            )
 
         tool = next(tool for tool in listed.tools if tool.name == self.TOOL)
         properties = tool.input_schema["properties"]

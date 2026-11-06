@@ -3,16 +3,19 @@
 Ошибки:
 HealthCheckError — служба не ответила на пробу готовности успехом.
 ServerStartError — сервер не смог запустить приложение.
+ProcessSignalError — подписка или обработка сигналов процесса не выполнены;
+    перехватывается через boba.cancellation, включая сбой действий остановки.
 """
 
 from __future__ import annotations
 
+import signal
 import socket
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Sequence
-from types import FrameType
+from collections.abc import Generator, Sequence
+from contextlib import contextmanager
 from typing import Any, ClassVar
 
 import uvicorn
@@ -122,32 +125,19 @@ class ServerStartError(Exception):
 
 
 class SignalledServer(uvicorn.Server):
-    """Сервер uvicorn, остановку которого по сигналу ведёт ProcessStop.
+    """HTTP-сервер с единственным владельцем сигналов — ProcessSignals.
 
-    Создаётся входом процесса приложения (чат, сервис MCP) из
-    настроек uvicorn и остановки процесса. На время работы uvicorn ставит
-    свои обработчики сигналов: пойманный сигнал сервер сразу сообщает
-    остановке процесса — та выполняет действия владельца, не дожидаясь
-    закрытия соединений. Закончив остановку, uvicorn посылает сигнал заново
-    прежнему обработчику; им стоит обработчик остановки процесса, поэтому
-    процесс не погибает с кодом 143, а доходит до кода после сервера.
-
-    Повторный сигнал uvicorn понимает как «не ждать соединения» (force_exit)
-    и вместе с ожиданием пропускает остановку приложения (lifespan
-    shutdown); сервер проводит её сам, иначе задачу lifespan отменил бы уже
-    asyncio.run на выходе, и ресурсы приложения закрывались бы отменой.
-
-    Сорванный старт приложения uvicorn только пишет в лог и возвращается из
-    serve() штатно; сервер превращает его в ServerStartError, чтобы процесс
-    вышел с ненулевым кодом. Перед выходом закрываются процессные ресурсы
-    (ProcessClosers): пул, оставшийся открытым после сорванного старта, не
-    даёт asyncio.run закрыть цикл событий, и процесс не завершается.
+    Приложение описывает остановку в ProcessStop; этот адаптер останавливает
+    приём запросов Uvicorn. Повторный TERM/INT ускоряет остановку, но lifespan
+    приложения всё равно закрывается. Собственная подписка Uvicorn отключена.
     """
 
     def __init__(self, config: uvicorn.Config, stop: ProcessStop) -> None:
         super().__init__(config)
         self._stop = stop
         self._closers = ProcessClosers()
+        for received in stop.handled:
+            stop.signals.on(received, self._exit)
 
     async def serve_until_stopped(self, sockets: Sequence[socket.socket] = ()) -> None:
         """Слушает адрес настроек uvicorn либо готовые сокеты sockets до
@@ -155,17 +145,19 @@ class SignalledServer(uvicorn.Server):
 
         Ошибки:
         ServerStartError — приложение не поднялось.
+        ProcessSignalError — ошибка подписок или действий сигналов; тип
+            экспортируется boba.cancellation, причины действий сохранены.
         """
-        self._stop.install()
-
         listeners: list[socket.socket] | None = None
         if sockets:
             listeners = list(sockets)
 
-        try:
-            await self.serve(listeners)
-        finally:
-            await self._closers.close_all()
+        async with self._stop.signals:
+            try:
+                await self.serve(listeners)
+            finally:
+                self._stop.signals.cancel_pending()
+                await self._closers.close_all()
 
         if not self.started:
             msg = (
@@ -186,7 +178,12 @@ class SignalledServer(uvicorn.Server):
 
         await self.lifespan.shutdown()
 
-    def handle_exit(self, sig: int, frame: FrameType | None) -> None:
-        self._stop.deliver(sig)
+    @contextmanager
+    def capture_signals(self) -> Generator[None, None, None]:
+        """Подписками владеет ProcessSignals; Uvicorn не меняет их и не повторяет."""
+        yield
 
-        super().handle_exit(sig, frame)
+    def _exit(self, received: signal.Signals) -> None:
+        if self.should_exit:
+            self.force_exit = True
+        self.should_exit = True

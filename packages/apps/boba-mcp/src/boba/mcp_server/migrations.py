@@ -48,7 +48,8 @@ class PluginMigrations(MigrationSources):
     async def targets(self, raw: DictConfig) -> Sequence[MigrationTarget]:
         targets: list[MigrationTarget] = []
         sections = PluginSections(raw)
-        launchers = ToolLaunchers(raw, self._backends).build()
+        factory = ToolLaunchers(raw, self._backends)
+        launchers = factory.build()
         try:
             launchers.probe()
             for plugin in sections.ids():

@@ -73,9 +73,7 @@ def _refresh() -> SessionRefresh:
         identity=IdentityRule(realm="local-stand"),
         users={"alice": "pw"},
         roles=LocalRoleProviders(
-            local=LocalRolesConfig(
-                mapping=RoleMappingConfig(root={"alice": ["DEV"]})
-            )
+            local=LocalRolesConfig(mapping=RoleMappingConfig(root={"alice": ["DEV"]}))
         ),
     )
     sign_ins = SignIns(

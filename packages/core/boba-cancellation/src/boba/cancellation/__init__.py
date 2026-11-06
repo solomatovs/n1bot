@@ -9,6 +9,9 @@ ProcessStop — остановка процесса по сигналу, общ�
 
 Ошибки:
 ToolStopped — работа прервана остановкой запуска.
+ProcessSignalError — подписка или обработка сигналов процесса не выполнены;
+    при сбое действий остановки цепочка причин содержит ProcessStopError.
+Ошибки переданной в ProcessStop.run работы и внешняя отмена передаются без изменений.
 """
 
 from __future__ import annotations
@@ -17,17 +20,20 @@ import asyncio
 import logging
 import signal
 import threading
-from collections.abc import Callable, Coroutine, Generator
+from collections.abc import Callable, Coroutine, Generator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from enum import StrEnum
-from types import FrameType
-from typing import ClassVar, TypeAlias
+from typing import TypeAlias
+
+from boba.core.process import ProcessSignalError, ProcessSignals
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "ProcessSignalError",
     "ProcessStop",
+    "ProcessStopError",
     "RunCancellation",
     "StopAction",
     "StopReason",
@@ -137,7 +143,8 @@ def current_cancellation() -> RunCancellation:
 @contextmanager
 def run_cancellation() -> Generator[RunCancellation, None, None]:
     "открывает запуск: публикует свежую RunCancellation в контексте"
-    with RunCancellation().published() as cancellation:
+    cancellation = RunCancellation()
+    with cancellation.published():
         yield cancellation
 
 
@@ -145,74 +152,89 @@ StopAction: TypeAlias = Callable[[signal.Signals], None]
 """Действие остановки процесса: получает пришедший сигнал."""
 
 
-class ProcessStop:
-    """Остановка процесса по SIGTERM и SIGINT, общая для всех приложений.
+class ProcessStopError(Exception):
+    """Причина ProcessSignalError при сбое действий остановки приложения.
 
-    Обработчик сигнала по умолчанию убивает процесс на месте: незакрытые
-    пулы, брошенные дочерние процессы, код выхода 143. Этот объект принимает
-    сигнал сам и в цикле событий зовёт действия остановки, которые назвал
-    владелец (on_stop): погасить запуски, закрыть сервер, остановить пул.
-    Дальше процесс доходит до конца своего кода и выходит с кодом 0.
-    Создаётся входом процесса. Приложение-задание отдаёт свою работу в
-    run(): по сигналу она отменяется, её finally выполняются. Сервер uvicorn
-    берёт объект в конструктор (SignalledServer) и сообщает ему о сигнале,
-    пойманном самим uvicorn. Действия зовутся один раз, по первому сигналу.
+    Исходные ошибки действий сохранены в __cause__ как ExceptionGroup.
+    Вызывающий run() или контекст signals перехватывает ProcessSignalError.
     """
 
-    HANDLED: ClassVar[tuple[signal.Signals, ...]] = (signal.SIGTERM, signal.SIGINT)
+
+class ProcessStop:
+    """Остановка работы по SIGTERM/SIGINT через общий ProcessSignals.
+
+    Действия приложения выполняются один раз. run() владеет подписками для
+    консольного задания; для HTTP их контекстом владеет SignalledServer.
+    Дополнительные сигналы приложение регистрирует через signals.
+    """
 
     def __init__(self) -> None:
+        self.signals = ProcessSignals()
+        self._handled = (signal.SIGTERM, signal.SIGINT)
         self._actions: list[StopAction] = []
-        self._loops: list[asyncio.AbstractEventLoop] = []
         self._tasks: list[asyncio.Future[None]] = []
-        self._received: list[signal.Signals] = []
+        self._received: signal.Signals | None = None
+
+        for received in self._handled:
+            self.signals.on(received, self._stop)
+
+    @property
+    def handled(self) -> Sequence[signal.Signals]:
+        return self._handled
 
     def on_stop(self, action: StopAction) -> None:
-        """Действие, которое выполнится в цикле событий по сигналу остановки."""
+        """Короткое действие остановки в event loop по первому сигналу."""
         self._actions.append(action)
 
-    def install(self) -> None:
-        """Ставит обработчики сигналов; зовётся внутри цикла событий."""
-        self._loops.append(asyncio.get_running_loop())
-        for handled in self.HANDLED:
-            signal.signal(handled, self._taken)
-
-    def deliver(self, received: int) -> None:
-        """Сигнал остановки, пойманный чужим обработчиком в любом потоке."""
-        # обработчик сигнала прерывает главный поток в произвольном месте:
-        # действия исполняет цикл событий, а не сам обработчик
-        for loop in self._loops:
-            loop.call_soon_threadsafe(self._stop, signal.Signals(received))
-
     async def run(self, work: Coroutine[object, object, None]) -> None:
-        """Исполняет работу приложения до конца либо до сигнала остановки."""
-        self.install()
-        task = asyncio.ensure_future(work)
-        self._tasks.append(task)
+        """Работа до завершения либо отмены сигналом; finally работы выполняются.
+
+        ProcessSignalError — ошибка подписок или действий сигналов, включая
+        остановку. Ошибки work и внешняя отмена передаются без изменений,
+        если завершение контекста сигналов прошло успешно.
+        """
         try:
-            await task
-        except asyncio.CancelledError:
-            if not self._received:
-                raise
+            async with self.signals:
+                task = asyncio.ensure_future(work)
+                self._tasks.append(task)
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    if self._received is None:
+                        raise
 
-            logger.info("the work was stopped by %s", self._received[0].name)
-
-    def _taken(self, received: int, frame: FrameType | None) -> None:
-        self.deliver(received)
+                    logger.info("the work was stopped by %s", self._received.name)
+                finally:
+                    self._tasks.remove(task)
+        finally:
+            work.close()
 
     def _stop(self, received: signal.Signals) -> None:
-        if self._received:
+        if self._received is not None:
             return
 
-        self._received.append(received)
+        self._received = received
+        self.signals.cancel_pending()
         logger.info(
             "stop signal %s: running %d stop action(s), stopping %d task(s)",
             received.name,
             len(self._actions),
             len(self._tasks),
         )
-        for action in self._actions:
-            action(received)
+        failures: list[Exception] = []
+        for action in tuple(self._actions):
+            try:
+                action(received)
+            except Exception as exc:
+                failures.append(exc)
 
         for task in self._tasks:
             task.cancel()
+
+        if failures:
+            causes = ExceptionGroup("stop actions failed", failures)
+            details = map(str, failures)
+            message = "; ".join(details)
+            raise ProcessStopError(
+                f"stopping on {received.name}: {message}"
+            ) from causes

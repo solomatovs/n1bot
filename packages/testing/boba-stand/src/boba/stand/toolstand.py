@@ -23,7 +23,7 @@ from typing import ClassVar, TypeAlias
 
 from pydantic import BaseModel, JsonValue
 
-from boba.access import ProfileGrant, RoleConfig, ToolAccess
+from boba.access import ProfileGrant, RoleConfig, ToolAccess, ToolPolicy
 from boba.identity.context import CallContexts
 from boba.sandbox.program import PluginCommand, PluginEntry
 from boba.tool_io.chain import CallAmbient
@@ -246,7 +246,7 @@ class ToolStand:
         )
 
     def registry(
-        self, access: ToolAccess, node_args: Sequence[NodeArgs]
+        self, access: ToolPolicy, node_args: Sequence[NodeArgs]
     ) -> ToolRegistry:
         """Реестр собранных инструментов под обвязками цепочки и правами
         access; node_args — правила аргументов узлов. Обвязки ложатся на
@@ -265,7 +265,7 @@ class ToolStand:
         )
 
     def server(
-        self, access: ToolAccess, node_args: Sequence[NodeArgs], calls: NodeCalls
+        self, access: ToolPolicy, node_args: Sequence[NodeArgs], calls: NodeCalls
     ) -> ToolServer:
         """Порт инструментов над реестром стенда; calls — путь вызова узла
         к телу."""

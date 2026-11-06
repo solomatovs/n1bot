@@ -1269,9 +1269,10 @@ def _connection_catalog(stand_database: str, llm_port: int) -> TableResult:
     postgres = stand_postgres.model_copy(update={"dbname": stand_database})
     clickhouse = bind(built, path="clickhouse", model=ClickHouseConfig)
     confluence = bind(
-        StandApp.AID.tools_app().config_files().loader(
-            StandApp.AID.tools_app().paths()
-        ).load(),
+        StandApp.AID.tools_app()
+        .config_files()
+        .loader(StandApp.AID.tools_app().paths())
+        .load(),
         path="confluence",
         model=HttpConnection,
     )

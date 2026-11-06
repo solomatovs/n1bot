@@ -36,6 +36,8 @@ from boba.db.postgres import AsyncPostgresPool, PgQuery, PgQueryBuilder, Postgre
 from boba.db.postgres.connection.config import PostgresConfig
 from boba.db.postgres.migrate import MigrationTarget, PostgresMigrations
 from boba.db.postgres.migration_cli import ApplicationMigrations
+from boba.identity.principal import IdentityRule, UserIdentity
+from boba.identity.session import Login
 from boba.ix_core.database import IxDatabase
 from boba.krb import KerberosWorkspaceConfig
 from boba.krb.layout import InstanceLayout
@@ -167,6 +169,7 @@ class StandDatabase:
         pool = postgres.pool.model_copy(update=self.POOL_OVERRIDE)
         self._maintenance = postgres.model_copy(update={"pool": pool})
         self._postgres = postgres.model_copy(update={"dbname": name, "pool": pool})
+        self._local_identity = IdentityRule(realm=app.local_realm())
         if app is StandApp.AID:
             application = bind(self._built, path="app", model=AppConfig)
         else:
@@ -339,6 +342,8 @@ class StandDatabase:
 
     def drop_threads_of(self, login: str) -> None:
         """Треды пользователя login сняты строками: его панель тредов пуста."""
+        identity = self._identity_of(login)
+
         query = (
             PgQueryBuilder(schema=sql.Identifier(self._schema))
             .add(
@@ -347,9 +352,11 @@ class StandDatabase:
                 using {schema}.users u
                 where
                     t.user_id = u.id
-                    and u.identifier = %(login)s
+                    and u.realm = %(realm)s
+                    and u.login = %(login)s
                 """,
-                login=login,
+                realm=identity.realm,
+                login=identity.login,
             )
             .build()
         )
@@ -359,6 +366,8 @@ class StandDatabase:
         """Тред name пользователя login без истории агента, созданный и
         последний раз активный в at. Строка users появляется со входом:
         пользователь должен войти раньше."""
+        identity = self._identity_of(login)
+
         query = (
             PgQueryBuilder(schema=sql.Identifier(self._schema))
             .add(
@@ -371,14 +380,16 @@ class StandDatabase:
                 from
                     {schema}.users u
                 where
-                    u.identifier = %(login)s
+                    u.realm = %(realm)s
+                    and u.login = %(login)s
                 returning
                     id
                 """,
                 id=uuid4(),
                 at=at,
                 name=name,
-                login=login,
+                realm=identity.realm,
+                login=identity.login,
             )
             .build()
         )
@@ -391,6 +402,9 @@ class StandDatabase:
             raise StandError(msg)
 
         return row[0]
+
+    def _identity_of(self, login: str) -> UserIdentity:
+        return self._local_identity.identity(Login(login))
 
     def backdate_thread(self, thread_id: str, at: datetime) -> None:
         """created_at и updated_at треда — at: тред выглядит начатым и

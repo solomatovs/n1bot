@@ -36,7 +36,6 @@ from PIL import Image, ImageChops
 from playwright.sync_api import Browser, BrowserContext, Locator, Page, ViewportSize
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 
-from boba.sandbox.paths import ProgramDir
 from boba.stand.ui.stand import (
     StandApp,
     StandAuth,
@@ -506,7 +505,11 @@ class StableShot:
     PAUSE_MS: ClassVar[int] = 100
     STYLE: ClassVar[str] = (
         "::-webkit-scrollbar { display: none !important; } "
-        "* { scrollbar-width: none !important; }"
+        "* { scrollbar-width: none !important; } "
+        ".loading-shimmer { animation: none !important; "
+        "background: none !important; "
+        "color: hsl(var(--muted-foreground)) !important; "
+        "-webkit-text-fill-color: hsl(var(--muted-foreground)) !important; }"
     )
 
     def take(self, region: Locator) -> bytes:
@@ -1275,7 +1278,7 @@ class LookAppRoots:
 
         tree = self._workdir / f"sources-{language.value}"
         runtime = tree / "runtime"
-        share = tree / ProgramDir.SHARE.value
+        share = tree / "packages" / "apps" / "boba-aid" / "assets"
         if not share.is_dir():
             runtime.mkdir(parents=True, exist_ok=True)
             shutil.copytree(LookPaths.ASSETS, share)

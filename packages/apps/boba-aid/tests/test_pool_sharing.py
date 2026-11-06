@@ -67,9 +67,7 @@ async def app_container(
     container.provide(services.application_config, stand_config)
     container.provide(services.app_name, AppName("aid"))
     container.provide(services.message_codec, ChatMessages().codec)
-    container.provide(
-        services.messaging_backends, StandardMessagingBackends().registry
-    )
+    container.provide(services.messaging_backends, StandardMessagingBackends().registry)
     container.provide(services.stale_observer, StaleTurnCloser)
     container.provide(services.call_contexts, CallContexts())
     container.provide(providers.storage_provider, storage)

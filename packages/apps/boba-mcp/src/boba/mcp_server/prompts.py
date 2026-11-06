@@ -80,7 +80,7 @@ class EndpointPrompts:
     """Промпты endpoint'а из его секции конфига: объявление fastmcp на каждый
     PromptFile. Файлы промптов подключает сам конфиг экземпляра
     (prompts = "${toml_dir:prompts/<endpoint>}"), сюда приходят уже
-    провалидированные модели. Создаёт сборка endpoint'ов (McpEndpoints)."""
+    провалидированные модели. Создаёт сервер endpoint'а (McpServer)."""
 
     def prompts(self, sources: Mapping[str, PromptFile]) -> Sequence[FilePrompt]:
         prompts: list[FilePrompt] = []

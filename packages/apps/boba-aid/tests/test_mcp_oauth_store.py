@@ -51,9 +51,7 @@ async def oauth_schema(
     finally:
         async with pool.connection() as conn:
             await conn.execute(
-                sql.SQL("drop schema if exists {} cascade").format(
-                    sql.Identifier(name)
-                )
+                sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(name))
             )
 
 
@@ -156,9 +154,7 @@ async def test_browser_authorization_round_trips_to_mcp(
                 ).format(schema.ident),
                 (user_id, f"oauth-{user_id.hex}"),
             )
-        store = McpOAuthStore(
-            pool, oauth_schema, SecretCipher(secrets.token_bytes(32))
-        )
+        store = McpOAuthStore(pool, oauth_schema, SecretCipher(secrets.token_bytes(32)))
         broker = McpBrowserOAuth(store, "http://127.0.0.1/aid/api/mcp/oauth/callback")
         url = await broker.begin(server_id, user_id, stand.LOGIN, stand.url())
         state = parse_qs(urlsplit(url).query)["state"][0]

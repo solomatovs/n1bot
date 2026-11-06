@@ -5,6 +5,7 @@
 сервиса boba-mcp; разделитель os.pathsep (StandConfigPaths).
 """
 
+import asyncio
 from collections.abc import AsyncIterator, Iterator
 from enum import StrEnum
 
@@ -206,8 +207,9 @@ def kerberos_workspace(
 
 
 @pytest.fixture(scope="session")
-async def test_database(stand_postgres: PostgresConfig) -> str:
-    return await TestDatabase.ensure(stand_postgres)
+def test_database(stand_postgres: PostgresConfig) -> str:
+    """Создать базу без удержания общего AnyIO runner на всю сессию тестов."""
+    return asyncio.run(TestDatabase.ensure(stand_postgres))
 
 
 @pytest.fixture

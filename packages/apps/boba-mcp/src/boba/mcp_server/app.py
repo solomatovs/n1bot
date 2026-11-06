@@ -17,9 +17,9 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar
-from uuid import UUID
 
 import uvicorn
+from fastmcp.tools import Tool
 from omegaconf import DictConfig
 from pydantic import BaseModel, ConfigDict, Field, SerializeAsAny, field_validator
 
@@ -48,21 +48,23 @@ from boba.krb.connections import KerberosCredentialSource
 from boba.krb.layout import InstanceLayout
 from boba.ldap import Ldap3Directory
 from boba.mcp_server.auth import ServiceMark
-from boba.mcp_server.catalog import EndpointCatalog, McpEndpoint
+from boba.mcp_server.catalog import EndpointCatalog
 from boba.mcp_server.connections import NoRefresh
 from boba.mcp_server.connections.params import ConnectionParams
 from boba.mcp_server.connections.store import ConnectionStore
 from boba.mcp_server.connections.tools import ConnectionTools
 from boba.mcp_server.connections.user_connections import ArmedConnections
 from boba.mcp_server.endpoints import McpEndpointStore
+from boba.mcp_server.reload import ReloadableMcp
+from boba.mcp_server.schemas import EndpointSchemas
 from boba.mcp_server.server import (
-    FileUploadTool,
+    FileUploadSchema,
     McpEndpoints,
-    McpServer,
     RunLimitMiddleware,
     RunLimits,
 )
 from boba.mcp_server.storage import StandardStorageBackends
+from boba.mcp_server.tool_adapter import McpTool
 from boba.oauth.server.assertions import ProxyAssertionVerifier
 from boba.oauth.server.clients import RegisteredClients, TrustedClient
 from boba.oauth.server.config import TokenConfig
@@ -172,11 +174,11 @@ class EndedSubscriptions:
     обрыв, и серверу не приходится ждать долгие потоки весь срок остановки.
     """
 
-    def __init__(self, endpoints: McpEndpoints) -> None:
+    def __init__(self, endpoints: ReloadableMcp) -> None:
         self._endpoints = endpoints
 
     def __call__(self, received: signal.Signals) -> None:
-        self._endpoints.end_subscriptions()
+        self._endpoints.begin_shutdown()
         logger.info("stop signal %s: listen streams are ended", received.name)
 
 
@@ -185,6 +187,7 @@ class McpRuntime:
     """Ресурсы запущенного MCP; срок жизни ограничен контекстом McpHost."""
 
     catalog: EndpointCatalog
+    endpoints: McpEndpointStore
     users: UsersTable
     sign_ins: SignIns
     runs: Runs
@@ -204,11 +207,14 @@ class McpHost:
         self._contexts = CallContexts()
         self._ambient = CallAmbient()
         self._launchers = ToolLaunchers(raw, config.LAUNCHER_BACKENDS)
+        self._storage = StorageFactory(config.paths, config.STORAGE_BACKENDS)
+        self._schemas = EndpointSchemas()
+        self._upload_schema = FileUploadSchema()
         self._tickets = KerberosSessionTickets()
         self._cipher = SecretCipher(config.connection_store.cipher.get_secret_value())
 
     @asynccontextmanager
-    async def _running(self, *, read_catalog: bool) -> AsyncGenerator[McpRuntime, None]:
+    async def _running(self) -> AsyncGenerator[McpRuntime, None]:
         async with AsyncExitStack() as cleanup:
             pool = await AsyncPostgresPool.get(self._config.postgres)
             cleanup.push_async_callback(pool.close)
@@ -216,12 +222,8 @@ class McpHost:
             store = ConnectionStore(
                 pool, self._config.db_schema, self._cipher, self._types
             )
-            records: Sequence[McpEndpoint] = ()
-            if read_catalog:
-                endpoints = McpEndpointStore(pool, self._config.db_schema)
-                records = await endpoints.list()
-
-            catalog = EndpointCatalog(records)
+            endpoints = McpEndpointStore(pool, self._config.db_schema)
+            catalog = EndpointCatalog(())
             auth_services = AuthServices(
                 self._directory, catalog, users, self._config.session.auth_secret
             )
@@ -239,7 +241,8 @@ class McpHost:
             tickets = ServiceTickets(credentials)
             resolver = ArmedConnections(store, credentials, self._contexts)
             params = ConnectionParams(self._types, self._contexts, tickets, resolver)
-            own = ConnectionTools(store, self._contexts).build()
+            connection_tools = ConnectionTools(store, self._contexts)
+            own = connection_tools.build()
             execution = ToolExecution(
                 self._contexts,
                 journals,
@@ -251,12 +254,14 @@ class McpHost:
             cleanup.callback(launchers.stop)
             cleanup.callback(runs.stop_all, StopReason.SHUTDOWN)
             launchers.probe()
-            kits = await PluginKits(self._raw, launchers).load()
-            tools = ToolLoader(
-                self._raw, kits, execution, launchers, catalog, own
-            ).load()
+            plugins = PluginKits(self._raw, launchers)
+            kits = await plugins.load()
+            loader = ToolLoader(self._raw, kits, execution, launchers, catalog, own)
+            tools = loader.load()
 
-            yield McpRuntime(catalog, users, sign_ins, runs, journals, params, tools)
+            yield McpRuntime(
+                catalog, endpoints, users, sign_ins, runs, journals, params, tools
+            )
 
     def _journals(self, runs: Runs) -> CallJournals:
         config = bind(self._raw, StreamJournalConfig.SECTION, StreamJournalConfig)
@@ -271,25 +276,28 @@ class McpHost:
         """Собирает опубликованные endpoint'ы и слушает адрес до остановки процесса."""
         section = self._config.mcp
         server = self._config.server
-        async with self._running(read_catalog=True) as runtime:
-            catalog = runtime.catalog
-            auth = self._auth(section, catalog, runtime)
-            endpoints = McpEndpoints(
-                runtime.tools,
-                runtime.runs,
-                runtime.journals,
-                auth,
-                catalog.endpoints(),
-                runtime.params,
-                section.limits,
-                self._config.storage,
-                StorageFactory(
-                    self._config.paths, self._config.STORAGE_BACKENDS
-                ).create(self._config.storage),
-            )
+        async with self._running() as runtime:
+            limits = RunLimitMiddleware(section.limits, McpEndpoints.OPERATIONS)
+            files = self._storage.create(self._config.storage)
+
+            def build(catalog: EndpointCatalog) -> McpEndpoints:
+                return McpEndpoints(
+                    runtime.tools,
+                    runtime.runs,
+                    runtime.journals,
+                    self._auth(section, catalog, runtime),
+                    catalog.endpoints(),
+                    runtime.params,
+                    limits,
+                    self._config.storage,
+                    files,
+                )
+
+            endpoints = ReloadableMcp(runtime.endpoints, runtime.catalog, build)
             stop = ProcessStop()
             stop.on_stop(StoppedRuns(runtime.runs))
             stop.on_stop(EndedSubscriptions(endpoints))
+            stop.signals.on_async(signal.SIGHUP, endpoints.on_reload)
             listener = SignalledServer(
                 uvicorn.Config(
                     endpoints.app(),
@@ -301,46 +309,26 @@ class McpHost:
                 stop,
             )
             logger.info(
-                "boba-mcp listens on %s:%d, mcp endpoints: %s",
+                "boba-mcp starting on %s:%d; SIGHUP reloads endpoint definitions",
                 server.host,
                 server.port,
-                ", ".join(endpoints.paths()),
             )
             await listener.serve_until_stopped()
 
     async def tool_schemas(self) -> Mapping[str, Mapping[str, object]]:
         """Схемы всех загруженных инструментов для администратора, без HTTP-сервера."""
-        async with self._running(read_catalog=False) as runtime:
-            registry: ToolRegistry = runtime.tools
-            port = registry.server(registry.tools, DirectCalls())
-            names = [card.name for card in port.tools()]
-            names.append(FileUploadTool.NAME)
-            endpoint = McpEndpoint(
-                id=UUID(int=0),
-                prefix_url="/export",
-                title="MCP tool schemas",
-                tools=tuple(names),
-            )
-            catalog = EndpointCatalog((endpoint,))
-            auth = self._auth(self._config.mcp, catalog, runtime)
-            server = McpServer(
-                registry,
-                runtime.runs,
-                runtime.journals,
-                auth.resource(endpoint.prefix_url, [endpoint.prefix_url]),
-                endpoint.prefix_url,
-                endpoint,
-                runtime.params,
-                RunLimitMiddleware(self._config.mcp.limits, McpEndpoints.OPERATIONS),
-                self._config.storage,
-                StorageFactory(
-                    self._config.paths, self._config.STORAGE_BACKENDS
-                ).create(self._config.storage),
-                endpoint.prefix_url,
-                auth.published(),
-                (),
-            )
-            return server.tool_schemas()
+        async with self._running() as runtime:
+            published = runtime.params.published(runtime.tools.tools)
+            calls = DirectCalls()
+            port = runtime.tools.server(published, calls)
+            tools: dict[str, Tool] = {}
+            for card in port.tools():
+                tools[card.name] = McpTool(card, port)
+
+            upload = self._upload_schema.tool
+            tools[upload.name] = upload
+
+            return self._schemas.export(tools)
 
     def _auth(
         self, section: McpSection, catalog: EndpointCatalog, runtime: McpRuntime
@@ -371,7 +359,7 @@ class McpHost:
             self._clients(section, sealed),
             sealed,
             list(resources.values()),
-            sessions=SessionService(runtime.users, catalog),
+            sessions=SessionService(runtime.users, runtime.catalog),
         )
 
         return ServiceAuth(
@@ -380,7 +368,7 @@ class McpHost:
             tokens,
             ServiceMark.NAME,
             resources,
-            profiles=catalog,
+            profiles=runtime.catalog,
         )
 
     def _clients(self, section: McpSection, sealed: SealedValues) -> RegisteredClients:
@@ -421,7 +409,8 @@ class McpEntry:
                 McpCommand.MIGRATE, "apply MCP and plugin schemas", self._migration.add
             ),
         )
-        call = ConfigArguments(parser, commands).call()
+        arguments = ConfigArguments(parser, commands)
+        call = arguments.call()
         command = McpCommand(call.command)
         migration = MigrationOptions()
         if command is McpCommand.MIGRATE:
@@ -444,23 +433,29 @@ class McpEntry:
     async def tools(self, paths: Sequence[Path]) -> None:
         loaded = self._configs.load(paths)
         config = loaded.value
-        InstanceLayout(paths[0].resolve().parent, config.paths, config.tls).apply()
+        layout = InstanceLayout(paths[0].resolve().parent, config.paths, config.tls)
+        layout.apply()
         logging.config.dictConfig(config.logger)
-        schemas = await McpHost(config, loaded.raw).tool_schemas()
+
+        host = McpHost(config, loaded.raw)
+        schemas = await host.tool_schemas()
         sys.stdout.write(json.dumps(schemas, ensure_ascii=False, indent=2) + "\n")
 
     async def migrate(self, paths: Sequence[Path], options: MigrationOptions) -> None:
         from boba.mcp_server.migrations import configured_migrations  # noqa: PLC0415
 
-        await configured_migrations().run(paths, "boba.mcp_server", options=options)
+        migrations = configured_migrations()
+        await migrations.run(paths, "boba.mcp_server", options=options)
 
     async def serve(self, paths: Sequence[Path]) -> None:
         loaded = self._configs.load(paths)
         config = loaded.value
-        InstanceLayout(paths[0].resolve().parent, config.paths, config.tls).apply()
+        layout = InstanceLayout(paths[0].resolve().parent, config.paths, config.tls)
+        layout.apply()
         logging.config.dictConfig(config.logger)
 
-        await McpHost(config, loaded.raw).serve()
+        host = McpHost(config, loaded.raw)
+        await host.serve()
 
     def health(self, paths: Sequence[Path]) -> None:
         """Проба готовности по [mcp]: порт и префикс сервиса."""
@@ -472,6 +467,7 @@ class McpEntry:
 
 async def main() -> None:
     try:
-        await McpEntry().run()
+        entry = McpEntry()
+        await entry.run()
     except Exception as exc:
         raise SystemExit(f"boba-mcp failed: {type(exc).__name__}: {exc}") from exc

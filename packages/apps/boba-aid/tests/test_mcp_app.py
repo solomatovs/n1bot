@@ -51,6 +51,7 @@ pytestmark = pytest.mark.anyio
 def chainlit_context() -> None:
     """MCP directory requests use explicit viewers, not Chainlit globals."""
 
+
 HTTP_SERVER = REPO_ROOT / "packages/services/boba-mcp-client/tests/standard_server.py"
 HTTP = "http"
 NEEDS = "needs"

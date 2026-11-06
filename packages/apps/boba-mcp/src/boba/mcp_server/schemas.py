@@ -67,7 +67,8 @@ class EndpointSchemas:
     """
 
     def __init__(self) -> None:
-        self._scope = CallFields().feature()
+        fields = CallFields()
+        self._scope = fields.feature()
         self._annotations = frozenset(SchemaAnnotation)
         self._children = frozenset(SchemaChildren)
         self._branches = frozenset(SchemaBranch)
@@ -85,6 +86,18 @@ class EndpointSchemas:
             ]
 
         return result
+
+    def export(self, tools: Mapping[str, Tool]) -> Mapping[str, Mapping[str, object]]:
+        """Карточки MCP и схемы для overrides без сборки HTTP-сервера."""
+        exported: dict[str, Mapping[str, object]] = {}
+        for name, tool in tools.items():
+            card = tool.to_mcp_tool()
+            exported[name] = {
+                "mcp": card.model_dump(mode="json", by_alias=True, exclude_none=True),
+                "override": self.model_schema(tool.parameters),
+            }
+
+        return exported
 
     def effective(
         self, endpoint: str, tool: Tool, override: Mapping[str, Any]

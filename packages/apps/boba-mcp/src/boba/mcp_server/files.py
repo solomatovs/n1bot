@@ -297,7 +297,11 @@ class JournalListing(Provider):
     def _listed(self, journals: Iterable[OpenJournal]) -> Iterator[Resource]:
         for journal in journals:
             for channel in JournalChannels.VISIBLE:
-                read = JournalRead(run=journal.run, node=journal.node, channel=channel)
+                read = JournalRead(
+                    run=journal.run,
+                    node=journal.node,
+                    channel=channel,
+                )
                 yield Resource(
                     uri=AnyUrl(self._uris.uri(read)),
                     name=f"{journal.node}.{channel.value}.log",

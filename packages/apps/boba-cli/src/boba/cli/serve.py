@@ -303,9 +303,8 @@ class ServeAgents(UserRows, RoleCatalog):
         self._history = history
         self._version = version
         self._info = schema.Implementation(name=ServeMark.NAME.value, version=version)
-        self._settings = Settings(Arguments(), env, Path.home(), cwd).effective_of(
-            self._layer(section, history)
-        )
+        settings = Settings(Arguments(), env, Path.home(), cwd)
+        self._settings = settings.effective_of(self._layer(section, history))
         self._types = LlmProviderTypes.declare([OPENAI, OLLAMA, ONNX])
         self._providers = LlmProviders(self._types)
         self._catalog = ModelCatalog(self._settings, env, self._providers)
@@ -415,7 +414,8 @@ class ServeAgents(UserRows, RoleCatalog):
         """
         postgres = history_config.postgres
         try:
-            dsn = LibpqConnection(postgres).dsn()
+            connection = LibpqConnection(postgres)
+            dsn = connection.dsn()
         except ValueError as exc:
             msg = f"[agent.history].postgres cannot be used by the agent: {exc}"
             raise SettingsError(msg) from exc
@@ -961,15 +961,17 @@ class ServeEntry:
         """
         try:
             config = self._configs.load(self._paths).value
-            InstanceLayout(
+            layout = InstanceLayout(
                 self._paths[0].resolve().parent, config.paths, config.tls
-            ).apply()
+            )
+            layout.apply()
         except (ConfigError, ValueError, OSError) as exc:
             msg = f"boba serve: the config {self._paths[0]} is not usable: {exc}"
             raise SystemExit(msg) from exc
 
         logging.config.dictConfig(config.logger)
-        version = Installed().version()
+        installed = Installed()
+        version = installed.version()
         try:
             host = ServeHost(config, version)
         except SettingsError as exc:

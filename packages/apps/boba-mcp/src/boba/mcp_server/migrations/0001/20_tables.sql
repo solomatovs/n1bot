@@ -68,7 +68,8 @@ create temporary table pg_temp.mcp_endpoints (
     created_at timestamptz not null default now(),
     updated_at timestamptz not null default now(),
     constraint mcp_endpoints_path check (
-        prefix_url ~ '^(/[A-Za-z0-9_~.-]+)+$' and prefix_url !~ '(^|/)\.\.?(/|$)'),
+        (prefix_url = '/' or prefix_url ~ '^(/[A-Za-z0-9_~.-]+)+$')
+        and prefix_url !~ '(^|/)\.\.?(/|$)'),
     constraint mcp_endpoints_tools_array check (jsonb_typeof(tools) = 'array'),
     constraint mcp_endpoints_overrides_object check (jsonb_typeof(overrides) = 'object'),
     constraint mcp_endpoints_prompts_object check (jsonb_typeof(prompts) = 'object')

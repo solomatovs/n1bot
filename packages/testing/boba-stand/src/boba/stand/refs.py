@@ -109,9 +109,7 @@ class StandRefs:
     ) -> ToolRegistry:
         launchers = self.launchers(raw)
         kits = await PluginKits(raw, launchers).load()
-        return ToolLoader(
-            raw, kits, execution, launchers, grants, own_tools
-        ).load()
+        return ToolLoader(raw, kits, execution, launchers, grants, own_tools).load()
 
     @staticmethod
     def granted(profile: str, tools: Sequence[str]) -> ToolGrants:

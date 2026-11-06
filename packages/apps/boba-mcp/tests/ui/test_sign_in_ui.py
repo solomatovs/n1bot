@@ -35,6 +35,7 @@ from fastmcp.client.auth import OAuth
 from fastmcp.client.transports import StreamableHttpTransport
 from key_value.aio.stores.memory import MemoryStore
 from playwright.sync_api import Browser, Page, expect
+from pydantic import BaseModel, Field
 
 from boba.auth.signin import SignInProviders
 from boba.db.postgres.connection import PostgresConfig
@@ -666,6 +667,12 @@ class DeployedService:
         return f"{self.origin()}/.well-known/{suffix}{httpx.URL(address).path}"
 
 
+class DeployedEndpoints(BaseModel):
+    """Пути endpoint'ов, опубликованных работающим сервисом."""
+
+    endpoints: list[str] = Field(min_length=1)
+
+
 @pytest.fixture
 def deployed() -> DeployedService:
     """Развёрнутый стенд compose: адрес, клиент и ключи сервиса из его
@@ -688,6 +695,9 @@ def deployed() -> DeployedService:
 
     if health.status_code != httpx.codes.OK:
         pytest.fail(f"the deployed service at {public} answers {health.status_code}")
+
+    catalog = DeployedEndpoints.model_validate(health.json())
+    endpoint = f"{public}{catalog.endpoints[0]}"
 
     clients = list(service["mcp"]["clients"])
     if len(clients) != 1:
@@ -718,7 +728,7 @@ def deployed() -> DeployedService:
 
     return DeployedService(
         public=public,
-        endpoint=f"{public}/{ENDPOINT}",
+        endpoint=endpoint,
         client_id=clients[0],
         client_secret=str(service["keys"]["mcp_client"]),
         proxy_secret=str(service["keys"]["mcp_proxy"]),
@@ -760,7 +770,7 @@ class TestDeployedService:
 
         tools = run_blocking(_listed(deployed.endpoint, token))
 
-        assert TOOL in tools, tools
+        assert tools, f"the deployed endpoint {deployed.endpoint} offers no tools"
 
     def test_sign_in_offers_configured_providers(
         self, deployed: DeployedService, login_page: LoginPage

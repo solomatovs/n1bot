@@ -550,9 +550,7 @@ def _app_config(stand: E2eStand) -> AppConfig:
     return bind(raw, path="app", model=AppConfig)
 
 
-async def _user_row(
-    config: AppConfig, identifier: str
-) -> StoredUser:
+async def _user_row(config: AppConfig, identifier: str) -> StoredUser:
     """Пользователь стенда: identity и роли из общей таблицы users.
 
     Пул свой и закрывается здесь же: общий пул процесса привязан к циклу
@@ -653,9 +651,7 @@ class _SessionProbe:
             raise AssertionError(msg) from exc
 
     def _on_request_failed(self, request: Any) -> None:
-        self.requests.append(
-            f"{request.method} {request.url}: {request.failure}"
-        )
+        self.requests.append(f"{request.method} {request.url}: {request.failure}")
 
     def _on_console(self, message: Any) -> None:
         if message.type == "error":

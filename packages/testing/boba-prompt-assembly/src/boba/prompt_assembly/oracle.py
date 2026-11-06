@@ -20,10 +20,16 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Iterator, Mapping, Sequence
 
-from boba.prompt_assembly.records import Encoding, Journal, JsNumber, Json, Key, RecordType
+from boba.prompt_assembly.records import (
+    Encoding,
+    Journal,
+    JsNumber,
+    Json,
+    Key,
+    RecordType,
+)
 
 Value = None | bool | int | float | str | Sequence["Value"] | Mapping[str, "Value"]
-
 
 
 class ReplayError(Exception):
@@ -77,7 +83,9 @@ class CanonicalJson:
 
         parts.append("]")
 
-    def _emit_object(self, obj: Mapping[str, Json], parts: list[str], omit: bool) -> None:
+    def _emit_object(
+        self, obj: Mapping[str, Json], parts: list[str], omit: bool
+    ) -> None:
         parts.append("{")
         first = True
 
@@ -114,7 +122,9 @@ class CanonicalJson:
         if isinstance(value, int):
             return str(value)
 
-        raise ReplayError(f"canonical json: unsupported value {value!r} of type {type(value).__name__}")
+        raise ReplayError(
+            f"canonical json: unsupported value {value!r} of type {type(value).__name__}"
+        )
 
     def _string(self, value: str) -> str:
         dumped = json.dumps(value, ensure_ascii=False)
@@ -179,13 +189,17 @@ class ReplayHasher:
         messages: list[Json] = []
         for message in value:
             if not isinstance(message, dict):
-                raise ReplayError(f"request digest: message expected as an object, got {type(message).__name__}")
+                raise ReplayError(
+                    f"request digest: message expected as an object, got {type(message).__name__}"
+                )
             messages.append(self.normalized(message))
 
         return messages
 
     def _sha256(self, text: str) -> str:
-        return hashlib.sha256(text.encode(Encoding.UTF8, Encoding.SURROGATES)).hexdigest()
+        return hashlib.sha256(
+            text.encode(Encoding.UTF8, Encoding.SURROGATES)
+        ).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -291,7 +305,10 @@ class JournalIndex:
             content = self._previous_content() + blocks
 
         self._run = _Run(role, message_id, content)
-        restored: dict[str, Json] = {"role": role, "content": self._without_cache_control(content)}
+        restored: dict[str, Json] = {
+            "role": role,
+            "content": self._without_cache_control(content),
+        }
         digest = self._hasher.message(restored)
         self._remember(digest, StoredMessage(restored, Source.JOURNAL, line.number))
 
@@ -398,7 +415,9 @@ class RequestRecords:
 
         params = record.get("params")
         if not isinstance(params, dict):
-            raise ReplayError(f"{where}: expected params as an object, got {type(params).__name__}")
+            raise ReplayError(
+                f"{where}: expected params as an object, got {type(params).__name__}"
+            )
 
         keep = record.get("keep")
         if not isinstance(keep, int):
@@ -414,7 +433,9 @@ class RequestRecords:
             query_source=self._text(record, "querySource", where),
             shape_hash=self._text(record, "shapeHash", where),
             params=params,
-            withheld=tuple(self._strings(record.get("withheld", []), "withheld", where)),
+            withheld=tuple(
+                self._strings(record.get("withheld", []), "withheld", where)
+            ),
             base=self._optional_text(record, "base"),
             keep=keep,
             tail=tuple(self._strings(record.get("tail"), "tail", where)),
@@ -438,31 +459,47 @@ class RequestRecords:
 
     def _strings(self, value: Json, key: str, where: str) -> Iterator[str]:
         if not isinstance(value, list):
-            raise ReplayError(f"{where}: expected {key} as an array of strings, got {type(value).__name__}")
+            raise ReplayError(
+                f"{where}: expected {key} as an array of strings, got {type(value).__name__}"
+            )
 
         for item in value:
             if not isinstance(item, str):
-                raise ReplayError(f"{where}: expected {key} items as strings, got {item!r}")
+                raise ReplayError(
+                    f"{where}: expected {key} items as strings, got {item!r}"
+                )
             yield item
 
     def _marks(self, value: Json, where: str) -> Iterator[CacheMark]:
         if not isinstance(value, list):
-            raise ReplayError(f"{where}: expected cacheControl as an array, got {type(value).__name__}")
+            raise ReplayError(
+                f"{where}: expected cacheControl as an array, got {type(value).__name__}"
+            )
 
         for item in value:
             if not isinstance(item, dict):
-                raise ReplayError(f"{where}: expected a cacheControl item as an object, got {item!r}")
-            yield CacheMark(tuple(self._path(item.get("path"), where)), item.get("value"))
+                raise ReplayError(
+                    f"{where}: expected a cacheControl item as an object, got {item!r}"
+                )
+            yield CacheMark(
+                tuple(self._path(item.get("path"), where)), item.get("value")
+            )
 
     def _path(self, value: Json, where: str) -> Iterator[str | int]:
         if not isinstance(value, list):
-            raise ReplayError(f"{where}: expected cacheControl path as an array, got {value!r}")
+            raise ReplayError(
+                f"{where}: expected cacheControl path as an array, got {value!r}"
+            )
 
         for step in value:
             if isinstance(step, bool):
-                raise ReplayError(f"{where}: expected a cacheControl path step as a string or an index, got {step!r}")
+                raise ReplayError(
+                    f"{where}: expected a cacheControl path step as a string or an index, got {step!r}"
+                )
             if not isinstance(step, (str, int)):
-                raise ReplayError(f"{where}: expected a cacheControl path step as a string or an index, got {step!r}")
+                raise ReplayError(
+                    f"{where}: expected a cacheControl path step as a string or an index, got {step!r}"
+                )
             yield step
 
 
@@ -495,7 +532,9 @@ class SessionLog:
             if request.line == line:
                 return request
 
-        raise ReplayError(f"{self._path}:{line}: an api-request record is expected at this line, found none")
+        raise ReplayError(
+            f"{self._path}:{line}: an api-request record is expected at this line, found none"
+        )
 
     def _note(self, number: int, record: Mapping[str, Json]) -> None:
         line = LogLine(number, record)
@@ -654,7 +693,9 @@ class RequestRebuilder:
         shape_hash_actual = ""
 
         if shape is None:
-            problems.append(f"shape {request.shape_hash} has no api-request-shape record")
+            problems.append(
+                f"shape {request.shape_hash} has no api-request-shape record"
+            )
 
         if shape is not None:
             shape_hash_actual = self._hasher.shape(shape)
@@ -697,17 +738,23 @@ class RequestRebuilder:
         base = self._log.by_id.get(request.base)
 
         if base is None:
-            problems.append(f"base request {request.base!r} is not in the log, first {request.keep} messages are lost")
+            problems.append(
+                f"base request {request.base!r} is not in the log, first {request.keep} messages are lost"
+            )
             return ()
 
         if base.line >= request.line:
-            problems.append(f"base request {request.base} is written at line {base.line}, after the request itself")
+            problems.append(
+                f"base request {request.base} is written at line {base.line}, after the request itself"
+            )
             return ()
 
         base_hashes = self._chain(base, problems)
 
         if len(base_hashes) < request.keep:
-            problems.append(f"base request {request.base} has {len(base_hashes)} messages, keep expects {request.keep}")
+            problems.append(
+                f"base request {request.base} has {len(base_hashes)} messages, keep expects {request.keep}"
+            )
             return ()
 
         return base_hashes[: request.keep]
@@ -723,25 +770,39 @@ class RequestRebuilder:
         stored = self._log.index.find(digest)
 
         if stored is None:
-            problems.append(f"message {position} with hash {digest} is neither a blob nor a journal run")
+            problems.append(
+                f"message {position} with hash {digest} is neither a blob nor a journal run"
+            )
             messages.append({"role": "unknown", "content": []})
             return MessageCheck(position, digest, "", Source.MISSING, 0)
 
         if stored.line > request.line:
-            problems.append(f"message {position} source at line {stored.line} is written after the request")
+            problems.append(
+                f"message {position} source at line {stored.line} is written after the request"
+            )
 
         message = self._copy(stored.message)
         messages.append(message)
-        return MessageCheck(position, digest, self._hasher.message(stored.message), stored.source, stored.line)
+        return MessageCheck(
+            position,
+            digest,
+            self._hasher.message(stored.message),
+            stored.source,
+            stored.line,
+        )
 
-    def _mark(self, body: dict[str, Json], mark: CacheMark, problems: list[str]) -> None:
+    def _mark(
+        self, body: dict[str, Json], mark: CacheMark, problems: list[str]
+    ) -> None:
         target: Json = body
 
         for step in mark.path:
             target = self._step(target, step)
 
         if not isinstance(target, dict):
-            problems.append(f"cache_control path {list(mark.path)} does not lead to an object")
+            problems.append(
+                f"cache_control path {list(mark.path)} does not lead to an object"
+            )
             return
 
         target[Key.CACHE_CONTROL] = self._copy(mark.value)
@@ -802,19 +863,25 @@ class JsonDiff:
         if self._array(expected) and self._array(actual):
             return self._arrays(self._items(expected), self._items(actual), path)
 
-        if expected == actual and isinstance(expected, bool) == isinstance(actual, bool):
+        if expected == actual and isinstance(expected, bool) == isinstance(
+            actual, bool
+        ):
             return ""
 
         return f"{path}: expected {self._show(expected)}, got {self._show(actual)}"
 
-    def _objects(self, expected: Mapping[str, Value], actual: Mapping[str, Value], path: str) -> str:
+    def _objects(
+        self, expected: Mapping[str, Value], actual: Mapping[str, Value], path: str
+    ) -> str:
         for key in expected:
             if key not in actual:
                 return f"{path}/{key}: expected {self._show(expected[key])}, got no such key"
 
         for key in actual:
             if key not in expected:
-                return f"{path}/{key}: expected no such key, got {self._show(actual[key])}"
+                return (
+                    f"{path}/{key}: expected no such key, got {self._show(actual[key])}"
+                )
 
         for key in expected:
             if found := self.first(expected[key], actual[key], f"{path}/{key}"):
@@ -822,7 +889,9 @@ class JsonDiff:
 
         return ""
 
-    def _arrays(self, expected: Sequence[Value], actual: Sequence[Value], path: str) -> str:
+    def _arrays(
+        self, expected: Sequence[Value], actual: Sequence[Value], path: str
+    ) -> str:
         for index, (left, right) in enumerate(zip(expected, actual)):
             if found := self.first(left, right, f"{path}/{index}"):
                 return found
@@ -864,17 +933,21 @@ class BodyLayers:
         self._hasher = hasher
         self._canonical = CanonicalJson()
 
-    def same(self, layer: Layer, expected: Mapping[str, Json], actual: Mapping[str, Json]) -> bool:
+    def same(
+        self, layer: Layer, expected: Mapping[str, Json], actual: Mapping[str, Json]
+    ) -> bool:
         if layer is Layer.MESSAGES:
             return self._hashes(expected) == self._hashes(actual)
 
         if layer is Layer.MARKS:
-            return list(self._marks(self.normalized(expected).get(Key.MESSAGES), ())) == list(
-                self._marks(self.normalized(actual).get(Key.MESSAGES), ())
-            )
+            return list(
+                self._marks(self.normalized(expected).get(Key.MESSAGES), ())
+            ) == list(self._marks(self.normalized(actual).get(Key.MESSAGES), ()))
 
         if layer in (Layer.SYSTEM, Layer.TOOLS):
-            return self._text(expected.get(layer.value)) == self._text(actual.get(layer.value))
+            return self._text(expected.get(layer.value)) == self._text(
+                actual.get(layer.value)
+            )
 
         return self._text(self._params(expected)) == self._text(self._params(actual))
 
@@ -905,7 +978,9 @@ class BodyLayers:
 
         return hashes
 
-    def _marks(self, value: Json, path: tuple[str | int, ...]) -> Iterator[tuple[tuple[str | int, ...], str]]:
+    def _marks(
+        self, value: Json, path: tuple[str | int, ...]
+    ) -> Iterator[tuple[tuple[str | int, ...], str]]:
         if isinstance(value, dict):
             if Key.CACHE_CONTROL in value:
                 yield path, self._text(value[Key.CACHE_CONTROL])

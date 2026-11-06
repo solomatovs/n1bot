@@ -137,9 +137,7 @@ class StandAuthBackends:
         self._standard = StandardAuthBackends()
 
     def build(self, configs: Sequence[AuthConfig], secret: str = SECRET) -> SignIns:
-        services = AuthServices(
-            self._directory, self._profiles, self._roles, secret
-        )
+        services = AuthServices(self._directory, self._profiles, self._roles, secret)
         return self._standard.registry.build(configs, services)
 
     def password(self, configs: Sequence[AuthConfig]) -> PasswordSignIn | None:
@@ -179,6 +177,4 @@ class StandAuthBackends:
         return contribution.sso.sign_in
 
     def _services(self) -> AuthServices:
-        return AuthServices(
-            self._directory, self._profiles, self._roles, self.SECRET
-        )
+        return AuthServices(self._directory, self._profiles, self._roles, self.SECRET)

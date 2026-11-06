@@ -59,9 +59,9 @@ logger = logging.getLogger(__name__)
 
 class AuthConnection(psycopg.AsyncConnection[Any]):
     """Соединение пула, поднимающее окружение авторизации профиля на время
-    connect: GSSAPI-обмен libpq идёт внутри connect, поэтому окружение
-    должно стоять до него, а не после. Что именно поднимать, решает
-    PostgresAuthSession профиля; у не-kerberos вариантов это ничего."""
+    connect и cancel_safe: GSSAPI-обмен libpq нужен и отдельному соединению
+    отмены запроса. Окружение выдаёт PostgresAuthSession профиля;
+    у не-kerberos вариантов это ничего."""
 
     session: ClassVar[PostgresAuthSession | None] = None
 
@@ -82,6 +82,17 @@ class AuthConnection(psycopg.AsyncConnection[Any]):
 
         async with cls.session.applied():
             return await super().connect(conninfo, **kwargs)  # type: ignore[return-value]
+
+    async def cancel_safe(self, *, timeout: float = 30.0) -> None:
+        """Отмена через отдельное соединение libpq с авторизацией этого пула."""
+        session = self.session
+        if session is None:
+            raise PostgresPoolClosedError(
+                "cancelling a query: connection has no bound auth session"
+            )
+
+        async with session.applied():
+            await super().cancel_safe(timeout=timeout)
 
 
 class PostgresPool(Protocol):

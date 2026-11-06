@@ -60,8 +60,10 @@ def run_app(raw: DictConfig, conf_dir: Path):
     """Запуск приложения по загруженному дереву конфига; env chainlit к этому
     моменту выставлен AppEntry. conf_dir — каталог главного файла конфига."""
     c = bind(raw, "app", AppConfig)
-    InstanceLayout(conf_dir, c.paths, c.tls).apply()
-    SandboxCors(chainlit_config.project.allow_origins).check(c)
+    layout = InstanceLayout(conf_dir, c.paths, c.tls)
+    layout.apply()
+    cors = SandboxCors(chainlit_config.project.allow_origins)
+    cors.check(c)
 
     UserLogContext.install()
     logging.config.dictConfig(c.logger)
@@ -224,7 +226,8 @@ def _use_chainlit_middleware(app: FastAPI, config: AidSection):
 
     from boba.aid.infra.callback import ChatCallbacks  # noqa: PLC0415
 
-    ChatCallbacks().install()
+    callbacks = ChatCallbacks()
+    callbacks.install()
     sio.eio.ping_interval = config.ping_interval
     sio.eio.ping_timeout = config.ping_timeout
     Payload.max_decode_packets = config.max_decode_packets
@@ -279,7 +282,9 @@ def _use_file_serving(c: AppConfig, storage: StorageClient) -> None:
     )
     from boba.aid.domain.keys import CanvasFileUrl  # noqa: PLC0415
 
-    UploadRoute(storage, UploadPolicy()).install(chainlit_app)
+    policy = UploadPolicy()
+    uploads = UploadRoute(storage, policy)
+    uploads.install(chainlit_app)
 
     canvas = CanvasServing(storage, UploadPolicy())
     chainlit_app.add_api_route(
@@ -396,7 +401,8 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     contexts = CallContexts()
     container.provide(services.call_contexts, contexts)
     container.provide(services.app_name, AppName("aid"))
-    container.provide(services.message_codec, ChatMessages().codec)
+    messages = ChatMessages()
+    container.provide(services.message_codec, messages.codec)
     container.provide(services.messaging_backends, c.MESSAGING_BACKENDS)
     container.provide(services.stale_observer, StaleTurnCloser)
     tokens = services.session_tokens(c)

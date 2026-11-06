@@ -589,6 +589,10 @@ app-runtime: $(ROOTFS:%=$(OUT)/rootfs-python/%.ext4) $(OUT_MCP)/sandbox/workspac
 	@mkdir -p "$(RUNTIME)/sandbox" "$(RUNTIME)/rootfs" "$(RUNTIME)/plugins" "$(RUNTIME)/models"
 	rm -rf "$(RUNTIME)/libexec"
 	cp -a "$(OUT_MCP)/libexec" "$(RUNTIME)/libexec"
+	# Remove files left by the previous runtime layout; tools now live in libexec.
+	rm -f "$(RUNTIME)/third/bin/bwrap" "$(RUNTIME)/third/bin/fuse2fs"
+	rm -f "$(RUNTIME)/sandbox/tools/mke2fs" "$(RUNTIME)/sandbox/tools/mke2fs.conf"
+	rmdir "$(RUNTIME)/third/bin" "$(RUNTIME)/sandbox/tools" 2>/dev/null || true
 	cp "$(OUT_MCP)/sandbox/workspace.ext4.gz" "$(RUNTIME)/sandbox/workspace.ext4.gz.part"
 	mv "$(RUNTIME)/sandbox/workspace.ext4.gz.part" "$(RUNTIME)/sandbox/workspace.ext4.gz"
 	$(foreach rootfs,$(ROOTFS),cp "$(OUT)/rootfs-python/$(rootfs).ext4" "$(RUNTIME)/rootfs/$(rootfs).ext4.part" && mv "$(RUNTIME)/rootfs/$(rootfs).ext4.part" "$(RUNTIME)/rootfs/$(rootfs).ext4"

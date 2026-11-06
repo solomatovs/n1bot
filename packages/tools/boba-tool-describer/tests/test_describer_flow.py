@@ -229,9 +229,7 @@ async def session_service(
     refs = runtime_stand.execution(store)
     grants = StandRefs.granted(PROFILE, ["*"])
     own_tools = ConnectionTools(store, call_stand.contexts).build()
-    registry = await runtime_stand.registry(
-        flow_raw, refs, grants, own_tools=own_tools
-    )
+    registry = await runtime_stand.registry(flow_raw, refs, grants, own_tools=own_tools)
     tools = registry.for_session(frozenset(ROLES), PROFILE)
     return registry.server(tools, DirectCalls())
 

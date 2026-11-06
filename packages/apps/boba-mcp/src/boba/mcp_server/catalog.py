@@ -97,8 +97,8 @@ class McpEndpoint(BaseModel):
     @field_validator("prefix_url")
     @classmethod
     def _path(cls, value: str) -> str:
-        if re.fullmatch(r"(?:/[A-Za-z0-9_~.-]+)+", value) is None:
-            raise ValueError("prefix_url expects a path such as /all or /dq/all")
+        if value != "/" and re.fullmatch(r"(?:/[A-Za-z0-9_~.-]+)+", value) is None:
+            raise ValueError("prefix_url expects / or a path such as /all or /dq/all")
 
         for segment in value.split("/")[1:]:
             if segment in (".", ".."):
@@ -140,10 +140,11 @@ class McpEndpoint(BaseModel):
 
 
 class EndpointCatalog(ProfileCatalog, ToolPolicy):
-    """Снимок endpoint'ов из БД для входа OAuth и проверки вызовов runtime.
+    """Кеш endpoint'ов для входа OAuth и проверки вызовов без запросов к БД.
 
-    McpHost загружает снимок один раз до старта. Роли пользователя получены
-    общим входом из БД и подписаны в токене; проверка запроса не читает users.
+    Сборка MCP заменяет весь проверенный снимок при старте и reload. Ссылки
+    потребителей на этот объект сохраняются. Роли пользователя подписаны
+    в токене; reload обновляет grants endpoint'ов, а не членство пользователя.
     """
 
     def __init__(self, endpoints: Sequence[McpEndpoint]) -> None:
@@ -155,6 +156,10 @@ class EndpointCatalog(ProfileCatalog, ToolPolicy):
 
             if endpoint.enabled:
                 self._endpoints[path] = endpoint
+
+    def replace(self, snapshot: EndpointCatalog) -> None:
+        """Публикует подготовленный снимок одним присваиванием в event loop."""
+        self._endpoints = dict(snapshot._endpoints)
 
     def endpoints(self) -> Sequence[McpEndpoint]:
         return tuple(self._endpoints.values())

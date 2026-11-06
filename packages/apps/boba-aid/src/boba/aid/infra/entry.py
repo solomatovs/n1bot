@@ -162,7 +162,8 @@ class AppEntry:
                 AidCommand.MIGRATE, "apply the chat storage schema", self._migration.add
             ),
         )
-        return ConfigArguments(parser, commands).call()
+        arguments = ConfigArguments(parser, commands)
+        return arguments.call()
 
     def serve(self, paths: Sequence[Path]) -> None:
         raw = self._configs.read(paths)
@@ -200,7 +201,8 @@ class AppEntry:
         """
         try:
             aid = bind(self._configs.read(paths), self.SECTION, AidSection)
-            checked = HealthProbe(aid.port, aid.url_prefix, self.HEALTH).check()
+            probe = HealthProbe(aid.port, aid.url_prefix, self.HEALTH)
+            checked = probe.check()
         except (ConfigError, HealthCheckError) as exc:
             raise SystemExit(f"boba-aid health: {exc}") from exc
 
@@ -239,4 +241,5 @@ class AppEntry:
 
 def cli() -> None:
     """Консольная команда boba-aid."""
-    AppEntry().run()
+    entry = AppEntry()
+    entry.run()

@@ -214,6 +214,9 @@ class StandApp(StrEnum):
     AID = "aid"
     MCP = "mcp"
 
+    def local_realm(self) -> str:
+        return f"{self.value}-local"
+
     def traits(self) -> StandAppTraits:
         known = {
             StandApp.AID: StandAppTraits(
@@ -568,7 +571,7 @@ class ServiceStand(StandService):
 
     ENDPOINTS: ClassVar[Mapping[str, Sequence[str]]] = {
         "all": ("*",),
-        "search": ("diagram_save", "canvas_open"),
+        "search": ("diagram_save", "canvas_open", "file_upload"),
     }
     """Endpoint'ы стенда: all — все инструменты, search — узкий набор."""
 
@@ -850,7 +853,13 @@ class StandConfig(StandService, ServerSeedSpec):
 
     agent_process: dict[str, Any] = field(
         default_factory=lambda: {
-            "command": shlex.join([sys.executable, "-m", StandConfig.AGENT_MODULE]),
+            "command": shlex.join(
+                [
+                    str(Path(sys.executable).with_name("python3")),
+                    "-m",
+                    StandConfig.AGENT_MODULE,
+                ]
+            ),
             "args": ["--stdio", "--setting-sources", ""],
         }
     )
@@ -1166,7 +1175,7 @@ class StandConfig(StandService, ServerSeedSpec):
                 ("auth", "local"),
                 {
                     "type": "local",
-                    "identity": {"realm": f"{self.app.value}-local"},
+                    "identity": {"realm": self.app.local_realm()},
                     "users": dict(self.STAND_USERS),
                     "roles": {"local": {"mapping": mapping}},
                     "require_roles": True,

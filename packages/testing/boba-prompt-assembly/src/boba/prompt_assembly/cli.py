@@ -21,11 +21,29 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Iterator, Sequence
 
-from boba.prompt_assembly.compaction import Attempt, CheckOutcome, CompactionError, LadderStop
+from boba.prompt_assembly.compaction import (
+    Attempt,
+    CheckOutcome,
+    CompactionError,
+    LadderStop,
+)
 from boba.prompt_assembly.compaction_checks import Report
-from boba.prompt_assembly.corpus import CorpusEntry, CorpusManifest, LaunchSpec, ManifestReader, VerifyError
+from boba.prompt_assembly.corpus import (
+    CorpusEntry,
+    CorpusManifest,
+    LaunchSpec,
+    ManifestReader,
+    VerifyError,
+)
 from boba.prompt_assembly.loader import LoaderError, LoadResult, RowKit, SessionLoader
-from boba.prompt_assembly.oracle import Rebuilt, ReplayError, ReplayHasher, RequestRebuilder, SessionLog, Source
+from boba.prompt_assembly.oracle import (
+    Rebuilt,
+    ReplayError,
+    ReplayHasher,
+    RequestRebuilder,
+    SessionLog,
+    Source,
+)
 from boba.prompt_assembly.records import (
     Encoding,
     Journal,
@@ -38,8 +56,20 @@ from boba.prompt_assembly.records import (
     Row,
 )
 from boba.prompt_assembly.request import BuiltRequest, LaunchProfile, RequestError
-from boba.prompt_assembly.session import OptionsReader, PromptSession, SessionError, SessionOptions, Sessions
-from boba.prompt_assembly.verify import CorpusReport, CorpusVerifier, JournalReport, RequestVerdict, Tally
+from boba.prompt_assembly.session import (
+    OptionsReader,
+    PromptSession,
+    SessionError,
+    SessionOptions,
+    Sessions,
+)
+from boba.prompt_assembly.verify import (
+    CorpusReport,
+    CorpusVerifier,
+    JournalReport,
+    RequestVerdict,
+    Tally,
+)
 
 
 class CliError(Exception):
@@ -90,7 +120,9 @@ class Output:
         try:
             self._target.write_bytes(text.encode(Encoding.UTF8, Encoding.SURROGATES))
         except OSError as exc:
-            raise CliError(f"writing the result to {self._target} failed: {exc}") from exc
+            raise CliError(
+                f"writing the result to {self._target} failed: {exc}"
+            ) from exc
 
 
 class LaunchOptions:
@@ -135,7 +167,9 @@ class LaunchOptions:
         try:
             value: Json = json.loads(raw)
         except ValueError as exc:
-            raise CliError(f"--set {key}: the value is expected to be JSON (quote strings), got {raw!r}: {exc}") from exc
+            raise CliError(
+                f"--set {key}: the value is expected to be JSON (quote strings), got {raw!r}: {exc}"
+            ) from exc
 
         return key, value
 
@@ -232,14 +266,21 @@ class HistoryCommand:
         seen: set[str] = set()
         for number, raw in journal.entries(self._upto):
             row = Row(line=number, raw=raw)
-            if row.kind not in (RecordType.USER, RecordType.ASSISTANT, RecordType.ATTACHMENT, RecordType.SYSTEM):
+            if row.kind not in (
+                RecordType.USER,
+                RecordType.ASSISTANT,
+                RecordType.ATTACHMENT,
+                RecordType.SYSTEM,
+            ):
                 continue
             if row.uuid in kept or row.uuid in seen:
                 continue
             seen.add(row.uuid)
             yield row
 
-    def _lines(self, journal: Journal, result: LoadResult, dropped: Sequence[Row]) -> Iterator[str]:
+    def _lines(
+        self, journal: Journal, result: LoadResult, dropped: Sequence[Row]
+    ) -> Iterator[str]:
         state = "the whole file"
         if self._upto is not None:
             state = f"line {self._upto}"
@@ -286,7 +327,14 @@ class HistoryCommand:
     def _document(self, result: LoadResult, dropped: Sequence[Row]) -> Json:
         history: list[Json] = []
         for row in result.history:
-            history.append({"line": row.line, "uuid": row.uuid, "type": row.kind, "parentUuid": row.parent})
+            history.append(
+                {
+                    "line": row.line,
+                    "uuid": row.uuid,
+                    "type": row.kind,
+                    "parentUuid": row.parent,
+                }
+            )
 
         removed: list[Json] = []
         for row in dropped:
@@ -330,7 +378,9 @@ class CompactionCommand:
         self._output.text("\n".join(self._lines(session, outcomes)))
         return 0
 
-    def _lines(self, session: PromptSession, outcomes: Sequence[CheckOutcome]) -> Iterator[str]:
+    def _lines(
+        self, session: PromptSession, outcomes: Sequence[CheckOutcome]
+    ) -> Iterator[str]:
         policy = session.policy
         yield (
             f"window {policy.window} ({policy.source.value}), effective {policy.effective_window}, "
@@ -409,7 +459,10 @@ class OracleCommand:
             self._dump_all(rebuilt, self._all_dir)
 
         failed = 0
-        lines: list[str] = [f"journal: {self._path}", f"requests: {len(rebuilt)}, shapes: {len(log.shapes)}, unparsed lines: {log.skipped_lines}"]
+        lines: list[str] = [
+            f"journal: {self._path}",
+            f"requests: {len(rebuilt)}, shapes: {len(log.shapes)}, unparsed lines: {log.skipped_lines}",
+        ]
         for ordinal, item in enumerate(rebuilt, start=1):
             if not item.ok:
                 failed += 1
@@ -456,7 +509,9 @@ class OracleCommand:
         if wanted.isdigit():
             ordinal = int(wanted)
             if ordinal < 1 or ordinal > len(rebuilt):
-                raise CliError(f"oracle {self._path}: request #{ordinal} requested, the journal has {len(rebuilt)} requests")
+                raise CliError(
+                    f"oracle {self._path}: request #{ordinal} requested, the journal has {len(rebuilt)} requests"
+                )
             return rebuilt[ordinal - 1]
 
         matched: list[Rebuilt] = []
@@ -465,7 +520,9 @@ class OracleCommand:
                 matched.append(item)
 
         if len(matched) != 1:
-            raise CliError(f"oracle {self._path}: request id {wanted!r} is expected to match one request, matched {len(matched)}")
+            raise CliError(
+                f"oracle {self._path}: request id {wanted!r} is expected to match one request, matched {len(matched)}"
+            )
 
         return matched[0]
 
@@ -473,10 +530,14 @@ class OracleCommand:
         try:
             directory.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
-            raise CliError(f"oracle {self._path}: creating output directory {directory} failed: {exc}") from exc
+            raise CliError(
+                f"oracle {self._path}: creating output directory {directory} failed: {exc}"
+            ) from exc
 
         for ordinal, item in enumerate(rebuilt, start=1):
-            Output(directory / f"{ordinal:04d}_{item.request.id}{Exit.JSON_SUFFIX}").text(self._document(item))
+            Output(
+                directory / f"{ordinal:04d}_{item.request.id}{Exit.JSON_SUFFIX}"
+            ).text(self._document(item))
 
     def _document(self, item: Rebuilt) -> str:
         document: Json = {"check": item.report(), "body": item.body}
@@ -544,10 +605,18 @@ class VerifyCommand:
             return manifest, entries
 
         if not self._journals:
-            raise CliError("verify expects --corpus MANIFEST.json or at least one journal, got neither")
+            raise CliError(
+                "verify expects --corpus MANIFEST.json or at least one journal, got neither"
+            )
 
         limits = self._options.default_compaction()
-        manifest = CorpusManifest(path=Path("."), projects=Path("."), limits=limits, tool_clearing_mode="unknown", entries=())
+        manifest = CorpusManifest(
+            path=Path("."),
+            projects=Path("."),
+            limits=limits,
+            tool_clearing_mode="unknown",
+            entries=(),
+        )
         adhoc: list[CorpusEntry] = []
         for path in self._journals:
             adhoc.append(self._adhoc(path))
@@ -556,7 +625,12 @@ class VerifyCommand:
 
     def _adhoc(self, path: Path) -> CorpusEntry:
         """Журнал вне манифеста: все записи эталона действительны, параметры — из набора --profile."""
-        launch = LaunchSpec(profile=self._profile, echo_api_block_order=False, safeguards_from_oracle=False, request_profiles={})
+        launch = LaunchSpec(
+            profile=self._profile,
+            echo_api_block_order=False,
+            safeguards_from_oracle=False,
+            request_profiles={},
+        )
         return CorpusEntry(
             address=self._addresses.of_path(path),
             path=path,
@@ -628,7 +702,9 @@ class VerifyCommand:
 
         moment = "no history moment (the request got no response)"
         if verdict.moment_line:
-            moment = f"moment line {verdict.moment_line} {self._flag(verdict.moment_ok)}"
+            moment = (
+                f"moment line {verdict.moment_line} {self._flag(verdict.moment_ok)}"
+            )
 
         yield (
             f"   #{verdict.ordinal} line={verdict.line} src={verdict.source} digest={self._flag(verdict.digest_ok)} "
@@ -666,45 +742,108 @@ class Cli:
 
     def __init__(self, argv: Sequence[str]) -> None:
         parser = argparse.ArgumentParser(
-            prog=Exit.PROGRAM, description="Rebuild Claude Code 2.1.289 API requests from a session journal"
+            prog=Exit.PROGRAM,
+            description="Rebuild Claude Code 2.1.289 API requests from a session journal",
         )
         commands = parser.add_subparsers(dest="command", required=True)
 
-        build = commands.add_parser(Command.BUILD, help="build request bodies from the journal history")
+        build = commands.add_parser(
+            Command.BUILD, help="build request bodies from the journal history"
+        )
         build.add_argument("journal", type=Path, help="session journal (.jsonl)")
         selector = build.add_mutually_exclusive_group()
-        selector.add_argument("--at", type=int, help="build the request whose history is the rows before this line")
-        selector.add_argument("--request", type=int, help="1-based number of a request moment found by history")
-        selector.add_argument("--all", action="store_true", help="every request moment found by history (the default)")
-        build.add_argument("--body-only", action="store_true", help="print bodies without source notes")
+        selector.add_argument(
+            "--at",
+            type=int,
+            help="build the request whose history is the rows before this line",
+        )
+        selector.add_argument(
+            "--request",
+            type=int,
+            help="1-based number of a request moment found by history",
+        )
+        selector.add_argument(
+            "--all",
+            action="store_true",
+            help="every request moment found by history (the default)",
+        )
+        build.add_argument(
+            "--body-only", action="store_true", help="print bodies without source notes"
+        )
         self._launch_arguments(build)
 
-        history = commands.add_parser(Command.HISTORY, help="show what --resume would load from the journal")
+        history = commands.add_parser(
+            Command.HISTORY, help="show what --resume would load from the journal"
+        )
         history.add_argument("journal", type=Path, help="session journal (.jsonl)")
-        history.add_argument("--upto", type=int, help="load the file state as of this line (inclusive); default is the whole file")
-        history.add_argument("--json", action="store_true", help="print the result as JSON")
-        history.add_argument("--out", type=Path, help="write the result to this file instead of stdout")
+        history.add_argument(
+            "--upto",
+            type=int,
+            help="load the file state as of this line (inclusive); default is the whole file",
+        )
+        history.add_argument(
+            "--json", action="store_true", help="print the result as JSON"
+        )
+        history.add_argument(
+            "--out", type=Path, help="write the result to this file instead of stdout"
+        )
 
-        compaction = commands.add_parser(Command.COMPACTION, help="context fill and auto-compaction decisions")
+        compaction = commands.add_parser(
+            Command.COMPACTION, help="context fill and auto-compaction decisions"
+        )
         compaction.add_argument("journal", type=Path, help="session journal (.jsonl)")
         self._launch_arguments(compaction)
 
-        oracle = commands.add_parser(Command.ORACLE, help="decode recorded api-request records (the reference)")
-        oracle.add_argument("journal", type=Path, help="session journal (.jsonl)")
-        oracle.add_argument("--request", default="", help="request id (or its prefix), or 1-based ordinal number")
-        oracle.add_argument("--all", type=Path, dest="all_dir", help="write every request into this directory")
-        oracle.add_argument("--body-only", action="store_true", help="write only the body, without the check report")
-        oracle.add_argument("--out", type=Path, help="write the result to this file instead of stdout")
-
-        verify = commands.add_parser(Command.VERIFY, help="compare built requests with the recorded reference")
-        verify.add_argument("journals", type=Path, nargs="*", help="journals to verify; default is the whole corpus")
-        verify.add_argument("--corpus", type=Path, help="corpus manifest (MANIFEST.json)")
-        verify.add_argument(
-            "--profile", default=LaunchProfile.SUBSCRIPTION_PRINT.value, help="launch profile for journals outside the manifest"
+        oracle = commands.add_parser(
+            Command.ORACLE, help="decode recorded api-request records (the reference)"
         )
-        verify.add_argument("--all-findings", action="store_true", help="print passed checks as well")
-        verify.add_argument("--notes", action="store_true", help="print builder and loader notes")
-        verify.add_argument("--out", type=Path, help="write the report to this file instead of stdout")
+        oracle.add_argument("journal", type=Path, help="session journal (.jsonl)")
+        oracle.add_argument(
+            "--request",
+            default="",
+            help="request id (or its prefix), or 1-based ordinal number",
+        )
+        oracle.add_argument(
+            "--all",
+            type=Path,
+            dest="all_dir",
+            help="write every request into this directory",
+        )
+        oracle.add_argument(
+            "--body-only",
+            action="store_true",
+            help="write only the body, without the check report",
+        )
+        oracle.add_argument(
+            "--out", type=Path, help="write the result to this file instead of stdout"
+        )
+
+        verify = commands.add_parser(
+            Command.VERIFY, help="compare built requests with the recorded reference"
+        )
+        verify.add_argument(
+            "journals",
+            type=Path,
+            nargs="*",
+            help="journals to verify; default is the whole corpus",
+        )
+        verify.add_argument(
+            "--corpus", type=Path, help="corpus manifest (MANIFEST.json)"
+        )
+        verify.add_argument(
+            "--profile",
+            default=LaunchProfile.SUBSCRIPTION_PRINT.value,
+            help="launch profile for journals outside the manifest",
+        )
+        verify.add_argument(
+            "--all-findings", action="store_true", help="print passed checks as well"
+        )
+        verify.add_argument(
+            "--notes", action="store_true", help="print builder and loader notes"
+        )
+        verify.add_argument(
+            "--out", type=Path, help="write the report to this file instead of stdout"
+        )
 
         self._args = parser.parse_args(argv)
 
@@ -726,16 +865,34 @@ class Cli:
         return VerifyCommand(self._args).run()
 
     def _options(self) -> SessionOptions:
-        args = LaunchArgs(params=self._args.params, profile=self._args.profile, overrides=tuple(self._args.set))
+        args = LaunchArgs(
+            params=self._args.params,
+            profile=self._args.profile,
+            overrides=tuple(self._args.set),
+        )
         return LaunchOptions(args).read()
 
     def _launch_arguments(self, parser: argparse.ArgumentParser) -> None:
-        parser.add_argument("--params", type=Path, help="JSON file with launch parameters the journal does not record")
-        parser.add_argument("--profile", default="", help="named set of launch parameters, e.g. subscription_print")
         parser.add_argument(
-            "--set", action="append", default=[], metavar="KEY=JSON", help="override one launch parameter, e.g. main_cache_ttl='\"\"'"
+            "--params",
+            type=Path,
+            help="JSON file with launch parameters the journal does not record",
         )
-        parser.add_argument("--out", type=Path, help="write the result to this file instead of stdout")
+        parser.add_argument(
+            "--profile",
+            default="",
+            help="named set of launch parameters, e.g. subscription_print",
+        )
+        parser.add_argument(
+            "--set",
+            action="append",
+            default=[],
+            metavar="KEY=JSON",
+            help="override one launch parameter, e.g. main_cache_ttl='\"\"'",
+        )
+        parser.add_argument(
+            "--out", type=Path, help="write the result to this file instead of stdout"
+        )
 
 
 def main() -> None:

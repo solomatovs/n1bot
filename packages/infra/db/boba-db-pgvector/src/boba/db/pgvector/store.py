@@ -926,7 +926,8 @@ class PostgresSourceLedger(KbTable, SourceLedger):
                         and source_id > %(after)s
                     order by
                         source_id
-                    limit %(page)s
+                    limit
+                        %(page)s
                     """,
                     collection=self._collection,
                     parent_id=str(parent),

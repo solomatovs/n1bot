@@ -37,6 +37,7 @@ class StandMigrations:
         plan = MigrationScripts(schema).application(package)
         await self._migrations.apply((MigrationTarget(postgres, plan),))
 
+
 class StandSchema:
     """Явная схема фикстуры сервиса: создать перед процессом, удалить после него.
 

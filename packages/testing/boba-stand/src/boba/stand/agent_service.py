@@ -173,7 +173,14 @@ class ServeStandConfig:
                     "identity": {"realm": "corporate"},
                     "secret": self.PROXY_SECRET,
                     "roles": {"header": {}},
-                }
+                },
+                {
+                    "type": "proxy",
+                    "identity": {"realm": "aid-local"},
+                    "path": "/auth/proxy/aid-local",
+                    "secret": self.PROXY_SECRET,
+                    "roles": {"header": {}},
+                },
             ],
             "session": {
                 "auth_secret": self.SESSION_SECRET,
@@ -196,7 +203,7 @@ class ServeStandConfig:
                 "clients": {
                     self.CLIENT_ID: {
                         "secret": self.CLIENT_SECRET,
-                        "realms": ["corporate"],
+                        "realms": ["corporate", "aid-local"],
                     }
                 },
             },

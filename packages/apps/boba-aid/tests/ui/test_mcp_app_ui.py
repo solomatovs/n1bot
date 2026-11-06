@@ -213,9 +213,7 @@ class TestMcpApp:
 
         card.get_by_text(view.label("reconnect")).click()
 
-        expect(card.get_by_text(view.label("reconnect"))).to_be_enabled(
-            timeout=WAIT_MS
-        )
+        expect(card.get_by_text(view.label("reconnect"))).to_be_enabled(timeout=WAIT_MS)
         expect(view.card(LIVE)).to_contain_text(view.label("state.connected"))
 
     def test_app_survives_reload_and_reads_the_state_again(

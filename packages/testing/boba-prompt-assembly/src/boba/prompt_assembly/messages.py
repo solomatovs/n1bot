@@ -18,7 +18,11 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Iterator, Mapping, Sequence
 
-from boba.prompt_assembly.attachments import DeferredToolsText, QueuedCommandRenderer, Reminders
+from boba.prompt_assembly.attachments import (
+    DeferredToolsText,
+    QueuedCommandRenderer,
+    Reminders,
+)
 from boba.prompt_assembly.cache import CacheMarks
 from boba.prompt_assembly.entries import (
     ApiSystemEntry,
@@ -53,7 +57,6 @@ from boba.prompt_assembly.records import (
 )
 
 
-
 class UserMerge:
     """Слияние user-сообщений (bM) и подмешивание напоминаний (byn/f_n/r6e)."""
 
@@ -77,7 +80,9 @@ class UserMerge:
             content=self._blocks.tool_results_first(self._join(left, right)),
         )
 
-    def merge_reminder(self, first: UserEntry, second: UserEntry, fold: bool, system_turns: bool) -> UserEntry:
+    def merge_reminder(
+        self, first: UserEntry, second: UserEntry, fold: bool, system_turns: bool
+    ) -> UserEntry:
         """byn: напоминание вложения дописывается к предыдущему user-сообщению."""
         left = self._blocks.as_blocks(first.content)
         right = self._blocks.as_blocks(second.content)
@@ -178,7 +183,9 @@ class UserMerge:
 
         return {**result, Key.CONTENT: self._joined_blocks(content, added)}
 
-    def _place(self, left: list[Block], right: list[Block], fold: bool, system_turns: bool) -> list[Block]:
+    def _place(
+        self, left: list[Block], right: list[Block], fold: bool, system_turns: bool
+    ) -> list[Block]:
         last = self._last_block(left)
         if last is None or not self._blocks.is_tool_result(last):
             return self._place_after_siblings(left, right, fold, system_turns)
@@ -218,7 +225,9 @@ class UserMerge:
 
         return [*self._place(left[:cut], right, fold, system_turns), *left[cut:]]
 
-    def _place_unfolded(self, left: list[Block], last: Block, right: list[Block]) -> list[Block]:
+    def _place_unfolded(
+        self, left: list[Block], last: Block, right: list[Block]
+    ) -> list[Block]:
         if not self._blocks.every(right, self._blocks.is_text):
             return [*left, *right]
 
@@ -322,7 +331,10 @@ class UserMerge:
                 continue
             previous = self._last_json_block(joined)
             if previous is not None and self._blocks.is_text(previous):
-                joined[-1] = {**previous, Key.TEXT: f"{self._blocks.text(previous)}\n\n{trimmed}"}
+                joined[-1] = {
+                    **previous,
+                    Key.TEXT: f"{self._blocks.text(previous)}\n\n{trimmed}",
+                }
                 continue
             joined.append(self._blocks.text_block(trimmed))
 
@@ -374,7 +386,9 @@ class ThinkingRules:
         current = list(entries)
 
         while True:
-            reduced = self.drop_blank_assistants(self.drop_orphan_thinking(current), False)
+            reduced = self.drop_blank_assistants(
+                self.drop_orphan_thinking(current), False
+            )
             if len(reduced) == len(current):
                 return current
             current = reduced
@@ -396,7 +410,9 @@ class ThinkingRules:
 
         return kept
 
-    def drop_blank_assistants(self, entries: Sequence[Entry], merge_users: bool) -> list[Entry]:
+    def drop_blank_assistants(
+        self, entries: Sequence[Entry], merge_users: bool
+    ) -> list[Entry]:
         """x_n: ответ из пробельного текста без содержательного соседа удаляется."""
         if not self._some_entry(entries, self._blank_assistant):
             return list(entries)
@@ -451,7 +467,9 @@ class ThinkingRules:
             if self._blocks.whitespace_only(entry.content) and alone:
                 result.append(entry)
                 continue
-            anchored = self._blocks.some(entry.content, self._neither_thinking_nor_empty)
+            anchored = self._blocks.some(
+                entry.content, self._neither_thinking_nor_empty
+            )
             if entry.message_id is not None and entry.message_id in keeps:
                 anchored = True
             content = list(self._without_empty_texts(entry.content, anchored))
@@ -510,7 +528,10 @@ class ThinkingRules:
         if keep == 0:
             return entries[:-1]
 
-        return [*entries[:-1], replace(last, content=last.content[:keep], api_block_indices=())]
+        return [
+            *entries[:-1],
+            replace(last, content=last.content[:keep], api_block_indices=()),
+        ]
 
     def _blank_text(self, block: Block) -> bool:
         if not self._blocks.is_text(block):
@@ -527,11 +548,15 @@ class ThinkingRules:
             entry = result[position]
             if not isinstance(entry, AssistantEntry) or entry.content:
                 continue
-            result[position] = replace(entry, content=[self._blocks.cited_text(Marker.NO_CONTENT)])
+            result[position] = replace(
+                entry, content=[self._blocks.cited_text(Marker.NO_CONTENT)]
+            )
 
         return result
 
-    def _without_empty_texts(self, content: Sequence[Block], anchored: bool) -> Iterator[Block]:
+    def _without_empty_texts(
+        self, content: Sequence[Block], anchored: bool
+    ) -> Iterator[Block]:
         for position, block in enumerate(content):
             if not self._blocks.is_empty_text(block):
                 yield block
@@ -541,7 +566,9 @@ class ThinkingRules:
             following = self._next_non_empty(content, position)
             if following is None:
                 continue
-            if self._blocks.is_thinking(content[position - 1]) and self._blocks.is_thinking(following):
+            if self._blocks.is_thinking(
+                content[position - 1]
+            ) and self._blocks.is_thinking(following):
                 yield self._blocks.cited_text(Marker.EMPTY_TEXT_REMOVED)
 
     def _next_non_empty(self, content: Sequence[Block], position: int) -> Block | None:
@@ -551,7 +578,9 @@ class ThinkingRules:
 
         return None
 
-    def _ids_with(self, entries: Sequence[Entry], predicate: Callable[[Block], bool]) -> Iterator[str]:
+    def _ids_with(
+        self, entries: Sequence[Entry], predicate: Callable[[Block], bool]
+    ) -> Iterator[str]:
         for entry in entries:
             if not isinstance(entry, AssistantEntry) or not entry.message_id:
                 continue
@@ -585,7 +614,9 @@ class ThinkingRules:
 
         return self._blocks.some(entry.content, self._blocks.is_empty_text)
 
-    def _some_entry(self, entries: Sequence[Entry], predicate: Callable[[Entry], bool]) -> bool:
+    def _some_entry(
+        self, entries: Sequence[Entry], predicate: Callable[[Entry], bool]
+    ) -> bool:
         for entry in entries:
             if predicate(entry):
                 return True
@@ -622,7 +653,9 @@ class _Feed:
     additions: list[str] = field(default_factory=lambda: list[str]())
     tail: bool = False
     created_system: bool = False
-    index: dict[str | None, int] = field(default_factory=lambda: dict[str | None, int]())
+    index: dict[str | None, int] = field(
+        default_factory=lambda: dict[str | None, int]()
+    )
     cursor: int = 0
     notes: list[str] = field(default_factory=lambda: list[str]())
 
@@ -636,7 +669,13 @@ class Normalizer:
     """
 
     _NEVER_SENT = frozenset(
-        ("thinking_drop", "credential_org", "prompt_snapshot", "prompt_render_point", "deferred_tools_record")
+        (
+            "thinking_drop",
+            "credential_org",
+            "prompt_snapshot",
+            "prompt_render_point",
+            "deferred_tools_record",
+        )
     )
     _USER_ROLE = frozenset(
         (
@@ -678,7 +717,10 @@ class Normalizer:
             AttachmentKind.SECONDARY_REMINDER,
         )
     )
-    _SENT_REMINDERS = (AttachmentKind.BATCHING_REMINDER_SENT, AttachmentKind.SECONDARY_REMINDER_SENT)
+    _SENT_REMINDERS = (
+        AttachmentKind.BATCHING_REMINDER_SENT,
+        AttachmentKind.SECONDARY_REMINDER_SENT,
+    )
 
     def __init__(self, shape: WireShape) -> None:
         self._shape = shape
@@ -792,10 +834,14 @@ class Normalizer:
 
         feed.kept.clear()
         if entry.has_task_delivery:
-            feed.notes.append(f"user {entry.uuid}: taskDelivery is not modelled, sent as a plain message")
+            feed.notes.append(
+                f"user {entry.uuid}: taskDelivery is not modelled, sent as a plain message"
+            )
 
         if entry.origin_kind == "task-notification":
-            feed.notes.append(f"user {entry.uuid}: task-notification wrapping (cKr) is not modelled")
+            feed.notes.append(
+                f"user {entry.uuid}: task-notification wrapping (cKr) is not modelled"
+            )
 
         message = entry
         if not self._shape.tool_search:
@@ -834,11 +880,17 @@ class Normalizer:
             feed.out.append(message)
             return
 
-        feed.out.append(replace(message, content=ordered, api_block_index=None, api_block_indices=()))
+        feed.out.append(
+            replace(
+                message, content=ordered, api_block_index=None, api_block_indices=()
+            )
+        )
 
     def _take_attachment(self, entry: AttachmentEntry, feed: _Feed) -> None:
         if entry.kind in self._UNMODELLED:
-            feed.notes.append(f"attachment {entry.uuid}: type {entry.kind} is not modelled, skipped")
+            feed.notes.append(
+                f"attachment {entry.uuid}: type {entry.kind} is not modelled, skipped"
+            )
             return
 
         if entry.kind in self._SENT_REMINDERS:
@@ -846,7 +898,9 @@ class Normalizer:
             return
 
         if entry.attachment.get("humanTurn") is True:
-            feed.notes.append(f"attachment {entry.uuid}: queued_command in a human turn is not modelled")
+            feed.notes.append(
+                f"attachment {entry.uuid}: queued_command in a human turn is not modelled"
+            )
 
         additions = self._surfaced(entry)
         rendered = self._rendered(entry, additions)
@@ -862,7 +916,9 @@ class Normalizer:
             text = self._system_text(messages)
             if text is not None:
                 feed.texts.append(self._system_wrapped(text))
-                feed.plain_texts.append(self._system_wrapped(self._name_only_text(entry, additions, text)))
+                feed.plain_texts.append(
+                    self._system_wrapped(self._name_only_text(entry, additions, text))
+                )
                 feed.additions.extend(additions)
                 return
 
@@ -903,17 +959,25 @@ class Normalizer:
         if not feed.tail or text == "":
             return
 
-        feed.notes.append(f"attachment {entry.uuid}: {entry.kind} without kept reminders is taken as the current one")
+        feed.notes.append(
+            f"attachment {entry.uuid}: {entry.kind} without kept reminders is taken as the current one"
+        )
         feed.ephemerals.append(self._system_wrapped(text))
 
-    def _reminder_messages(self, entry: AttachmentEntry, rendered: Sequence[Content]) -> list[UserEntry]:
+    def _reminder_messages(
+        self, entry: AttachmentEntry, rendered: Sequence[Content]
+    ) -> list[UserEntry]:
         messages: list[UserEntry] = []
         for content in rendered:
-            messages.append(self._escape(UserEntry(uuid=entry.uuid, content=content, is_meta=True)))
+            messages.append(
+                self._escape(UserEntry(uuid=entry.uuid, content=content, is_meta=True))
+            )
 
         return messages
 
-    def _rendered(self, entry: AttachmentEntry, additions: Sequence[str]) -> Sequence[Content] | None:
+    def _rendered(
+        self, entry: AttachmentEntry, additions: Sequence[str]
+    ) -> Sequence[Content] | None:
         """apt: текст из поля rendered; повторный рендер — когда его нет или набор всплывших имён другой."""
         if entry.kind == AttachmentKind.DEFERRED_TOOLS_DELTA and entry.has_rendered:
             return self._delta_rendered(entry, additions)
@@ -926,19 +990,25 @@ class Normalizer:
 
         return self._queued.render(entry.attachment)
 
-    def _delta_rendered(self, entry: AttachmentEntry, additions: Sequence[str]) -> Sequence[Content]:
+    def _delta_rendered(
+        self, entry: AttachmentEntry, additions: Sequence[str]
+    ) -> Sequence[Content]:
         """$Cr: записанный текст годится, только если набор всплывших имён тот же."""
         recorded = self._deferred.recorded_names(entry.attachment)
         if len(recorded) == len(additions) and set(recorded) == set(additions):
             return entry.rendered
 
-        rerendered = self._deferred.rerender(entry.attachment, entry.rendered, additions)
+        rerendered = self._deferred.rerender(
+            entry.attachment, entry.rendered, additions
+        )
         if rerendered is None:
             return entry.rendered
 
         return rerendered
 
-    def _name_only_text(self, entry: AttachmentEntry, additions: Sequence[str], text: str) -> str:
+    def _name_only_text(
+        self, entry: AttachmentEntry, additions: Sequence[str], text: str
+    ) -> str:
         """Текст вложения без раздела о всплывших инструментах (qn): им понижается api_system."""
         if not additions:
             return text
@@ -995,12 +1065,16 @@ class Normalizer:
 
         if isinstance(last, ApiSystemEntry):
             extended = self._extend_system(last, text, ephemeral, name_only, additions)
-            feed.out[-1] = replace(extended, from_records=last.from_records or bool(kept))
+            feed.out[-1] = replace(
+                extended, from_records=last.from_records or bool(kept)
+            )
             return
 
         if isinstance(last, UserEntry):
             feed.created_system = True
-            created = self._extend_system(ApiSystemEntry(content=""), text, ephemeral, name_only, additions)
+            created = self._extend_system(
+                ApiSystemEntry(content=""), text, ephemeral, name_only, additions
+            )
             feed.out.append(replace(created, from_records=bool(kept)))
             return
 
@@ -1016,7 +1090,9 @@ class Normalizer:
         if not self._shape.wrap_system_text:
             content = self._reminders.wrap(body)
 
-        feed.out.append(UserEntry(uuid="", content=content, is_meta=True, ephemeral=transient != ""))
+        feed.out.append(
+            UserEntry(uuid="", content=content, is_meta=True, ephemeral=transient != "")
+        )
 
     def _finish(self, feed: _Feed) -> list[Entry]:
         entries = self._thinking.drop_empty_texts(feed.out)
@@ -1060,7 +1136,9 @@ class Normalizer:
                 following = entries[position + 1]
 
             after_user = isinstance(previous, UserEntry)
-            before_ok = following is None or isinstance(following, (AssistantEntry, ApiSystemEntry))
+            before_ok = following is None or isinstance(
+                following, (AssistantEntry, ApiSystemEntry)
+            )
             if after_user and before_ok:
                 result.append(entry)
                 continue
@@ -1188,7 +1266,9 @@ class Normalizer:
 
         return {**block, Key.INPUT: tool_input}
 
-    def _merge_assistant(self, first: AssistantEntry, second: AssistantEntry) -> AssistantEntry:
+    def _merge_assistant(
+        self, first: AssistantEntry, second: AssistantEntry
+    ) -> AssistantEntry:
         """rCr: записи одного ответа склеиваются; пробельный текст остаётся только между мышлением."""
         if self._keeps_api_order(first) and self._keeps_api_order(second):
             return self._merge_by_api_order(first, second)
@@ -1205,10 +1285,15 @@ class Normalizer:
             chosen = filtered
 
         return replace(
-            first, content=self._blocks.tool_uses_last(chosen), api_block_index=None, api_block_indices=()
+            first,
+            content=self._blocks.tool_uses_last(chosen),
+            api_block_index=None,
+            api_block_indices=(),
         )
 
-    def _merge_by_api_order(self, first: AssistantEntry, second: AssistantEntry) -> AssistantEntry:
+    def _merge_by_api_order(
+        self, first: AssistantEntry, second: AssistantEntry
+    ) -> AssistantEntry:
         """rCr при echoApiBlockOrder: блоки одного ответа встают по номеру блока в ответе API."""
         indexed = [*self._indexed(first), *self._indexed(second)]
         indexed.sort(key=self._block_order)
@@ -1218,7 +1303,12 @@ class Normalizer:
             indices.append(index)
             content.append(block)
 
-        return replace(first, content=content, api_block_index=min(indices, default=None), api_block_indices=tuple(indices))
+        return replace(
+            first,
+            content=content,
+            api_block_index=min(indices, default=None),
+            api_block_indices=tuple(indices),
+        )
 
     def _indexed(self, entry: AssistantEntry) -> Iterator[tuple[int, Block]]:
         """V4e: номер блока — из apiBlockIndices, если их столько же, сколько блоков, иначе apiBlockIndex."""
@@ -1247,7 +1337,9 @@ class Normalizer:
         if position == 0 or position + 1 >= len(blocks):
             return True
 
-        between = self._blocks.is_thinking(blocks[position - 1]) and self._blocks.is_thinking(blocks[position + 1])
+        between = self._blocks.is_thinking(
+            blocks[position - 1]
+        ) and self._blocks.is_thinking(blocks[position + 1])
         return not between
 
     def _keeps_api_order(self, entry: AssistantEntry) -> bool:
@@ -1275,7 +1367,10 @@ class Normalizer:
         for name in names:
             if not isinstance(name, str):
                 continue
-            if self._shape.deferred_wire_tools is not None and name not in self._shape.deferred_wire_tools:
+            if (
+                self._shape.deferred_wire_tools is not None
+                and name not in self._shape.deferred_wire_tools
+            ):
                 continue
             surfaced.append(name)
 
@@ -1286,7 +1381,10 @@ class Normalizer:
         if entry.kind in self._USER_ROLE:
             return False
 
-        if entry.kind == AttachmentKind.QUEUED_COMMAND and entry.rendered_role == Role.USER:
+        if (
+            entry.kind == AttachmentKind.QUEUED_COMMAND
+            and entry.rendered_role == Role.USER
+        ):
             return False
 
         return entry.rendered_role != Role.USER
@@ -1311,7 +1409,12 @@ class Normalizer:
         return joined
 
     def _extend_system(
-        self, entry: ApiSystemEntry, text: str, ephemeral: str, name_only: str | None, additions: tuple[str, ...]
+        self,
+        entry: ApiSystemEntry,
+        text: str,
+        ephemeral: str,
+        name_only: str | None,
+        additions: tuple[str, ...],
     ) -> ApiSystemEntry:
         """E8 + a6e: дописывает текст и напоминание со сроком в сообщение role:"system"."""
         base = entry.content
@@ -1335,14 +1438,26 @@ class Normalizer:
         tools = (*entry.tool_additions, *additions)
         if merged == "":
             return replace(
-                entry, content=suffix, ephemeral=True, ephemeral_suffix="", name_only_content=plain, tool_additions=tools
+                entry,
+                content=suffix,
+                ephemeral=True,
+                ephemeral_suffix="",
+                name_only_content=plain,
+                tool_additions=tools,
             )
 
         return replace(
-            entry, content=merged, ephemeral=False, ephemeral_suffix=suffix, name_only_content=plain, tool_additions=tools
+            entry,
+            content=merged,
+            ephemeral=False,
+            ephemeral_suffix=suffix,
+            name_only_content=plain,
+            tool_additions=tools,
         )
 
-    def _absorb_system(self, first: ApiSystemEntry, second: ApiSystemEntry) -> ApiSystemEntry:
+    def _absorb_system(
+        self, first: ApiSystemEntry, second: ApiSystemEntry
+    ) -> ApiSystemEntry:
         """Склейка соседних api_system в sCr."""
         text = second.content
         ephemeral = second.ephemeral_suffix
@@ -1350,7 +1465,9 @@ class Normalizer:
             text = ""
             ephemeral = second.content
 
-        merged = self._extend_system(first, text, ephemeral, second.name_only_content, second.tool_additions)
+        merged = self._extend_system(
+            first, text, ephemeral, second.name_only_content, second.tool_additions
+        )
         return replace(
             merged,
             tool_removals=(*first.tool_removals, *second.tool_removals),
@@ -1376,8 +1493,12 @@ class Normalizer:
 
         content: list[Block] = []
         for block in message.content:
-            if self._blocks.is_text(block) and not self._reminders.wrapped(self._blocks.text(block)):
-                content.append({**block, Key.TEXT: self._reminders.wrap(self._blocks.text(block))})
+            if self._blocks.is_text(block) and not self._reminders.wrapped(
+                self._blocks.text(block)
+            ):
+                content.append(
+                    {**block, Key.TEXT: self._reminders.wrap(self._blocks.text(block))}
+                )
                 continue
             content.append(block)
 
@@ -1386,12 +1507,23 @@ class Normalizer:
     def _escape(self, message: UserEntry) -> UserEntry:
         """cyn: текст, начинающийся с поддельного <system-reminder, получает &lt;."""
         if isinstance(message.content, str):
-            return replace(message, content=self._reminders.escape_forged(message.content))
+            return replace(
+                message, content=self._reminders.escape_forged(message.content)
+            )
 
         content: list[Block] = []
         for block in message.content:
-            if self._blocks.is_text(block) and self._reminders.forged(self._blocks.text(block)):
-                content.append({**block, Key.TEXT: self._reminders.escape_forged(self._blocks.text(block))})
+            if self._blocks.is_text(block) and self._reminders.forged(
+                self._blocks.text(block)
+            ):
+                content.append(
+                    {
+                        **block,
+                        Key.TEXT: self._reminders.escape_forged(
+                            self._blocks.text(block)
+                        ),
+                    }
+                )
                 continue
             content.append(block)
 
@@ -1404,15 +1536,22 @@ class Normalizer:
 
         referenced = False
         for block in message.content:
-            if self._blocks.is_text(block) and self._blocks.text(block).startswith(Marker.TOOL_LOADED):
+            if self._blocks.is_text(block) and self._blocks.text(block).startswith(
+                Marker.TOOL_LOADED
+            ):
                 return message
-            if self._blocks.is_tool_result(block) and self._blocks.has_reference(block.get(Key.CONTENT)):
+            if self._blocks.is_tool_result(block) and self._blocks.has_reference(
+                block.get(Key.CONTENT)
+            ):
                 referenced = True
 
         if not referenced:
             return message
 
-        return replace(message, content=[*message.content, self._blocks.text_block(Marker.TOOL_LOADED)])
+        return replace(
+            message,
+            content=[*message.content, self._blocks.text_block(Marker.TOOL_LOADED)],
+        )
 
     def _strip_references(self, message: UserEntry) -> UserEntry:
         """S0e: без tool search блоки tool_reference из результатов удаляются."""
@@ -1430,7 +1569,10 @@ class Normalizer:
                 continue
             kept: list[Json] = []
             for item in inner:
-                if isinstance(item, dict) and item.get(Key.TYPE) == BlockType.TOOL_REFERENCE:
+                if (
+                    isinstance(item, dict)
+                    and item.get(Key.TYPE) == BlockType.TOOL_REFERENCE
+                ):
                     continue
                 kept.append(item)
             if not kept:
@@ -1529,7 +1671,9 @@ class ToolPairing:
 
             own: list[str] = []
             content = list(self._kept_blocks(entry.content, seen, own))
-            changed = len(content) != len(entry.content) or self._replaced(content, entry.content)
+            changed = len(content) != len(entry.content) or self._replaced(
+                content, entry.content
+            )
             if not content:
                 content = [self._blocks.cited_text(Marker.TOOL_USE_INTERRUPTED)]
 
@@ -1583,7 +1727,9 @@ class ToolPairing:
         if result and isinstance(result[-1], AssistantEntry):
             return entry
 
-        rest = [block for block in entry.content if not self._blocks.is_tool_result(block)]
+        rest = [
+            block for block in entry.content if not self._blocks.is_tool_result(block)
+        ]
         if len(rest) == len(entry.content):
             return entry
 
@@ -1595,7 +1741,9 @@ class ToolPairing:
 
         return replace(entry, content=[self._blocks.text_block(Marker.ORPHANED_RESULT)])
 
-    def _kept_blocks(self, content: Sequence[Block], seen: set[str], own: list[str]) -> Iterator[Block]:
+    def _kept_blocks(
+        self, content: Sequence[Block], seen: set[str], own: list[str]
+    ) -> Iterator[Block]:
         server_results: set[str] = set()
         for block in content:
             if Key.TOOL_USE_ID in block and not self._blocks.is_tool_result(block):
@@ -1608,7 +1756,9 @@ class ToolPairing:
             if self._between_thinking(content, position):
                 yield self._blocks.cited_text(Marker.TOOL_USE_REMOVED)
 
-    def _dropped(self, block: Block, seen: set[str], own: list[str], server_results: set[str]) -> bool:
+    def _dropped(
+        self, block: Block, seen: set[str], own: list[str], server_results: set[str]
+    ) -> bool:
         kind = self._blocks.kind(block)
         block_id = self._blocks.id_of(block, Key.ID)
 
@@ -1628,7 +1778,9 @@ class ToolPairing:
         if position == 0 or position + 1 >= len(content):
             return False
 
-        return self._blocks.is_thinking(content[position - 1]) and self._blocks.is_thinking(content[position + 1])
+        return self._blocks.is_thinking(
+            content[position - 1]
+        ) and self._blocks.is_thinking(content[position + 1])
 
     def _replaced(self, content: Sequence[Block], original: Sequence[Block]) -> bool:
         for kept, source in zip(content, original):
@@ -1637,7 +1789,9 @@ class ToolPairing:
 
         return False
 
-    def _fix_results(self, own: Sequence[str], following: Entry | None) -> UserEntry | None:
+    def _fix_results(
+        self, own: Sequence[str], following: Entry | None
+    ) -> UserEntry | None:
         """Недостающие результаты дополняются заглушками, чужие и повторные удаляются."""
         present: list[str] = []
         duplicate = False
@@ -1682,7 +1836,9 @@ class ToolPairing:
 
         return replace(following, content=merged)
 
-    def _unique_results(self, blocks: Sequence[Block], orphan: set[str]) -> Iterator[Block]:
+    def _unique_results(
+        self, blocks: Sequence[Block], orphan: set[str]
+    ) -> Iterator[Block]:
         taken: set[str] = set()
 
         for block in blocks:
@@ -1700,7 +1856,10 @@ class ToolPairing:
         if kind == BlockType.ADVISOR_TOOL_RESULT:
             return True
 
-        return kind == BlockType.SERVER_TOOL_USE and block.get(Key.NAME) == Marker.ADVISOR_TOOL
+        return (
+            kind == BlockType.SERVER_TOOL_USE
+            and block.get(Key.NAME) == Marker.ADVISOR_TOOL
+        )
 
     def _substantial(self, block: Block) -> bool:
         if self._blocks.is_thinking(block):
@@ -1742,7 +1901,9 @@ class PerTurnConfig:
                     pending = levels[position]
 
         if pending is not None:
-            result.append(ApiSystemEntry(content="", output_config={Key.EFFORT: pending}))
+            result.append(
+                ApiSystemEntry(content="", output_config={Key.EFFORT: pending})
+            )
 
         return result
 
@@ -1797,7 +1958,11 @@ class WireSerializer:
                 messages.append(message)
             if cleared != "":
                 messages.append(
-                    {Key.ROLE: Role.SYSTEM, Key.CONTENT: cleared, Key.CLEAR_AT: Marker.NEXT_USER_MESSAGE}
+                    {
+                        Key.ROLE: Role.SYSTEM,
+                        Key.CONTENT: cleared,
+                        Key.CLEAR_AT: Marker.NEXT_USER_MESSAGE,
+                    }
                 )
 
         return messages, paths
@@ -1829,7 +1994,12 @@ class WireSerializer:
             cleared = scoped
 
         stripped = replace(entry, content=base, ephemeral=False, ephemeral_suffix="")
-        if base != "" or entry.tool_additions or entry.tool_removals or entry.output_config is not None:
+        if (
+            base != ""
+            or entry.tool_additions
+            or entry.tool_removals
+            or entry.output_config is not None
+        ):
             return stripped, cleared
 
         return None, cleared
@@ -1844,14 +2014,19 @@ class WireSerializer:
         if isinstance(entry, AssistantEntry):
             return self._assistant(entry, marked)
 
-        raise AssembleError(f"serializing messages: unexpected entry {type(entry).__name__} after normalization")
+        raise AssembleError(
+            f"serializing messages: unexpected entry {type(entry).__name__} after normalization"
+        )
 
     def _user(self, entry: UserEntry, marked: bool) -> tuple[dict[str, Json], int]:
         """$Go: пробельные текстовые блоки отбрасываются (Eqt), метка — на последнем блоке."""
         if isinstance(entry.content, str):
             if not marked:
                 return {Key.ROLE: Role.USER, Key.CONTENT: entry.content}, -1
-            return {Key.ROLE: Role.USER, Key.CONTENT: [self._blocks.text_block(entry.content)]}, 0
+            return {
+                Key.ROLE: Role.USER,
+                Key.CONTENT: [self._blocks.text_block(entry.content)],
+            }, 0
 
         content: list[Json] = []
         for block in entry.content:
@@ -1868,7 +2043,9 @@ class WireSerializer:
 
         return {Key.ROLE: Role.USER, Key.CONTENT: content}, mark
 
-    def _system(self, entry: ApiSystemEntry, marked: bool) -> tuple[dict[str, Json], int]:
+    def _system(
+        self, entry: ApiSystemEntry, marked: bool
+    ) -> tuple[dict[str, Json], int]:
         """Ветка api_system в vzo и tBo: text, tool_removal, tool_addition, затем суффикс."""
         message: dict[str, Json] = {Key.ROLE: Role.SYSTEM}
         mark = -1
@@ -1912,7 +2089,9 @@ class WireSerializer:
 
         return []
 
-    def _assistant(self, entry: AssistantEntry, marked: bool) -> tuple[dict[str, Json], int]:
+    def _assistant(
+        self, entry: AssistantEntry, marked: bool
+    ) -> tuple[dict[str, Json], int]:
         """BGo: метка — на последнем блоке, если он её допускает."""
         content: list[Json] = list(entry.content)
         mark = -1
@@ -1923,7 +2102,10 @@ class WireSerializer:
         return {Key.ROLE: Role.ASSISTANT, Key.CONTENT: content}, mark
 
     def _tool_change(self, kind: BlockType, name: str) -> Block:
-        return {Key.TYPE: kind, Key.TOOL: {Key.TYPE: BlockType.TOOL_REFERENCE, Key.NAME: name}}
+        return {
+            Key.TYPE: kind,
+            Key.TOOL: {Key.TYPE: BlockType.TOOL_REFERENCE, Key.NAME: name},
+        }
 
     def _blank_text(self, block: Block) -> bool:
         text = block.get(Key.TEXT)
@@ -1957,7 +2139,11 @@ class EntryFactory:
                 content = ""
             preserved, anchor = self._preserved(raw)
             return SystemEntry(
-                uuid=uuid, subtype=self._text(raw, "subtype"), content=content, preserved=preserved, anchor=anchor
+                uuid=uuid,
+                subtype=self._text(raw, "subtype"),
+                content=content,
+                preserved=preserved,
+                anchor=anchor,
             )
 
         if kind == RecordType.ATTACHMENT:
@@ -1987,7 +2173,11 @@ class EntryFactory:
         return self._assistant(number, uuid, raw, message)
 
     def _assistant(
-        self, number: int, uuid: str, raw: Mapping[str, Json], message: Mapping[str, Json]
+        self,
+        number: int,
+        uuid: str,
+        raw: Mapping[str, Json],
+        message: Mapping[str, Json],
     ) -> AssistantEntry:
         content = self._content(number, message)
         if isinstance(content, str):
@@ -2044,7 +2234,9 @@ class EntryFactory:
 
         return tuple(names), self._text(messages, "anchorUuid")
 
-    def _attachment(self, number: int, uuid: str, raw: Mapping[str, Json]) -> AttachmentEntry:
+    def _attachment(
+        self, number: int, uuid: str, raw: Mapping[str, Json]
+    ) -> AttachmentEntry:
         attachment = raw.get("attachment")
         if not isinstance(attachment, dict):
             raise AssembleError(
@@ -2058,7 +2250,9 @@ class EntryFactory:
         if isinstance(recorded, list):
             for item in recorded:
                 if not isinstance(item, dict):
-                    raise AssembleError(f"{self._path}:{number}: rendered expects objects with content, got {item!r}")
+                    raise AssembleError(
+                        f"{self._path}:{number}: rendered expects objects with content, got {item!r}"
+                    )
                 rendered.append(self._content(number, item))
 
         return AttachmentEntry(
@@ -2084,7 +2278,9 @@ class EntryFactory:
         blocks: list[Block] = []
         for block in content:
             if not isinstance(block, dict):
-                raise AssembleError(f"{self._path}:{number}: content block expects an object, got {block!r}")
+                raise AssembleError(
+                    f"{self._path}:{number}: content block expects an object, got {block!r}"
+                )
             blocks.append(block)
 
         return blocks
@@ -2092,7 +2288,9 @@ class EntryFactory:
     def _uuid(self, number: int, raw: Mapping[str, Json]) -> str:
         uuid = raw.get("uuid")
         if not isinstance(uuid, str):
-            raise AssembleError(f"{self._path}:{number}: history record expects uuid as a string, got {uuid!r}")
+            raise AssembleError(
+                f"{self._path}:{number}: history record expects uuid as a string, got {uuid!r}"
+            )
 
         return uuid
 
@@ -2140,13 +2338,21 @@ class SessionShape:
                 continue
             kind = attachment.get(Key.TYPE)
             if kind == AttachmentKind.PROMPT_SNAPSHOT:
-                for key in ("systemTurns", "toolChangeHeader", "reminderFold", "echoWireToolInputs", "keptReminders"):
+                for key in (
+                    "systemTurns",
+                    "toolChangeHeader",
+                    "reminderFold",
+                    "echoWireToolInputs",
+                    "keptReminders",
+                ):
                     if isinstance(attachment.get(key), bool):
                         snapshot[key] = attachment[key]
                 tools = attachment.get("tools")
                 if isinstance(tools, list):
                     listed = Marker.TOOL_SEARCH in self._entry_names(tools)
-            if kind == AttachmentKind.DEFERRED_TOOLS_DELTA and attachment.get("addedNames"):
+            if kind == AttachmentKind.DEFERRED_TOOLS_DELTA and attachment.get(
+                "addedNames"
+            ):
                 announced = True
             if kind == AttachmentKind.DEFERRED_TOOLS_RECORD:
                 has_record = True
@@ -2195,7 +2401,10 @@ class SessionShape:
                 waiting.clear()
                 continue
             attachment = raw.get("attachment")
-            if not isinstance(attachment, dict) or attachment.get(Key.TYPE) != AttachmentKind.DEFERRED_TOOLS_RECORD:
+            if (
+                not isinstance(attachment, dict)
+                or attachment.get(Key.TYPE) != AttachmentKind.DEFERRED_TOOLS_RECORD
+            ):
                 continue
             waiting.update(self._strings(attachment.get("nameOnlyAnnouncements")))
 
@@ -2206,7 +2415,10 @@ class SessionShape:
         before: str | None = None
 
         for number, raw in self._journal.entries():
-            if raw.get(Key.TYPE) != RecordType.ASSISTANT or raw.get("isApiErrorMessage") is True:
+            if (
+                raw.get(Key.TYPE) != RecordType.ASSISTANT
+                or raw.get("isApiErrorMessage") is True
+            ):
                 continue
             effort = raw.get("perTurnEffort")
             if not isinstance(effort, str):
@@ -2244,11 +2456,15 @@ class Assembler:
     SummaryRequestBuilder и сверка.
     """
 
-    def __init__(self, memory: SessionMemory, echo_api_block_order: bool = False) -> None:
+    def __init__(
+        self, memory: SessionMemory, echo_api_block_order: bool = False
+    ) -> None:
         self._memory = memory
         self._factory = EntryFactory(memory.journal.path)
         self._session = SessionShape(memory.journal)
-        self.shape = replace(self._session.shape(), echo_api_block_order=echo_api_block_order)
+        self.shape = replace(
+            self._session.shape(), echo_api_block_order=echo_api_block_order
+        )
         self._normalizers: dict[frozenset[str], Normalizer] = {}
         self._pairing = ToolPairing()
         self._per_turn = PerTurnConfig()
@@ -2269,7 +2485,9 @@ class Assembler:
         try:
             window = self._memory.window_before(line)
         except LoaderError as exc:
-            raise AssembleError(f"restoring history of {self._memory.journal.path} before line {line} failed: {exc}") from exc
+            raise AssembleError(
+                f"restoring history of {self._memory.journal.path} before line {line} failed: {exc}"
+            ) from exc
 
         entries: list[Entry] = []
         for row in window.rows:
@@ -2282,9 +2500,17 @@ class Assembler:
         notes: list[str] = []
         entries = self.entries(self.history_before(moment.line), moment, notes)
         messages, marks = self._serializer.serialize(entries, False, fork_pin)
-        return Assembled(ordinal=moment.ordinal, line=moment.line, messages=messages, marks=marks, notes=notes)
+        return Assembled(
+            ordinal=moment.ordinal,
+            line=moment.line,
+            messages=messages,
+            marks=marks,
+            notes=notes,
+        )
 
-    def entries(self, history: Sequence[Entry], moment: Moment, notes: list[str]) -> list[Entry]:
+    def entries(
+        self, history: Sequence[Entry], moment: Moment, notes: list[str]
+    ) -> list[Entry]:
         """Нормализованный список сообщений перед сериализацией."""
         effort = moment.effort
         entries = self._normalizer_at(moment.line).run(history, notes)
@@ -2298,7 +2524,9 @@ class Assembler:
 
         return self._per_turn.apply(entries, effort)
 
-    def serialize(self, entries: Sequence[Entry], skip_cache_write: bool) -> tuple[list[dict[str, Json]], list[MarkPath]]:
+    def serialize(
+        self, entries: Sequence[Entry], skip_cache_write: bool
+    ) -> tuple[list[dict[str, Json]], list[MarkPath]]:
         return self._serializer.serialize(entries, skip_cache_write, False)
 
     def _normalizer_at(self, line: int) -> Normalizer:

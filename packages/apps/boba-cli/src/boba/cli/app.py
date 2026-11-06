@@ -864,6 +864,7 @@ class AgentProcess:
         self._env = env
         self._cwd = cwd
         self._settings = Settings(arguments, env, home, cwd)
+        self._postgres = PostgresBuilder(env)
         self._streams = StdioStreams(stdin, output_fd)
         self._stop = stop
         self._environment = Environment(env)
@@ -976,7 +977,7 @@ class AgentProcess:
         """
         history = settings.history
         if isinstance(history, PostgresHistorySettings):
-            postgres = PostgresBuilder(self._env).config(history)
+            postgres = self._postgres.config(history)
             pool = await AsyncPostgresPool.get(postgres)
             locks = SessionLocks(postgres)
             store = PostgresHistoryStore(
@@ -996,7 +997,8 @@ class AgentProcess:
         if settings.skills_dir is None:
             return ()
 
-        return SkillsDir(self._cwd / settings.skills_dir).read()
+        directory = SkillsDir(self._cwd / settings.skills_dir)
+        return directory.read()
 
 
 async def main(argv: Sequence[str] | None = None) -> None:
@@ -1007,7 +1009,8 @@ async def main(argv: Sequence[str] | None = None) -> None:
     if argv is None:
         argv = sys.argv[1:]
 
-    invocation = ArgumentParser().parse(argv)
+    parser = ArgumentParser()
+    invocation = parser.parse(argv)
     if isinstance(invocation, ServeInvocation):
         if invocation.command is Command.MIGRATE:
             from boba.cli.serve import ServeConfig  # noqa: PLC0415
@@ -1017,9 +1020,10 @@ async def main(argv: Sequence[str] | None = None) -> None:
             )
 
             try:
-                await ApplicationMigrations(
+                migrations = ApplicationMigrations(
                     schema=ConfigSchema(ServeConfig, values=("auth",))
-                ).run(
+                )
+                await migrations.run(
                     invocation.config,
                     "boba.cli",
                     options=invocation.migration,
@@ -1042,7 +1046,8 @@ async def main(argv: Sequence[str] | None = None) -> None:
 
     if invocation.command is Command.SELF_CHECK:
         try:
-            checked = PackageDataCheck().run()
+            package_data = PackageDataCheck()
+            checked = package_data.run()
         except PackageDataError as exc:
             raise SystemExit(str(exc)) from exc
 
@@ -1050,14 +1055,17 @@ async def main(argv: Sequence[str] | None = None) -> None:
         return
 
     if invocation.command is Command.SETTINGS_SCHEMA:
-        document = json.dumps(SettingsSchema().document(), indent=2, ensure_ascii=False)
+        schema = SettingsSchema()
+        document = json.dumps(schema.document(), indent=2, ensure_ascii=False)
         sys.stdout.write(f"{document}\n")
         return
 
     if invocation.command is Command.INTERACTIVE:
-        InteractiveMode().refuse()
+        interactive = InteractiveMode()
+        interactive.refuse()
 
-    installed = Installed().version()
+    package = Installed()
+    installed = package.version()
     output_fd = os.dup(sys.stdout.fileno())
     os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
 

@@ -73,6 +73,22 @@ async def fake_sleep(
 
 
 @tool
+async def fake_gate(
+    marker: Annotated[str, Field(min_length=1, description="Файл с pid тела")],
+    release: Annotated[str, Field(min_length=1, description="Файл разрешения выхода")],
+) -> MarkdownResult:
+    """Ждёт явного разрешения теста, сохраняя идентичность вызова и процесса."""
+    marker_path = Path(marker)
+    release_path = Path(release)
+    marker_path.write_text(str(os.getpid()), encoding="utf-8")
+    async with asyncio.timeout(60):
+        while not release_path.exists():
+            await asyncio.sleep(0.02)
+
+    return MarkdownResult(text="released")
+
+
+@tool
 async def fake_query(
     sql: Annotated[
         str,
@@ -86,7 +102,7 @@ async def fake_query(
 
 
 TOOLS: Final = ToolMain.toolset(
-    fake_whoami, fake_scope, fake_progress, fake_sleep, fake_query
+    fake_whoami, fake_scope, fake_progress, fake_sleep, fake_gate, fake_query
 )
 
 PLUGIN: Final = ToolPlugin(id="fake_caller", tools=TOOLS)

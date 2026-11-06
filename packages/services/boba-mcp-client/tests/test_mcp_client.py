@@ -1532,9 +1532,9 @@ class TestSignInAsTheUser:
             await servers.stop()
 
         assert described.result.cache_scope == "public"
-        assert described.result.ttl_ms > 0
+        assert described.result.ttl_ms == 0
         assert wide_tools.cache_scope == "private"
-        assert wide_tools.ttl_ms > 0
+        assert wide_tools.ttl_ms == 0
         wide_names = [tool.name for tool in wide_tools.tools]
         weak_names = [tool.name for tool in weak_tools.tools]
         assert "fake_progress" in wide_names

@@ -18,7 +18,6 @@ from __future__ import annotations
 import json
 import os
 import signal
-import sys
 import time
 from collections.abc import Callable, Iterator, Mapping
 from http import HTTPStatus
@@ -588,9 +587,7 @@ class ServiceStand:
     MODEL: ClassVar[str] = "fake-model-general"
     ROLES: ClassVar[tuple[str, ...]] = ("ADM", "DEV")
 
-    def __init__(
-        self, process_config: AppConfig, stand: Stand, llm_port: int
-    ) -> None:
+    def __init__(self, process_config: AppConfig, stand: Stand, llm_port: int) -> None:
         listen = StandPorts().free()
         self.proxy = FaultProxy(listen)
         self._address = ServeAddress(listen=listen, public=self.proxy.port)
@@ -669,7 +666,10 @@ def process_stand(look_stands: LookStand, faulty: FaultyServer) -> StandProcess:
 
 @pytest.fixture(scope="module")
 def service(
-    process_config: AppConfig, stand: Stand, look_llm_port: int
+    process_config: AppConfig,
+    stand: Stand,
+    look_llm_port: int,
+    agent_history_storage: None,
 ) -> Iterator[ServiceStand]:
     served = ServiceStand(process_config, stand, look_llm_port)
     served.serve.start()
@@ -849,7 +849,7 @@ def test_agent_start_look(
 
     silent = LookAgentShape(
         process={
-            "command": f"{sys.executable} -c 'import time; time.sleep(600)'",
+            "command": "python -c 'import time; time.sleep(600)'",
             "args": [],
         },
         timeouts_sec=(8.0, 8.0),

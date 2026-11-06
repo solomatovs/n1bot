@@ -56,9 +56,7 @@ async def store(
     tool_service: ToolService,
     app_config: AppConfig,
 ) -> ConnectionStore:
-    built = await tool_service.catalog(
-        pool, UsersTable(pool, app_config.db_schema)
-    )
+    built = await tool_service.catalog(pool, UsersTable(pool, app_config.db_schema))
     await RoleSeed(built).add([ROLE])
     return built
 
@@ -107,9 +105,7 @@ class Session:
     users: ClassVar[UsersTable | None] = None
 
     @classmethod
-    async def user(
-        cls, layer: PostgresDataLayer, identifier: str
-    ) -> PersistedUser:
+    async def user(cls, layer: PostgresDataLayer, identifier: str) -> PersistedUser:
         identity = UserIdentity.model_validate(
             identifier if ":" in identifier else f"corporate:{identifier}"
         )

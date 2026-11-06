@@ -198,9 +198,7 @@ async def test_own_server_restarts_all_user_agents_and_records_delta(
     await processes.await_thread(tab.thread_id, other_than=first_pid)
     await remote_processes.await_thread(remote.thread_id, other_than=second_pid)
     config = bind(
-        StandApp.AID.config_files()
-        .loader(app.config.files.paths(StandApp.AID))
-        .load(),
+        StandApp.AID.config_files().loader(app.config.files.paths(StandApp.AID)).load(),
         "app",
         AppConfig,
     )
@@ -240,9 +238,7 @@ async def test_sql_role_grant_appears_only_in_a_new_chat(
     await tab.send(f"before role grant {ScenarioName.ANSWER.value}")
     await tab.wait_task_end()
     config = bind(
-        StandApp.AID.config_files()
-        .loader(app.config.files.paths(StandApp.AID))
-        .load(),
+        StandApp.AID.config_files().loader(app.config.files.paths(StandApp.AID)).load(),
         "app",
         AppConfig,
     )

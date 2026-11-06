@@ -12,9 +12,16 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Sequence
 
-from boba.prompt_assembly.entries import ApiSystemEntry, AssistantEntry, Block, BlockKit, Entry, UserEntry, WireShape
+from boba.prompt_assembly.entries import (
+    ApiSystemEntry,
+    AssistantEntry,
+    Block,
+    BlockKit,
+    Entry,
+    UserEntry,
+    WireShape,
+)
 from boba.prompt_assembly.records import BlockType, JsText, Json, Key
-
 
 
 class CacheKind(StrEnum):
@@ -40,7 +47,9 @@ class CacheMarks:
         self._blocks = BlockKit()
         self._js = JsText()
 
-    def choose(self, entries: Sequence[Entry], skip_cache_write: bool, fork_pin: bool) -> list[int]:
+    def choose(
+        self, entries: Sequence[Entry], skip_cache_write: bool, fork_pin: bool
+    ) -> list[int]:
         tail = self._step_back(entries, len(entries) - 1)
         if skip_cache_write:
             tail = self._step_back(entries, tail - 1)
@@ -100,7 +109,9 @@ class CacheMarks:
 
         return not self.stampable(entry.content[-1])
 
-    def _markable_system(self, entries: Sequence[Entry], position: int, tail: int) -> bool:
+    def _markable_system(
+        self, entries: Sequence[Entry], position: int, tail: int
+    ) -> bool:
         """Ce: последний api_system с непустым текстом, без эфемерных user между ним и хвостом."""
         entry = entries[position]
         if not isinstance(entry, ApiSystemEntry) or entry.ephemeral:

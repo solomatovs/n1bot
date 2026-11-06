@@ -78,9 +78,7 @@ async def store(
     tool_service: ToolService,
     app_config: AppConfig,
 ) -> ConnectionStore:
-    built = await tool_service.catalog(
-        pool, UsersTable(pool, app_config.db_schema)
-    )
+    built = await tool_service.catalog(pool, UsersTable(pool, app_config.db_schema))
     await RoleSeed(built).add([ROLE])
     return built
 

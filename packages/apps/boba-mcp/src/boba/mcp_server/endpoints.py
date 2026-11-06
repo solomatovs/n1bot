@@ -2,7 +2,7 @@
 
 Ошибки:
 EndpointStoreError — каталог недоступен или строка не проходит валидацию;
-    McpHost прекращает запуск, сохраняя причину ошибки.
+    запуск или reload отказывает, сохраняя причину ошибки.
 """
 
 from collections.abc import Sequence
@@ -24,22 +24,38 @@ class McpEndpointStore(PostgresTable):
     def _failure(self, action: str, exc: Exception) -> EndpointStoreError:
         return EndpointStoreError(self._detail(action, exc))
 
-    async def list(self) -> Sequence[McpEndpoint]:
+    async def endpoint_list(self) -> Sequence[McpEndpoint]:
         query = (
             self._query()
             .add("""
-            select e.id, e.prefix_url, e.title, e.description, e.instructions,
-                   e.enabled, e.tools, e.overrides, e.prompts,
-                   coalesce(array_agg(distinct r.role)
-                       filter (where r.role is not null), '{{}}') as roles
-            from {schema}.mcp_endpoints e
-            left join {schema}.grants g
-                on g.src_kind = 'mcp_endpoints' and g.src_kind_id = e.id
-                and g.tgt_kind = 'roles'
-            left join {schema}.roles r on r.id = g.tgt_kind_id
-            where e.enabled
-            group by e.id
-            order by e.prefix_url
+            select
+                e.id,
+                e.prefix_url,
+                e.title,
+                e.description,
+                e.instructions,
+                e.enabled,
+                e.tools,
+                e.overrides,
+                e.prompts,
+                coalesce(
+                    array_agg(distinct r.role) filter (where r.role is not null),
+                    '{{}}'
+                ) as roles
+            from
+                {schema}.mcp_endpoints e
+                left join {schema}.grants g on
+                        g.src_kind = 'mcp_endpoints'
+                    and g.src_kind_id = e.id
+                    and g.tgt_kind = 'roles'
+                left join {schema}.roles r on
+                        g.tgt_kind_id = r.id
+            where
+                e.enabled
+            group by
+                e.id
+            order by
+                e.prefix_url
         """)
             .build()
         )

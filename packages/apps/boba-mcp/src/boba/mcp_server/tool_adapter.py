@@ -153,7 +153,9 @@ class McpTool(Tool):
     _failures: FailurePacker = PrivateAttr()
 
     def __init__(self, card: ToolCard, server: ToolServer) -> None:
-        annotations = McpToolStubs().annotations_of(card.hints)
+        stubs = McpToolStubs()
+        annotations = stubs.annotations_of(card.hints)
+        views = CallViews()
         output: dict[str, Any] | None = None
         if card.output is not None:
             output = dict(card.output)
@@ -161,7 +163,7 @@ class McpTool(Tool):
         super().__init__(
             name=card.name,
             description=card.description,
-            parameters=CallViews().typed(card.parameters, card.views),
+            parameters=views.typed(card.parameters, card.views),
             output_schema=output,
             annotations=annotations,
         )

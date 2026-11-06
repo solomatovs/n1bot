@@ -190,7 +190,8 @@ class ToolRunLogger(CallHooks[_CallScope]):
 
     @staticmethod
     def _elapsed_ms(started: float) -> int:
-        return int((time.monotonic() - started) * 1000)
+        """Измеренный вызов — минимум 1 мс; 0 зарезервирован для отсутствия замера."""
+        return max(1, int((time.monotonic() - started) * 1000))
 
     @classmethod
     def _render_args(cls, kwargs: dict[str, object], not_logged: frozenset[str]) -> str:

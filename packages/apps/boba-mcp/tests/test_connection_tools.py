@@ -63,9 +63,7 @@ def catalog(store: ConnectionStore) -> GrantedConnections:
     return GrantedConnections(store)
 
 
-def _subject(
-    roles: frozenset[str] = frozenset(), login: str = "tester"
-) -> Subject:
+def _subject(roles: frozenset[str] = frozenset(), login: str = "tester") -> Subject:
     identity = UserIdentity(realm="test", login=Login(login))
     return Subject.of_user(uuid4(), identity, roles, "test")
 

@@ -19,7 +19,7 @@ resources/read, итог несёт ссылки на каналы (JournalUris)
 загрузки файла отдаёт операция file_upload (FileUploadTool), видная только
 интерфейсу клиента. Клиентов сервер принимает обеих эпох — server/discover
 (2026-07-28) и initialize прежних редакций — и объявляет возможности такими,
-какие у него на их проводе есть (McpServer.on_discover, on_initialize).
+какие у него на их проводе есть (EndpointHandshake.on_discover, on_initialize).
 
 Ошибки:
 наружу уходит только итог вызова — сбой любого вида возвращается
@@ -54,6 +54,7 @@ from fastmcp.tools import Tool
 from fastmcp.tools.base import ToolResult
 from mcp.server.apps import EXTENSION_ID as APPS_EXTENSION
 from mcp.server.caching import CacheHint
+from mcp.server.lowlevel import Server
 from mcp.server.subscriptions import ResourceUpdated, SubscriptionBus
 from mcp.shared.jsonrpc_dispatcher import progress_token_from_params
 from mcp_types.version import MODERN_PROTOCOL_VERSIONS
@@ -68,7 +69,7 @@ from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import BaseRoute, Mount, Route
-from starlette.types import ASGIApp, Receive, Send
+from starlette.types import Receive, Send
 from starlette.types import Scope as AsgiScope
 
 from boba.cancellation import RunCancellation, StopReason, ToolStopped
@@ -98,7 +99,6 @@ from boba.mcp_server.files import (
 )
 from boba.mcp_server.prompts import (
     EndpointPrompts,
-    FilePrompt,
     FilePrompts,
 )
 from boba.mcp_server.schemas import DescribedTool, EndpointSchemas
@@ -154,7 +154,7 @@ logger = logging.getLogger(__name__)
 class EndpointTools(CallerServers):
     """Публикует выбранные инструменты и проверяет доступ ко всему endpoint'у.
 
-    McpServer собирает карточки один раз. Порт исполнения содержит только
+    McpEndpoints собирает карточки один раз. Порт исполнения содержит только
     выбранные инструменты; встроенные операции проходят ту же политику.
     """
 
@@ -166,9 +166,7 @@ class EndpointTools(CallerServers):
         params: ConnectionParams,
         operations: Sequence[Tool],
     ) -> None:
-        self._subjects = subjects
-        self._endpoint = endpoint
-        self._schemas = EndpointSchemas()
+        schemas = EndpointSchemas()
         selected = frozenset(endpoint.tools)
         complete = registry.server(registry.tools, DirectCalls())
         available = {card.name for card in complete.tools()}
@@ -198,20 +196,26 @@ class EndpointTools(CallerServers):
                 "require streaming tools in the same endpoint"
             )
 
-        self._features = dict(port.features())
-        nested = CallDag().feature()
+        features = dict(port.features())
+        dags = CallDag()
+        nested = dags.feature()
         if nested.tool not in selected:
-            self._features.pop(nested.ID, None)
+            features.pop(nested.ID, None)
 
-        self._tools: dict[str, Tool] = {}
+        selected_tools: dict[str, Tool] = {}
         for name in endpoint.tools:
             tool = tools[name]
             override = endpoint.overrides.get(name)
             if override is not None:
-                schema = self._schemas.effective(endpoint.prefix_url, tool, override)
+                schema = schemas.effective(endpoint.prefix_url, tool, override)
                 tool = DescribedTool(tool, schema)
 
-            self._tools[name] = tool
+            selected_tools[name] = tool
+
+        self._subjects = subjects
+        self._endpoint = endpoint
+        self._features = features
+        self._tools = selected_tools
 
     def features(self) -> Mapping[str, Mapping[str, object]]:
         return self._features
@@ -520,7 +524,7 @@ class CallProgress(StreamFeed):
 
 class FileUploadRequest(BaseModel):
     """Аргументы file_upload: имя файла в каталоге вложений области. Схему
-    вызова и проверку аргументов FileUploadTool собирает из неё с
+    вызова и проверку аргументов FileUploadSchema собирает из неё с
     параметром области вызова (CallFields.scoped)."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -542,13 +546,10 @@ class FileUploadAddress(BaseModel):
     workspace_path: str
 
 
-class FileUploadTool(Tool):
-    """Операция сервиса file_upload: адрес, по которому клиент загружает файл.
+class FileUploadSchema:
+    """Общее объявление file_upload для экспорта и исполняемой операции.
 
-    Создаётся сервером endpoint'а рядом с FileRoutes. Байты файла вызовом
-    MCP не передаются: модель получает адрес и способ отправки, а клиент
-    шлёт файл потоком на маршрут файлов тем же токеном входа. Запуска
-    области операция не открывает и в предел запусков не входит.
+    Создаёт модель аргументов и карточку FastMCP без маршрутов и авторизации.
     """
 
     NAME: ClassVar[str] = "file_upload"
@@ -561,6 +562,28 @@ class FileUploadTool(Tool):
         "в workspace.\n"
     )
 
+    def __init__(self) -> None:
+        fields = CallFields()
+        self.request = fields.scoped(FileUploadRequest)
+        app_config = AppConfig(visibility=["app"])
+        operation_meta = {"ui": app_config_to_meta_dict(app_config)}
+        self.tool = Tool(
+            name=self.NAME,
+            description=self.DESCRIPTION,
+            parameters=self.request.model_json_schema(),
+            meta=operation_meta,
+        )
+
+
+class FileUploadTool(Tool):
+    """Операция file_upload выдаёт адрес загрузки в FileRoutes текущего пользователя.
+
+    Создаётся EndpointResources. Байты передаются отдельным HTTP PUT;
+    операция не открывает запуск и не занимает общий лимит вызовов.
+    """
+
+    NAME: ClassVar[str] = FileUploadSchema.NAME
+
     _request: type[BaseModel] = PrivateAttr()
     _routes: FileRoutes = PrivateAttr()
     _subjects: TokenSubjects = PrivateAttr()
@@ -568,14 +591,9 @@ class FileUploadTool(Tool):
     _replies: McpReplies = PrivateAttr()
 
     def __init__(self, routes: FileRoutes, subjects: TokenSubjects) -> None:
-        scoped = CallFields().scoped(FileUploadRequest)
-        super().__init__(
-            name=self.NAME,
-            description=self.DESCRIPTION,
-            parameters=scoped.model_json_schema(),
-            meta=dict(McpEndpoints.OPERATION_META),
-        )
-        self._request = scoped
+        schema = FileUploadSchema()
+        super().__init__(**schema.tool.model_dump())
+        self._request = schema.request
         self._routes = routes
         self._subjects = subjects
         self._scopes = CallScopes()
@@ -604,7 +622,9 @@ class FileUploadTool(Tool):
             f"(same bearer token); tools read it at {key.in_workspace()}"
         )
         answer = FileUploadAddress(
-            method="PUT", path=address, workspace_path=key.in_workspace()
+            method="PUT",
+            path=address,
+            workspace_path=key.in_workspace(),
         )
 
         return self._replies.answered(text, answer)
@@ -690,7 +710,11 @@ class CallContextMiddleware(Middleware):
         shape: ProgressShape = OwnProgress()
         if context.message.name == CallDag.WORKFLOW:
             shape = NodeProgress(
-                DagNode(key=run_id, tool=context.message.name, args=dict(arguments))
+                DagNode(
+                    key=run_id,
+                    tool=context.message.name,
+                    args=dict(arguments),
+                )
             )
 
         progress = CallProgress(
@@ -825,118 +849,94 @@ class RunLimitMiddleware(Middleware):
         return self._replies.refused(tool, failure)
 
 
-class McpServer(Middleware):
-    """Собирает один endpoint из каталога, инструментов runtime и общего входа.
+class EndpointResources:
+    """Владелец файлов, журналов и подписок одного endpoint'а поколения.
 
-    Создаётся McpEndpoints. Набор инструментов и промптов фиксирован до
-    перезапуска; права ресурса проверяет OAuth. Middleware объявляет
-    возможности протокола, файлы и журналы текущего пользователя.
+    McpEndpoints создаёт ресурсы и передаёт те же subjects, bus и listed
+    исполнителям. McpServer подключает их маршруты и провайдеры к FastMCP.
     """
 
-    NAME: ClassVar[str] = "boba-mcp"
-    HINT_TTL_MS: ClassVar[int] = 300_000
-    """Срок свежести описания и списка инструментов: реестр собран на старте
-    процесса, и меняет их только перезапуск сервиса."""
-
-    def __init__(  # noqa: PLR0913 — сервер собирается всеми своими входами
+    def __init__(
         self,
-        registry: ToolRegistry,
-        runs: Runs,
-        journals: CallJournals,
-        auth: AuthProvider,
-        profile: str,
         endpoint: McpEndpoint,
-        params: ConnectionParams,
-        limits: RunLimitMiddleware,
+        journals: CallJournals,
         storage: StorageConfig,
         files: StorageClient,
-        path: str,
         published: str,
-        prompts: Sequence[FilePrompt],
+    ) -> None:
+        path = endpoint.prefix_url
+        self.subjects = TokenSubjects(path)
+        self.bus = CallerBus(self.subjects)
+        self.listed = OpenJournals(self.bus)
+        self.journaled = journals.active()
+        callers = RouteCallers(self.subjects, path)
+        self._files = FileRoutes(files, journals, callers, path, published)
+        self._journals = JournalRoutes(
+            journals, callers, self.subjects, storage, path, published, self.bus
+        )
+        self._listing = JournalListing(self.listed, self.subjects)
+        self.upload = FileUploadTool(self._files, self.subjects)
+        self._features: dict[str, Mapping[str, object]] = {}
+
+        if self.upload.name in endpoint.tools:
+            feature = self._files.feature(self.upload.name)
+            self._features[FilesFeature.ID] = feature.settings()
+
+        if self.journaled:
+            journal = JournalFeature(
+                path=self._journals.path(), resource=JournalRoutes.TEMPLATE
+            )
+            self._features[JournalFeature.ID] = journal.settings()
+
+    def features(self) -> Mapping[str, Mapping[str, object]]:
+        return self._features
+
+    def providers(self) -> Sequence[Provider]:
+        if not self.journaled:
+            return ()
+
+        return (self._listing,)
+
+    def install(self, server: FastMCP, lowlevel: Server[Any]) -> None:
+        self._files.install(server)
+
+        if not self.journaled:
+            return
+
+        self._journals.install(server, lowlevel)
+
+    def end_subscriptions(self) -> None:
+        self._journals.close()
+
+
+class EndpointHandshake(Middleware):
+    """Объявляет описание и возможности endpoint'а при discover и initialize.
+
+    McpServer передаёт подготовленные объявления; middleware не собирает
+    исполнителей, маршруты или хранилища.
+    """
+
+    HINT_TTL_MS: ClassVar[int] = 0
+    """После reload следующий запрос клиента должен получить свежий каталог."""
+
+    def __init__(
+        self,
+        endpoint: McpEndpoint,
+        features: Mapping[str, Mapping[str, object]],
+        *,
+        journaled: bool,
     ) -> None:
         self._name = endpoint.title
         self._description = endpoint.description
         self._instructions = endpoint.instructions
-        self._prompts = FilePrompts(prompts)
-        self._prompted = bool(prompts)
-        self._auth = auth
-        self._subjects = TokenSubjects(profile)
-        self._limits = limits
-        callers = RouteCallers(self._subjects, profile)
-        bus = CallerBus(self._subjects)
-        listed = OpenJournals(bus)
-        self._files = FileRoutes(files, journals, callers, path, published)
-        self._journal_files = JournalRoutes(
-            journals, callers, self._subjects, storage, path, published, bus
-        )
-        self._listing = JournalListing(listed, self._subjects)
-        upload = FileUploadTool(self._files, self._subjects)
-        self._tools = EndpointTools(
-            registry, self._subjects, endpoint, params, [upload]
-        )
-        self._features = {
-            key: dict(value) for key, value in self._tools.features().items()
-        }
+        self._prompted = bool(endpoint.prompts)
+        self._journaled = journaled
+        self._features = {}
+        for key, value in features.items():
+            self._features[key] = dict(value)
         self._features[ScopeFeature.ID] = CallFields().feature().settings()
-        if upload.name in endpoint.tools:
-            self._features[FilesFeature.ID] = self._files.feature(
-                upload.name
-            ).settings()
         commands = CommandsFeature(version=CommandsVersion.V2026_10_24)
         self._features[CommandsFeature.ID] = commands.settings()
-        self._journaled = journals.active()
-        if self._journaled:
-            journal = JournalFeature(
-                path=self._journal_files.path(), resource=JournalRoutes.TEMPLATE
-            )
-            self._features[JournalFeature.ID] = journal.settings()
-
-        self._provider = McpToolProvider(self._tools)
-        self._contexts = CallContextMiddleware(
-            runs, journals, self._subjects, McpEndpoints.OPERATIONS, bus, listed
-        )
-
-    def tool_schemas(self) -> Mapping[str, Mapping[str, object]]:
-        exported: dict[str, Mapping[str, object]] = {}
-        schemas = EndpointSchemas()
-        for name, tool in self._tools.described().items():
-            exported[name] = {
-                "mcp": tool.to_mcp_tool().model_dump(
-                    mode="json", by_alias=True, exclude_none=True
-                ),
-                "override": schemas.model_schema(tool.parameters),
-            }
-
-        return exported
-
-    def mcp(self) -> FastMCP:
-        providers: list[Provider] = [self._provider]
-        if self._journaled:
-            providers.append(self._listing)
-
-        if self._prompted:
-            providers.append(self._prompts)
-
-        server = FastMCP(
-            self._name,
-            instructions=self._instructions,
-            auth=self._auth,
-            providers=providers,
-            middleware=[self, self._limits, self._contexts],
-            dereference_schemas=False,
-        )
-        # сбой списка инструментов — ошибка, а не «у вызывающего нет инструментов»
-        server.provider_error_strategy = "raise"
-        # подсказка fastmcp одна на все методы, а журналы свежими не бывают
-        server._mcp_server.cache_hints = {
-            "tools/list": CacheHint(ttl_ms=self.HINT_TTL_MS, scope="private")
-        }
-        self._files.install(server)
-        if self._journaled:
-            # закрытое имя fastmcp: спец-методы MCP в ServerExtension запрещены
-            self._journal_files.install(server, server._mcp_server)
-
-        return server
 
     async def on_discover(
         self,
@@ -947,6 +947,7 @@ class McpServer(Middleware):
         MCP Apps, по которому операции сервиса видны только интерфейсу."""
         extensions: dict[str, dict[str, Any]] = {APPS_EXTENSION: {}}
         extensions.update(self._features)
+
         capabilities = self._capabilities(listened=True)
 
         return mt.DiscoverResult(
@@ -991,7 +992,8 @@ class McpServer(Middleware):
         resources: mt.ResourcesCapability | None = None
         if self._journaled:
             resources = mt.ResourcesCapability(
-                subscribe=listened, list_changed=listened
+                subscribe=listened,
+                list_changed=listened,
             )
 
         prompts: mt.PromptsCapability | None = None
@@ -1004,26 +1006,82 @@ class McpServer(Middleware):
             resources=resources,
         )
 
-    def close(self) -> None:
-        """Штатный конец потоков subscriptions/listen endpoint'а."""
-        self._journal_files.close()
+
+class McpServer:
+    """Собирает FastMCP из готовых инструментов, ресурсов и middleware endpoint'а.
+
+    McpEndpoints владеет экземпляром на протяжении одного поколения.
+    Здесь сосредоточена настройка FastMCP и доступ к его low-level серверу.
+    """
+
+    def __init__(  # noqa: PLR0913 — явные компоненты сервера endpoint'а
+        self,
+        endpoint: McpEndpoint,
+        auth: AuthProvider,
+        tools: EndpointTools,
+        resources: EndpointResources,
+        contexts: CallContextMiddleware,
+        limits: RunLimitMiddleware,
+    ) -> None:
+        features: dict[str, Mapping[str, object]] = {}
+        features.update(tools.features())
+        features.update(resources.features())
+
+        providers: list[Provider] = [McpToolProvider(tools)]
+        providers.extend(resources.providers())
+        if endpoint.prompts:
+            prompts = EndpointPrompts().prompts(endpoint.prompts)
+            providers.append(FilePrompts(prompts))
+
+        handshake = EndpointHandshake(
+            endpoint,
+            features,
+            journaled=resources.journaled,
+        )
+
+        server = FastMCP(
+            endpoint.title,
+            instructions=endpoint.instructions,
+            auth=auth,
+            providers=providers,
+            middleware=[
+                handshake,
+                limits,
+                contexts,
+            ],
+            dereference_schemas=False,
+        )
+        server.provider_error_strategy = "raise"
+
+        lowlevel = server._mcp_server
+        lowlevel.cache_hints = {
+            "tools/list": CacheHint(
+                ttl_ms=EndpointHandshake.HINT_TTL_MS, scope="private"
+            )
+        }
+        resources.install(server, lowlevel)
+        self._resources = resources
+        self._server = server
+
+    def mcp(self) -> FastMCP:
+        return self._server
+
+    def end_subscriptions(self) -> None:
+        self._resources.end_subscriptions()
 
 
 class EndpointApp:
     """Приложение одного endpoint'а MCP и путь, на котором оно отвечает."""
 
-    def __init__(
-        self, path: str, app: ASGIApp, lifespan: StarletteWithLifespan
-    ) -> None:
+    def __init__(self, path: str, app: StarletteWithLifespan) -> None:
         self.path = path
         self.app = app
-        self.lifespan = lifespan
 
     def serves(self, path: str) -> bool:
         if path == self.path:
             return True
 
-        return path.startswith(f"{self.path}/")
+        return path.startswith(f"{self.path.rstrip('/')}/")
 
 
 class McpEndpoints:
@@ -1040,12 +1098,6 @@ class McpEndpoints:
     OPERATIONS: ClassVar[frozenset[str]] = frozenset({FileUploadTool.NAME})
     """Операции сервиса: запуска не открывают и в предел запусков не входят."""
 
-    OPERATION_META: ClassVar[Mapping[str, Any]] = {
-        "ui": app_config_to_meta_dict(AppConfig(visibility=["app"]))
-    }
-    """_meta операций сервиса: их зовёт интерфейс клиента, а не модель
-    (visibility ["app"] расширения MCP Apps)."""
-
     def __init__(  # noqa: PLR0913 — endpoint'ы собираются всеми входами процесса
         self,
         registry: ToolRegistry,
@@ -1054,44 +1106,56 @@ class McpEndpoints:
         auth: ServiceAuth,
         endpoints: Sequence[McpEndpoint],
         params: ConnectionParams,
-        limits: RunLimits,
+        limits: RunLimitMiddleware,
         storage: StorageConfig,
         files: StorageClient,
     ) -> None:
-        self._auth = auth
-        self._prompts = EndpointPrompts()
-        self._discovery: list[BaseRoute] = []
-        self._endpoints: list[EndpointApp] = []
-        self._servers: list[McpServer] = []
-        slots = RunLimitMiddleware(limits, self.OPERATIONS)
+        discovery: list[BaseRoute] = []
+        endpoint_apps: list[EndpointApp] = []
+        servers: list[McpServer] = []
+        published = auth.published()
         ordered = sorted(
             endpoints, key=lambda endpoint: len(endpoint.prefix_url), reverse=True
         )
         for endpoint in ordered:
             path = endpoint.prefix_url
-            self._check_route(path)
+            self._error_if_route_reserved(path)
+
             provider = auth.resource(path, [path])
-            server = McpServer(
+            resources = EndpointResources(endpoint, journals, storage, files, published)
+            tools = EndpointTools(
                 registry,
-                runs,
-                journals,
-                provider,
-                path,
+                resources.subjects,
                 endpoint,
                 params,
-                slots,
-                storage,
-                files,
-                path,
-                auth.published(),
-                self._prompts.prompts(endpoint.prompts),
+                [resources.upload],
             )
-            served = server.mcp().http_app(path=path, stateless_http=True)
-            self._servers.append(server)
-            self._endpoints.append(EndpointApp(path, served, served))
-            self._discovery.extend(provider.get_well_known_routes(path))
+            contexts = CallContextMiddleware(
+                runs,
+                journals,
+                resources.subjects,
+                self.OPERATIONS,
+                resources.bus,
+                resources.listed,
+            )
 
-    def _check_route(self, path: str) -> None:
+            server = McpServer(endpoint, provider, tools, resources, contexts, limits)
+            served = server.mcp().http_app(path=path, stateless_http=True)
+            servers.append(server)
+            endpoint_apps.append(EndpointApp(endpoint.path_under(published), served))
+            discovery.extend(provider.get_well_known_routes(path))
+
+        service_routes: list[BaseRoute] = [
+            Route(self.HEALTH, self._health, methods=["GET"]),
+            Mount("/", app=self._dispatch),
+        ]
+        routes = auth.app_routes(discovery, service_routes)
+
+        self._servers = servers
+        self._endpoints = endpoint_apps
+        self._app = Starlette(routes=routes, lifespan=self._lifespan)
+
+    def _error_if_route_reserved(self, path: str) -> None:
         reserved = (
             self.HEALTH,
             "/login",
@@ -1115,7 +1179,7 @@ class McpEndpoints:
         """Штатный конец потоков subscriptions/listen всех endpoint'ов: при
         остановке процесса клиенты получают итог подписки, а не обрыв."""
         for server in self._servers:
-            server.close()
+            server.end_subscriptions()
 
     def paths(self) -> Sequence[str]:
         paths: list[str] = []
@@ -1125,21 +1189,15 @@ class McpEndpoints:
         return paths
 
     def app(self) -> Starlette:
-        served: list[BaseRoute] = [
-            Route(self.HEALTH, self._health, methods=["GET"]),
-            Mount("/", app=self._dispatch),
-        ]
-        routes = self._auth.app_routes(self._discovery, served)
-
-        return Starlette(routes=routes, lifespan=self._lifespan)
+        return self._app
 
     async def _health(self, request: Request) -> Response:
         """Проба готовности: процесс слушает, endpoint'ы собраны."""
         return JSONResponse({"endpoints": list(self.paths())})
 
     async def _dispatch(self, scope: AsgiScope, receive: Receive, send: Send) -> None:
-        """Запрос — endpoint'у, чей это путь под префиксом сервиса; чужой путь — 404."""
-        path = scope["path"].removeprefix(scope["root_path"])
+        """Запрос — endpoint'у по полному публичному пути; чужой путь — 404."""
+        path = scope["path"]
         for endpoint in self._endpoints:
             if not endpoint.serves(path):
                 continue
@@ -1152,14 +1210,15 @@ class McpEndpoints:
             f"404 Not Found: no mcp endpoint at {scope['path']}; known: {known} "
             f"under the prefix {scope['root_path']!r}"
         )
-        await JSONResponse({"error": message}, status_code=404)(scope, receive, send)
+        response = JSONResponse({"error": message}, status_code=404)
+        await response(scope, receive, send)
 
     @asynccontextmanager
     async def _lifespan(self, app: Starlette) -> AsyncGenerator[None, None]:
         """Жизненный цикл endpoint'ов: у каждого свой менеджер сессий MCP."""
         async with AsyncExitStack() as stack:
             for endpoint in self._endpoints:
-                served = endpoint.lifespan
+                served = endpoint.app
                 await stack.enter_async_context(served.router.lifespan_context(served))
 
             yield
