@@ -199,7 +199,7 @@ class AppConfig(SignInSettings):
     """Секции процесса aid поверх общих: [server], профили, роли и агент."""
 
     db_schema: str = Field(alias="schema", min_length=1)
-    paths: PathsConfig
+    paths: PathsConfig = Field(alias="data")
     tls: TlsConfig = Field(default_factory=TlsConfig)
     session: SessionConfig
     postgres: PostgresConfig

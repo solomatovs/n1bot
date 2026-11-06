@@ -27,11 +27,9 @@ services:
       - --config
       - /app/boba/conf/config.toml
     volumes:
-      - ./conf/config.toml:/app/boba/conf/config.toml:ro
-      - ./conf/migrations:/app/boba/conf/migrations:ro
-      - ./conf/krb:/app/boba/conf/krb:ro
+      - ./conf:/app/boba/conf:ro
       - ${BOBA_MODELS}:/app/boba/models:ro
-      - ./data:/app/boba/data:rw
+      - ${BOBA_RUNTIME}/data/compose/mcp:/app/boba/data:rw
       - ${BOBA_SANDBOX_CGROUP}:/cgroup/boba-sandbox-mcp:rw
     ports:
       - "8650"

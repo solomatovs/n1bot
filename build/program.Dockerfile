@@ -15,6 +15,7 @@ ARG BOBA_UID=1000
 ARG BOBA_GID=1000
 
 ENV PROGRAM=/app/boba/${PROGRAM}
+ENV BOBA_RUNTIME=/app/boba
 
 COPY . /app/boba/
 

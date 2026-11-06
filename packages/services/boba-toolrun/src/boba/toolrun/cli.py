@@ -23,8 +23,6 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar
 
-from omegaconf import DictConfig
-
 from boba.config import ConfigLoader, bind
 from boba.krb import KerberosWorkspaceConfig
 from boba.sandbox.program import PluginCommand, PluginEntry, PluginEntryError
@@ -51,7 +49,9 @@ class HostConfig:
     KERBEROS_SECTION: ClassVar[str] = "krb"
 
     def __init__(self, paths: Sequence[Path]) -> None:
-        self._raw: DictConfig = ConfigLoader(paths).load()
+        self._raw = ConfigLoader(
+            paths, file_sections=PluginSections.FILE_SECTIONS
+        ).load()
         self._sections = PluginSections(self._raw)
 
     def enter_kerberos(self) -> None:

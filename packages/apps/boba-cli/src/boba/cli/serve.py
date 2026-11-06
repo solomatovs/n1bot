@@ -239,7 +239,7 @@ class ServeConfig(SignInSettings):
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
     db_schema: str = Field(alias="schema", min_length=1)
-    paths: PathsConfig
+    paths: PathsConfig = Field(alias="data")
     tls: TlsConfig = Field(default_factory=TlsConfig)
     session: TokenConfig
     logger: dict[str, Any] = Field(default_factory=ProcessLogging().default)

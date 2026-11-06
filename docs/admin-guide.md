@@ -250,10 +250,10 @@ coreutils, `curl`, `tar` и Docker. Всё перечисленное выше �
 
 | Каталог | Что лежит | Кто пишет | В git |
 |---|---|---|---|
-| `packages/` | код приложений, конфиги плагинов boba-mcp (`apps/boba-mcp/conf/plugins`) и статика | разработчик | да |
+| `packages/` | код приложений и статика | разработчик | да |
 | `build/` | `Makefile`, Dockerfile'ы, сценарии сборки и образцы (`conf/`); `build/src` — скачанное, `build/out` — собранное, `build/cache` — кэш компиляции | разработчик; `src` — `make fetch`, `out` и `cache` — сборка | да, кроме `src`, `out`, `cache` |
 | `runtime/` | собранное для запуска из исходников и тестов: libexec, корни песочницы с python, программы плагинов на python, модели | `make -C build build APP=runtime` | нет |
-| `compose/<приложение>/` | случай запуска в Docker: `docker-compose.yml`, `.env`, `conf/` (специфика машины), `data/` | администратор — `conf` и `.env`; контейнер — `data` | только `docker-compose.yml` |
+| `compose/<приложение>/` | случай запуска в Docker: `docker-compose.yml`, `.env`, `conf/`, `data/` | администратор — `conf` и `.env`; контейнер — `data` | `docker-compose.yml` и примеры `mcp/conf/plugins/*.conf` |
 
 `runtime/` один на репозиторий и держит только собранное, чего в исходниках
 нет, — в той же раскладке, что каталог программы mcp (подраздел ниже).
@@ -290,25 +290,29 @@ runtime/
   sandbox/   mcp: workspace.ext4.gz — шаблон рабочего каталога пользователя, сжатый gzip
   plugins/   mcp: программы групп плагинов (core, shell, db, docs), каталог Nuitka с исполняемым run
   rootfs/    mcp: корни песочницы base.ext4 и shell.ext4
-  conf/plugins/  mcp: конфиги плагинов <id>.toml
   share/     aid: статика chainlit (.chainlit, public, ui, mcp-apps, шрифты)
 ```
 
+Конфиги плагинов находятся в каталоге экземпляра рядом с `config.toml`,
+в `plugins/<id>.conf`. В образ программы они не входят.
+
 Модели в каталог программы не входят: админ монтирует их каталогом на
 `<программа>/models` (раздел 6). Какие программу, корень и модели берёт
-плагин, называет его конфиг `conf/plugins/<id>.toml` — секция `[sandbox]`:
+плагин, называет его конфиг `conf/plugins/<id>.conf` — секция `[sandbox]`:
 
 ```
 [sandbox]
-    program = "plugins/docs"
-    rootfs  = "rootfs/base.ext4"
-    images  = ["models/rapidocr:/var/cache/rapidocr"]
+    program = "${oc.env:BOBA_RUNTIME}/plugins/docs"
+    rootfs  = "${oc.env:BOBA_RUNTIME}/rootfs/base.ext4"
+    mounts  = ["${oc.env:BOBA_RUNTIME}/models/rapidocr:/var/cache/rapidocr"]
 ```
 
-Путь без ведущего `/` считается от каталога программы (в образе —
-`/app/boba`, из исходников — `runtime/`), с ведущим `/` — как есть. Сервер с
+Пути к артефактам задаются через `${oc.env:BOBA_RUNTIME}`. В Docker переменная
+задана образом как `/app/boba`; при запуске из исходников она указывает на
+абсолютный путь к `runtime/` репозитория. Для запуска установленного бинарника
+вне Docker администратор задаёт её каталогом артефактов программы. Сервер с
 этими ключами делает одно: монтирует образ `rootfs` корнем песочницы, биндит
-каталог `program` в `/plugin` и каталоги `images` в их точки — всё только на
+каталог `program` в `/plugin` и каталоги `mounts` в их точки — всё только на
 чтение — и зовёт `/plugin/run <id> <подкоманда>`. Каких плагинов и моделей
 ждать, сервер не знает. Нет файла или каталога — не поднимается только этот
 плагин, причина — в журнале старта, остальные работают.
@@ -325,14 +329,14 @@ runtime/
   conf/      config.toml — конфиг экземпляра (раздел 5)
              krb/        — krb5.conf и keytab'ы; в конфиге keytab называется только именем файла
              prompts/    — промпты endpoint'ов (только mcp)
-  data/      [paths].data_dir — единственное место, куда пишет программа:
+  data/      data — единственное место, куда пишет программа:
              krb/cache/  — кэши билетов, в том числе krb5cc_http (TGT сервиса для S4U)
              dump/  workspace/  tool-logs/  files/  agents/
 ```
 
 `conf/` — каталог, где лежит `config.toml` (первый `--config`): `krb/` ищется
 рядом с ним. Раскладка `data/` фиксирована, в конфиге задаётся только сам
-каталог (`[paths] data_dir`).
+каталог (`data`).
 
 Запуск любой программы — одна команда:
 
@@ -354,7 +358,7 @@ boba-mcp — бинарник Nuitka без python: кроме `serve` и `healt
 экземпляра переносится как есть — `conf/` целиком, `data/` по желанию (без
 него теряются только кэши билетов, образы workspace пользователей, журналы
 вызовов и вложения чата), модели — каталогом. В `config.toml` меняется то,
-что относится к машине: `[paths] data_dir`, `[tls] ca_file`, адреса и
+что относится к машине: `data`, `[tls] ca_file`, адреса и
 порты в `[server]`, `cgroup_base`.
 
 Почему у отладки свой каталог данных. Контейнер пишет данные от
@@ -419,7 +423,7 @@ rootless, — так же, как в закрытом контуре, где Bui
 
 | Деталь | Что получается |
 |---|---|
-| `mcp` | образ `boba-mcp:<версия>`: сервер, программы всех групп плагинов, корни песочницы, libexec, шаблон workspace, конфиги плагинов |
+| `mcp` | образ `boba-mcp:<версия>`: сервер, программы всех групп плагинов, корни песочницы, libexec, шаблон workspace |
 | `boba` | образ `boba:<версия>`: агент с рантаймом onnxruntime-genai, без моделей |
 | `aid` | образ `boba-aid:<версия>`: чат и его фронт |
 | `plugins-<группа>` | программа группы плагинов в `build/out/boba-mcp/plugins/<группа>`, проверенная в корне каждого её плагина |
@@ -436,7 +440,7 @@ rootless, — так же, как в закрытом контуре, где Bui
 Плагины собираются группами: одна программа Nuitka несёт несколько плагинов
 (`/plugin/run <id> <подкоманда>`), и общая часть компилируется один раз на
 группу. Группы и корни называют сами конфиги плагинов (`program`,
-`rootfs`): Makefile находит их по `packages/apps/boba-mcp/conf/plugins/*.toml`,
+`rootfs`): Makefile находит их по `compose/mcp/conf/plugins/*.conf`,
 поэтому новый плагин — это новый конфиг, а сборка его подхватит.
 
 | Программа | Плагины | Корень |
@@ -547,7 +551,7 @@ boba.mcp_server serve --config ...` (раздел 8).
 (профили чата, способы входа, пулы соединений, MCP-серверы, лимиты) и
 специфику машины (порты, каталог данных, адреса серверов, имена моделей,
 логины, секреты). Путей к файлам программы в нём нет, путей экземпляра — два:
-`[paths] data_dir` и `[tls] ca_file` (раздел 3). Он свой у каждого случая запуска —
+`data` и `[tls] ca_file` (раздел 3). Он свой у каждого случая запуска —
 `compose/<приложение>/conf/config.toml`,
 `<каталог установки>/conf/config.toml` — и в git не входит: в нём секреты.
 Отладка своего конфига не имеет: она берёт конфиг дерева compose и кладёт
@@ -555,9 +559,9 @@ boba.mcp_server serve --config ...` (раздел 8).
 репозитории нет, значения, одинаковые для нескольких программ (адрес базы,
 realm, секреты, которые должны совпадать), повторяются в каждом файле.
 
-В git остаются только файлы плагинов сервиса
-`packages/apps/boba-mcp/conf/plugins/<инструмент>.toml`: они попадают в образ и
-в дерево релиза, а конфиг экземпляра подключает их каталогом (ниже,
+В git остаются примеры файлов плагинов сервиса
+`compose/mcp/conf/plugins/<инструмент>.conf`: администратор размещает их
+рядом с основным конфигом, который подключает их шаблоном (ниже,
 «Подключённые файлы»). У утилит ix (индексаторы и скраперы) такой же один файл —
 `conf.toml` в их каталоге.
 
@@ -579,7 +583,7 @@ realm, секреты, которые должны совпадать), повт
 
 Ключи `config.toml`, которые почти всегда свои у машины:
 
-- `[paths]` и `[tls]` — каталог данных и CA-файл контура (раздел «Секции `[server]`, `[paths]` и `[tls]`»);
+- `data` и `[tls]` — каталог данных и CA-файл контура (раздел «Секции `[server]`, `data` и `[tls]`»);
 - `[server]` — порт, префикс и публичный адрес;
 - `[postgres]` (и `[agent.history.postgres]` у локального AID) — сервер и база (`host`, `hostaddr`,
   `port`, `dbname`);
@@ -687,8 +691,8 @@ Defaults известных приложению секций доступны �
 schema = "mcp"
 ```
 
-`paths`, `tls`, `server`, `session`, `postgres`, `mcp`, `storage` и другие известные этому
-приложению поля подхватываются из одноимённых корневых секций. Таблицы
+`data`, `tls`, `server`, `session`, `postgres`, `mcp`, `storage` и другие известные этому
+приложению поля подхватываются из одноимённых корневых ключей. Таблицы
 `[auth.<имя>]` собираются в список способов входа. Существующие явные ссылки
 продолжают работать; явно заданное поле `[app]` имеет приоритет, включая
 пустой список. Порядок TOML-наложений сохраняется. Команды `serve`, `health`
@@ -715,19 +719,19 @@ files_dir = "/srv/mcp/files"
 размером блока. `op_timeout_sec` по умолчанию равен 60. Переключение вида
 хранилища не переносит файлы между каталогом и образом.
 
-### Секции `[server]`, `[paths]` и `[tls]`
+### Секции `[server]`, `data` и `[tls]`
 
 Все три приложения используют одинаковую группировку:
 
 ```toml
+data = "/app/boba/data"
+
 [server]
     host = "0.0.0.0"
     port = 8650
     url_prefix = "/mcp"
-    public_url = "https://boba.example.com/mcp"
+    public_url = "https://boba.example.com${server.url_prefix}"
 
-[paths]
-    data_dir = "/app/boba/data"
 ```
 
 `server` задаёт прослушивание и внешний адрес приложения. У AID здесь же
@@ -735,9 +739,17 @@ files_dir = "/srv/mcp/files"
 `ssl_cert`, `ssl_key`, `ssl_ca_certs`. Endpoint'ы и клиенты MCP остаются в
 `[mcp]`, профили и клиенты службы агента — в `[agent]`.
 
-`paths.data_dir` — абсолютный каталог данных. Его внутреннее устройство
+`data = "${oc.env:BOBA_RUNTIME}/data"` — абсолютный каталог данных экземпляра.
+Это корневой параметр, отдельная таблица для него не нужна. Его внутреннее устройство
 фиксировано: Kerberos-кэши `krb/cache`, дампы `dump`, workspace `workspace`,
 журналы `tool-logs`, вложения чата `files`, приватные каталоги агента `agents`.
+В Docker `BOBA_RUNTIME=/app/boba`, и этот каталог данных заполняется bind mount
+экземпляра. При отладке сервисы используют раздельные `data/aid`, `data/boba`
+и `data/mcp` внутри общего `BOBA_RUNTIME`. Сборщик обновляет артефакты по
+их каталогам и не очищает `data`. Поэтому весь `runtime/` с состоянием
+экземпляров нельзя удалять как временный результат сборки.
+Изменение `data` не переносит существующие файлы: при смене каталога
+экземпляр останавливают и переносят его данные перед следующим запуском.
 
 `tls.ca_file` — абсолютный путь к PEM с доверенными CA **исходящих**
 подключений. По умолчанию `/etc/ssl/certs/ca-certificates.crt`, поэтому
@@ -757,7 +769,7 @@ files_dir = "/srv/mcp/files"
 
 Промежуточный `[env]` больше не нужен. Переменные окружения можно использовать
 непосредственно в полях, например `cluster.host = "${oc.env:HOSTNAME}"`.
-Связанные значения ссылаются на фактического владельца: `${paths.data_dir}`,
+Связанные значения ссылаются на фактического владельца: `${data}`,
 `${server.public_url}`. Старые `[instance]`, `[aid]`, `[service.boba]`,
 `[agent_auth.boba]`, `[agent_launch.*]` заменены новым форматом.
 
@@ -775,34 +787,38 @@ files_dir = "/srv/mcp/files"
 разрешаются от корня конфига, и наложение может поменять в них отдельный ключ.
 Читаются они один раз при старте.
 
-Плагины сервиса подключаются каталогом в секцию `tool`:
+Плагины сервиса подключаются обычным путём или шаблоном:
 
 ```toml
-tool = "${toml_dir:plugins}"
+plugins = "plugins/*.conf"
 ```
 
-В образе каталог `plugins` лежит рядом с конфигом (`/app/boba/conf/plugins`), в
-отладке наложение называет каталог пакета абсолютным путём:
-`tool = "${toml_dir:<репозиторий>/packages/apps/boba-mcp/conf/plugins}"`. Файлы
-плагинов ссылаются на секции конфига экземпляра — `${postgres}`,
-`${confluence}`, `${kb_tables}`, `${embedding.main}`, `${ocr}`, `${app.schema}`,
-`${mail}`; эти секции — договор между плагинами и конфигом, и в конфиге
-сервиса они обязаны быть, даже если плагин выключен.
+Каталог `plugins` находится рядом с основным конфигом как в Docker, так и
+в отладке. Файлы с расширением `.conf` содержат TOML. Они читаются в порядке
+имён, затем сервер по очереди получает манифесты включённых плагинов.
+Файл `<id>.conf` становится секцией `[tool.<id>]` загруженного дерева.
+Путь `plugins` считается от каталога первого `--config`; допускается и
+один файл, например `plugins = "plugins/doc.conf"`.
+OCR, embedding, таблицы индексаторов и параметры почты задаются в самих
+файлах плагинов. Общие ресурсы можно явно переиспользовать, например
+`connection = "${postgres}"` и `db_schema = "${app.schema}"`.
+Пустой каталог означает отсутствие плагинов; отсутствующий каталог или
+неверный TOML останавливают загрузку с путём проблемного файла.
 
 Пример конфига сервиса boba-mcp в контейнере (значения выдуманы, часть секций
 опущена):
 
 ```toml
-tool = "${toml_dir:plugins}"
+data = "/app/boba/data"
 
-[paths]
-    data_dir = "/app/boba/data"
+plugins = "plugins/*.conf"
+
 
 [server]
     host = "0.0.0.0"
     port = 8650
     url_prefix = "/mcp"
-    public_url = "https://boba.example.com/mcp"
+    public_url = "https://boba.example.com${server.url_prefix}"
 
 [tool_launcher]
     provider = "sandbox"
@@ -833,18 +849,6 @@ tool = "${toml_dir:plugins}"
         keytab    = "boba-svc.keytab"
         service   = "postgres"
 
-[mail]
-    server    = "mail.example.com"
-    port      = 587
-    use_tls   = true
-    sender    = "boba@example.com"
-    recipient = "boba-reports@example.com"
-
-    [mail.auth]
-        method   = "password"
-        user     = "boba-mail"
-        password = "..."
-
 [auth.proxy]
     type   = "proxy"
     secret = "${keys.mcp_proxy}"
@@ -859,6 +863,12 @@ tool = "${toml_dir:plugins}"
 `url_prefix`, иначе сервис не стартует: от `public_url` строятся адреса входа
 OAuth и издатель токенов. Endpoint'ы MCP отвечают на `{url_prefix}/{имя}` — в
 примере `/mcp/chat`, `/mcp/all`.
+
+В `public_url` используйте ссылку `${server.url_prefix}`, чтобы путь задавался
+один раз. Ссылки разрешаются после слияния конфигов: изменение `url_prefix`
+в наложении автоматически меняет путь публичного адреса. Внутренний адрес
+AID для агента задаётся как
+`public_url = "http://127.0.0.1:${server.port}${server.url_prefix}"` в `[agent]`.
 
 #### Промпты endpoint'ов
 
@@ -1131,7 +1141,7 @@ compose, поэтому keytab она читает из `compose/<приложе
 
 | Ключ | compose | отладка | установка без Docker |
 |---|---|---|---|
-| `[paths] data_dir` | `/app/boba/data` | `<репозиторий>/.dev/data/<приложение>` | `<каталог установки>/data` |
+| `data` | `/app/boba/data` | `<репозиторий>/.dev/data/<приложение>` | `<каталог установки>/data` |
 | `[tls] ca_file` | `/etc/ssl/certs/ca-certificates.crt` | системный набор CA машины | системный набор CA машины |
 | `[server] port`, `url_prefix` | рабочие | свои, чтобы не мешать контейнерам | рабочие |
 | `[tool_launcher] cgroup_base` | `/cgroup/boba-sandbox-<приложение>` | каталог `sandbox` юнита `boba-sandbox@debug` | каталог `sandbox` юнита `boba-sandbox@<экземпляр>` |
@@ -1641,16 +1651,16 @@ boba-mcp принимает клиентов обеих редакций на о
 
 Конфиг службы содержит секции `[keys]` (`session`, `agent_proxy` — ключ
 утверждений proxy чата, `agent_client` — секрет доверенного клиента
-`boba-chat` из `[agent.clients]`), `[paths]` и `[tls]`, `[ldap]` со служебным bind
+`boba-chat` из `[agent.clients]`), `data` и `[tls]`, `[ldap]` со служебным bind
 `[ldap.auth]`, `[postgres]` со своим входом, провайдера модели
 `[llm.main]` (`baseUrl`, вход `[llm.main.auth]`, `sslVerify`), профили
 `[agent.profiles.<профиль>]` с моделью, пределами и промптом, способы входа
 `[auth.<имя>]`, `[server]` с `port = 8660`, `host`, `url_prefix`,
-`public_url` и `[paths].data_dir`.
+`public_url` и `data`.
 `public_url` — издатель токенов службы, и он обязан совпасть с адресом, по
 которому в неё ходит чат. OAuth вне localhost принимает только https, поэтому
 чат ходит в службу через nginx: `url_prefix = "/boba"`,
-`public_url = "https://boba.example.com/boba"` (раздел 13, «Адрес сервиса и
+`public_url = "https://boba.example.com${server.url_prefix}"` (раздел 13, «Адрес сервиса и
 его `public_url`»).
 
 Чат в режиме службы использует приведённые выше `[agent]` и `[agent.auth]`.
@@ -1771,7 +1781,8 @@ browser: ...` и сообщением mermaid, и модель исправля�
 
 ```toml
 [server]
-    public_url = "https://boba.example.com/aid/"
+    url_prefix = "/aid"
+    public_url = "https://boba.example.com${server.url_prefix}/"
     sandbox_port = 8502
 ```
 
@@ -1820,13 +1831,13 @@ compose/mcp/
 `boba-sandbox@<приложение>.service` (раздел 9) и каталог моделей
 (деталь `models` сборки), который `.env` называет переменной `BOBA_MODELS`.
 
-Compose-файл монтирует `conf/config.toml` в `/app/boba/conf/config.toml`,
-у boba-mcp ещё `conf/prompts` в `/app/boba/conf/prompts`, и `conf/krb` в
-`/app/boba/conf/krb`. Окружения экземпляра у контейнера нет: образ запускает
+Compose MCP монтирует весь каталог `conf` в `/app/boba/conf` только для
+чтения: основной конфиг, файлы плагинов, миграционные данные и keytab.
+Окружения экземпляра у контейнера нет: образ запускает
 `/app/boba/bin/<программа> serve --config /app/boba/conf/config.toml`, а
-`KRB5_CONFIG` и `SSL_CERT_FILE` программа ставит себе сама из конфига. Файлы плагинов boba-mcp лежат в образе, в
+`KRB5_CONFIG` и `SSL_CERT_FILE` программа ставит себе сама из конфига. Файлы плагинов boba-mcp лежат в каталоге экземпляра, в
 `/app/boba/conf/plugins`, и конфиг подключает их ключом
-`tool = "${toml_dir:plugins}"`.
+`plugins = "plugins/*.conf"`.
 
 Локаль процесс берёт из образа (`ru_RU.UTF-8`), а кодировку UTF-8 python
 получает от `PYTHONUTF8=1`, который ставит скрипт запуска программы. Ставить
@@ -1971,8 +1982,9 @@ permitted`. Выдавать контейнеру `SETFCAP` ради удобс�
 
 ### Обновление версии и откат
 
-Новая версия — это новый образ. Файлы плагинов boba-mcp приезжают в нём же,
-`config.toml` экземпляра, промпты и данные остаются на месте.
+Новая версия программы — это новый образ. `config.toml`, каталог `plugins`,
+промпты и данные принадлежат экземпляру и остаются на месте. Обновление
+образа не заменяет настройки плагинов.
 
 ```
 make -C build build APP=mcp                  # образ с новым тегом версии, self-check при сборке
@@ -2114,10 +2126,10 @@ make -C build build APP=runtime   # runtime/ и фронт чата в ассе�
 `${oc.env:BOBA_TOOL_LAUNCHER}` у boba-mcp. Наложение boba-mcp, например:
 
 ```toml
-tool = "${toml_dir:/home/ss/boba/packages/apps/boba-mcp/conf/plugins}"
+data = "/home/ss/boba/.dev/data/mcp"
 
-[paths]
-    data_dir = "/home/ss/boba/.dev/data/mcp"
+plugins = "plugins/*.conf"
+
 
 [server]
     port = 8651
@@ -2131,15 +2143,16 @@ tool = "${toml_dir:/home/ss/boba/packages/apps/boba-mcp/conf/plugins}"
 [postgres]
     dbname = "aid_ss"
 
-[fastembed_cache]
-    process = "/home/ss/boba/runtime/models/fastembed"
 ```
 
-Наложение чата задаёт `[paths].data_dir`, `[server]`, `[cluster]`,
+Наложение чата задаёт `data`, `[server]`, `[cluster]`,
 `[messaging]`, `[agent.endpoint]` и `[postgres].dbname`. Для локального агента
 добавляется `aid-process.toml` с командой, историей и моделью; для удалённого —
 `aid-service.toml`. Наложение Boba меняет `[postgres].dbname`, пути и сервер.
-Плагины MCP debug читает из исходников по абсолютному пути `tool` выше.
+Плагины MCP debug читает по шаблону основного конфига compose; отдельный
+каталог пакета в наложении не указывается.
+Пути к программам, rootfs и моделям раскрываются из `BOBA_RUNTIME`, которую
+цель запуска задаёт каталогом `runtime/` рабочей копии.
 
 Секреты в наложение не кладут: ключи `[keys]`, токены и keytab у отладки те же,
 что у контейнера, и приходят из конфига compose. keytab отладка читает из
@@ -2417,7 +2430,7 @@ xdist набор задаёт в своём conftest, остальным тес�
 монтирования, без сети, если профиль её не включает. Корень файловой системы —
 образ, который называет ключ `rootfs` конфига плагина (`rootfs/base.ext4`),
 подключённый только для чтения; программа плагина — каталог `program` в
-`/plugin`, модели — каталоги `images`. Тело видит в своей таблице монтирования
+`/plugin`, модели — каталоги `mounts`. Тело видит в своей таблице монтирования
 пути к каталогам программы и моделей, поэтому секретов в этих путях быть не
 должно. Рабочий каталог пользователя `/workspace` — его личный образ
 `data/workspace/<id>.ext4`, который монтирует `fuse2fs`; первый образ
@@ -2760,9 +2773,9 @@ unshare --user --map-root-user --map-auto \
 **`ConfigError: config ...: resolving the config failed: Interpolation key
 'x.y' not found`, ниже строка `full_key: ...`.** В `config.toml` есть ссылка
 `"${x.y}"` на ключ, которого в файле нет; `full_key` называет ключ, где стоит
-ссылка. Чаще всего это секция, на которую ссылаются файлы плагинов
-(`postgres`, `http`, `confluence`, `kb_tables`, `embedding`, `ocr`, `mail`,
-раздел 5): она нужна в конфиге boba-mcp, даже если плагин выключен. Сервис
+ссылка. Проверьте основной конфиг и файл плагина из `full_key`: общие
+ссылки вроде `${postgres}` требуют соответствующей секции, а локальные
+параметры OCR и embedding находятся в самом файле плагина (раздел 5). Сервис
 boba-mcp печатает ошибку одной строкой с префиксом `boba-mcp failed:`, чат —
 последней строкой трассировки Python. Тот же текст с `Environment variable
 'ИМЯ' not found` — в окружении процесса нет переменной из ссылки
@@ -2860,7 +2873,7 @@ fork`** в логе на каждом вызове. Не ошибка: seccomp-�
 **`fastembed embedding: loading 'intfloat/multilingual-e5-large' from ... failed:
 ValueError: Could not load model ...`**. В каталоге `cache_dir` провайдера нет
 модели. Провайдер берёт её только из кэша и из сети не качает: каталог
-`fastembed` детали `models` монтируется в песочницу (ключ `images` конфига
+`fastembed` детали `models` монтируется в песочницу (ключ `mounts` конфига
 плагина), а `cache_dir` указывает на точку монтирования.
 
 **`External data path escapes model directory`** от onnxruntime при загрузке
@@ -3046,11 +3059,11 @@ boba-mcp и служба агента — сами себе серверы ав�
 буква в букву. Адрес сервера авторизации OAuth вне `localhost` обязан быть
 https, поэтому в развёртывании сервис публикуется за nginx и чат ходит туда же:
 
-- boba-mcp: `url_prefix = "/mcp"`, `public_url = "https://boba.example.com/mcp"`,
+- boba-mcp: `url_prefix = "/mcp"`, `public_url = "https://boba.example.com${server.url_prefix}"`,
   у чата `mcp_scheme = "https"`, `mcp_host = "boba.example.com"`,
   `mcp_port = 443`, `mcp_prefix = "/mcp"`;
 - служба агента: `url_prefix = "/boba"`,
-  `public_url = "https://boba.example.com/boba"`, у чата
+  `public_url = "https://boba.example.com${server.url_prefix}"`, у чата
   `agent_scheme = "https"`, `agent_host = "boba.example.com"`,
   `agent_port = 443`, `agent_prefix = "/boba"`.
 
@@ -3088,7 +3101,7 @@ boba паролей учёток не меняет. Внешних провай�
 ### Сеть песочницы
 
 Сеть плагину включает ключ `[sandbox] network = true` в его файле
-`plugins/<плагин>.toml` boba-mcp; по умолчанию её нет. Без
+`plugins/<плагин>.conf` boba-mcp; по умолчанию её нет. Без
 сети bwrap запускает тело инструмента с `--unshare-net`: у него своё
 пространство сети, в котором есть только собственный loopback.
 
@@ -3119,9 +3132,9 @@ boba паролей учёток не меняет. Внешних провай�
 всех плагинов.
 
 Плагин `mail` в поставке выключен; сеть и бинды `/etc/resolv.conf` и
-`/etc/hosts` в его профиле уже есть. Чтобы включить его, в `plugins/mail.toml`
-ставят `enable = true`. Файлы плагинов лежат в образе boba-mcp, поэтому правка
-доходит до контейнера с пересборкой образа (раздел 4).
+`/etc/hosts` в его профиле уже есть. Чтобы включить его, в `plugins/mail.conf`
+ставят `enable = true`. Файл находится в `conf/plugins` экземпляра;
+изменения применяются после перезапуска MCP без пересборки образа.
 
 ### Сеть сборки
 

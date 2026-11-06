@@ -195,7 +195,7 @@ class E2eStand(ServerSeedSpec):
         overlay.set(("server", "port"), self.SERVICE_PORT)
         overlay.set(("server", "url_prefix"), self.SERVICE_PREFIX)
         overlay.set(("server", "public_url"), f"{origin}{self.SERVICE_PREFIX}")
-        overlay.set(("paths", "data_dir"), str(self._service_data))
+        overlay.set(("data",), str(self._service_data))
         # тесты называют файлы путями тела инструмента (/workspace/...):
         # так их видит только сервис с песочницей
         overlay.set(("tool_launcher", "provider"), self.SERVICE_LAUNCHER)
@@ -211,7 +211,7 @@ class E2eStand(ServerSeedSpec):
         overlay.set(("server", "sandbox_port"), self._sandbox_port)
         overlay.set(("server", "url_prefix"), self.APP_PREFIX)
         overlay.set(("cluster", "node_id"), self.INSTANCE)
-        overlay.set(("paths", "data_dir"), str(self._app_data))
+        overlay.set(("data",), str(self._app_data))
         overlay.set(("env", "mcp_scheme"), self.SERVICE_SCHEME)
         overlay.set(("env", "mcp_host"), self.SERVICE_HOST)
         overlay.set(("env", "mcp_port"), self.SERVICE_PORT)

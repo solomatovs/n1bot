@@ -42,12 +42,12 @@ async def test_migrate_uses_only_storage_config_and_reconciles_repeat(  # noqa: 
     )
     connection = test_postgres.model_dump(mode="json", exclude_none=True)
     location = {"schema": name, "postgres": "${postgres}"}
-    app: dict[str, object] = {"paths": "${paths}", **location}
+    app: dict[str, object] = {"data": "${data}", **location}
     if module == "boba.cli.app":
         app["agent"] = {"history": location}
 
     document: dict[str, object] = {
-        "paths": instance.model_dump(mode="json"),
+        "data": instance.data_dir,
         "postgres": connection,
         "app": app,
     }

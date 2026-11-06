@@ -35,6 +35,11 @@ CLAUDE.md
 site.toml
 !/compose/*/docker-compose.yml
 !/compose/*/docker-compose-test.yml
+!/compose/mcp/conf/
+/compose/mcp/conf/*
+!/compose/mcp/conf/plugins/
+/compose/mcp/conf/plugins/*
+!/compose/mcp/conf/plugins/*.conf
 
 packages/**/build/
 packages/**/dist/

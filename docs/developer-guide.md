@@ -45,10 +45,10 @@
 
 Тело живёт в pip-пакете, который мы называем **плагином**. У каждого
 плагина одно короткое имя, **id**: `pg`, `doc`, `web`. По id сервер находит
-файл конфига плагина `conf/plugins/<id>.toml`, а тот называет секцией
+файл конфига плагина `conf/plugins/<id>.conf`, а тот называет секцией
 `[sandbox]` всё остальное: каталог программы (`program`), образ корня
-песочницы (`rootfs`) и каталоги моделей (`images`). Конфиг экземпляра сервиса подключает
-каталог плагинов ключом `tool = "${toml_dir:plugins}"`, и файл становится
+песочницы (`rootfs`) и каталоги моделей (`mounts`). Конфиг экземпляра сервиса подключает
+файлы плагинов ключом `plugins = "plugins/*.conf"`, и файл становится
 таблицей `[tool.<id>]` того же дерева. Поэтому внутри файла плагина работают
 ссылки на секции конфига экземпляра: `${app.schema}`, `${postgres}`,
 `${redis}`.
@@ -132,7 +132,7 @@ packages/tools/boba-tool-redis/
 Больше нигде пакет не объявляется: `members` корневого `pyproject.toml`
 берёт `packages/tools/*` глобом. Имя entry point'а группы `boba.tools` —
 id плагина. Сборка находит плагины по их конфигам
-`packages/apps/boba-mcp/conf/plugins/*.toml`: ключ `program` называет группу
+`compose/mcp/conf/plugins/*.conf`: ключ `program` называет группу
 (одну программу Nuitka на несколько плагинов), ключ `rootfs` — корень
 песочницы; `make all` собирает программу каждой группы и каждый корень.
 Сервер кода плагинов не импортирует (это проверяет `test_no_plugin_code.py`
@@ -416,7 +416,7 @@ PLUGIN: Final = ToolPlugin(id="redis", tools=tuple(TOOLS), network=True)
 Поля объявления:
 
 - `id` — единственное имя плагина: секция `[tool.<id>]`, файл конфига
-  `<id>.toml`, имя entry point'а.
+  `<id>.conf`, имя entry point'а.
 - `tools` — инструменты фасада `@tool`.
 - `network` — телу нужна сеть: сервер даёт песочнице сеть хоста и
   кладёт в неё `/etc/resolv.conf`, `/etc/hosts` и `krb5.conf` из
@@ -501,15 +501,14 @@ Entry point материализуется установкой: после пр
 
 ### Файл конфига
 
-Файл `conf/plugins/redis.toml` — конфиг плагина. Его секция `[sandbox]`
+Файл `conf/plugins/redis.conf` — конфиг плагина. Его секция `[sandbox]`
 называет программу, корень и модели плагина (раздел 13): чего из этого нет,
 тот плагин на старте не поднимается, остальные работают. Файл плагина лежит
-в git:
-`packages/apps/boba-mcp/conf/plugins/redis.toml`. Сборка кладёт его в образ
-сервиса (`/app/boba/conf/plugins`), а отладка подключает каталог пакета прямо
-(`tool = "${toml_dir:<репозиторий>/packages/apps/boba-mcp/conf/plugins}"` в
-наложении отладки `.vscode/boba/mcp.toml`). Значения машины — адреса, логины, секреты —
-живут в `config.toml` экземпляра, а файл плагина на них ссылается.
+рядом с основным конфигом экземпляра. В репозитории примеры находятся в
+`compose/mcp/conf/plugins/`. Основной файл подключает их явно:
+`plugins = "plugins/*.conf"`. Содержимое `.conf` — TOML.
+Настройки плагина, включая OCR и embedding, находятся в его файле;
+общие ресурсы экземпляра доступны обычными ссылками OmegaConf.
 
 ```toml
 enable     = true
@@ -577,7 +576,7 @@ args:  {"path": "report.csv",
 declaration: limit: …».
 
 Так же устроен плагин `doc` в `packages/tools/boba-tool-doc`: модель
-`DocToolSection` и файл `conf/plugins/doc.toml`.
+`DocToolSection` и файл `conf/plugins/doc.conf`.
 
 ---
 
@@ -1281,13 +1280,13 @@ async def redis_restore_stream(
 
 Профиль песочницы плагина сервер собирает из дефолтов, каталога программы
 (`ProgramRoot`: `libexec`, шаблон workspace), каталога данных экземпляра
-(`[paths] data_dir`), секции `[sandbox]` файла плагина и манифеста:
+(`data`), секции `[sandbox]` файла плагина и манифеста:
 
 - `rootfs` — ext4-образ корня, монтируется fuse2fs read-only один раз на
   жизнь зиготы;
 - `program` — каталог программы плагина, строгий read-only бинд в `/plugin`;
   сервер зовёт `/plugin/run <id> <подкоманда>`;
-- каждый элемент `images` (`каталог:точка`) — строгий read-only бинд
+- каждый элемент `mounts` (`каталог:точка`) — строгий read-only бинд
   каталога данных в точку внутри корня. Точка обязана быть в корне (`data`
   в `[tool.boba.sandbox]`), а нет каталога — плагин не поднимается;
 - `network = true` в манифесте — сеть хоста и read-only файлы
@@ -1296,8 +1295,9 @@ async def redis_restore_stream(
   `conf/krb/krb5.conf` экземпляра на `/etc/krb5.conf`, если он есть; без сети
   их нет.
 
-Пути `program`, `rootfs` и `images` без ведущего `/` считаются от каталога
-программы (в образе — `/app/boba`, из исходников — `runtime/`), поэтому один
+Пути `program`, `rootfs` и источники `mounts` задаются через
+`${oc.env:BOBA_RUNTIME}`: в образе это `/app/boba`, из исходников — абсолютный
+путь к `runtime/`. Точки монтирования остаются путями внутри песочницы. Один
 файл плагина работает и в образе, и в тестах. Подкоманда `manifest` идёт в
 профиле без сети и workspace: манифест о сети ещё не сказал. `setup` и
 зигота — в полном профиле плагина.
@@ -1310,7 +1310,7 @@ async def redis_restore_stream(
 |---|---|
 | `program` | каталог программы плагина, обязателен; у плагинов репозитория — `plugins/<группа>` |
 | `rootfs` | ext4-образ корня песочницы, обязателен; `rootfs/base.ext4` или `rootfs/shell.ext4` |
-| `images` | каталоги данных `каталог:точка`, например `models/rapidocr:/var/cache/rapidocr`; по умолчанию нет |
+| `mounts` | каталоги данных `каталог:точка`, например `models/rapidocr:/var/cache/rapidocr`; по умолчанию нет |
 | `workspace` | `true` — монтирует ext4-образ воркспейса пользователя в `/workspace` и делает его рабочим каталогом; по умолчанию воркспейса нет, рабочий каталог `/tmp` |
 | `[sandbox.limits]` | `process_memory_bytes` (1 GiB), `process_cpu_sec`, `process_file_bytes`, `process_open_files` (1024), `group_memory_bytes` — обязателен, кодом не выводится, `group_cpu_percent` (100 = одно ядро), `group_pids_max` (256), `timeout_sec` (86400) |
 | `[sandbox.zygote]` | `max_start_attempts`, `restart_backoff_sec`, `start_timeout_sec`; `start_timeout_sec` — заодно срок подкоманд `manifest` и `setup` |
@@ -1321,9 +1321,9 @@ async def redis_restore_stream(
 
 ```toml
 [sandbox]
-    program   = "plugins/docs"
-    rootfs    = "rootfs/base.ext4"
-    images    = ["models/fastembed:/var/cache/fastembed"]
+    program   = "${oc.env:BOBA_RUNTIME}/plugins/docs"
+    rootfs    = "${oc.env:BOBA_RUNTIME}/rootfs/base.ext4"
+    mounts    = ["${oc.env:BOBA_RUNTIME}/models/fastembed:/var/cache/fastembed"]
     [sandbox.limits]
         process_memory_bytes = 17179869184
         group_memory_bytes   = 8589934592
@@ -1353,7 +1353,7 @@ async def redis_restore_stream(
 - `python = true` — пользовательским командам нужен python с `payload`
   плагина в корне (bash).
 - `data` — точки монтирования каталогов данных внутри корня: веса моделей,
-  словари OCR. Сами данные приезжают каталогом из `images` конфига плагина.
+  словари OCR. Сами данные приезжают каталогом из `mounts` конфига плагина.
 - `entry_points` — группы entry points, которые тело находит на ходу: их
   поставщики попадают в дерево программы.
 - `root` — каталог-оверлей внутри пакета, копируется поверх корня как есть.
@@ -1513,10 +1513,10 @@ BOBA_RUNTIME=$PWD/runtime BOBA_TOOL_LAUNCHER=process .venv/bin/python -m boba.mc
 базой и каталогом данных (руководство администратора, раздел 8,
 «Конфигурация отладки»).
 
-Каталог данных экземпляра называет `[paths] data_dir`, раскладка внутри
+Каталог данных экземпляра называет `data`, раскладка внутри
 фиксирована (`InstanceData`), `conf/krb` лежит рядом с `config.toml`
 (`InstanceConf`). Компонент, которому нужен путь в данных, берёт секцию
-`[paths]` и зовёт `paths.data(InstanceData.<часть>)`, а не заводит ключ
+`data` и зовёт `paths.data(InstanceData.<часть>)`, а не заводит ключ
 с путём.
 
 Тело запускается без хоста той же программой плагина, что и в песочнице:
@@ -1947,12 +1947,12 @@ BOBA_MCP_CONFIG_PATH=$PWD/compose/mcp/conf/config.toml:$PWD/.vscode/boba/mcp.tom
 
 ### Конфиг, программа и корень
 
-Плагин описывает его конфиг `<id>.toml`: конфиг экземпляра подключает каталог
-`conf/plugins` ключом `tool = "${toml_dir:plugins}"`, и файл становится
+Плагин описывает его конфиг `<id>.conf`: конфиг экземпляра подключает файлы
+ключом `plugins = "plugins/*.conf"`, и файл становится
 таблицей `[tool.<id>]`. id — единственное имя плагина: им же названы секция
 конфига и entry point объявления. Секция `[sandbox]` называет три вещи
 (раздел 8): каталог программы `program`, образ корня `rootfs` и каталоги
-данных `images`. Сервер путей не выводит и плагинов не знает; чего нет, тот
+данных `mounts`. Сервер путей не выводит и плагинов не знает; чего нет, тот
 плагин на старте не поднимается, остальные работают. Чтобы заменить плагин,
 достаточно положить программу, корень и конфиг и перезапустить сервис.
 
@@ -2132,7 +2132,7 @@ reads spec 1 only», и плагин пересобирается под сер�
 
 ### Общие настройки приложений
 
-Сетевые поля принадлежат `[server]`, каталог данных — `[paths]`, исходящие
+Сетевые поля принадлежат `[server]`, каталог данных — `data`, исходящие
 CA — `[tls]`. `ProcessConfig` предоставляет эти общие модели; приложение
 расширяет модель сервера своими полями. `ServiceAddress` в boba-identity
 проверяет согласованность OAuth public_url/url_prefix и используется OAuth,

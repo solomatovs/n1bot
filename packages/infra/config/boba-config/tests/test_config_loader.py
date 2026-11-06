@@ -3,13 +3,22 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 from omegaconf import OmegaConf
 from omegaconf.errors import ReadonlyConfigError
 from pydantic import BaseModel, ConfigDict
 
-from boba.config import ConfigError, ConfigLoader, bind
+from boba.config import (
+    ConfigError,
+    ConfigFileSections,
+    ConfigLoader,
+    ConfigModel,
+    ConfigSchema,
+    bind,
+)
+from boba.config.paths import PathsConfig
 
 MAIN = """
 tool = "${toml_dir:plugins}"
@@ -41,6 +50,11 @@ class _Connection(BaseModel):
     model_config = ConfigDict(extra="forbid")
     host: str
     dbname: str
+
+
+class _FileApp(ConfigModel):
+    CONFIG_FILES: ClassVar = (ConfigFileSections("plugins", "tool"),)
+    plugins: str = ""
 
 
 class _Plugin(BaseModel):
@@ -153,6 +167,109 @@ def test_missing_plugin_directory_fails_the_load(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigError, match="plugins"):
         ConfigLoader([main]).load()
+
+
+@pytest.fixture
+def glob_config(tmp_path: Path) -> Path:
+    (tmp_path / "plugins").mkdir()
+    main = tmp_path / "config.toml"
+    main.write_text('plugins = "plugins/*.conf"\n')
+
+    return main
+
+
+def test_glob_reads_only_matching_files_in_name_order(glob_config: Path) -> None:
+    plugins = glob_config.parent / "plugins"
+    (plugins / "z.conf").write_text(
+        'enable = true\n[sandbox]\nprogram = "plugins/db"\n'
+    )
+    (plugins / "a.conf").write_text("enable = false\n")
+    (plugins / "notes.toml").write_text("not valid TOML")
+
+    raw = ConfigLoader([glob_config], schema=ConfigSchema(_FileApp)).load()
+
+    assert list(raw.tool) == ["a", "z"]
+    assert raw.tool.a.enable is False
+    assert raw.tool.z.sandbox.program == "plugins/db"
+
+
+def test_glob_preserves_plugin_settings_under_an_overlay(glob_config: Path) -> None:
+    plugins = glob_config.parent / "plugins"
+    (plugins / "doc.conf").write_text(
+        'connection = "${postgres}"\n'
+        '[ocr]\nprovider = "rapidocr"\nmodels_dir = "/var/cache/rapidocr"\n'
+    )
+    overlay = glob_config.parent / "debug.toml"
+    overlay.write_text('[postgres]\nhost = "db.example"\n[tool.doc.ocr]\nthreads = 2\n')
+
+    raw = ConfigLoader([glob_config, overlay], schema=ConfigSchema(_FileApp)).load()
+
+    assert raw.tool.doc.connection.host == "db.example"
+    assert raw.tool.doc.ocr.provider == "rapidocr"
+    assert raw.tool.doc.ocr.models_dir == "/var/cache/rapidocr"
+    assert raw.tool.doc.ocr.threads == 2
+
+
+def test_glob_allows_an_empty_plugin_directory(glob_config: Path) -> None:
+    raw = ConfigLoader([glob_config], schema=ConfigSchema(_FileApp)).load()
+
+    assert list(raw.tool) == []
+
+
+def test_glob_refuses_a_missing_directory(glob_config: Path) -> None:
+    glob_config.write_text('plugins = "missing/*.conf"\n')
+
+    with pytest.raises(ConfigError, match="missing"):
+        ConfigLoader([glob_config], schema=ConfigSchema(_FileApp)).load()
+
+
+def test_glob_reports_the_file_with_invalid_toml(glob_config: Path) -> None:
+    (glob_config.parent / "plugins" / "broken.conf").write_text("enable = [")
+
+    with pytest.raises(ConfigError, match=r"broken\.conf"):
+        ConfigLoader([glob_config], schema=ConfigSchema(_FileApp)).load()
+
+
+def test_glob_refuses_duplicate_section_names(glob_config: Path) -> None:
+    glob_config.write_text('plugins = "plugins/*"\n')
+    plugins = glob_config.parent / "plugins"
+    (plugins / "doc.conf").write_text("enable = true\n")
+    (plugins / "doc.toml").write_text("enable = false\n")
+
+    with pytest.raises(ConfigError, match="multiple files name section 'doc'"):
+        ConfigLoader([glob_config], schema=ConfigSchema(_FileApp)).load()
+
+
+def test_file_sections_also_accept_a_single_path(glob_config: Path) -> None:
+    glob_config.write_text('plugins = "plugins/doc.conf"\n')
+    (glob_config.parent / "plugins" / "doc.conf").write_text("enable = true\n")
+
+    raw = ConfigLoader([glob_config], schema=ConfigSchema(_FileApp)).load()
+
+    assert list(raw.tool) == ["doc"]
+
+
+def test_file_sections_work_without_an_application_model(glob_config: Path) -> None:
+    (glob_config.parent / "plugins" / "doc.conf").write_text("enable = true\n")
+
+    raw = ConfigLoader([glob_config], file_sections=_FileApp.CONFIG_FILES).load()
+
+    assert raw.tool.doc.enable is True
+
+
+def test_scalar_data_path_builds_the_instance_paths() -> None:
+    raw = OmegaConf.create({"data": "/srv/boba/data"})
+
+    paths = bind(raw, "data", PathsConfig)
+
+    assert paths.data("workspace") == Path("/srv/boba/data/workspace")
+
+
+def test_scalar_data_path_rejects_a_relative_directory() -> None:
+    raw = OmegaConf.create({"data": "relative/data"})
+
+    with pytest.raises(ConfigError, match="expected an absolute path"):
+        bind(raw, "data", PathsConfig)
 
 
 def test_broken_toml_names_the_file(tmp_path: Path) -> None:

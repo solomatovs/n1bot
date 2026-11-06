@@ -39,12 +39,11 @@ def keep_environ() -> Iterator[None]:
 
 
 CONFIG = """
+data = "<data_dir>"
+
 [app]
     server  = "${server}"
     session = "${session}"
-
-[paths]
-    data_dir = "<data_dir>"
 
 [tls]
     ca_file  = "/etc/ssl/certs/ca-certificates.crt"

@@ -14,6 +14,7 @@ from pydantic import (
     ConfigDict,
     Field,
     field_validator,
+    model_validator,
 )
 
 
@@ -22,18 +23,26 @@ class PathsConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    SECTION: ClassVar[str] = "paths"
+    SECTION: ClassVar[str] = "data"
 
     data_dir: str = Field(
         min_length=1,
         description="Абсолютный путь к данным экземпляра приложения.",
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _directory(cls, value: object) -> object:
+        if isinstance(value, str):
+            return {"data_dir": value}
+
+        return value
+
     @field_validator("data_dir")
     @classmethod
     def _absolute(cls, value: str) -> str:
         if not os.path.isabs(value):
-            msg = f"[paths]: expected an absolute path, got {value!r}"
+            msg = f"data: expected an absolute path, got {value!r}"
             raise ValueError(msg)
 
         return os.path.normpath(value)

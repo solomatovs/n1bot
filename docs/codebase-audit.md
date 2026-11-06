@@ -413,7 +413,7 @@ workspace storage — связанные, но разные обязанност
 [`kb/tools.py`](../packages/tools/boba-tool-knowledge/src/boba/tool/kb/tools.py)
 в `TOOLS` регистрирует одновременно `kb_vector_search`, `kb_fts_search` и
 `kb_*2`. Более того, отслеживаемый
-[`conf/plugins/kb.toml`](../packages/apps/boba-mcp/conf/plugins/kb.toml)
+[`conf/plugins/kb.conf`](../compose/mcp/conf/plugins/kb.conf)
 включает только два старых поиска; новые имена `*2` в его allowlist закомментированы.
 Это состояние поставляемого конфига, а не проверка локальных настроек работающих
 экземпляров. [`kb/plugin.py`](../packages/tools/boba-tool-knowledge/src/boba/tool/kb/plugin.py)
@@ -2034,7 +2034,7 @@ profiles = {
     'boba': ['boba-cli', 'boba-llm-onnx[generation]'],
 }
 groups = collections.defaultdict(list)
-for path in pathlib.Path('packages/apps/boba-mcp/conf/plugins').glob('*.toml'):
+for path in pathlib.Path('compose/mcp/conf/plugins').glob('*.conf'):
     config = tomllib.loads(path.read_text())
     groups[config['sandbox']['program']].append(path.stem)
 for group, ids in sorted(groups.items()):

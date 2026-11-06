@@ -17,8 +17,7 @@ from boba.config import bind
 from boba.config.application import ConfigFiles
 
 INSTANCE = r"""
-[paths]
-data_dir = "/srv/boba/data"
+data = "/srv/boba/data"
 
 [env]
 listen_host = "0.0.0.0"

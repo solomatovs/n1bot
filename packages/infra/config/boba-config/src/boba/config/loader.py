@@ -24,7 +24,7 @@ from omegaconf import DictConfig, Node, OmegaConf
 from omegaconf.basecontainer import BaseContainer
 from omegaconf.errors import OmegaConfBaseException
 
-from boba.config.schema import ConfigSchema
+from boba.config.schema import ConfigFileSections, ConfigSchema
 
 __all__ = ["ConfigError", "ConfigLoader", "ConfigResolver"]
 
@@ -57,17 +57,22 @@ class TomlFiles:
             )
             raise ConfigError(msg) from exc
 
-    def read_dir(self, path: Path) -> dict[str, Any]:
-        """Файлы <имя>.toml каталога — таблица по именам файлов."""
-        if not path.is_dir():
+    def read_glob(self, pattern: Path) -> dict[str, Any]:
+        """TOML-файлы по шаблону — таблица по именам без расширения."""
+        directory = pattern.parent
+        if not directory.is_dir():
             msg = (
-                f"config {path}: expected a directory of {self.SUFFIX} files, "
-                "it does not exist"
+                f"config {pattern}: expected a directory of TOML files at "
+                f"{directory}, it does not exist"
             )
             raise ConfigError(msg)
 
         tables: dict[str, Any] = {}
-        for file in sorted(path.glob(f"*{self.SUFFIX}")):
+        for file in sorted(directory.glob(pattern.name)):
+            if file.stem in tables:
+                msg = f"config {pattern}: multiple files name section {file.stem!r}"
+                raise ConfigError(msg)
+
             tables[file.stem] = self.read(file)
 
         return tables
@@ -77,7 +82,7 @@ class ConfigLoader:
     """Загрузчик конфига процесса: главный файл, поверх него наложения.
 
     Создают его вход программы (по путям --config) и стенды тестов. Файлы
-    сливаются OmegaConf.merge, резолверы ${toml:…}/${toml_dir:…}
+    сливаются OmegaConf.merge, резолверы toml и toml_dir
     регистрируются на время загрузки. Если передана ConfigSchema, defaults
     моделей и связи известных секций добавляются после наложений. Затем дерево
     разрешается
@@ -87,10 +92,17 @@ class ConfigLoader:
     Наложение в памяти (load_over) нужно стендам тестов: оно ложится
     последним слоем до разрешения, поэтому ссылки на изменённые ключи
     следуют за ними.
+    Подключения ConfigFileSections берутся из переданной схемы или аргумента
+    file_sections: загрузчик читает шаблоны из названных ключей и помещает
+    файлы в указанные секции до разрешения ссылок.
     """
 
     def __init__(
-        self, paths: Sequence[Path], *, schema: ConfigSchema | None = None
+        self,
+        paths: Sequence[Path],
+        *,
+        schema: ConfigSchema | None = None,
+        file_sections: Sequence[ConfigFileSections] = (),
     ) -> None:
         if not paths:
             msg = "config: expected at least one config file, got none"
@@ -100,6 +112,10 @@ class ConfigLoader:
         self._base = paths[0].resolve().parent
         self._files = TomlFiles()
         self._schema = schema
+        self._file_sections = list(file_sections)
+        if schema is not None:
+            self._file_sections.extend(schema.file_sections)
+
         self._included: dict[int, tuple[Node, DictConfig]] = {}
 
     def load(self) -> DictConfig:
@@ -127,6 +143,9 @@ class ConfigLoader:
                 if self._schema is not None and isinstance(merged, DictConfig):
                     self._schema.prepare_merge(merged, layer)
                 merged = OmegaConf.merge(merged, layer)
+            if isinstance(merged, DictConfig):
+                merged = self._sections(merged)
+
             if isinstance(merged, DictConfig) and self._schema is not None:
                 self._schema.apply(merged)
             resolved = OmegaConf.to_container(merged, resolve=True)
@@ -151,6 +170,30 @@ class ConfigLoader:
         for path in self._paths:
             yield OmegaConf.create(self._files.read(path))
 
+    def _sections(self, tree: DictConfig) -> DictConfig:
+        if not self._file_sections:
+            return tree
+
+        included = OmegaConf.create({})
+        for spec in self._file_sections:
+            pattern = OmegaConf.select(tree, spec.source, default="")
+            if not isinstance(pattern, str):
+                msg = (
+                    f"config {self._named()}: {spec.source} expects a file path "
+                    f"or pattern, got {pattern!r}"
+                )
+                raise ConfigError(msg)
+
+            if not pattern:
+                continue
+
+            tables = self._files.read_glob(self._base / pattern)
+            OmegaConf.update(included, spec.target, tables, merge=False)
+
+        included.merge_with(tree)
+
+        return included
+
     def _toml(self, path: str, _parent_: BaseContainer, _node_: Node) -> DictConfig:
         if id(_node_) not in self._included:
             self._included[id(_node_)] = (
@@ -161,7 +204,7 @@ class ConfigLoader:
 
     def _toml_dir(self, path: str, _parent_: BaseContainer, _node_: Node) -> DictConfig:
         if id(_node_) not in self._included:
-            files = self._files.read_dir(self._base / path)
+            files = self._files.read_glob(self._base / path / f"*{TomlFiles.SUFFIX}")
             self._included[id(_node_)] = (
                 _node_,
                 OmegaConf.create(files, parent=_parent_),

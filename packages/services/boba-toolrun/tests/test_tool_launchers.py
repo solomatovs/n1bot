@@ -36,16 +36,12 @@ PG_SECTION: dict[str, object] = {
 """Секция плагина pg, как её даёт conf/plugins/pg.toml."""
 
 
-def _paths(data_dir: Path) -> dict[str, object]:
-    return {"data_dir": str(data_dir)}
-
-
 def _process_section(data_dir: Path) -> dict[str, object]:
     """Способ запуска процессом; workdir — workspace/ каталога данных."""
     (data_dir / "workspace").mkdir(parents=True, exist_ok=True)
 
     return {
-        "paths": _paths(data_dir),
+        "data": str(data_dir),
         "tool_launcher": {
             "provider": "process",
             "timeout_sec": 60,
@@ -80,7 +76,7 @@ def test_process_without_the_section_launches_no_tool_sections(
 def _sandbox_section(data_dir: Path) -> dict[str, object]:
     """Способ запуска песочницей; пути плагинов — в их конфигах."""
     return {
-        "paths": _paths(data_dir),
+        "data": str(data_dir),
         "tls": {},
         "tool_launcher": {"provider": "sandbox", "cgroup_base": str(data_dir)},
     }
@@ -133,7 +129,7 @@ def test_sandbox_probe_needs_no_plugin_directory(program: Path, tmp_path: Path) 
 
 def test_sandbox_without_cgroup_base_is_refused(program: Path, tmp_path: Path) -> None:
     raw = OmegaConf.create(
-        {"paths": _paths(tmp_path), "tool_launcher": {"provider": "sandbox"}}
+        {"data": str(tmp_path), "tool_launcher": {"provider": "sandbox"}}
     )
 
     with pytest.raises(ConfigError, match="cgroup_base"):
@@ -157,7 +153,7 @@ def test_process_provider_builds_process_launchers(
 
 def test_process_probe_requires_existing_workdir(tmp_path: Path) -> None:
     section = _process_section(tmp_path)
-    section["paths"] = _paths(tmp_path / "absent")
+    section["data"] = str(tmp_path / "absent")
     raw = OmegaConf.create(section)
 
     launchers = _build(raw)

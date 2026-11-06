@@ -166,7 +166,7 @@ class ServeStandConfig:
         return {
             "schema": location["schema"],
             "postgres": location["postgres"],
-            "paths": self._instance.model_dump(mode="json"),
+            "data": self._instance.data_dir,
             "auth": [
                 {
                     "type": "proxy",

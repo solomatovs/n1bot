@@ -11,7 +11,15 @@ from omegaconf import DictConfig, ListConfig, OmegaConf
 from pydantic import BaseModel, TypeAdapter
 from pydantic.fields import FieldInfo
 
-__all__ = ["ConfigModel", "ConfigSchema", "ConfigVariant"]
+__all__ = ["ConfigFileSections", "ConfigModel", "ConfigSchema", "ConfigVariant"]
+
+
+@dataclass(frozen=True)
+class ConfigFileSections:
+    """Ключ шаблона файлов и секция, куда загрузчик помещает их содержимое."""
+
+    source: str
+    target: str
 
 
 @dataclass(frozen=True)
@@ -26,6 +34,7 @@ class ConfigModel(BaseModel):
     """Корень конфигурации передаёт выбор моделей; загрузчик не знает реализаций."""
 
     CONFIG_VARIANTS: ClassVar[Mapping[type[BaseModel], ConfigVariant]] = {}
+    CONFIG_FILES: ClassVar[Sequence[ConfigFileSections]] = ()
 
 
 class ConfigSchema:
@@ -46,8 +55,15 @@ class ConfigSchema:
         self._section = section
         self._values = frozenset(values)
         self._variants: Mapping[type[BaseModel], ConfigVariant] = {}
+        self._file_sections: Sequence[ConfigFileSections] = ()
         if issubclass(model, ConfigModel):
             self._variants = model.CONFIG_VARIANTS
+            self._file_sections = model.CONFIG_FILES
+
+    @property
+    def file_sections(self) -> Sequence[ConfigFileSections]:
+        """Подключения файлов, объявленные моделью приложения."""
+        return self._file_sections
 
     def apply(self, tree: DictConfig) -> None:
         sections = self._sections(tree)

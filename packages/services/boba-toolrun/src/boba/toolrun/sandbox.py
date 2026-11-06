@@ -65,7 +65,7 @@ from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
 
 __all__ = [
     "CallSurface",
-    "PluginImage",
+    "PluginMount",
     "PluginOutput",
     "PluginSandbox",
     "ProcessLaunchers",
@@ -163,8 +163,8 @@ class SandboxLauncherConfig(SandboxCgroupConfig):
     provider: Literal["sandbox"] = "sandbox"
 
 
-class PluginImage(BaseModel):
-    """Каталог данных плагина из `images` конфига: `путь:точка`. Путь —
+class PluginMount(BaseModel):
+    """Каталог данных плагина из `mounts` конфига: `путь:точка`. Путь —
     от каталога программы (ProgramRoot.located) либо абсолютный, точка —
     абсолютный путь внутри песочницы."""
 
@@ -182,7 +182,7 @@ class PluginImage(BaseModel):
         path, separator, target = value.partition(":")
         if not separator:
             msg = (
-                f"[sandbox] images expects entries `path:target`, got {value!r} "
+                f"[sandbox] mounts expects entries `path:target`, got {value!r} "
                 "without the target inside the sandbox"
             )
             raise ValueError(msg)
@@ -191,10 +191,10 @@ class PluginImage(BaseModel):
 
 
 class PluginSandbox(BaseModel):
-    """Секция [sandbox] файла conf/plugins/<id>.toml: что и как запускать.
+    """Секция [sandbox] файла plugins/<id>.conf: что и как запускать.
 
     program — каталог программы плагина (бинд в /plugin), rootfs — ext4-образ
-    корня, images — каталоги данных `каталог:точка`. Пути относительные —
+    корня, mounts — каталоги данных `каталог:точка`. Пути относительные —
     от каталога программы сервиса (ProgramRoot.located), абсолютные — как
     есть. workspace — образ рабочего каталога пользователя. Сеть плагин
     объявляет манифестом. Таблицы host/isolation/limits/run/zygote
@@ -205,7 +205,7 @@ class PluginSandbox(BaseModel):
 
     program: str = Field(min_length=1)
     rootfs: str = Field(min_length=1)
-    images: tuple[PluginImage, ...] = ()
+    mounts: tuple[PluginMount, ...] = ()
     workspace: bool = False
     host: dict[str, Any] = Field(default_factory=dict)
     isolation: dict[str, Any] = Field(default_factory=dict)
@@ -243,7 +243,7 @@ class SandboxDefaults:
     KRB5_CONF: ClassVar[str] = "/etc/krb5.conf"
     """Куда плагину с сетью кладётся krb5.conf процесса: нужен для билетов."""
     CA_FILE: ClassVar[str] = "/etc/ssl/certs/ca-certificates.crt"
-    """Куда плагину с сетью кладётся CA-файл контура ([paths].ca_file)."""
+    """Куда плагину с сетью кладётся CA-файл контура ([tls].ca_file)."""
 
     HOST: ClassVar[dict[str, Any]] = {
         "stderr_tail_bytes": 4096,
@@ -309,15 +309,17 @@ class SandboxDefaults:
     def network_env(self) -> dict[str, str]:
         return {TlsConfig.CA_ENV: self.CA_FILE}
 
-    def images(self, sandbox: PluginSandbox) -> list[str]:
+    def mounts(self, sandbox: PluginSandbox) -> list[str]:
         """Каталог программы плагина в /plugin и каталоги данных конфига —
         пути от каталога программы сервиса."""
         program = self._program.located(sandbox.program)
-        images = [f"{program}:{PluginLayout.DIR.value}"]
-        for image in sandbox.images:
-            images.append(f"{self._program.located(image.path)}:{image.target}")
+        mounts = [f"{program}:{PluginLayout.DIR.value}"]
 
-        return images
+        for mount in sandbox.mounts:
+            source = self._program.located(mount.path)
+            mounts.append(f"{source}:{mount.target}")
+
+        return mounts
 
     def profile(self, sandbox: PluginSandbox) -> dict[str, Any]:
         binaries = self._program.binaries()
@@ -332,7 +334,7 @@ class SandboxDefaults:
             "mounts": {
                 "ro": [],
                 "rw": [],
-                "images": self.images(sandbox),
+                "images": self.mounts(sandbox),
                 "tmp": self.TMP_SIZE,
             },
             "isolation": self._isolation(),
@@ -533,7 +535,7 @@ class ZygoteLaunchers(SectionLaunchers):
 
     def _composed(self, needs: PluginSandbox) -> dict[str, Any]:
         """Дефолтный профиль программы + корень, программа и данные + таблицы
-        из [sandbox] файла conf/plugins/<id>.toml."""
+        из [sandbox] файла plugins/<id>.conf."""
         data = self._defaults.profile(needs)
 
         overrides = {

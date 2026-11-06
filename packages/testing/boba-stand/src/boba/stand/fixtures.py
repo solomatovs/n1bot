@@ -144,7 +144,7 @@ def service_overlay(tmp_path_factory: pytest.TempPathFactory) -> ConfigOverlay:
     for name in ServiceData:
         (data / name.value).mkdir()
 
-    base = {"paths.data_dir": str(data)}
+    base = {"data": str(data)}
 
     return ConfigOverlay(StandApp.MCP.config_files().loader(), base)
 

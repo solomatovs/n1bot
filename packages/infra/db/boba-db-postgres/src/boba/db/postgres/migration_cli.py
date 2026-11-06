@@ -46,7 +46,7 @@ class MigrationSources(Protocol):
 class MigrationConfig(MigrationLocation):
     """Минимальные секции команды migrate, включая окружение Kerberos."""
 
-    paths: PathsConfig
+    paths: PathsConfig = Field(alias="data")
     tls: TlsConfig = Field(default_factory=TlsConfig)
 
 
@@ -81,7 +81,7 @@ class ApplicationMigrations:
             options = MigrationOptions()
 
         raw = ConfigLoader(paths, schema=self._schema).load()
-        instance = bind(raw, "app.paths", PathsConfig)
+        instance = bind(raw, "app.data", PathsConfig)
         tls = bind(raw, "app.tls", TlsConfig)
         InstanceLayout(paths[0].resolve().parent, instance, tls).apply()
         targets = await self.targets(

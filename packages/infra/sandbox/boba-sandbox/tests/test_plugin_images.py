@@ -1,6 +1,6 @@
 """Образы корней плагинов: точки монтирования данных обязаны быть в образе.
 
-Каталоги моделей плагина называет его конфиг (images), а корень плагина
+Каталоги моделей плагина называет его конфиг (mounts), а корень плагина
 read-only: нет пустого каталога в образе — bwrap не создаст его и секция не
 поднимется. Сборщик такие каталоги создаёт по декларациям пакетов, тест
 сверяет образ с конфигом.
@@ -37,8 +37,8 @@ class DataPlugins:
 
     def targets(self, plugin_id: str) -> list[str]:
         targets: list[str] = []
-        for image in RUNTIME.plugin_sandbox(plugin_id).images:
-            targets.append(image.target)
+        for mount in RUNTIME.plugin_sandbox(plugin_id).mounts:
+            targets.append(mount.target)
 
         return targets
 

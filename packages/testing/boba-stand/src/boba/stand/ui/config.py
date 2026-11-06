@@ -31,9 +31,8 @@ from pathlib import Path
 from typing import Any, ClassVar, Protocol
 
 from omegaconf import DictConfig, OmegaConf
-from pydantic import ValidationError
 
-from boba.config import ConfigError
+from boba.config import ConfigError, bind
 from boba.core.mcp_names import McpToolNames
 from boba.sandbox.paths import ProgramDir, ProgramRoot, ProgramRoots
 from boba.stand.site import StandConfigEnv, StandConfigPaths
@@ -299,11 +298,11 @@ class StandApp(StrEnum):
 
 class RuntimeLayout(StrEnum):
     """Что стенды берут из конфигов плагинов сервиса: базовый корень песочницы
-    — корень shell-плагина, а конфиги — те, что уходят в образ mcp."""
+    — корень shell-плагина, а конфиги — из каталога экземпляра MCP."""
 
     SHELL_PLUGIN = "bash"
-    PLUGIN_CONFS = "packages/apps/boba-mcp/conf/plugins"
-    CONF_SUFFIX = ".toml"
+    PLUGIN_CONFS = "compose/mcp/conf/plugins"
+    CONF_SUFFIX = ".conf"
     SANDBOX = "sandbox"
 
 
@@ -314,7 +313,7 @@ class StandRuntime:
     Его называет BOBA_RUNTIME окружения тестов — тот же каталог runtime/, по
     которому сервис из исходников собирает профили песочницы (ProgramRoots),
     поэтому от положения дерева исходников он не зависит. Пути корня и
-    каталогов данных плагина стенд берёт из его конфига в пакете boba-mcp
+    каталогов данных плагина стенд берёт из его конфига в экземпляре MCP
     так же, как сервер, и разрешает от того же каталога программы. Создают
     его стенды песочницы и зигот (boba.stand.zygote); тесты берут готовый
     объект оттуда.
@@ -354,8 +353,12 @@ class StandRuntime:
             raise StandError(msg) from exc
 
         try:
-            return PluginSandbox.model_validate(table[RuntimeLayout.SANDBOX.value])
-        except (KeyError, ValidationError) as exc:
+            section = OmegaConf.create(
+                {RuntimeLayout.SANDBOX.value: table[RuntimeLayout.SANDBOX.value]}
+            )
+
+            return bind(section, RuntimeLayout.SANDBOX.value, PluginSandbox)
+        except (KeyError, ConfigError) as exc:
             msg = (
                 f"stand runtime: {path} expects a [sandbox] table with program "
                 f"and rootfs: {exc}"
@@ -366,13 +369,15 @@ class StandRuntime:
         """Образ корня плагина по его конфигу: make build APP=runtime."""
         return self._program.located(self.plugin_sandbox(plugin_id).rootfs)
 
-    def plugin_images(self, plugin_id: str) -> tuple[str, ...]:
+    def plugin_mounts(self, plugin_id: str) -> tuple[str, ...]:
         """Каталоги данных плагина `каталог:точка` по его конфигу."""
-        images: list[str] = []
-        for image in self.plugin_sandbox(plugin_id).images:
-            images.append(f"{self._program.located(image.path)}:{image.target}")
+        mounts: list[str] = []
 
-        return tuple(images)
+        for mount in self.plugin_sandbox(plugin_id).mounts:
+            source = self._program.located(mount.path)
+            mounts.append(f"{source}:{mount.target}")
+
+        return tuple(mounts)
 
     @property
     def workspace_template(self) -> Path:
@@ -734,7 +739,7 @@ class ServiceStand(StandService):
 
 
 class StandEnv:
-    """Свой каталог данных ([paths].data_dir) и секция [env] наложения
+    """Свой каталог данных (data) и секция [env] наложения
     приложения стенда: порт, имя инстанса и способ запуска инструментов.
     Создают конфиги стенда на запись; каталоги данных, которые приложение
     ждёт готовыми, заводит put."""
@@ -761,7 +766,7 @@ class StandEnv:
         if sandbox:
             launcher = "sandbox"
 
-        overlay.set(("paths", "data_dir"), str(self._data_dir))
+        overlay.set(("data",), str(self._data_dir))
         overlay.set(("server", "port"), port)
         overlay.set(("cluster", "node_id"), f"stand{port}")
         overlay.set(("tool_launcher", "provider"), launcher)

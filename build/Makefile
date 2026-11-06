@@ -21,7 +21,7 @@ OUT_MCP         := $(OUT)/boba-mcp
 OUT_BOBA        := $(OUT)/boba
 OUT_AID         := $(OUT)/boba-aid
 AID_ASSETS      := $(ROOT)/packages/apps/boba-aid/assets
-PLUGIN_CONF_DIR := $(ROOT)/packages/apps/boba-mcp/conf/plugins
+PLUGIN_CONF_DIR ?= $(ROOT)/compose/mcp/conf/plugins
 
 .DEFAULT_GOAL   := help
 .ONESHELL:
@@ -149,12 +149,12 @@ aid_DEST        := $(OUT_AID)/bin/boba-aid.dist
 # группа плагинов — одна программа над несколькими плагинами: `run <id> <подкоманда>`
 plugins_ENTRY   := boba/sandbox/program.py
 
-# плагины, их программы и корни — из конфигов, уходящих в образ mcp: строки
-# `program = "plugins/<группа>"` и `rootfs = "rootfs/<имя>.ext4"` секции [sandbox]
-PLUGIN_MAP      := $(shell cd $(PLUGIN_CONF_DIR) && for conf in *.toml; do \
-                       program=$$(sed -n 's|^ *program *= *"plugins/\([^"]*\)".*|\1|p' "$$conf"); \
-                       rootfs=$$(sed -n 's|^ *rootfs *= *"rootfs/\([^"]*\)\.ext4".*|\1|p' "$$conf"); \
-                       printf '%s:%s:%s ' "$${conf%.toml}" "$$program" "$$rootfs"; done)
+# плагины, их программы и корни — из конфигов экземпляра: строки
+# program и rootfs секции [sandbox]: суффиксы plugins/<группа> и rootfs/<имя>.ext4
+PLUGIN_MAP      := $(shell cd $(PLUGIN_CONF_DIR) && for conf in *.conf; do \
+                       program=$$(sed -n 's|^ *program *= *"[^"]*plugins/\([^"/]*\)".*|\1|p' "$$conf"); \
+                       rootfs=$$(sed -n 's|^ *rootfs *= *"[^"]*rootfs/\([^"/]*\)\.ext4".*|\1|p' "$$conf"); \
+                       printf '%s:%s:%s ' "$${conf%.conf}" "$$program" "$$rootfs"; done)
 PLUGINS         := $(foreach e,$(PLUGIN_MAP),$(word 1,$(subst :, ,$(e))))
 GROUPS          := $(sort $(foreach e,$(PLUGIN_MAP),$(word 2,$(subst :, ,$(e)))))
 ROOTFS          := $(sort $(foreach e,$(PLUGIN_MAP),$(word 3,$(subst :, ,$(e)))))
@@ -552,8 +552,6 @@ endef
 app-mcp: $(OUT)/compiled/mcp.sum $(GROUPS:%=$(OUT)/compiled/plugins-%.sum) $(ROOTFS:%=$(OUT_MCP)/rootfs/%.ext4) \
         $(OUT_MCP)/sandbox/workspace.ext4.gz $(OUT_MCP)/libexec/bwrap | prepare-os
 	@rm -rf "$(OUT_MCP)/conf/plugins"
-	mkdir -p "$(OUT_MCP)/conf"
-	cp -a "$(PLUGIN_CONF_DIR)" "$(OUT_MCP)/conf/plugins"
 	$(call program-image,$(OUT_MCP),boba-mcp,boba-build-os:$(TAG),bin/boba-mcp.dist/boba-mcp.bin,$(mcp_PORT),self-check)
 
 app-boba: $(OUT)/compiled/boba.sum | prepare-os
@@ -570,7 +568,7 @@ $(GROUPS:%=app-plugins-%): app-plugins-%: $(OUT)/compiled/plugins-%.sum
 # /plugin; оба из тех же артефактов, что у образа mcp. Корень у группы один: плагины
 # группы, назвавшие разные корни, такого образа не дают
 $(GROUPS:%=app-plugins-%-image): app-plugins-%-image: $(OUT)/compiled/plugins-%.sum
-	@$(if $(word 2,$(call group-rootfs,$*)),$(error plugins-$*-image: the plugins of group $* name different roots: $(foreach p,$(call group-plugins,$*),$(p) names rootfs/$(word 3,$(subst :, ,$(filter $(p):$*:%,$(PLUGIN_MAP)))).ext4;) one image carries one root, give the group one rootfs in plugins/*.toml))
+	@$(if $(word 2,$(call group-rootfs,$*)),$(error plugins-$*-image: the plugins of group $* name different roots: $(foreach p,$(call group-plugins,$*),$(p) names rootfs/$(word 3,$(subst :, ,$(filter $(p):$*:%,$(PLUGIN_MAP)))).ext4;) one image carries one root, give the group one rootfs in plugins/*.conf))
 	$(DOCKER_BUILD) $(FRESH) --network none -f $(BUILD)/plugin.Dockerfile \
 	    --build-arg ROOTFS=boba-build-rootfs-$(call group-rootfs,$*):$(TAG) \
 	    --tag boba-plugins-$*:$(TAG) "$(OUT_MCP)/plugins/$*"

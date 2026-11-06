@@ -79,7 +79,7 @@ from boba.tool_io.chain import CallAmbient
 from boba.toolrun.hosted import DirectCalls
 from boba.toolrun.injected import InjectedConfig
 from boba.toolrun.launchers import ToolLaunchers
-from boba.toolrun.plugins import PluginKits, ToolExecution, ToolLoader
+from boba.toolrun.plugins import PluginKits, PluginSections, ToolExecution, ToolLoader
 from boba.toolrun.registry import ToolRegistry
 from boba.toolrun.sandbox import StandardToolLaunchers
 from boba.toolrun.streams import CallJournals
@@ -110,7 +110,8 @@ class McpAppConfig(SignInSettings):
     каталоги соединений и пользователей."""
 
     db_schema: str = Field(alias="schema", min_length=1)
-    paths: PathsConfig
+    plugins: str = ""
+    paths: PathsConfig = Field(alias="data")
     tls: TlsConfig = Field(default_factory=TlsConfig)
     session: TokenConfig
     logger: dict[str, Any] = Field(default_factory=ProcessLogging().default)
@@ -119,6 +120,7 @@ class McpAppConfig(SignInSettings):
 
     AUTH_BACKENDS: ClassVar[AuthBackends] = StandardAuthBackends().registry
     LAUNCHER_BACKENDS: ClassVar = StandardToolLaunchers().registry
+    CONFIG_FILES: ClassVar = PluginSections.FILE_SECTIONS
 
     server: McpServerConfig
     mcp: McpSection
@@ -260,7 +262,14 @@ class McpHost:
             tools = loader.load()
 
             yield McpRuntime(
-                catalog, endpoints, users, sign_ins, runs, journals, params, tools
+                catalog,
+                endpoints,
+                users,
+                sign_ins,
+                runs,
+                journals,
+                params,
+                tools,
             )
 
     def _journals(self, runs: Runs) -> CallJournals:

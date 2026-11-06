@@ -1,7 +1,7 @@
 """Единственная точка перехода дерева omegaconf в pydantic-модель (bind).
 
 Ошибки:
-ConfigError — секции нет, она не таблица, её ссылки не разрешаются или она не
+ConfigError — значения нет, его ссылки не разрешаются или оно не
     сходится с моделью.
 """
 
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import TypeVar
 
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, ListConfig, OmegaConf
 from omegaconf.errors import OmegaConfBaseException
 from pydantic import BaseModel, ValidationError
 
@@ -31,15 +31,9 @@ def bind(config: DictConfig, path: str, model: type[M]) -> M:
             )
             raise ConfigError(msg)
 
-        if not isinstance(node, DictConfig):
-            got = type(node).__name__
-            msg = (
-                f"config: section [{path}] expects a table for {model.__name__}, "
-                f"got {got}"
-            )
-            raise ConfigError(msg)
-
-        data = OmegaConf.to_container(node, resolve=True)
+        data = node
+        if isinstance(node, DictConfig | ListConfig):
+            data = OmegaConf.to_container(node, resolve=True)
     except OmegaConfBaseException as exc:
         msg = f"config: resolving section [{path}] for {model.__name__} failed: {exc}"
         raise ConfigError(msg) from exc

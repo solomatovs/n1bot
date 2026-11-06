@@ -8,7 +8,7 @@ StreamGroupsConfigError — настройки потоков отсутству
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Coroutine, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
@@ -16,7 +16,7 @@ from omegaconf import DictConfig, OmegaConf
 from pydantic import BaseModel, ConfigDict
 
 from boba.access import ToolAccess, ToolGrants, ToolPolicy
-from boba.config import ConfigError, bind
+from boba.config import ConfigError, ConfigFileSections, bind
 from boba.core.types import StringList
 from boba.identity.context import CallContexts
 from boba.tool_io.chain import CallAmbient
@@ -57,6 +57,9 @@ class PluginSections:
     """
 
     SECTION: ClassVar[str] = "tool"
+    FILE_SECTIONS: ClassVar[tuple[ConfigFileSections, ...]] = (
+        ConfigFileSections("plugins", SECTION),
+    )
 
     def __init__(self, raw: DictConfig) -> None:
         self._raw = raw
@@ -111,7 +114,7 @@ class PluginKits:
     """Комплекты плагинов процесса из его конфига.
 
     Создаёт его провайдер процесса со способом запуска. load() получает
-    манифесты включённых плагинов от их программ одновременно. Таблицы
+    манифесты включённых плагинов от их программ по очереди. Таблицы
     подготавливает отдельная команда migrate. Ошибка включённого плагина
     останавливает сборку процесса с именем плагина и причиной.
     """
@@ -121,29 +124,17 @@ class PluginKits:
         self._launchers = launchers
 
     async def load(self) -> dict[str, PluginKit]:
-        ids = list(self._sections.ids())
-
-        enabled: list[tuple[str, PluginMeta, dict[str, Any]]] = []
-        for plugin_id in ids:
+        kits: dict[str, PluginKit] = {}
+        for plugin_id in self._sections.ids():
             meta = self._sections.meta(plugin_id)
             if not meta.enable:
                 continue
 
-            enabled.append((plugin_id, meta, self._sections.values(plugin_id)))
-
-        started = await asyncio.gather(*self._started(enabled))
-
-        kits: dict[str, PluginKit] = {}
-        for kit in started:
+            values = self._sections.values(plugin_id)
+            kit = await self._start(plugin_id, meta, values)
             kits[kit.launch.id] = kit
 
         return kits
-
-    def _started(
-        self, enabled: Sequence[tuple[str, PluginMeta, dict[str, Any]]]
-    ) -> Iterator[Coroutine[Any, Any, PluginKit]]:
-        for plugin_id, meta, values in enabled:
-            yield self._start(plugin_id, meta, values)
 
     async def _start(
         self, plugin_id: str, meta: PluginMeta, values: dict[str, Any]

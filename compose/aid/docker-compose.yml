@@ -23,7 +23,7 @@ services:
     volumes:
       - ./conf/config.toml:/app/boba/conf/config.toml:ro
       - ./conf/krb:/app/boba/conf/krb:ro
-      - ./data:/app/boba/data:rw
+      - ${BOBA_RUNTIME}/data/compose/aid:/app/boba/data:rw
     ports:
       - "8501"
       - "8502"

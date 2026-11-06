@@ -73,8 +73,8 @@ SRC_PACKAGES = _src_packages()
 class SandboxLayout:
     """Монтирования и env: код пакетов кладётся поверх собранного site.
 
-    Каталоги моделей плагина называет его конфиг (images): стенд берёт их
-    оттуда же, что сервер (StandRuntime.plugin_images); корень несёт только
+    Каталоги моделей плагина называет его конфиг (mounts): стенд берёт их
+    оттуда же, что сервер (StandRuntime.plugin_mounts); корень несёт только
     пустые точки."""
 
     @staticmethod
@@ -166,7 +166,7 @@ def sandbox_profile(
         "rootfs": str(RUNTIME.plugin_rootfs(plugin_id)),
         "mounts": {
             "ro": tuple(SandboxLayout.ro_binds(docs_dir)),
-            "images": RUNTIME.plugin_images(plugin_id),
+            "images": RUNTIME.plugin_mounts(plugin_id),
             "rw": (),
             "tmp": "256M",
         },
@@ -210,7 +210,7 @@ def section_profile(raw: DictConfig, plugin_id: str) -> SandboxProfile:
     """Профиль плагина той же сборкой, что у приложения: base + манифест.
 
     Образы, workspace и libexec берутся из каталога программы прогона
-    (BOBA_RUNTIME), каталог данных — из [paths] конфига.
+    (BOBA_RUNTIME), каталог данных — из параметра data конфига.
     """
     return ZygoteLaunchers(
         raw, bind(raw, "tool_launcher", SandboxCgroupConfig)
