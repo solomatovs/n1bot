@@ -18,6 +18,7 @@ __pycache__
 !/docs/llm-registry-and-agents-plan.md
 !/docs/extensibility-audit.md
 !/docs/knowledge-schema.sql
+!/docs/configuration-regrouping.md
 !/docs/psql-queries/
 !/docs/migrations/
 /docs/psql-queries/*.log
