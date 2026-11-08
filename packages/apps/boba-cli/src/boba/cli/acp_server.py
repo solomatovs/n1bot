@@ -4571,9 +4571,7 @@ class AcpAgent(AcpAgentProtocol):
             ),
         )
 
-        methods: list[AuthMethod] | None = None
-        if self._auth_methods:
-            methods = list(self._auth_methods)
+        methods: list[AuthMethod] = list(self._auth_methods)
 
         offered = schema.AgentCapabilities(
             session=session,

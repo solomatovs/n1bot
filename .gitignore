@@ -12,6 +12,8 @@ __pycache__
 !/docs/developer-guide.md
 !/docs/codebase-audit.md
 !/docs/authentication-review.md
+!/docs/acp-v2-model-configuration.md
+!/docs/acp-v2-sdk-auth-implementation.md
 !/docs/migration-from-dev.md
 !/docs/knowledge-graph-plan.md
 !/docs/mcp-database-endpoints-implementation.md

@@ -26,7 +26,6 @@ from test_cli_serve import Connected, HistoryStand, Profile, StandTools
 
 from boba.aid.config.app import AppConfig
 from boba.cli.config.models import ServeHistory
-from boba.cli.serve import ServeMark
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.stand.agent import FakeServer
@@ -319,7 +318,6 @@ class ServeRun:
         )
         self._connected = Connected(transport, StandTools())
         await self.connected.initialize()
-        await self.connected.conn.login(method_id=ServeMark.AUTH_METHOD)
         for _ in range(self.SESSIONS):
             opened = await self.connected.new_session(cwd)
             self.sessions.append(opened.session_id)

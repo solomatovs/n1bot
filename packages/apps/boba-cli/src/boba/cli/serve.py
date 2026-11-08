@@ -141,14 +141,12 @@ logger = logging.getLogger(__name__)
 
 class ServeMark(StrEnum):
     """Как служба называет себя: имя на странице входа, соли ключей токенов
-    и печатей, имя ресурса ACP и способа входа в initialize, проба
-    готовности."""
+    и печатей, имя ресурса ACP, проба готовности."""
 
     NAME = "boba-agent"
     TOKEN_SALT = "boba-agent-access-token"  # noqa: S105 — соль вывода ключа, не секрет
     SEALED_SALT = "boba-agent-sealed-values"
     RESOURCE = "acp"
-    AUTH_METHOD = "boba-oauth"
     HEALTH = "/health"
     STORE_THREAD = "history-store"
 
@@ -706,16 +704,22 @@ class ServeHost:
 
     def __init__(self, config: ServeConfig, version: str) -> None:
         self._config = config
-        section = config.agent
-        self._profiles = AgentProfiles(section.profiles)
-        self._agents = ServeAgents(
-            section, config.history, version, self._auth_methods()
-        )
-        self._sign_ins = self._signed(config, self._profiles, self._agents)
 
-    def resource(self) -> str:
-        section = self._config.agent
-        return f"{self._config.server.public_url.rstrip('/')}{section.path}"
+        self._profiles = AgentProfiles(config.agent.profiles)
+        self._agents = ServeAgents(
+            config.agent,
+            config.history,
+            version,
+            self._auth_methods(),
+        )
+        self._sign_ins = self._signed(
+            config,
+            self._profiles,
+            self._agents,
+        )
+
+    def endpoint(self) -> str:
+        return f"{self._config.server.public_url.rstrip('/')}{self._config.agent.path}"
 
     def app(self) -> Starlette:
         """Приложение службы: маршруты входа, адрес ACP и проба готовности под
@@ -723,7 +727,7 @@ class ServeHost:
         section = self._config.agent
         auth = self._auth()
         provider = auth.resource(ServeMark.RESOURCE, [])
-        metadata = build_resource_metadata_url(AnyHttpUrl(self.resource()))
+        metadata = build_resource_metadata_url(AnyHttpUrl(self.endpoint()))
         router = ServeRouter(self._agents)
         endpoint = AcpEndpoint(router, CallerTokens(), section.idle_sec)
         guarded = RequireAuthMiddleware(endpoint, [], metadata)
@@ -761,20 +765,8 @@ class ServeHost:
         await self._agents.stop()
 
     def _auth_methods(self) -> list[schema.AgentAuthMethod]:
-        """Способ входа в ответе initialize: токен службы, который адрес ACP
-        проверил до подключения; auth/login с ним принимается сразу."""
-        metadata = build_resource_metadata_url(AnyHttpUrl(self.resource()))
-        method = schema.AgentAuthMethod(
-            method_id=ServeMark.AUTH_METHOD,
-            name="Boba sign-in",
-            description=(
-                f"OAuth 2.1 bearer token of {self._config.server.public_url}, "
-                "checked on every HTTP request and on the WebSocket handshake; "
-                f"resource metadata: {metadata}"
-            ),
-        )
-
-        return [method]
+        """Отдельного ACP-входа нет: Bearer проверяется до initialize."""
+        return []
 
     async def _health(self, request: Request) -> Response:
         """Проба готовности: процесс слушает; число открытых сессий."""
@@ -787,7 +779,10 @@ class ServeHost:
         """Способы входа процесса из [auth]: пароли, SPNEGO и proxy с их
         провайдерами ролей и профилей."""
         services = AuthServices(
-            Ldap3Directory(), profiles, roles, config.session.auth_secret
+            Ldap3Directory(),
+            profiles,
+            roles,
+            config.session.auth_secret,
         )
         return config.AUTH_BACKENDS.build(config.auth, services)
 
@@ -812,7 +807,7 @@ class ServeHost:
             self._config.auth_entries(ProxyAuthConfig),
             RegisteredClients(sealed, section.clients),
             sealed,
-            [self.resource()],
+            [self.endpoint()],
             sessions=SessionService(self._agents, self._profiles),
         )
 
@@ -821,7 +816,7 @@ class ServeHost:
             server,
             tokens,
             ServeMark.NAME,
-            {ServeMark.RESOURCE: self.resource()},
+            {ServeMark.RESOURCE: self.endpoint()},
         )
 
     async def serve(self) -> None:
@@ -843,7 +838,7 @@ class ServeHost:
                 "boba serve listens on %s:%d, acp at %s",
                 server.host,
                 server.port,
-                self.resource(),
+                self.endpoint(),
             )
             await listener.serve_until_stopped()
         finally:

@@ -2,9 +2,9 @@
 ACP → initialize → session/new с выбором профиля агента настройкой `model` →
 ход на фейковой модели → ответ, по WebSocket и по streamable HTTP. Сессии —
 потоки процесса службы, история — в Postgres стенда своим подключением
-(вход билетом Kerberos из кэша стенда). Проверяется: способ входа службы в
-initialize и auth/login; инструмент клиента по MCP-over-ACP (mcp/message
-туда и обратно), в том числе у двух вкладок одного пользователя и разных —
+(вход билетом Kerberos из кэша стенда). Проверяется: пустой authMethods в
+initialize и работа сессий без auth/login; инструмент клиента по MCP-over-ACP
+(mcp/message туда и обратно), в том числе у двух вкладок одного пользователя и разных —
 каждый запрос в своё подключение; профили только по ролям; чужая сессия не
 видна и не открывается; session/close и закрытие подключения закрывают
 сессии; предел сессий; подключение HTTP, брошенное клиентом без DELETE,
@@ -39,7 +39,6 @@ from websockets.exceptions import InvalidStatus
 from boba.aid.config.app import AppConfig
 from boba.auth.providers.proxy import ProxySignature
 from boba.cli.config.models import ServeHistory
-from boba.cli.serve import ServeMark
 from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
@@ -434,7 +433,7 @@ class TestTurns:
         connected = http(stand, reply.json()["access_token"])
         try:
             initialized = await connected.initialize()
-            assert initialized.auth_methods is not None
+            assert initialized.auth_methods == []
         finally:
             await connected.close()
 
@@ -445,11 +444,7 @@ class TestTurns:
         connected = await websocket(stand, await stand.token("alice", "dev"))
         try:
             initialized = await connected.initialize()
-            assert initialized.auth_methods is not None
-            method = initialized.auth_methods[0]
-            assert isinstance(method, schema.AgentAuthMethod)
-            assert method.method_id == ServeMark.AUTH_METHOD
-            await connected.conn.login(method_id=ServeMark.AUTH_METHOD)
+            assert initialized.auth_methods == []
 
             opened = await connected.new_session(tmp_path)
             current, offered = model_choice(opened)
