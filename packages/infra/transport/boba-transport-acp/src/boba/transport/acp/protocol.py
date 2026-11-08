@@ -741,7 +741,7 @@ class AgentSide:
         self._receivers: dict[str, Callable[[McpMessage], Awaitable[None]]] = {}
         self._outcomes: TypeAdapter[McpOutcome] = TypeAdapter(McpOutcome)
         self._connection = Connection(self, transport, listening=listening)
-        _, self._router = AgentSideConnection.attach(
+        self._sdk, self._router = AgentSideConnection.attach(
             functools.partial(agent_factory, self), self._connection
         )
 
@@ -835,7 +835,7 @@ class AgentSide:
         method = BobaExtension.TOOL_SOURCE.value
         params = request.model_dump(mode="json", by_alias=True, exclude_none=True)
         try:
-            raw = await self._connection.send_request(method, params)
+            raw = await self._sdk.send_extension_request(method, params)
         except ConnectionError as exc:
             raise AcpTransportError(
                 f"Could not send {method} for call '{request.tool_call_id}' of "
@@ -864,51 +864,38 @@ class AgentSide:
             await self._connection.main_loop()
 
 
-class ClientConnection(ClientSideConnection):
-    """Наследник ClientSideConnection SDK на его закрытых именах. Запрос
-    mcp/message отдаёт answer, запрос `_boba/tool_source` — source,
-    остальное — роутеру SDK; notify шлёт уведомление mcp/message."""
+class ToolSourceClient:
+    """Обработчик `_boba/tool_source` для публичного API расширений SDK.
+
+    Остальные методы, расширения и уведомления остаются у исходного клиента.
+    Делегирование сохраняет идентичность заглушек Client: SDK отличает их от
+    реализованных обработчиков и отвечает method not found.
+    """
 
     def __init__(
         self,
         client: Client,
-        answer: Callable[[McpMessage], Awaitable[McpOutcome]],
         source: Callable[[ToolSourceRequest], Awaitable[ToolSourceReply]],
-        input_stream: asyncio.StreamWriter | Transport,
-        output_stream: asyncio.StreamReader | None,
-        **connection_kwargs: Any,
     ) -> None:
         self._client = client
-        self._answer = answer
         self._source = source
-        self._state = InitializationState()
-        self._router = _ClientRouter(client, self._state)
-        self._conn = open_connection(
-            self._receive, input_stream, output_stream, **connection_kwargs
-        )
 
-    async def _receive(
-        self, method: str, params: JsonValue | None, is_notification: bool
-    ) -> JsonValue | None:
-        await self._state.require(method)
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._client, name)
 
-        mcp_request = not is_notification and method == CLIENT_METHODS["mcp_message"]
-        if mcp_request:
-            outcome = await self._answer(McpMessage.model_validate(params))
-            return outcome.model_dump(mode="json", by_alias=True, exclude_unset=True)
-
-        source_request = not is_notification and method == BobaExtension.TOOL_SOURCE
-        if source_request:
-            return await self._sourced(params)
-
-        return await self._router(method, params, is_notification)
-
-    async def _sourced(self, params: JsonValue | None) -> JsonValue:
-        """Ответ на `_boba/tool_source` обработчиком source.
+    async def handle_extension_request(self, method: str, params: Any) -> Any:
+        """Источник вызова — source, другие расширения — исходному клиенту.
 
         Ошибки:
-        RequestError — параметры не по форме запроса (-32602).
+        RequestError — неизвестный метод (-32601), параметры источника не
+            по форме (-32602), либо ошибка обработчика клиента.
         """
+        if method != BobaExtension.TOOL_SOURCE.value:
+            handler = getattr(self._client, "handle_extension_request", None)
+            if handler is None:
+                raise RequestError.method_not_found(method)
+            return await handler(method, params)
+
         try:
             request = ToolSourceRequest.model_validate(params)
         except ValidationError as exc:
@@ -923,6 +910,43 @@ class ClientConnection(ClientSideConnection):
         reply = await self._source(request)
 
         return reply.model_dump(mode="json", by_alias=True, exclude_none=True)
+
+
+class ClientConnection(ClientSideConnection):
+    """Адаптер rc3 для mcp/message с serverId/requestId вместо connectionId.
+
+    Только этот конверт обходит роутер SDK; расширения проходят через его
+    handle_extension_request. Закрытые имена SDK нужны для MCP-адаптера;
+    notify шлёт уведомление mcp/message.
+    """
+
+    def __init__(
+        self,
+        client: Client,
+        answer: Callable[[McpMessage], Awaitable[McpOutcome]],
+        source: Callable[[ToolSourceRequest], Awaitable[ToolSourceReply]],
+        input_stream: asyncio.StreamWriter | Transport,
+        output_stream: asyncio.StreamReader | None,
+        **connection_kwargs: Any,
+    ) -> None:
+        self._answer = answer
+        self._state = InitializationState()
+        self._router = _ClientRouter(ToolSourceClient(client, source), self._state)
+        self._conn = open_connection(
+            self._receive, input_stream, output_stream, **connection_kwargs
+        )
+
+    async def _receive(
+        self, method: str, params: JsonValue | None, is_notification: bool
+    ) -> JsonValue | None:
+        await self._state.require(method)
+
+        mcp_request = not is_notification and method == CLIENT_METHODS["mcp_message"]
+        if mcp_request:
+            outcome = await self._answer(McpMessage.model_validate(params))
+            return outcome.model_dump(mode="json", by_alias=True, exclude_unset=True)
+
+        return await self._router(method, params, is_notification)
 
     def connected(self) -> bool:
         """Соединение живо: SDK не видел конца потока агента и его не закрывали."""

@@ -67,8 +67,9 @@ HTTP/WS и MCP-over-ACP — Active RFD. Зафиксировать исполь�
 
 - [protocol.py](../packages/infra/transport/boba-transport-acp/src/boba/transport/acp/protocol.py):
   AgentSide — проверки перед роутером SDK и MCP-over-ACP; ClientConnection —
-  адаптер клиентской стороны; BatchTransport — текущий stdio с пакетами;
-  BobaExtension — имена собственных расширений.
+  адаптер клиентской стороны; ToolSourceClient — обработчик расширения через
+  API SDK; BatchTransport — текущий stdio с пакетами; BobaExtension — имена
+  собственных расширений.
 - [serve.py](../packages/apps/boba-cli/src/boba/cli/serve.py):
   ServeHost — ASGI/OAuth-сборка и authMethods; CallerTokens — текущая привязка
   к собственному JWT; AcpEndpoint — проверка владельца и активности соединения;
@@ -488,11 +489,19 @@ URL из непроверенных iss/jku или перебирать чужи
 
 ### 7.1. Публичные расширения
 
-AgentSide.tool_source перевести на AgentSideConnection.send_extension_request.
-Приём _boba/tool_source перенести в handle_extension_request клиентского
-обработчика. Общую обработку расширений не дублировать в ClientConnection.
-Проверки собственных payload сохранить. Современный MCP-адаптер пока отделить,
-но не удалять: rc3 ожидает connectionId вместо serverId/requestId.
+Выполнено 2026-11-08. AgentSide.tool_source использует
+AgentSideConnection.send_extension_request. Приём _boba/tool_source идёт через
+ToolSourceClient.handle_extension_request, вызываемый роутером SDK. Ветка
+перехвата этого расширения удалена из ClientConnection. Проверки собственного
+payload и ответа сохранены; другие расширения и уведомления передаются
+исходному клиенту, неизвестный метод без обработчика получает -32601.
+
+MCP-адаптер сохраняется: rc3 ожидает connectionId вместо serverId/requestId.
+Для него ClientConnection пока использует _ClientRouter, InitializationState
+и open_connection; полной замены этих внутренних API в данном пункте нет.
+
+Проверено: 45 транспортных тестов и 5 проверок stdio/HTTP/WebSocket/AID,
+включая обычный клиент SDK, ошибки расширений, источник вызова и replay истории.
 
 ### 7.2. URL-elicitation через готовый SDK
 

@@ -14,7 +14,13 @@ import pytest
 from acp._transport import memory_transport_pair
 from acp.connection import Connection, JsonValue
 from acp.exceptions import RequestError
-from acp.experimental.v2 import Agent, AgentSideConnection, Client, schema
+from acp.experimental.v2 import (
+    Agent,
+    AgentSideConnection,
+    Client,
+    ClientSideConnection,
+    schema,
+)
 from acp.experimental.v2._router import MethodRouter
 from acp.experimental.v2.meta import AGENT_METHODS, CLIENT_METHODS
 from mcp_types.jsonrpc import ErrorData
@@ -23,9 +29,11 @@ from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 from boba.stand.acp_frames import Frames
 from boba.transport.acp.protocol import (
     AcpErrorCode,
+    AcpTransportError,
     AcpVersion,
     AgentSide,
     BatchTransport,
+    BobaExtension,
     ClientConnection,
     McpErrorOutcome,
     McpMessage,
@@ -497,6 +505,108 @@ class TestToolSource:
 
         assert reply == ToolSourceReply(source={"tool": "pg_query"})
         assert acp_pair.stand_client.sourced == [self.REQUEST]
+
+    @pytest.mark.parametrize("params", [None, {}, {"sessionId": "s-1"}])
+    async def test_invalid_source_request_is_refused(
+        self, acp_pair: AcpPair, params: JsonValue | None
+    ) -> None:
+        with pytest.raises(RequestError) as caught:
+            await acp_pair.agent.connection.send_request(
+                BobaExtension.TOOL_SOURCE.value, params
+            )
+
+        assert caught.value.code == AcpErrorCode.INVALID_PARAMS
+        assert acp_pair.stand_client.sourced == []
+
+    async def test_unknown_extension_is_refused(self, acp_pair: AcpPair) -> None:
+        with pytest.raises(RequestError) as caught:
+            await acp_pair.agent.connection.send_request("_stand/unknown", {})
+
+        assert caught.value.code == AcpErrorCode.METHOD_NOT_FOUND
+        assert acp_pair.stand_client.sourced == []
+
+    async def test_other_extensions_reach_the_original_client(
+        self, acp_pair: AcpPair, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        requests: list[tuple[str, Any]] = []
+        notifications: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
+
+        async def request(method: str, params: Any) -> Any:
+            requests.append((method, params))
+            return {"echo": params}
+
+        async def notification(method: str, params: Any) -> None:
+            await notifications.put((method, params))
+
+        monkeypatch.setattr(
+            acp_pair.stand_client, "handle_extension_request", request, raising=False
+        )
+        monkeypatch.setattr(
+            acp_pair.stand_client,
+            "handle_extension_notification",
+            notification,
+            raising=False,
+        )
+        reply = await acp_pair.agent.connection.send_request("_stand/echo", {"n": 1})
+        assert reply == {"echo": {"n": 1}}
+        assert requests == [("_stand/echo", {"n": 1})]
+
+        await acp_pair.agent.connection.send_notification("_stand/changed", {"n": 2})
+        async with asyncio.timeout(5):
+            assert await notifications.get() == ("_stand/changed", {"n": 2})
+
+        # Наше расширение по-прежнему получает source, а не чужой обработчик.
+        assert await acp_pair.agent.tool_source(self.REQUEST) == ToolSourceReply(
+            source={"tool": "pg_query"}
+        )
+        assert len(requests) == 1
+
+    async def test_unimplemented_sdk_method_remains_unavailable(
+        self, acp_pair: AcpPair
+    ) -> None:
+        with pytest.raises(RequestError) as caught:
+            await acp_pair.agent.connection.send_request(
+                CLIENT_METHODS["session_request_permission"],
+                {
+                    "sessionId": "s-1",
+                    "title": "Allow test?",
+                    "options": [
+                        {"optionId": "allow", "name": "Allow", "kind": "allow_once"}
+                    ],
+                },
+            )
+
+        assert caught.value.code == AcpErrorCode.METHOD_NOT_FOUND
+
+    @pytest.mark.parametrize("reply", [{"source": {"tool": "plain-sdk"}}, {}, None])
+    async def test_source_from_a_plain_sdk_client(self, reply: Any) -> None:
+        class Peer:
+            async def handle_extension_request(self, method: str, params: Any) -> Any:
+                assert method == BobaExtension.TOOL_SOURCE.value
+                assert (
+                    ToolSourceRequest.model_validate(params) == TestToolSource.REQUEST
+                )
+                return reply
+
+        agent_end, client_end = memory_transport_pair()
+        agent = AgentSide(StandAgent, agent_end)
+        serving = asyncio.create_task(agent.serve())
+        try:
+            async with ClientSideConnection(Peer(), client_end) as client:
+                await client.initialize(
+                    protocol_version=AcpVersion.V2,
+                    info=schema.Implementation(name="plain-sdk", version="0"),
+                )
+                if reply and "source" in reply:
+                    assert await agent.tool_source(self.REQUEST) == ToolSourceReply(
+                        source={"tool": "plain-sdk"}
+                    )
+                else:
+                    with pytest.raises(AcpTransportError, match="expected an object"):
+                        await agent.tool_source(self.REQUEST)
+        finally:
+            await agent.connection.close()
+            await serving
 
     async def test_source_rides_the_tool_call_as_its_content(self) -> None:
         content = ToolSourceContent(source={"tool": "pg_query"}).wire()
