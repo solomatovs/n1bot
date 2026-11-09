@@ -1411,10 +1411,17 @@ class TestHandshake:
             assert session.fork is not None
             assert session.delete is not None
 
+            repeated = await handshake(conn)
+            assert repeated.protocol_version == response.protocol_version
+            assert repeated.capabilities == response.capabilities
+
             with pytest.raises(RequestError) as refused:
                 await conn.login(method_id="none")
 
             assert refused.value.code == AcpErrorCode.METHOD_NOT_FOUND
+            with pytest.raises(RequestError) as sealed:
+                await handshake(conn)
+            assert sealed.value.code == -32600
         finally:
             await conn.close()
             await boba.close_stdin()
@@ -2145,6 +2152,28 @@ class TestMcpOverAcp:
 class TestQueueAndCancel:
     QUEUED_LOG: ClassVar[str] = "waits for the next step boundary of the running turn"
 
+    async def _queue_waiting(
+        self,
+        boba: AcpProcess,
+        conn: ClientConnection,
+        session_id: str,
+        texts: Sequence[str],
+    ) -> list[asyncio.Task[schema.PromptResponse]]:
+        queued = [
+            asyncio.create_task(
+                conn.prompt(
+                    session_id=session_id,
+                    prompt=[schema.TextContentBlock(text=text)],
+                )
+            )
+            for text in texts
+        ]
+        async with asyncio.timeout(READ_TIMEOUT_SEC):
+            while sum(self.QUEUED_LOG in line for line in boba.stderr) < len(texts):
+                await asyncio.sleep(0.01)
+        assert all(not asked.done() for asked in queued)
+        return queued
+
     async def test_prompts_asked_during_a_turn_join_it_at_the_step_boundary(
         self,
         boba: AcpProcess,
@@ -2159,6 +2188,7 @@ class TestQueueAndCancel:
         client = AcpClient()
         document = boba.settings_document(mode="bypassPermissions", allow_bypass=True)
         conn = await boba.start(client, registration, document)
+        registration.progress_release.clear()
         try:
             await handshake(conn)
             session = await conn.new_session(
@@ -2170,21 +2200,15 @@ class TestQueueAndCancel:
                 "arguments": {"steps": 1, "seconds": 1.0},
             }
             first = await conn.prompt(session_id=session_id, prompt=[*call(slow)])
+            await asyncio.wait_for(
+                registration.progress_started.wait(), READ_TIMEOUT_SEC
+            )
             texts = (
                 f"{ScenarioName.ANSWER.value} two",
                 f"{ScenarioName.ANSWER.value} three",
             )
-            queued: list[asyncio.Task[schema.PromptResponse]] = []
-            for text in texts:
-                asked = conn.prompt(
-                    session_id=session_id, prompt=[schema.TextContentBlock(text=text)]
-                )
-                queued.append(asyncio.create_task(asked))
-                await asyncio.sleep(0.1)
-
-            await asyncio.sleep(0.3)
-            assert not queued[0].done()
-            assert not queued[1].done()
+            queued = await self._queue_waiting(boba, conn, session_id, texts)
+            registration.progress_release.set()
 
             second = await queued[0]
             third = await queued[1]
@@ -2192,6 +2216,7 @@ class TestQueueAndCancel:
             assert ended.stop_reason == StopReason.END_TURN
             live = self.order(client.updates_of(session_id))
         finally:
+            registration.progress_release.set()
             await conn.close()
             await boba.close_stdin()
 

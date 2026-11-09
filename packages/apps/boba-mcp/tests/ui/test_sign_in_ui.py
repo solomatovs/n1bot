@@ -34,6 +34,7 @@ from fastmcp import Client
 from fastmcp.client.auth import OAuth
 from fastmcp.client.transports import StreamableHttpTransport
 from key_value.aio.stores.memory import MemoryStore
+from omegaconf import OmegaConf
 from playwright.sync_api import Browser, Page, expect
 from pydantic import BaseModel, Field
 
@@ -677,8 +678,8 @@ class DeployedEndpoints(BaseModel):
 def deployed() -> DeployedService:
     """Развёрнутый стенд compose: адрес, клиент и ключи сервиса из его
     config.toml, пользователь с ролями — из входа proxy конфига чата. Файлы
-    читаются как TOML без разрешения ссылок: окружение и каталоги контейнера
-    у теста другие."""
+    читаются как TOML; ссылки разрешаются только в публичном URL:
+    окружение и каталоги контейнера у теста другие."""
     service_path = REPO_ROOT / "compose" / "mcp" / "conf" / "config.toml"
     chat_path = REPO_ROOT / "compose" / "aid" / "conf" / "config.toml"
     with service_path.open("rb") as handle:
@@ -687,7 +688,9 @@ def deployed() -> DeployedService:
     with chat_path.open("rb") as handle:
         chat = tomllib.load(handle)
 
-    public = str(service["server"]["public_url"]).rstrip("/")
+    public = str(
+        OmegaConf.select(OmegaConf.create(service), "server.public_url")
+    ).rstrip("/")
     try:
         health = httpx.get(f"{public}/health", timeout=10.0)
     except httpx.HTTPError as exc:
@@ -697,7 +700,7 @@ def deployed() -> DeployedService:
         pytest.fail(f"the deployed service at {public} answers {health.status_code}")
 
     catalog = DeployedEndpoints.model_validate(health.json())
-    endpoint = f"{public}{catalog.endpoints[0]}"
+    endpoint = str(httpx.URL(public).join(catalog.endpoints[0]))
 
     clients = list(service["mcp"]["clients"])
     if len(clients) != 1:

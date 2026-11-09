@@ -19,16 +19,17 @@ from boba.toolkit.manifest import PluginManifest
 from boba.toolrun.plugins import PluginMeta
 
 PLUGINS_DIR = (
-    Path(__file__).resolve().parents[3] / "apps" / "boba-mcp" / "conf" / "plugins"
+    Path(__file__).resolve().parents[4] / "compose" / "mcp" / "conf" / "plugins"
 )
 """Конфиги плагинов сервиса: по одному на плагин, имя файла — id."""
 
 
 def _ids() -> list[str]:
     ids: list[str] = []
-    for path in sorted(PLUGINS_DIR.glob("*.toml")):
+    for path in sorted(PLUGINS_DIR.glob("*.conf")):
         ids.append(path.stem)
 
+    assert ids, f"No plugin configs found in {PLUGINS_DIR}"
     return ids
 
 

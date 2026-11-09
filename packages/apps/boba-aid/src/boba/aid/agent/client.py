@@ -43,7 +43,6 @@ from uuid import UUID
 import httpx2
 from acp.exceptions import RequestError
 from acp.experimental.v2 import Client, schema
-from acp.http import create_http_stream
 from acp.http.client import AcpHttpStatusError
 from acp.transports import spawn_stdio_transport
 from mcp.client.auth.exceptions import OAuthFlowError
@@ -54,6 +53,7 @@ from boba.aid.agent.settings import AgentWorkdir, WorkdirFile
 from boba.aid.config.models import AgentServiceConfig
 from boba.aid.rendering.acp_view import SessionUpdate
 from boba.mcp_client.client import McpCaller, McpClientError
+from boba.transport.acp.http import HttpStream
 from boba.transport.acp.protocol import (
     AcpVersion,
     BobaExtension,
@@ -1270,7 +1270,7 @@ class AgentService(AgentLink):
         timeout = httpx2.Timeout(None, read=self._config.silence_timeout_sec)
         http = httpx2.AsyncClient(auth=auth, timeout=timeout)
         self._stack.push_async_callback(http.aclose)
-        transport = create_http_stream(self._url, client=http)
+        transport = HttpStream(self._url, client=http, owns_client=False)
         connection = ClientConnection(
             self._client, self._answer, self._source, transport, None
         )

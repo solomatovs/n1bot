@@ -1246,6 +1246,14 @@ async def test_controls_share_one_alignment(panel: CanvasPage) -> None:
     как в полноэкранном режиме.
     """
     await panel.show("flow.mmd")
+    # Вьювер уже нарисован, но контейнер ещё может выезжать в панель.
+    shell = await panel.page.locator(panel.SIDE).evaluate_handle(
+        "element => element.closest('.bg-card')"
+    )
+    element = shell.as_element()
+    assert element is not None
+    await element.wait_for_element_state("stable")
+    await shell.dispose()
 
     geometry = await panel.page.evaluate(
         """() => {
@@ -1285,7 +1293,7 @@ async def test_controls_share_one_alignment(panel: CanvasPage) -> None:
     if last["label"] != "close":
         raise AssertionError('last["label"] == "close"')
     if abs(last["right"] - 25) > 4:
-        raise AssertionError('abs(last["right"] - 25) <= 4')
+        raise AssertionError(f'abs(last["right"] - 25) <= 4: {geometry}')
 
 
 async def test_fullscreen_controls_are_on_the_close_line(panel: CanvasPage) -> None:

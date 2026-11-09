@@ -97,7 +97,7 @@ from boba.llm.http.ollama import MANIFEST as OLLAMA
 from boba.llm.http.openai import MANIFEST as OPENAI
 from boba.llm.onnx.chat import MANIFEST as ONNX
 from boba.llm.providers import LlmProviders, LlmProvidersError, LlmProviderTypes
-from boba.transport.acp.protocol import AgentSide, BatchTransport
+from boba.transport.acp.protocol import AgentSide, StdioTransport
 
 logger = logging.getLogger(__name__)
 
@@ -916,7 +916,7 @@ class AgentProcess:
         threads = SessionThreads(settings.sessions.max_open)
         agent = AcpAgent(assembly, info, settings.mcp, threads, ())
         reader, writer = await self._streams.open()
-        side = AgentSide(agent.attach, BatchTransport(reader, writer))
+        side = AgentSide(agent.attach, StdioTransport(reader, writer))
         self._stop.on_stop(self._stopper(agent))
         try:
             await side.serve()

@@ -328,9 +328,11 @@ class ProxyStand:
     CLIENT_ID = "aid"
     PEER = "192.0.2.10"
 
-    def __init__(self, prefix: str, *, enabled: bool = True) -> None:
+    def __init__(
+        self, prefix: str, *, enabled: bool = True, resource_path: str = "/api"
+    ) -> None:
         self.public = f"https://service.example{prefix}"
-        self.resource = f"{self.public}/api"
+        self.resource = f"{self.public}{resource_path}"
         self.config = ProxyAuthConfig(
             path="/trusted/proxy",
             secret=SecretStr(self.SECRET),
@@ -442,6 +444,36 @@ async def test_proxy_headers_issue_scoped_token_with_roles_and_profiles(
     assert proxy.users.upserts == 1
     foreign = ResourceTokens(proxy.tokens, f"{proxy.resource}/other", [])
     assert await foreign.verify_token(issued["access_token"]) is None
+
+
+@pytest.mark.parametrize("path", ["/api", "/api/", "/"])
+@pytest.mark.parametrize("entry", ["headers", "assertion"])
+async def test_registered_resource_url_is_preserved(path: str, entry: str) -> None:
+    stand = ProxyStand("/mcp", resource_path=path)
+    form = stand.form()
+    headers = {}
+    url = stand.url
+    if entry == "assertion":
+        url = f"{stand.public}/token"
+        form.update(
+            grant_type=JWT_BEARER_GRANT_TYPE,
+            assertion=ProxyAssertions(stand.SECRET, 0).issue(
+                stand.CLIENT_ID, "alice", "dev", stand.public, stand.resource
+            ),
+        )
+    else:
+        headers = stand.headers()
+    async with stand.client() as client:
+        response = await client.post(url, headers=headers, data=form)
+    assert response.status_code == 200, response.text
+    token = response.json()["access_token"]
+    verifier = ResourceTokens(stand.tokens, stand.resource, [SignInStand.PROFILE])
+    access = await verifier.verify_token(token)
+    assert access is not None
+    assert access.resource == stand.resource
+    assert access.scopes == [SignInStand.PROFILE]
+    foreign = ResourceTokens(stand.tokens, f"{stand.resource}/other", [])
+    assert await foreign.verify_token(token) is None
 
 
 @pytest.mark.parametrize(

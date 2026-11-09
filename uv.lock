@@ -117,6 +117,13 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/9c/40/f1f64b3a439ac8fe0e66208d3d5cd8c87db3c8ceac8d06864143fb2414c9/agent_client_protocol-1.0.0rc3-py3-none-any.whl", hash = "sha256:003c087eae1b03f2410f2e06bcfbaaa26ae99abbdd011c7a2183e5a699a3426f", size = 127192, upload-time = "2026-10-12T09:38:45.252Z" },
 ]
 
+[package.optional-dependencies]
+http = [
+    { name = "httpx2", extra = ["http2"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "starlette", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "websockets", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
+
 [[package]]
 name = "aiofile"
 version = "3.12.3"
@@ -551,7 +558,7 @@ dependencies = [
     { name = "boba-storage", extra = ["http"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-tool-io", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-toolkit", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "boba-transport-acp", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-transport-acp", extra = ["http"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-transport-http", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "chainlit", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "fastapi", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -640,7 +647,7 @@ requires-dist = [
     { name = "boba-tool-io", marker = "extra == 'dev'", editable = "packages/infra/stream/boba-tool-io" },
     { name = "boba-toolkit", editable = "packages/core/boba-toolkit" },
     { name = "boba-toolrun", marker = "extra == 'dev'", editable = "packages/services/boba-toolrun" },
-    { name = "boba-transport-acp", editable = "packages/infra/transport/boba-transport-acp" },
+    { name = "boba-transport-acp", extras = ["http"], editable = "packages/infra/transport/boba-transport-acp" },
     { name = "boba-transport-http", editable = "packages/infra/transport/boba-transport-http" },
     { name = "chainlit", specifier = "==2.11.1+boba.1" },
     { name = "cryptography", marker = "extra == 'dev'", specifier = ">=45.0.1" },
@@ -904,7 +911,7 @@ dependencies = [
     { name = "boba-llm-http", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-llm-onnx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-oauth", extra = ["server"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "boba-transport-acp", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-transport-acp", extra = ["http"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "fastmcp-slim", extra = ["server"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "httpx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "mcp", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -950,7 +957,7 @@ requires-dist = [
     { name = "boba-llm-onnx", editable = "packages/infra/llm/boba-llm-onnx" },
     { name = "boba-oauth", extras = ["server"], editable = "packages/services/boba-oauth" },
     { name = "boba-stand", marker = "extra == 'dev'", editable = "packages/testing/boba-stand" },
-    { name = "boba-transport-acp", editable = "packages/infra/transport/boba-transport-acp" },
+    { name = "boba-transport-acp", extras = ["http"], editable = "packages/infra/transport/boba-transport-acp" },
     { name = "fastmcp-slim", extras = ["server"], specifier = ">=4.1.4,<5" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "httpx2", marker = "extra == 'dev'", specifier = ">=2.10,<3" },
@@ -2158,8 +2165,10 @@ dev = [
     { name = "boba-auth", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-stand", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "fastmcp-slim", extra = ["server"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "httpx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "mcp", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pytest", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "starlette", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
 server = [
     { name = "boba-auth", extra = ["http"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -2178,11 +2187,13 @@ requires-dist = [
     { name = "cryptography", marker = "extra == 'server'", specifier = ">=45.0.1" },
     { name = "fastmcp-slim", extras = ["server"], marker = "extra == 'dev'", specifier = ">=4.1.4,<5" },
     { name = "fastmcp-slim", extras = ["server"], marker = "extra == 'server'", specifier = ">=4.1.4,<5" },
+    { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.28,<1" },
     { name = "mcp", marker = "extra == 'dev'", specifier = ">=2.3,<3" },
     { name = "mcp", marker = "extra == 'server'", specifier = ">=2.3,<3" },
     { name = "pydantic", specifier = ">=2.12,<3" },
     { name = "pyjwt", specifier = ">=2.10,<3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1,<10" },
+    { name = "starlette", marker = "extra == 'dev'", specifier = ">=1.0,<2" },
     { name = "starlette", marker = "extra == 'server'", specifier = ">=1.0,<2" },
 ]
 provides-extras = ["server", "dev"]
@@ -3317,16 +3328,22 @@ dev = [
     { name = "boba-stand", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pytest", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
+http = [
+    { name = "agent-client-protocol", extra = ["http"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "starlette", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "agent-client-protocol", specifier = "==1.0.0rc3" },
+    { name = "agent-client-protocol", extras = ["http"], marker = "extra == 'http'", specifier = "==1.0.0rc3" },
     { name = "boba-stand", marker = "extra == 'dev'", editable = "packages/testing/boba-stand" },
     { name = "mcp-types", specifier = ">=2.3,<3" },
     { name = "pydantic", specifier = ">=2.12,<3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1,<10" },
+    { name = "starlette", marker = "extra == 'http'", specifier = ">=1.0,<2" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["http", "dev"]
 
 [[package]]
 name = "boba-transport-http"
@@ -4220,6 +4237,11 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/d5/44/474bef2a0e9d90f1715d32cb98b0738695ca17ba324095fb2497ed7fbd59/httpx2-2.13.1.tar.gz", hash = "sha256:e48744a19e3af5ee48313d0ce5fe941d5422fae5705ea922a4aabf94d7800dfa", size = 100405, upload-time = "2026-09-23T07:47:23.052Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d8/9c/6fe8931fd9f381042a9e4c7d5a7b4cbf7016b252bec0c99a49fce42c3326/httpx2-2.13.1-py3-none-any.whl", hash = "sha256:6dff50fabc270ee5fd25d845d0b078ed20564579744d6d962850975996d2f9a4", size = 95597, upload-time = "2026-09-23T07:47:20.995Z" },
+]
+
+[package.optional-dependencies]
+http2 = [
+    { name = "h2", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
 
 [[package]]

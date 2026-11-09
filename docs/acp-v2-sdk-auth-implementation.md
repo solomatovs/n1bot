@@ -68,8 +68,13 @@ HTTP/WS и MCP-over-ACP — Active RFD. Зафиксировать исполь�
 - [protocol.py](../packages/infra/transport/boba-transport-acp/src/boba/transport/acp/protocol.py):
   AgentSide — проверки перед роутером SDK и MCP-over-ACP; ClientConnection —
   адаптер клиентской стороны; ToolSourceClient — обработчик расширения через
-  API SDK; BatchTransport — текущий stdio с пакетами; BobaExtension — имена
-  собственных расширений.
+  API SDK; StdioTransport — один объект на строку с ответами на ошибки разбора;
+  NegotiationState — повтор initialize и сохранение последнего успешного
+  согласования; BobaExtension — имена собственных расширений.
+- [http.py](../packages/infra/transport/boba-transport-acp/src/boba/transport/acp/http.py):
+  HttpServer — адаптер AcpServer rc3, повтор initialize в прежнем контексте;
+  HttpStream — адаптер клиента SDK, повтор с прежним Acp-Connection-Id без
+  второго SSE-потока. Остальные HTTP/SSE-операции выполняет SDK.
 - [serve.py](../packages/apps/boba-cli/src/boba/cli/serve.py):
   ServeHost — ASGI/OAuth-сборка и authMethods; CallerTokens — текущая привязка
   к собственному JWT; AcpEndpoint — проверка владельца и активности соединения;
@@ -527,24 +532,36 @@ Accept означает согласие открыть URL, не успешну
 
 ### 7.3. Stdio и оставшиеся несовместимости
 
-Проверить все вызовы BatchTransport и тесты. Целевой stdio — один объект на строку;
-убрать сборку пакетных ответов. На массив отвечать отказом -32600 без исполнения
-элементов. Сохранить -32700 на malformed JSON, ограничения размера и чистый stdout.
-Поскольку NdjsonTransport rc3 пропускает часть некорректных данных без ответа,
-оставить минимальный framing-адаптер, если замена на него меняет эти гарантии.
-Существующий отдельный output_fd нужен для защиты протокола от чужих print.
+**Выполнено 2026-11-08.** BatchTransport заменён на StdioTransport: один объект
+на строку. Массив получает один ответ -32600 с id: null, элементы не исполняются;
+повреждённый JSON/UTF-8 — -32700. После ошибки чтение следующих строк продолжается.
+Сохранены предел длины строки и отдельный output_fd для защиты stdout от print.
+Минимальный адаптер нужен, поскольку NdjsonTransport rc3 молча пропускает ошибки.
 
-В AgentSide сохранить проверки отсутствующих params, replayFrom и выбора версии
-до устранения соответствующих расхождений SDK. Отдельно исправить повторный
-initialize, разрешённый текущим V2 до первого другого запроса: учесть SDK
-InitializationState и HTTP AcpServer, который сейчас создаёт новый connection ID.
-Повтор должен сохранять соединение и обновлять capabilities; неуспешный повтор
-не стирает предыдущее согласование. Сверить с закреплённым нормативным срезом:
-[Initialization](https://agentclientprotocol.com/protocol/v2/initialization).
+NegotiationState разрешает последовательные initialize до первого другого
+запроса клиента. Уведомления этот период не завершают. Первый успешный initialize
+открывает операции; повтор заменяет capabilities, отказ сохраняет предыдущее
+успешное согласование. После ошибки первого initialize возможна новая попытка.
+Пока initialize выполняется, другие запросы и параллельный повтор получают
+-32600. После первого другого запроса повтор также запрещён, даже если тот
+запрос завершился ошибкой. Проверки protocolVersion, params и replayFrom сохранены.
+Основание — закреплённый срез
+[Initialization, revision 7ec5185](https://github.com/agentclientprotocol/agent-client-protocol/blob/7ec5185c18ca928b48e457d2d8a163800be013c8/docs/protocol/v2/initialization.mdx).
 
-AcpServer и handle_websocket оставить ответственными за транспорт. Не заменять
-AcpEndpoint на create_asgi_app ценой удаления ownership, timeout и cleanup.
-Contrib helpers rc3 используют модели V1; в код V2 их напрямую не переносить.
+HttpServer возвращает повторный initialize в теле POST с прежним
+Acp-Connection-Id. HttpStream передаёт этот ID при повторе и использует прежний
+SSE-поток; его использует и клиент AID. AcpEndpoint продолжает проверять владельца,
+вести активность и закрывать ресурсы. Очереди, маршрутизация сессий, SSE и WebSocket
+остаются в SDK. Из-за ограничений rc3 адаптеры используют закрытые поля состояния
+и HTTP-транспорта; при обновлении SDK проверить эти места и удалить обходы,
+когда SDK поддержит повтор. Site-packages не менялся.
+
+Проверено: 61 транспортный тест выбора версии, повторов, отказов и stdio;
+настоящий subprocess boba --stdio; HTTP с сохранением ID, отказом чужому
+пользователю и одним SSE-потоком; WebSocket; рабочие ходы stdio/HTTP/WS и AID
+(7 интеграционных проверок). Ruff и Pyright проходят. CLI и AID подключают
+extra boba-transport-acp[http]; зависимости и uv.lock обновлены.
+Contrib helpers rc3 с моделями V1 не используются.
 
 ## 8. Порядок реализации
 

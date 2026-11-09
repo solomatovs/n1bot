@@ -32,7 +32,6 @@ from boba.transport.acp.protocol import (
     AcpTransportError,
     AcpVersion,
     AgentSide,
-    BatchTransport,
     BobaExtension,
     ClientConnection,
     McpErrorOutcome,
@@ -40,6 +39,7 @@ from boba.transport.acp.protocol import (
     McpOutcome,
     McpResultOutcome,
     McpVersion,
+    StdioTransport,
     ToolSourceContent,
     ToolSourceReply,
     ToolSourceRequest,
@@ -152,14 +152,14 @@ async def acp_pair() -> AsyncIterator[AcpPair]:
 
 
 @pytest.fixture
-async def batch_wire() -> AsyncIterator[
+async def stdio_wire() -> AsyncIterator[
     tuple[asyncio.StreamReader, asyncio.StreamWriter]
 ]:
-    """Сторона клиента сокета, на другом конце которого AgentSide на BatchTransport."""
+    """Сторона клиента сокета, на другом конце которого AgentSide на StdioTransport."""
     agent_socket, client_socket = socket.socketpair()
     agent_reader, agent_writer = await asyncio.open_connection(sock=agent_socket)
     client_reader, client_writer = await asyncio.open_connection(sock=client_socket)
-    agent = AgentSide(StandAgent, BatchTransport(agent_reader, agent_writer))
+    agent = AgentSide(StandAgent, StdioTransport(agent_reader, agent_writer))
     serving = asyncio.create_task(agent.serve())
 
     yield client_reader, client_writer
@@ -173,7 +173,7 @@ async def batch_wire() -> AsyncIterator[
     await agent_writer.wait_closed()
 
 
-class TestBatches:
+class TestStdio:
     INITIALIZE: ClassVar[dict[str, Any]] = {
         "jsonrpc": "2.0",
         "method": AGENT_METHODS["initialize"],
@@ -183,84 +183,72 @@ class TestBatches:
         },
     }
 
-    async def test_two_requests_get_one_array(
-        self, batch_wire: tuple[asyncio.StreamReader, asyncio.StreamWriter]
+    @pytest.mark.parametrize(
+        "value",
+        [
+            [],
+            [17, True, None],
+            17,
+            True,
+            None,
+            "text",
+            [
+                {**INITIALIZE, "id": 1},
+                {"jsonrpc": "2.0", "id": 2, "method": "session/list"},
+            ],
+            [{"jsonrpc": "2.0", "method": "_unknown"}],
+        ],
+    )
+    async def test_non_object_is_rejected_without_executing_entries(
+        self,
+        stdio_wire: tuple[asyncio.StreamReader, asyncio.StreamWriter],
+        value: Any,
     ) -> None:
-        reader, writer = batch_wire
-        batch = [
-            {**self.INITIALIZE, "id": 1},
-            {"jsonrpc": "2.0", "id": 2, "method": AGENT_METHODS["session_list"]},
-        ]
-
-        writer.write(json.dumps(batch).encode() + b"\n")
+        reader, writer = stdio_wire
+        writer.write(json.dumps(value).encode() + b"\n")
         async with asyncio.timeout(5):
             answer = json.loads(await reader.readline())
-
-        assert isinstance(answer, list)
-        ids = sorted(reply["id"] for reply in answer)
-        assert ids == [1, 2]
-        (initialized,) = [reply for reply in answer if reply["id"] == 1]
-        assert initialized["result"]["protocolVersion"] == AcpVersion.V2
-
-    async def test_empty_batch_is_one_invalid_request(
-        self, batch_wire: tuple[asyncio.StreamReader, asyncio.StreamWriter]
-    ) -> None:
-        reader, writer = batch_wire
-
-        writer.write(b"[]\n")
-        async with asyncio.timeout(5):
-            answer = json.loads(await reader.readline())
-
         assert answer["id"] is None
         assert answer["error"]["code"] == -32600
 
-    async def test_notifications_only_get_nothing(
-        self, batch_wire: tuple[asyncio.StreamReader, asyncio.StreamWriter]
-    ) -> None:
-        reader, writer = batch_wire
-        batch = [
-            {
-                "jsonrpc": "2.0",
-                "method": "$/cancel_request",
-                "params": {"requestId": 7},
-            },
-            {"jsonrpc": "2.0", "method": "_boba/unknown", "params": {}},
-        ]
+        # initialize из массива не должен был изменить состояние соединения.
+        writer.write(b'{"jsonrpc":"2.0","id":3,"method":"session/list"}\n')
+        async with asyncio.timeout(5):
+            refused = json.loads(await reader.readline())
+        assert refused["id"] == 3
+        assert refused["error"]["code"] == -32600
 
-        writer.write(json.dumps(batch).encode() + b"\n")
-        writer.write(json.dumps({**self.INITIALIZE, "id": 3}).encode() + b"\n")
+        writer.write(json.dumps({**self.INITIALIZE, "id": 4}).encode() + b"\n")
+        async with asyncio.timeout(5):
+            initialized = json.loads(await reader.readline())
+        assert initialized["id"] == 4
+        assert initialized["result"]["protocolVersion"] == 2
+
+    @pytest.mark.parametrize("line", [b'{"jsonrpc": "2.0", "method"\n', b"\xff\n"])
+    async def test_broken_json_is_parse_error_and_reading_continues(
+        self,
+        stdio_wire: tuple[asyncio.StreamReader, asyncio.StreamWriter],
+        line: bytes,
+    ) -> None:
+        reader, writer = stdio_wire
+        writer.write(line)
+        writer.write(json.dumps({**self.INITIALIZE, "id": 1}).encode() + b"\n")
         async with asyncio.timeout(5):
             answer = json.loads(await reader.readline())
-
-        assert answer["id"] == 3
-        assert answer["result"]["protocolVersion"] == AcpVersion.V2
-
-    async def test_scalar_entries_get_invalid_request_each(
-        self, batch_wire: tuple[asyncio.StreamReader, asyncio.StreamWriter]
-    ) -> None:
-        reader, writer = batch_wire
-
-        writer.write(b"[17,true,null]\n")
-        async with asyncio.timeout(5):
-            answer = json.loads(await reader.readline())
-
-        assert isinstance(answer, list)
-        assert len(answer) == 3
-        for reply in answer:
-            assert reply["id"] is None
-            assert reply["error"]["code"] == -32600
-
-    async def test_broken_json_is_parse_error(
-        self, batch_wire: tuple[asyncio.StreamReader, asyncio.StreamWriter]
-    ) -> None:
-        reader, writer = batch_wire
-
-        writer.write(b'{"jsonrpc": "2.0", "method"\n')
-        async with asyncio.timeout(5):
-            answer = json.loads(await reader.readline())
-
+            initialized = json.loads(await reader.readline())
         assert answer["id"] is None
         assert answer["error"]["code"] == -32700
+        assert initialized["result"]["protocolVersion"] == 2
+
+    async def test_line_limit_is_preserved(
+        self,
+        stdio_wire: tuple[asyncio.StreamReader, asyncio.StreamWriter],
+    ) -> None:
+        _, writer = stdio_wire
+        reader = asyncio.StreamReader(limit=16)
+        reader.feed_data(b"x" * 17 + b"\n")
+        with pytest.raises(AcpTransportError, match="line limit"):
+            await StdioTransport(reader, writer).receive()
 
 
 class TestVersionNegotiation:
@@ -296,10 +284,10 @@ class TestVersionNegotiation:
     @pytest.mark.parametrize("version", [0, 1])
     async def test_lower_version_does_not_initialize_the_connection(
         self,
-        batch_wire: tuple[asyncio.StreamReader, asyncio.StreamWriter],
+        stdio_wire: tuple[asyncio.StreamReader, asyncio.StreamWriter],
         version: int,
     ) -> None:
-        reader, writer = batch_wire
+        reader, writer = stdio_wire
         request = {
             "jsonrpc": "2.0",
             "id": 1,
@@ -341,10 +329,10 @@ class TestVersionNegotiation:
     )
     async def test_malformed_version_is_invalid_params(
         self,
-        batch_wire: tuple[asyncio.StreamReader, asyncio.StreamWriter],
+        stdio_wire: tuple[asyncio.StreamReader, asyncio.StreamWriter],
         params: dict[str, Any],
     ) -> None:
-        reader, writer = batch_wire
+        reader, writer = stdio_wire
         request = {
             "jsonrpc": "2.0",
             "id": 1,
@@ -363,11 +351,11 @@ class TestVersionNegotiation:
     )
     async def test_malformed_replay_is_not_normalized(
         self,
-        batch_wire: tuple[asyncio.StreamReader, asyncio.StreamWriter],
+        stdio_wire: tuple[asyncio.StreamReader, asyncio.StreamWriter],
         cursor: Any,
     ) -> None:
-        reader, writer = batch_wire
-        initialize = {**TestBatches.INITIALIZE, "id": 1}
+        reader, writer = stdio_wire
+        initialize = {**TestStdio.INITIALIZE, "id": 1}
         writer.write(json.dumps(initialize).encode() + b"\n")
         async with asyncio.timeout(5):
             initialized = json.loads(await reader.readline())
@@ -402,6 +390,204 @@ class TestVersionNegotiation:
             await reading
 
         await raw.close()
+
+
+class NegotiatingAgent:
+    """Сохраняет последнее согласование, позволяет задержать или отклонить его."""
+
+    def __init__(self) -> None:
+        self.capabilities: schema.ClientCapabilities | None = None
+        self.calls = 0
+        self.entered = asyncio.Event()
+        self.proceed = asyncio.Event()
+        self.notified = asyncio.Event()
+
+    async def handle_extension_notification(self, method: str, params: Any) -> None:
+        self.notified.set()
+
+    async def initialize(
+        self,
+        protocol_version: int,
+        info: schema.Implementation,
+        capabilities: schema.ClientCapabilities | None = None,
+        **kwargs: Any,
+    ) -> schema.InitializeResponse:
+        self.calls += 1
+        if info.name == "wait":
+            self.entered.set()
+            await self.proceed.wait()
+        if info.name == "refuse":
+            raise RequestError.invalid_params({"details": "test refusal"})
+        self.capabilities = capabilities
+        return schema.InitializeResponse(protocol_version=2, info=info)
+
+
+@pytest.fixture
+async def negotiation() -> AsyncIterator[tuple[NegotiatingAgent, Connection]]:
+    agent_end, client_end = memory_transport_pair()
+    target = NegotiatingAgent()
+    agent = AgentSide(lambda side, connection: target, agent_end)
+    serving = asyncio.create_task(agent.serve())
+
+    async def receive(
+        method: str,
+        params: JsonValue | None,
+        is_notification: bool,
+    ) -> None:
+        return None
+
+    async with Connection(receive, client_end) as raw:
+        yield target, raw
+    await serving
+
+
+class TestRepeatedInitialization:
+    @staticmethod
+    async def initialize(
+        raw: Connection,
+        name: str = "client",
+        **params: Any,
+    ) -> Any:
+        return await raw.send_request(
+            "initialize",
+            {"protocolVersion": 2, "info": {"name": name, "version": "0"}, **params},
+        )
+
+    async def test_latest_success_replaces_capabilities(
+        self,
+        negotiation: tuple[NegotiatingAgent, Connection],
+    ) -> None:
+        target, raw = negotiation
+        first = await self.initialize(
+            raw, protocolVersion=3, capabilities={"elicitation": {"form": {}}}
+        )
+        assert first["protocolVersion"] == 2
+        assert target.capabilities is not None
+        assert target.capabilities.elicitation is not None
+        await raw.send_notification("_unknown", {})
+        for _ in range(2):
+            await self.initialize(raw, capabilities={"elicitation": {"url": {}}})
+        assert target.calls == 3
+        assert target.capabilities.elicitation.form is None
+        assert target.capabilities.elicitation.url is not None
+
+    @pytest.mark.parametrize("first", [True, False])
+    async def test_notifications_are_ignored_only_before_first_initialization(
+        self,
+        negotiation: tuple[NegotiatingAgent, Connection],
+        first: bool,
+    ) -> None:
+        target, raw = negotiation
+        if not first:
+            await self.initialize(raw)
+        pending = asyncio.create_task(self.initialize(raw, name="wait"))
+        await target.entered.wait()
+        try:
+            await raw.send_notification("_test/notification", {})
+            with pytest.raises(RequestError):
+                await raw.send_request("_test/barrier", {})
+        finally:
+            target.proceed.set()
+            await pending
+        if not first:
+            async with asyncio.timeout(5):
+                await target.notified.wait()
+        assert target.notified.is_set() is not first
+
+    @pytest.mark.parametrize("first", [True, False])
+    async def test_failed_initialize_can_be_retried(
+        self,
+        negotiation: tuple[NegotiatingAgent, Connection],
+        first: bool,
+    ) -> None:
+        target, raw = negotiation
+        if not first:
+            await self.initialize(raw, capabilities={"elicitation": {"form": {}}})
+        previous = target.capabilities
+        with pytest.raises(RequestError, match="Invalid params"):
+            await self.initialize(raw, name="refuse")
+        assert target.capabilities is previous
+        await self.initialize(raw)
+
+    @pytest.mark.parametrize(
+        ("params", "code"),
+        [
+            ({"protocolVersion": 1}, -32022),
+            ({"info": {}}, -32602),
+            ({"info": {"name": "refuse", "version": "0"}}, -32602),
+        ],
+    )
+    async def test_bad_repeat_leaves_previous_initialization_in_effect(
+        self,
+        negotiation: tuple[NegotiatingAgent, Connection],
+        params: dict[str, Any],
+        code: int,
+    ) -> None:
+        target, raw = negotiation
+        await self.initialize(raw, capabilities={"elicitation": {"form": {}}})
+        previous = target.capabilities
+        with pytest.raises(RequestError) as refused:
+            await self.initialize(raw, **params)
+        assert refused.value.code == code
+        assert target.capabilities is previous
+        calls = target.calls
+        with pytest.raises(RequestError) as unknown:
+            await raw.send_request("_unknown", {})
+        assert unknown.value.code == -32601  # готов, а не -32600
+        with pytest.raises(RequestError) as sealed:
+            await self.initialize(raw)
+        assert sealed.value.code == -32600
+        assert target.calls == calls
+
+    async def test_pending_initialize_does_not_admit_requests_or_repeats(
+        self,
+        negotiation: tuple[NegotiatingAgent, Connection],
+    ) -> None:
+        target, raw = negotiation
+        pending = asyncio.create_task(self.initialize(raw, name="wait"))
+        await target.entered.wait()
+        try:
+            for method, params in [
+                ("session/list", {}),
+                (
+                    "initialize",
+                    {"protocolVersion": 2, "info": {"name": "second", "version": "0"}},
+                ),
+            ]:
+                with pytest.raises(RequestError) as refused:
+                    await raw.send_request(method, params)
+                assert refused.value.code == -32600
+            assert target.calls == 1
+        finally:
+            target.proceed.set()
+            await pending
+        await self.initialize(raw)
+
+    async def test_client_retries_refusal_without_closing(self) -> None:
+        agent_end, client_end = memory_transport_pair()
+        target = NegotiatingAgent()
+        agent = AgentSide(lambda side, connection: target, agent_end)
+        serving = asyncio.create_task(agent.serve())
+        peer = StandClient()
+        client = ClientConnection(peer, peer.answer, peer.source, client_end, None)
+        try:
+            for name in ("refuse", "client", "refuse", "client"):
+                info = schema.Implementation(name=name, version="0")
+                if name == "refuse":
+                    with pytest.raises(RequestError):
+                        await client.initialize(protocol_version=2, info=info)
+                else:
+                    await client.initialize(protocol_version=2, info=info)
+                assert client.connected()
+            with pytest.raises(RequestError):
+                await client.list_sessions()
+            with pytest.raises(RequestError) as sealed:
+                await client.initialize(protocol_version=2, info=info)
+            assert sealed.value.code == -32600
+            assert target.calls == 4
+        finally:
+            await client.close()
+            await serving
 
 
 class TestMcpMessage:

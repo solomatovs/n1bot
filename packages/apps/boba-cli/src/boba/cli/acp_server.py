@@ -4556,12 +4556,11 @@ class AcpAgent(AcpAgentProtocol):
         if elicitation is not None:
             elicits = elicitation.form is not None
 
-        self._features = SessionFeatures(
+        features = SessionFeatures(
             elicits=elicits,
             commands=self._receives(capabilities, BobaExtension.COMMANDS),
             history=self._receives(capabilities, BobaExtension.HISTORY),
         )
-        self._linked().declared(capabilities)
         session = schema.SessionCapabilities(
             prompt=schema.PromptCapabilities(),
             mcp=schema.McpCapabilities(acp=schema.McpAcpCapabilities()),
@@ -4582,12 +4581,16 @@ class AcpAgent(AcpAgentProtocol):
             },
         )
 
-        return schema.InitializeResponse(
+        response = schema.InitializeResponse(
             protocol_version=AcpVersion.V2,
             info=self._info,
             capabilities=offered,
             auth_methods=methods,
         )
+        # Повтор заменяет capabilities только после успешной сборки ответа.
+        self._linked().declared(capabilities)
+        self._features = features
+        return response
 
     @staticmethod
     def _receives(

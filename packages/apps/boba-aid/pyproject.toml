@@ -33,7 +33,7 @@ dependencies = [
     "boba-cancellation==0.0.33.dev2",
     "boba-db-postgres[cli,messaging]==0.0.33.dev2",
     "boba-http-server==0.0.33.dev2",
-    "boba-transport-acp==0.0.33.dev2",
+    "boba-transport-acp[http]==0.0.33.dev2",
     "agent-client-protocol==1.0.0rc3",
     "httpx2>=2.10,<3",
     "mcp>=2.3,<3",

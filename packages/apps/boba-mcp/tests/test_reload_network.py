@@ -13,6 +13,7 @@ import socket
 import subprocess
 import sys
 from collections.abc import AsyncGenerator, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, LiteralString
@@ -492,7 +493,9 @@ async def test_stop_cancels_two_users_calls_and_incomplete_http_request(
                         os.kill(pid, 0)
             finally:
                 writer.close()
-                await writer.wait_closed()
+                # EOF уже проверен выше; при уборке peer может дослать TCP RST.
+                with suppress(ConnectionResetError):
+                    await writer.wait_closed()
         finally:
             release.touch()
             for call in calls:

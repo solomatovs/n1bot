@@ -22,12 +22,9 @@ AcpTransportError — соединение закрыто, ответ на mcp/m
 from __future__ import annotations
 
 import asyncio
-import functools
 import json
 import logging
-from collections import deque
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 from types import ModuleType
 from typing import Annotated, Any, ClassVar, Literal, TypeAlias, assert_never
@@ -55,9 +52,11 @@ from acp.experimental.v2 import (
 )
 from acp.experimental.v2._connection import open_connection
 from acp.experimental.v2._initialization import InitializationState
+from acp.experimental.v2._params import build_request
 from acp.experimental.v2._schema_base import BaseModel
 from acp.experimental.v2.client import _ClientRouter
 from acp.experimental.v2.meta import AGENT_METHODS, CLIENT_METHODS
+from acp.utils import param_model
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +65,6 @@ __all__ = [
     "AcpTransportError",
     "AcpVersion",
     "AgentSide",
-    "BatchTransport",
     "BobaExtension",
     "ClientConnection",
     "CommandApp",
@@ -101,6 +99,7 @@ __all__ = [
     "SessionCommandsRequest",
     "SessionRecordParams",
     "SessionRecordRequest",
+    "StdioTransport",
     "StopReason",
     "ToolSourceContent",
     "ToolSourceReply",
@@ -569,19 +568,10 @@ class McpErrorOutcome(BaseModel):
 McpOutcome: TypeAlias = McpResultOutcome | McpErrorOutcome
 
 
-@dataclass(slots=True)
-class _Batch:
-    """Пакет JSON-RPC, ждущий ответов: id неотвеченных запросов и собранные ответы."""
-
-    awaited: list[JsonValue]
-    replies: list[JsonValue]
-
-
-class BatchTransport(Transport):
-    """Реализация Transport SDK стороны агента над строками stdio с пакетами
-    JSON-RPC 2.0: записи пакета Connection получает по одной, ответы на его запросы
-    уходят одним массивом. Временная замена NdjsonTransport, пока SDK не разбирает
-    пакеты."""
+class StdioTransport(Transport):
+    """Один объект JSON-RPC на строку stdio. В отличие от NdjsonTransport rc3,
+    отвечает на повреждённый JSON и не-объекты, не исполняет массивы сообщений.
+    """
 
     ENCODING: ClassVar[str] = "utf-8"
 
@@ -590,11 +580,9 @@ class BatchTransport(Transport):
     ) -> None:
         self._reader = reader
         self._writer = writer
-        self._inbox: deque[dict[str, Any]] = deque()
-        self._batches: list[_Batch] = []
 
     async def receive(self) -> dict[str, Any] | None:
-        while not self._inbox:
+        while True:
             try:
                 line = await self._reader.readline()
             except ValueError as exc:
@@ -605,102 +593,33 @@ class BatchTransport(Transport):
 
             if not line:
                 return None
-
             if not line.strip():
                 continue
 
             try:
-                value = json.loads(line)
+                value = json.loads(line.decode(self.ENCODING))
             except ValueError as exc:
                 shown = line[:200].decode(self.ENCODING, errors="replace")
                 details = (
                     f"The input line {shown!r} is not {self.ENCODING} JSON: {exc}."
                 )
                 error = ErrorData(code=PARSE_ERROR, message=details)
-                refusal = JSONRPCError(jsonrpc=JSONRPC_VERSION, id=None, error=error)
-                await self._write(refusal.model_dump(mode="json"))
-                continue
+            else:
+                if isinstance(value, dict):
+                    return value
+                details = f"Expected one JSON-RPC object, got {repr(value)[:200]}."
+                error = ErrorData(code=INVALID_REQUEST, message=details)
 
-            await self._accept(value)
-
-        return self._inbox.popleft()
+            refusal = JSONRPCError(jsonrpc=JSONRPC_VERSION, id=None, error=error)
+            await self.send(refusal.model_dump(mode="json"))
 
     async def send(self, message: dict[str, Any]) -> None:
-        if "method" in message:
-            await self._write(message)
-            return
-
-        for batch in self._batches:
-            if message["id"] not in batch.awaited:
-                continue
-
-            batch.awaited.remove(message["id"])
-            batch.replies.append(message)
-            if batch.awaited:
-                return
-
-            self._batches.remove(batch)
-            await self._write(batch.replies)
-            return
-
-        await self._write(message)
-
-    async def close(self) -> None:
-        """Очереди записи нет, writer stdio не закрывается; ждущие пакеты не
-        дописываются — Connection.close уже отменил их обработчики."""
-
-    async def _accept(self, value: JsonValue) -> None:
-        """Раскладывает разобранную строку: объект — в очередь, записи пакета — в
-        очередь с ожиданием ответов на его запросы; на не-объект пишет ошибку."""
-        match value:
-            case dict():
-                self._inbox.append(value)
-                return
-            case [_, *_]:
-                entries = value
-            case _:
-                details = (
-                    "Expected a JSON-RPC object or a non-empty batch, "
-                    f"got {repr(value)[:200]}."
-                )
-                error = ErrorData(code=INVALID_REQUEST, message=details)
-                refusal = JSONRPCError(jsonrpc=JSONRPC_VERSION, id=None, error=error)
-                await self._write(refusal.model_dump(mode="json"))
-                return
-
-        batch = _Batch(awaited=[], replies=[])
-        for index, entry in enumerate(entries):
-            if not isinstance(entry, dict):
-                details = (
-                    f"Batch entry {index} must be a JSON-RPC object, "
-                    f"got {repr(entry)[:200]}."
-                )
-                error = ErrorData(code=INVALID_REQUEST, message=details)
-                refusal = JSONRPCError(jsonrpc=JSONRPC_VERSION, id=None, error=error)
-                batch.replies.append(refusal.model_dump(mode="json"))
-                continue
-
-            self._inbox.append(entry)
-            if "method" not in entry:
-                continue
-
-            if "id" not in entry:
-                continue
-
-            batch.awaited.append(entry["id"])
-
-        if batch.awaited:
-            self._batches.append(batch)
-            return
-
-        if batch.replies:
-            await self._write(batch.replies)
-
-    async def _write(self, value: JsonValue) -> None:
-        """Одна строка JSON в вывод с ожиданием противодавления."""
-        text = json.dumps(value) + "\n"
+        text = json.dumps(message) + "\n"
         self._writer.write(text.encode(self.ENCODING))
         await self._writer.drain()
+
+    async def close(self) -> None:
+        """Потоки принадлежат процессу; Connection отменяет обработчики сам."""
 
 
 class InitializationParams(StrictModel):
@@ -724,6 +643,54 @@ class ResumeParams(StrictModel):
     replay_from: Annotated[ReplayCursor | None, Field(alias="replayFrom")] = None
 
 
+class NegotiationState(InitializationState):
+    """Совместимость rc3 с повтором initialize по V2 revision 7ec5185.
+
+    SDK хранит готовность и проверяет версию ответа. Здесь меняется только
+    жизненный цикл: повторы до первого другого запроса и откат ошибки.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._used = False
+        self._previous = False
+
+    def begin(self, request: schema.InitializeRequest) -> None:
+        if self._used or self.phase == "initializing":
+            raise RequestError.invalid_request(
+                {"details": "initialize must finish before the first other request"}
+            )
+        self._previous = self.phase == "initialized"
+        previous_phase = self._phase
+        self._phase = "uninitialized"
+        try:
+            super().begin(request)
+        except BaseException:
+            self._phase = previous_phase
+            raise
+        self._failure = None
+        self._ready.clear()
+
+    def fail(self, error: BaseException) -> None:
+        self._phase = "initialized" if self._previous else "uninitialized"
+        self._failure = None if self._previous else error
+        self._ready.set()
+
+    def accepts_notifications(self) -> bool:
+        """Уведомления допустимы после первого успешного initialize."""
+        return self.phase == "initialized" or (
+            self.phase == "initializing" and self._previous
+        )
+
+    def request(self, method: str) -> None:
+        """Первый другой запрос клиента завершает согласование навсегда."""
+        if self.phase != "initialized":
+            raise RequestError.invalid_request(
+                {"details": f"ACP must be initialized before {method!r}"}
+            )
+        self._used = True
+
+
 class AgentSide:
     """Сторона агента ACP v2 на AgentSideConnection.attach SDK.
 
@@ -740,10 +707,15 @@ class AgentSide:
     ) -> None:
         self._receivers: dict[str, Callable[[McpMessage], Awaitable[None]]] = {}
         self._outcomes: TypeAdapter[McpOutcome] = TypeAdapter(McpOutcome)
+        self._state = NegotiationState()
         self._connection = Connection(self, transport, listening=listening)
-        self._sdk, self._router = AgentSideConnection.attach(
-            functools.partial(agent_factory, self), self._connection
-        )
+
+        def attach(connection: AgentSideConnection) -> object:
+            # attach rc3 создаёт роутер после фабрики: оба используют одно состояние.
+            connection._state = self._state
+            return agent_factory(self, connection)
+
+        self._sdk, self._router = AgentSideConnection.attach(attach, self._connection)
 
     async def __call__(
         self, method: str, params: JsonValue | None, is_notification: bool
@@ -751,6 +723,11 @@ class AgentSide:
         # роутер rc3 проверяет отсутствующие params моделью, схема v2 их не требует
         if params is None:
             params = {}
+
+        if is_notification and not self._state.accepts_notifications():
+            return None
+        if not is_notification and method != AGENT_METHODS["initialize"]:
+            self._state.request(method)
 
         mcp_notification = is_notification and method == AGENT_METHODS["mcp_message"]
         if mcp_notification:
@@ -913,11 +890,11 @@ class ToolSourceClient:
 
 
 class ClientConnection(ClientSideConnection):
-    """Адаптер rc3 для mcp/message с serverId/requestId вместо connectionId.
+    """Адаптер rc3 для повторов initialize и нового конверта mcp/message.
 
-    Только этот конверт обходит роутер SDK; расширения проходят через его
-    handle_extension_request. Закрытые имена SDK нужны для MCP-адаптера;
-    notify шлёт уведомление mcp/message.
+    MCP использует serverId/requestId вместо connectionId. Расширения проходят
+    через handle_extension_request SDK; notify шлёт уведомление mcp/message.
+    Закрытые имена SDK нужны для состояния согласования и MCP-адаптера.
     """
 
     def __init__(
@@ -930,11 +907,55 @@ class ClientConnection(ClientSideConnection):
         **connection_kwargs: Any,
     ) -> None:
         self._answer = answer
-        self._state = InitializationState()
+        self._state = NegotiationState()
         self._router = _ClientRouter(ToolSourceClient(client, source), self._state)
         self._conn = open_connection(
             self._receive, input_stream, output_stream, **connection_kwargs
         )
+
+    @param_model(schema.InitializeRequest)
+    async def initialize(
+        self,
+        protocol_version: int,
+        info: schema.Implementation,
+        capabilities: schema.ClientCapabilities | None = None,
+        **kwargs: Any,
+    ) -> schema.InitializeResponse:
+        """Повтор не закрывает соединение при отказе агента, в отличие от rc3."""
+        request = build_request(
+            schema.InitializeRequest,
+            {
+                "protocol_version": protocol_version,
+                "info": info,
+                "capabilities": capabilities,
+            },
+            kwargs,
+        )
+        self._state.begin(request)
+        try:
+            response = await self._conn.send_request(
+                AGENT_METHODS["initialize"],
+                request.model_dump(mode="json", by_alias=True, exclude_unset=True),
+            )
+        except BaseException as error:
+            self._state.fail(error)
+            raise
+        try:
+            parsed = schema.InitializeResponse.model_validate(response)
+            self._state.complete(parsed)
+        except BaseException as error:
+            self._state.fail(error)
+            await self._conn.close()
+            raise
+        return parsed
+
+    async def _request(self, method: str, request: BaseModel) -> Any:
+        self._state.request(method)
+        return await super()._request(method, request)
+
+    async def send_extension_request(self, method: str, params: Any = None) -> Any:
+        self._state.request(method)
+        return await super().send_extension_request(method, params)
 
     async def _receive(
         self, method: str, params: JsonValue | None, is_notification: bool

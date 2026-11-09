@@ -22,7 +22,7 @@ dependencies = [
     "boba-llm==0.0.33.dev2",
     "boba-llm-http==0.0.33.dev2",
     "boba-llm-onnx==0.0.33.dev2",
-    "boba-transport-acp==0.0.33.dev2",
+    "boba-transport-acp[http]==0.0.33.dev2",
     "boba-access==0.0.33.dev2",
     "boba-auth[kerberos]==0.0.33.dev2",
     "boba-identity==0.0.33.dev2",

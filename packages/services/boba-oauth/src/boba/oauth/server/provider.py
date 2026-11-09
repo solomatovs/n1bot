@@ -300,6 +300,9 @@ class AuthServer(OAuthProvider):
                 f"address of a resource of this service; known: {known}",
             )
 
+        if resource in self._resources:
+            return resource
+
         named = resource.rstrip("/")
         if named in self._resources:
             return named

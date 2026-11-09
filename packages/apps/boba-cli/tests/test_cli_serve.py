@@ -27,7 +27,6 @@ import mcp_types as mt
 import pytest
 from acp.exceptions import RequestError
 from acp.experimental.v2 import Client, schema
-from acp.http import create_http_stream
 from acp.ws import create_websocket_stream
 from mcp_types.jsonrpc import ErrorData
 from mcp_types.methods import parse_client_request
@@ -54,6 +53,7 @@ from boba.stand.database import TestDatabase
 from boba.stand.migrate import StandMigrations
 from boba.stand.ui.fake_llm import FailureName, ScenarioName
 from boba.stand.ui.stand import StandPorts
+from boba.transport.acp.http import HttpStream
 from boba.transport.acp.protocol import (
     AcpErrorCode,
     AcpVersion,
@@ -378,7 +378,9 @@ def http(stand: AgentServiceStand, token: str) -> Connected:
         headers={"Authorization": f"Bearer {token}"}, timeout=httpx2.Timeout(None)
     )
 
-    return Connected(create_http_stream(stand.url(), client=client), StandTools())
+    return Connected(
+        HttpStream(stand.url(), client=client, owns_client=False), StandTools()
+    )
 
 
 def call(name: str, arguments: Mapping[str, object]) -> str:
@@ -404,6 +406,91 @@ def model_choice(response: schema.NewSessionResponse) -> tuple[str, list[str]]:
         return option.current_value, values
 
     pytest.fail(f"session/new has no model option: {response.config_options}")
+
+
+class TestNegotiation:
+    async def test_http_repeats_keep_id_owner_and_stream(self, stands: Stands) -> None:
+        stand = await stands.start()
+        alice = await stand.token("alice", "dev")
+        bob = await stand.token("bob", "dev")
+        requests: list[httpx2.Request] = []
+        responses: list[httpx2.Response] = []
+
+        async def sent(request: httpx2.Request) -> None:
+            requests.append(request)
+
+        async def received(response: httpx2.Response) -> None:
+            responses.append(response)
+
+        async with httpx2.AsyncClient(
+            headers={"Authorization": f"Bearer {alice}"},
+            event_hooks={"request": [sent], "response": [received]},
+        ) as client:
+            connected = Connected(
+                HttpStream(stand.url(), client=client, owns_client=False), StandTools()
+            )
+            try:
+                await connected.initialize()
+                connection_id = responses[0].headers["Acp-Connection-Id"]
+                headers = {"Acp-Connection-Id": connection_id}
+                repeat = {
+                    "jsonrpc": "2.0",
+                    "id": "repeat",
+                    "method": "initialize",
+                    "params": {"protocolVersion": 1},
+                }
+                refused = await client.post(stand.url(), headers=headers, json=repeat)
+                assert refused.status_code == 200
+                assert refused.headers["Acp-Connection-Id"] == connection_id
+                assert refused.json()["error"]["code"] == -32022
+
+                foreign = await client.post(
+                    stand.url(),
+                    json=repeat,
+                    headers={**headers, "Authorization": f"Bearer {bob}"},
+                )
+                assert foreign.status_code == 404
+                await connected.initialize()
+                # Один поток продолжает доставлять ответы после повторов.
+                assert (await connected.conn.list_sessions()).sessions == []
+                late = await client.post(
+                    stand.url(),
+                    headers=headers,
+                    json={
+                        **repeat,
+                        "params": {
+                            "protocolVersion": 2,
+                            "info": {"name": "late", "version": "0"},
+                        },
+                    },
+                )
+                assert late.json()["error"]["code"] == -32600
+                assert (await connected.conn.list_sessions()).sessions == []
+                gets = [r for r in requests if r.method == "GET"]
+                assert len(gets) == 1
+                assert gets[0].headers["Acp-Connection-Id"] == connection_id
+                assert all(
+                    r.headers["Acp-Connection-Id"] == connection_id
+                    for r in requests[1:]
+                )
+            finally:
+                await connected.close()
+
+    async def test_websocket_can_repeat_before_session_requests(
+        self,
+        stands: Stands,
+    ) -> None:
+        stand = await stands.start()
+        connected = await websocket(stand, await stand.token("alice", "dev"))
+        try:
+            first = await connected.initialize()
+            assert await connected.initialize() == first
+            assert (await connected.conn.list_sessions()).sessions == []
+            with pytest.raises(RequestError) as refused:
+                await connected.initialize()
+            assert refused.value.code == -32600
+        finally:
+            await connected.close()
 
 
 class TestTurns:
@@ -603,7 +690,7 @@ class TestSessions:
             timeout=httpx2.Timeout(None),
         )
         connected = Connected(
-            create_http_stream(stand.url(), client=client), StandTools()
+            HttpStream(stand.url(), client=client, owns_client=False), StandTools()
         )
         try:
             await connected.initialize()

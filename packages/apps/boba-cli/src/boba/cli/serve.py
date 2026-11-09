@@ -43,7 +43,6 @@ from acp.connection import Connection
 from acp.experimental.negotiation import AgentProtocolConnection, AgentProtocolRouter
 from acp.experimental.v2 import schema
 from acp.http.protocol import CONNECTION_ID_HEADER, CONTENT_TYPE_SSE, SESSION_ID_HEADER
-from acp.http.server import AcpServer
 from acp.ws.server import handle_websocket
 from fastmcp.server.auth import AccessToken
 from fastmcp.server.auth.middleware import RequireAuthMiddleware
@@ -120,6 +119,7 @@ from boba.oauth.server.provider import AuthServer
 from boba.oauth.server.resources import ServiceAuth
 from boba.oauth.server.sealed import SealedValues
 from boba.oauth.server.tokens import ServiceTokens
+from boba.transport.acp.http import HttpServer
 from boba.transport.acp.protocol import AgentSide
 
 __all__ = [
@@ -484,7 +484,7 @@ class AcpEndpoint:
         self, router: ServeRouter, callers: CallerTokens, idle_sec: float
     ) -> None:
         self._router = router
-        self._server = AcpServer(router)
+        self._server = HttpServer(router)
         self._callers = callers
         self._idle_sec = idle_sec
         self._owners: dict[str, UUID] = {}
