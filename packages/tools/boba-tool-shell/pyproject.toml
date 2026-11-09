@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-tool-shell"
-version = "0.0.33.dev2"
+version = "0.0.33.dev3"
 description = "Инструмент bash: команда пользователя в песочнице поверх workspace-образа."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-tool-io==0.0.33.dev2",
-    "boba-toolkit==0.0.33.dev2",
+    "boba-tool-io==0.0.33.dev3",
+    "boba-toolkit==0.0.33.dev3",
     "pydantic>=2.12,<3",
 ]
 

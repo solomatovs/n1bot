@@ -16,27 +16,12 @@ from boba.toolkit.ports import StreamSpecs
 from boba.toolkit.result import MarkdownResult, ToolResultBase
 from boba.toolrun.access import ToolAccessDeniedError, ToolAccessGuard
 from boba.toolrun.hosted import HostedTool
-from boba.toolrun.plugins import PluginMeta
 from boba.toolrun.registry import ToolRegistry
 
 
 @pytest.fixture(autouse=True)
 def chainlit_context() -> None:
     pass
-
-
-class TestPluginMetaNotation:
-    def test_tools_list_is_the_allowlist(self) -> None:
-        meta = PluginMeta(enable=True, tools=["a", "b"])
-        if "a" not in meta.tools:
-            raise AssertionError('"a" in meta.tools')
-        if "c" in meta.tools:
-            raise AssertionError('"c" not in meta.tools')
-
-    def test_tools_default_is_empty(self) -> None:
-        meta = PluginMeta(enable=True)
-        if meta.tools != []:
-            raise AssertionError("meta.tools == []")
 
 
 class TestRegistryFiltering:

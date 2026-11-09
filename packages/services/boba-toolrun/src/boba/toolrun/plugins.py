@@ -17,10 +17,8 @@ from pydantic import BaseModel, ConfigDict
 
 from boba.access import ToolAccess, ToolGrants, ToolPolicy
 from boba.config import ConfigError, ConfigFileSections, bind
-from boba.core.types import StringList
 from boba.identity.context import CallContexts
 from boba.tool_io.chain import CallAmbient
-from boba.toolkit.manifest import ToolDecl
 from boba.toolkit.ports import StreamSpecs
 from boba.toolrun.callvalues import CallContextValues
 from boba.toolrun.dev_null import DevNullTool
@@ -37,13 +35,12 @@ from boba.toolrun.streams import CallJournals
 
 
 class PluginMeta(BaseModel):
-    """Ключи фреймворка в [tool.<id>]: включён ли плагин и какие инструменты
-    он предоставляет. Остальные ключи секции проверяет плагин подкомандой manifest."""
+    """Ключи фреймворка в [tool.<id>]: включение плагина и версия миграций.
+    Остальные ключи секции проверяет плагин подкомандой manifest."""
 
     model_config = ConfigDict(extra="ignore")
 
     enable: bool = False
-    tools: StringList = []
     migration_version: str | None = None
 
 
@@ -213,7 +210,9 @@ class ToolLoader:
             launcher = self._launchers.launcher_of(
                 kit.launch, self._contexts, self._ambient
             )
-            plugged = self._chain.launch(self._enabled(kit), launcher, kit.section)
+            plugged = self._chain.launch(
+                kit.launch.manifest.tools, launcher, kit.section
+            )
             built = plugged.tools
             tools.extend(built)
             specs = specs.merged(plugged.specs)
@@ -246,29 +245,6 @@ class ToolLoader:
             specs=specs,
             ambient=self._ambient,
         )
-
-    @staticmethod
-    def _enabled(kit: PluginKit) -> list[ToolDecl]:
-        """Объявления инструментов из списка tools секции; имя, которого
-        плагин не объявил, — отказ."""
-        declared: dict[str, ToolDecl] = {}
-        for decl in kit.launch.manifest.tools:
-            declared[decl.name] = decl
-
-        stray = sorted(set(kit.meta.tools) - set(declared))
-        if stray:
-            msg = (
-                f"[tool.{kit.launch.id}] tools names {stray}, which plugin "
-                f"{kit.launch.id!r} does not declare: it has {sorted(declared)}"
-            )
-            raise RuntimeError(msg)
-
-        enabled: list[ToolDecl] = []
-        for name, decl in declared.items():
-            if name in kit.meta.tools:
-                enabled.append(decl)
-
-        return enabled
 
     @staticmethod
     def _stream_writers(

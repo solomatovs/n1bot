@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 
 import pytest
 from omegaconf import DictConfig
@@ -15,7 +15,8 @@ from boba.stand.refs import StandRefs
 from boba.stand.toolsetup import ToolSetup
 from boba.stand_core.context import CallStand
 from boba.toolkit.manifest import InjectedRole
-from boba.toolrun.plugins import PluginKits
+from boba.toolrun.dev_null import DevNullTool
+from boba.toolrun.plugins import PluginKits, ToolLoader
 
 pytestmark = pytest.mark.anyio
 
@@ -81,20 +82,47 @@ async def test_plugin_without_its_root_is_left_out(
     assert "nope.ext4" in str(caught.value)
 
 
-async def test_tool_the_plugin_does_not_declare_refuses_start(
+@pytest.mark.parametrize("launcher", ["process", "sandbox"])
+@pytest.mark.parametrize(
+    "selection",
+    [
+        {},
+        {"tool.pg.tools": []},
+        {"tool.pg.tools": ["pg_query"]},
+        {"tool.pg.tools": ["pg_query", "pg_nope"]},
+    ],
+    ids=["no-list", "empty-list", "partial-list", "unknown-name"],
+)
+@pytest.mark.usefixtures("call_stand")
+async def test_enabled_plugin_loads_all_manifest_tools(
     runtime_stand: StandRefs,
-    call_stand: CallStand,
     raw_config: DictConfig,
     config_overlay: ConfigOverlay,
+    launcher: str,
+    selection: Mapping[str, object],
 ) -> None:
-    changes = _enabled_only(raw_config, ("pg",), "process")
-    changes["tool.pg.tools"] = ["pg_query", "pg_nope"]
+    changes = ToolSetup.sandbox_changes()
+    changes.update(_enabled_only(raw_config, ("pg",), launcher))
+    changes.update(selection)
     raw = config_overlay.tree(changes)
+    launchers = runtime_stand.launchers(raw)
+    kits = await PluginKits(raw, launchers).load()
 
-    with pytest.raises(RuntimeError, match=r"\[tool\.pg\] tools names \['pg_nope'\]"):
-        await runtime_stand.registry(
-            raw, runtime_stand.execution(), StandRefs.granted("all", ["*"])
-        )
+    assert set(kits) == {"pg"}
+
+    loader = ToolLoader(
+        raw,
+        kits,
+        runtime_stand.execution(),
+        launchers,
+        StandRefs.granted("all", ["*"]),
+    )
+    registry = loader.load()
+    declared = [decl.name for decl in kits["pg"].launch.manifest.tools]
+    loaded = [tool.name for tool in registry.tools if tool.name != DevNullTool.NAME]
+
+    assert len(declared) > 1
+    assert loaded == declared
 
 
 async def test_plugin_section_is_checked_by_the_plugin(

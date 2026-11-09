@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-http-server"
-version = "0.0.33.dev2"
+version = "0.0.33.dev3"
 description = "HTTP server lifecycle, configuration and readiness probes."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-cancellation==0.0.33.dev2",
-    "boba-identity==0.0.33.dev2",
-    "boba-tool-io==0.0.33.dev2",
+    "boba-cancellation==0.0.33.dev3",
+    "boba-identity==0.0.33.dev3",
+    "boba-tool-io==0.0.33.dev3",
     "pydantic>=2.12,<3",
     "uvicorn>=0.35,<1",
 ]
@@ -23,6 +23,6 @@ namespaces = true
 [project.optional-dependencies]
 
 dev = [
-    "boba-stand==0.0.33.dev2",
+    "boba-stand==0.0.33.dev3",
     "pytest>=9.1,<10",
 ]

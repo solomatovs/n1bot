@@ -333,7 +333,7 @@ TOOLS: Final = ToolMain.toolset(redis_scan)
 «[tool.redis] does not fit RedisToolConfig: …».
 
 **`extra = "ignore"`** нужен потому, что в той же таблице toml лежат
-служебные ключи `enable`, `tools`, `connections`, `sandbox`. Их читает
+служебные ключи `enable`, `migration_version`, `connections`, `sandbox`. Их читает
 загрузчик хоста, а не ваша модель.
 
 **`SqlLimits`** из `boba.toolkit.sql` даёт обязательные поля `max_rows` и
@@ -512,7 +512,6 @@ Entry point материализуется установкой: после пр
 
 ```toml
 enable     = true
-tools      = ["redis_scan"]
 max_rows   = 200
 max_bytes  = 1000000
 scan_batch = 500
@@ -528,9 +527,9 @@ scan_batch = 500
 ```
 
 - `enable = false` выключает секцию целиком: плагин не загружается.
-- `tools` — список инструментов, которые получит модель. Инструмент есть
-  в `TOOLS`, но не в списке — модели он не виден. Так администратор
-  управляет набором. Имя, которого плагин не объявил, — отказ старта.
+- У включённого плагина загружаются все инструменты его манифеста.
+  Перечислять `tools` в конфиге плагина не нужно; этот ключ игнорируется.
+  Публикацией инструментов управляют MCP-endpoint'ы, доступом — права пользователя.
 - Остальные ключи — поля `RedisToolConfig`, вложенная таблица `[server]`
   — поля `RedisServer`.
 - `[sandbox]` — изоляция для sandbox-режима: workspace, лимиты, политика
@@ -975,7 +974,6 @@ boba-mcp что-то ему предлагают на месте этого па
 
 ```toml
 enable     = true
-tools      = ["redis_scan", "redis_copy"]
 max_rows   = 200
 max_bytes  = 1000000
 scan_batch = 500
@@ -1663,8 +1661,6 @@ BOBA_MCP_CONFIG_PATH=$PWD/compose/mcp/conf/config.toml:$PWD/.vscode/boba/mcp.tom
 - Старт падает «… printed … bytes that are not a plugin manifest of spec 1»
   или «plugin manifest spec … is not supported»: программа собрана другой
   версией SDK, `make -C build build APP=plugins-<группа>`.
-- Старт падает «[tool.<id>] tools names […], which plugin '<id>' does not
-  declare»: в списке `tools` файла плагина имя, которого нет в манифесте.
 - Старт падает «plugin <id>: `setup` … preparing its storage failed: …»:
   хранилище плагина не подготовилось — база недоступна или билет к ней не
   выпущен.
@@ -2073,9 +2069,9 @@ KbToolConfig: connection: Field required [missing]».
 ### Что проверяет сервер и что — плагин
 
 Сервер разбирает в секции плагина только ключи фреймворка моделью
-`PluginMeta`: `enable`, `tools` (имя, которого нет в манифесте, — отказ
-старта) и таблицу `[sandbox]` (изоляция и лимиты, раздел 8). Остальные
-ключи секции проверяет плагин подкомандой `manifest`.
+`PluginMeta`: `enable` и `migration_version`. Таблица `[sandbox]` задаёт
+изоляцию и лимиты (раздел 8). Все инструменты манифеста включённого плагина
+попадают в реестр. Остальные ключи секции проверяет плагин подкомандой `manifest`.
 
 Аргументы модели сервер не проверяет. Он ставит в схему для клиента свои
 поля — подпись вызова `intent`, область `scope_id`, имена
