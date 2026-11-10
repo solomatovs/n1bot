@@ -43,8 +43,8 @@ class TestMcpForm:
         form = view.page.locator("[data-mcp-form]").last
         selected = form.locator('[data-mcp-choice="auth"] button[value="oauth"]')
         expect(selected).to_have_attribute("aria-checked", "true")
-        form.get_by_role("button", name=view.label("back"), exact=True).click()
-        card.get_by_role("button", name=view.label("back"), exact=True).click()
+        form.locator("[data-mcp-form-close]").click()
+        expect(view.server("user-oauth")).to_have_attribute("aria-expanded", "true")
         view.app().locator('[data-mcp-row-remove="user-oauth"]').click()
         confirm = view.page.locator("[data-mcp-remove-confirm]").last
         confirm.get_by_role("textbox").fill("user-oauth")
@@ -63,6 +63,8 @@ class TestMcpForm:
         card = view.card("live")
         expect(card.locator("[data-mcp-edit]")).to_have_count(0)
         expect(card.locator("[data-mcp-toggle]")).to_have_count(0)
+        expect(card.locator("[data-mcp-row-toggle]")).to_be_disabled()
+        expect(card.locator("[data-mcp-row-toggle]")).to_be_checked()
         card.locator("[data-mcp-settings]").click()
         form = view.page.locator("[data-mcp-readonly]").last
         expect(form.locator('[name="mcp-name"]')).to_have_value("live")
@@ -78,7 +80,7 @@ class TestMcpForm:
         )
         expect(form.locator('button[type="submit"]')).to_have_count(0)
         expect(form.locator("[data-mcp-remove]")).to_have_count(0)
-        form.get_by_role("button", name=view.label("back"), exact=True).click()
+        form.locator("[data-mcp-form-close]").click()
         expect(view.card("live")).to_contain_text(live_address)
 
     def test_user_manages_a_server(
@@ -101,6 +103,8 @@ class TestMcpForm:
         card = view.card("user-live")
         expect(card).to_contain_text(view.label("state.connected"), timeout=60_000)
         expect(card).to_contain_text(view.label("yours"))
+        expect(view.server("user-live")).to_have_attribute("aria-expanded", "true")
+        expect(view.server("live")).to_be_visible()
         card.locator("[data-mcp-edit]").click()
         form = view.page.locator("[data-mcp-form]").last
         expect(form.locator('[name="mcp-url"]')).to_have_value(live_address)
@@ -109,11 +113,20 @@ class TestMcpForm:
         form.get_by_role("button", name=view.label("save"), exact=True).click()
         card = view.card("user-renamed")
         expect(card).to_contain_text(view.label("state.failed"), timeout=60_000)
-        card.locator("[data-mcp-toggle]").click()
+        checkbox = card.get_by_role("checkbox")
+        expect(checkbox).to_be_checked()
+        checkbox.click()
         expect(card).to_contain_text(view.label("state.disabled"))
-        card.locator("[data-mcp-toggle]").click()
+        expect(checkbox).not_to_be_checked()
+        expect(card.locator("[data-mcp-row-reconnect]")).to_be_disabled()
+        expect(view.server("user-renamed")).to_have_attribute("aria-expanded", "true")
+        view.server("user-renamed").click()
+        expect(card.locator("[data-mcp-details]")).to_be_hidden()
+        checkbox.click()
         expect(card).to_contain_text(view.label("state.failed"), timeout=60_000)
-        card.get_by_role("button", name=view.label("back"), exact=True).click()
+        expect(checkbox).to_be_checked()
+        expect(card.locator("[data-mcp-row-reconnect]")).to_be_enabled()
+        expect(view.server("user-renamed")).to_have_attribute("aria-expanded", "false")
         view.app().locator('[data-mcp-row-remove="user-renamed"]').click()
         form = view.page.locator("[data-mcp-form]").last
         confirm = form.locator("[data-mcp-remove-confirm]")
@@ -167,7 +180,7 @@ class TestMcpForm:
             )
             expect(card).not_to_contain_text("handshake failed")
             expect(card.locator("[data-mcp-tool]")).to_have_count(0)
-            card.get_by_text(view.label("reconnect"), exact=True).click()
+            card.locator("[data-mcp-row-reconnect]").click()
             expect(card).to_contain_text(view.label("state.needs_auth"))
             assert "OAuth flow error" not in mcp_stand.log_path.read_text()
 

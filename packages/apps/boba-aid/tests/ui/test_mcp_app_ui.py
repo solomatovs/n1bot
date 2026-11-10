@@ -23,6 +23,7 @@ import pytest
 from acp_stand import AppsHost, ClosedEndpoint
 from chat_ui import BOOT_TIMEOUT_SEC, OpenChat
 from playwright.sync_api import Locator, Page, expect
+from pydantic import BaseModel, TypeAdapter
 
 from boba.aid.chat.ui_text import UiText
 from boba.mcp_client.client import McpServerConfig
@@ -153,6 +154,54 @@ class McpAppPage:
 
 
 class TestMcpApp:
+    @pytest.mark.parametrize("width", [1280, 420])
+    def test_expansion_keeps_header_position(
+        self,
+        mcp_stand: StandProcess,
+        open_chat: OpenChat,
+        app_texts: UiText,
+        tmp_path: Path,
+        width: int,
+    ) -> None:
+        view = McpAppPage(open_chat(mcp_stand, ""), app_texts)
+        view.page.set_viewport_size({"width": width, "height": 720})
+        for count in range(1, 4):
+            view.run()
+            expect(view.page.locator(view.APP)).to_have_count(count)
+
+        view.run()
+        expect(view.page.locator(view.APP)).to_have_count(4)
+        view.app().locator("[data-mcp-search]").fill(LIVE)
+        trigger = view.server(LIVE)
+        expect(trigger).to_contain_text(view.label("state.connected"))
+        trigger.scroll_into_view_if_needed()
+        view.page.wait_for_timeout(700)
+        raw = trigger.evaluate("""node => new Promise(resolve => {
+            let scroll = node.parentElement;
+            while (scroll && getComputedStyle(scroll).overflowY !== 'auto') {
+                scroll = scroll.parentElement;
+            }
+            const card = node.closest('[data-mcp-card]');
+            const samples = [];
+            const sample = () => {
+                samples.push({
+                    top: node.getBoundingClientRect().top,
+                    height: card.getBoundingClientRect().height,
+                    scroll: scroll.scrollTop,
+                    spacer: scroll.lastElementChild.getBoundingClientRect().height
+                });
+                if ([2, 102, 202].includes(samples.length)) node.click();
+                if (samples.length < 300) requestAnimationFrame(sample);
+                else resolve(samples);
+            };
+            requestAnimationFrame(sample);
+        })""")
+        frames = TypeAdapter(list[McpLayoutFrame]).validate_python(raw)
+        encoded = TypeAdapter(list[McpLayoutFrame]).dump_json(frames, indent=2)
+        (tmp_path / "motion.json").write_bytes(encoded)
+        tops = [frame.top for frame in frames]
+        assert max(tops) - min(tops) <= 2, (min(tops), max(tops))
+
     def test_slash_shows_the_mcp_command(
         self, mcp_stand: StandProcess, open_chat: OpenChat, app_texts: UiText
     ) -> None:
@@ -179,6 +228,11 @@ class TestMcpApp:
         expect(view.server(GONE)).to_contain_text(view.label("state.failed"))
         expect(app.locator(f'[data-mcp-row-reconnect="{LIVE}"]')).to_be_visible()
         expect(app.locator(f'[data-mcp-row-remove="{LIVE}"]')).to_have_count(0)
+        enabled = app.locator(f'[data-mcp-row-toggle="{LIVE}"]')
+        expect(enabled).to_be_checked()
+        expect(enabled).to_be_disabled()
+        expect(view.server(LIVE)).to_have_attribute("aria-expanded", "false")
+        expect(app.locator(f'[data-mcp-details="{LIVE}"]')).to_be_hidden()
 
         search = app.locator("[data-mcp-search]")
         search.fill(LIVE)
@@ -236,10 +290,60 @@ class TestMcpApp:
         expect(tool.locator("[data-mcp-tool-json]")).to_be_hidden()
         expect(another.locator("[data-mcp-tool-json]")).to_be_visible()
 
-        card.get_by_text(view.label("reconnect")).click()
+        reconnect = card.locator("[data-mcp-row-reconnect]")
+        reconnect.click()
 
-        expect(card.get_by_text(view.label("reconnect"))).to_be_enabled(timeout=WAIT_MS)
+        expect(reconnect).to_be_enabled(timeout=WAIT_MS)
         expect(view.card(LIVE)).to_contain_text(view.label("state.connected"))
+        expect(view.server(LIVE)).to_have_attribute("aria-expanded", "true")
+
+    @pytest.mark.parametrize("viewport", [(1280, 900), (420, 900)])
+    def test_servers_expand_independently_and_keep_header_actions(
+        self,
+        mcp_stand: StandProcess,
+        open_chat: OpenChat,
+        app_texts: UiText,
+        tmp_path: Path,
+        viewport: tuple[int, int],
+    ) -> None:
+        """Сведения раскрываются внутри списка, действия шапки его не заменяют."""
+        view = McpAppPage(open_chat(mcp_stand, ""), app_texts)
+        width, height = viewport
+        view.page.set_viewport_size({"width": width, "height": height})
+        view.run()
+        view.server(LIVE).click()
+        card = view.card(LIVE)
+        expect(card).to_contain_text("streamable-http")
+        expect(view.server(LIVE)).to_have_attribute("aria-expanded", "true")
+        expect(view.app().locator("[data-mcp-search]")).to_be_visible()
+        expect(view.server(GONE)).to_be_visible()
+        reconnect = card.locator("[data-mcp-row-reconnect]")
+        expect(reconnect).to_be_visible()
+        expect(card.locator("[data-mcp-settings]")).to_be_visible()
+        checkbox_box = card.locator("[data-mcp-row-toggle]").bounding_box()
+        reconnect_box = reconnect.bounding_box()
+        assert checkbox_box is not None
+        assert reconnect_box is not None
+        assert checkbox_box["x"] + checkbox_box["width"] < reconnect_box["x"]
+        view.app().screenshot(
+            path=str(tmp_path / "mcp-servers-expanded.png"), animations="disabled"
+        )
+
+        view.server(GONE).click()
+        expect(view.card(GONE).locator("[data-mcp-issue]")).to_be_visible()
+        expect(card.locator("[data-mcp-details]")).to_be_visible()
+        view.server(LIVE).press("Enter")
+        expect(view.server(LIVE)).to_have_attribute("aria-expanded", "false")
+        expect(card.locator("[data-mcp-details]")).to_be_hidden()
+        expect(view.card(GONE).locator("[data-mcp-details]")).to_be_visible()
+        expect(reconnect).to_be_visible()
+        reconnect.click()
+        expect(reconnect).to_be_enabled(timeout=WAIT_MS)
+        expect(view.server(LIVE)).to_have_attribute("aria-expanded", "false")
+        view.app().screenshot(
+            path=str(tmp_path / "mcp-servers-failed-expanded.png"),
+            animations="disabled",
+        )
 
     def test_app_survives_reload_and_reads_the_state_again(
         self, mcp_stand: StandProcess, open_chat: OpenChat, app_texts: UiText
@@ -259,3 +363,12 @@ class TestMcpApp:
         app = again.app()
         expect(app).to_contain_text(again.label("title"))
         expect(again.server(LIVE)).to_contain_text(again.label("state.connected"))
+
+
+class McpLayoutFrame(BaseModel):
+    """Измерение положения строки и прокрутки браузером при раскрытии."""
+
+    top: float
+    height: float
+    scroll: float
+    spacer: float

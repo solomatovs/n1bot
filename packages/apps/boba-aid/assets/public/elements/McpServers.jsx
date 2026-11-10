@@ -3,7 +3,6 @@ import { useRecoilValue } from "recoil";
 import { sessionState } from "@chainlit/react-client";
 import {
   AlertCircle,
-  ArrowLeft,
   Check,
   ChevronDown,
   ChevronRight,
@@ -18,8 +17,10 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -31,7 +32,7 @@ import { Separator } from "@/components/ui/separator";
 import { useTranslation } from "@/components/i18n";
 
 // Приложение MCP-серверов чата: команда /mcp выводит его в ленту сообщением
-// со списком серверов, карточкой и диалогом правки. Состояние экрана
+// со списком раскрывающихся серверов и диалогом правки. Состояние экрана
 // живёт в компоненте; данные приходят действиями чата (mcp_list, mcp_status,
 // mcp_detail, mcp_reconnect), после переподключения сокета список читается
 // заново — как подписка на connect в CanvasView.
@@ -94,8 +95,6 @@ function useLabels() {
     headerAdd: t(`${TEXT}.headerAdd`),
     headerRemove: t(`${TEXT}.headerRemove`),
     enabled: t(`${TEXT}.enabled`),
-    disable: t(`${TEXT}.disable`),
-    enable: t(`${TEXT}.enable`),
     limits: t(`${TEXT}.limits`),
     formTitle: t(`${TEXT}.formTitle`),
     formHelp: t(`${TEXT}.formHelp`),
@@ -114,7 +113,9 @@ function useLabels() {
       if (STATES.includes(state)) return t(`${TEXT}.state.${state}`);
       return t(`${TEXT}.state.pending`);
     },
-    back: t(`${TEXT}.back`),
+    close: t(`${TEXT}.close`),
+    expand: t(`${TEXT}.expand`),
+    collapse: t(`${TEXT}.collapse`),
     reconnect: t(`${TEXT}.reconnect`),
     reconnecting: t(`${TEXT}.reconnecting`),
     transport: t(`${TEXT}.transport`),
@@ -216,11 +217,10 @@ function ServerList({ labels }) {
   const [rows, setRows] = useState(null);
   const [statuses, setStatuses] = useState({});
   const [error, setError] = useState("");
-  const [selected, setSelected] = useState(null);
+  const [expanded, setExpanded] = useState([]);
   const [editing, setEditing] = useState(null);
   const [query, setQuery] = useState("");
-  const [busyName, setBusyName] = useState("");
-  const [actionError, setActionError] = useState("");
+  const [revision, setRevision] = useState(0);
 
   const load = useCallback(async () => {
     setError("");
@@ -237,15 +237,26 @@ function ServerList({ labels }) {
         }
         setStatuses((was) => ({ ...was, [row.name]: status }));
       }));
+      setRevision((was) => was + 1);
     } catch (failed) {
       setError(failed.message);
     }
   }, []);
 
-  useEffect(() => {
-    if (selected || editing) return;
+  useEffect(() => { load(); }, [load]);
+
+  const changed = useCallback((detail) => {
+    const name = detail.row.name;
+    setRows((was) => was.map((row) => row.name === name ? detail.row : row));
+    setStatuses((was) => ({ ...was, [name]: {
+      name, state: detail.state, issue: detail.issue, tools: detail.tools.length,
+    } }));
+  }, []);
+
+  const closeForm = () => {
+    setEditing(null);
     load();
-  }, [load, selected, editing]);
+  };
 
   // Сначала серверы, которым нужен вход, — они стоят первыми, как в Claude
   // Code; остальные остаются в порядке профиля, как их отдал mcp_list.
@@ -263,28 +274,12 @@ function ServerList({ labels }) {
   }
   const sorted = [...first, ...rest];
   const visible = sorted.filter((row) => row.name.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
-  const reconnect = async (name) => {
-    setBusyName(name);
-    setActionError("");
-    try {
-      await ask("mcp_reconnect", { name });
-      const status = await ask("mcp_status", { name });
-      setStatuses((was) => ({ ...was, [name]: status }));
-    } catch (failed) {
-      setActionError(failed.message);
-    } finally {
-      setBusyName("");
-    }
-  };
 
   const heading = <ListHeading labels={labels} count={rows ? rows.length : undefined}
     query={query} onQuery={setQuery} onAdd={() => setEditing({ current: null, removing: false })} />;
 
   let content;
-  if (selected) {
-    content = <ServerCard name={selected} labels={labels} onBack={() => setSelected(null)}
-      onEdit={() => setEditing({ current: selected, removing: false })} />;
-  } else if (error) {
+  if (error) {
     content = <Note tone="failure" title={labels.listFailed} text={error}>
       <Button variant="outline" size="sm" className="h-8 w-fit" onClick={load}>
         <RefreshCw />{labels.retry}
@@ -299,100 +294,89 @@ function ServerList({ labels }) {
       {sorted.length ? labels.noMatches : labels.empty}
     </div>;
   } else {
-    content = <div className="flex flex-col gap-2">
+    content = <Accordion type="multiple" value={expanded} onValueChange={setExpanded} className="flex flex-col gap-2">
       {visible.map((row) => (
         <ServerRow
           key={row.name}
           row={row}
           status={statuses[row.name]}
           labels={labels}
-          busy={busyName === row.name}
-          onOpen={() => setSelected(row.name)}
-          onReconnect={() => reconnect(row.name)}
+          expanded={expanded.includes(row.name)}
+          revision={revision}
+          onChanged={changed}
           onEdit={() => setEditing({ current: row.name, removing: false })}
           onRemove={() => setEditing({ current: row.name, removing: true })}
         />
       ))}
-    </div>;
+    </Accordion>;
   }
 
   return (
     <>
-      {selected ? content : <div className="flex w-full flex-col gap-3 text-sm" data-mcp-servers>
+      <div className="flex w-full flex-col gap-3 text-sm" data-mcp-servers>
         {heading}
-        {actionError ? <Note tone="failure" title={labels.actionFailed} text={actionError} /> : null}
         {content}
-      </div>}
+      </div>
       {editing ? <ServerForm current={editing.current} startRemoving={editing.removing} labels={labels}
-        onBack={() => setEditing(null)}
-        onSaved={(name) => { setSelected(name); setEditing(null); }}
-        onRemoved={() => { setSelected(null); setEditing(null); }} /> : null}
+        onClose={closeForm}
+        onSaved={(name) => {
+          setQuery("");
+          setExpanded((was) => [...was.filter((item) => item !== editing.current && item !== name), name]);
+          closeForm();
+        }}
+        onRemoved={() => {
+          setExpanded((was) => was.filter((item) => item !== editing.current));
+          closeForm();
+        }} /> : null}
     </>
   );
 }
 
-// Строка списка: открытие карточки и действия — отдельные кнопки без вложенности.
-function ServerRow({ row, status, labels, busy, onOpen, onReconnect, onEdit, onRemove }) {
-  let state = "pending";
-  if (status) state = status.state;
-
-  let summary = labels.state(state);
-  if (status && status.tools) summary = `${summary} · ${labels.toolCount(status.tools)}`;
-
-  return <Card className="flex min-w-0 items-center gap-1 overflow-hidden px-2 py-2" data-mcp-server-card={row.name}>
-    <button type="button" className="flex min-w-0 flex-1 items-center gap-3 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      data-mcp-server={row.name} onClick={onOpen}>
-      <span className="relative flex size-10 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground" aria-hidden="true">
-        <Server className="size-5" />
-        <span className="absolute -bottom-1 -right-1 inline-flex rounded-full border-2 border-card bg-card"><StateDot state={state} large /></span>
-      </span>
-      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span className="flex min-w-0 items-center gap-2"><span className="truncate font-semibold">{row.name}</span><OriginBadge origin={row.origin} labels={labels} /></span>
-        <span className="truncate text-xs text-muted-foreground">{summary}</span>
-      </span>
-    </button>
-    <div className="flex shrink-0 items-center gap-0.5">
-      {row.enabled ? <Button variant="ghost" size="icon" className="size-8 text-muted-foreground" onClick={onReconnect} disabled={busy}
-        aria-label={`${labels.reconnect}: ${row.name}`} title={labels.reconnect} data-mcp-row-reconnect={row.name}>
-        <RefreshCw className={`size-4 ${busy ? "animate-spin" : ""}`} />
-      </Button> : null}
-      <Button variant="ghost" size="icon" className="size-8 text-muted-foreground" onClick={onEdit}
-        aria-label={`${row.editable ? labels.edit : labels.settings}: ${row.name}`} title={row.editable ? labels.edit : labels.settings} data-mcp-row-edit={row.name}>
-        {row.editable ? <Pencil className="size-4" /> : <Settings2 className="size-4" />}
-      </Button>
-      {row.editable ? <Button variant="ghost" size="icon" className="size-8 text-destructive hover:text-destructive" onClick={onRemove}
-        aria-label={`${labels.remove}: ${row.name}`} title={labels.remove} data-mcp-row-remove={row.name}>
-        <Trash2 className="size-4" />
-      </Button> : null}
-    </div>
-  </Card>;
-}
-
-// Карточка сервера: адрес, транспорт, состояние, Reconnect и инструменты.
-function ServerCard({ name, labels, onBack, onEdit }) {
+// Шапка и действия остаются на месте при раскрытии сведений о сервере.
+function ServerRow({ row, status, labels, expanded, revision, onChanged, onEdit, onRemove }) {
+  const name = row.name;
   const [detail, setDetail] = useState(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [showTools, setShowTools] = useState(false);
 
-  const load = useCallback(async () => {
-    try {
-      const response = await ask("mcp_detail", { name });
-      setDetail(response);
-      setError("");
-    } catch (failed) {
-      setError(failed.message);
-    }
-  }, [name]);
+  const receive = useCallback((response) => {
+    setDetail(response);
+    onChanged(response);
+  }, [onChanged]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    if (!expanded) {
+      setLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    ask("mcp_detail", { name }).then((response) => {
+      if (!cancelled) receive(response);
+    }).catch((failed) => {
+      if (!cancelled) setError(failed.message);
+    }).finally(() => {
+      if (!cancelled) setLoading(false);
+    });
+
+    return () => { cancelled = true; };
+  }, [name, expanded, revision, receive]);
+
+  const refresh = async () => {
+    const response = await ask("mcp_detail", { name });
+    receive(response);
+  };
 
   const change = async (action, payload) => {
     setBusy(true);
     setError("");
     try {
       await ask(action, payload);
-      await load();
+      await refresh();
     } catch (failed) {
       setError(failed.message);
     } finally {
@@ -411,7 +395,7 @@ function ServerCard({ name, labels, onBack, onEdit }) {
       if (response.url) {
         window.location.assign(response.url);
       } else {
-        await load();
+        await refresh();
         setBusy(false);
       }
     } catch (failed) {
@@ -419,131 +403,123 @@ function ServerCard({ name, labels, onBack, onEdit }) {
       setBusy(false);
     }
   };
-  const toggle = () => change("mcp_toggle", { name, enabled: !detail.row.enabled });
+  const toggle = (enabled) => change("mcp_toggle", { name, enabled });
 
-  const back = (
-    <Button
-      variant="ghost"
-      size="sm"
-      className="-ml-3 h-8 w-fit text-muted-foreground"
-      onClick={onBack}
-    >
-      <ArrowLeft />
-      {labels.back}
-    </Button>
-  );
+  let state = "pending";
+  if (status) state = status.state;
 
-  if (!detail) {
-    return (
-      <div className="flex w-full flex-col gap-2 text-sm" data-mcp-card-loading>
-        {back}
-        {error ? <Note tone="failure" title={labels.actionFailed} text={error} /> : null}
+  let summary = labels.state(state);
+  if (status && status.tools) summary = `${summary} · ${labels.toolCount(status.tools)}`;
+
+  const working = busy || loading;
+  const disclosureLabel = expanded ? labels.collapse : labels.expand;
+
+  return <Card className="min-w-0 overflow-hidden" data-mcp-server-card={name} data-mcp-card={name}>
+    <AccordionItem value={name} className="border-0">
+      <div className="flex min-w-0 items-center gap-1 px-2 py-2">
+        <div className="min-w-0 flex-1">
+          <AccordionTrigger className="min-w-0 w-full flex-row-reverse gap-3 rounded-md px-2 py-1.5 text-left hover:bg-accent hover:no-underline [&>svg]:-rotate-90 [&[data-state=open]>svg]:rotate-0"
+            aria-label={`${disclosureLabel}: ${name}`} data-mcp-server={name}>
+            <span className="flex min-w-0 flex-1 items-center gap-3">
+              <span className="relative flex size-10 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground" aria-hidden="true">
+                <Server className="size-5" />
+                <span className="absolute -bottom-1 -right-1 inline-flex rounded-full border-2 border-card bg-card"><StateDot state={state} large /></span>
+              </span>
+              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1"><span className="truncate font-semibold">{name}</span><OriginBadge origin={row.origin} labels={labels} /></span>
+                <span className="truncate text-xs font-normal text-muted-foreground">{summary}</span>
+              </span>
+            </span>
+          </AccordionTrigger>
+        </div>
+        <div className="flex shrink-0 items-center gap-0.5">
+          <label className="flex size-8 items-center justify-center" title={row.editable ? labels.enabled : labels.roleManaged}>
+            <Checkbox checked={row.enabled} onCheckedChange={toggle} disabled={working || !row.editable}
+              aria-label={`${labels.enabled}: ${name}`} data-mcp-row-toggle={name} data-mcp-toggle={row.editable || undefined} />
+          </label>
+          <Button variant="ghost" size="icon" className="size-8 text-muted-foreground" onClick={reconnect} disabled={working || !row.enabled}
+            aria-label={`${labels.reconnect}: ${name}`} title={busy ? labels.reconnecting : labels.reconnect} data-mcp-row-reconnect={name}>
+            <RefreshCw className={`size-4 ${busy ? "animate-spin" : ""}`} />
+          </Button>
+          <Button variant="ghost" size="icon" className="size-8 text-muted-foreground" onClick={onEdit} disabled={working}
+            aria-label={`${row.editable ? labels.edit : labels.settings}: ${name}`} title={row.editable ? labels.edit : labels.settings}
+            data-mcp-row-edit={name} data-mcp-edit={row.editable || undefined} data-mcp-settings={!row.editable || undefined}>
+            {row.editable ? <Pencil className="size-4" /> : <Settings2 className="size-4" />}
+          </Button>
+          {row.editable ? <Button variant="ghost" size="icon" className="size-8 text-destructive hover:text-destructive" onClick={onRemove} disabled={working}
+            aria-label={`${labels.remove}: ${name}`} title={labels.remove} data-mcp-row-remove={name}>
+            <Trash2 className="size-4" />
+          </Button> : null}
+        </div>
       </div>
-    );
-  }
+      {error ? <div className="px-4 pb-3"><Note tone="failure" title={labels.actionFailed} text={error} /></div> : null}
+      <AccordionContent className="pb-0" aria-busy={loading} data-mcp-details={name}>
+        <Separator />
+        <ServerInfo row={row} status={status} tools={detail?.tools} labels={labels} busy={working} showTools={showTools}
+          onToggleTools={() => setShowTools(!showTools)} onConnectOAuth={connectOAuth} onDisconnectOAuth={disconnectOAuth} />
+      </AccordionContent>
+    </AccordionItem>
+  </Card>;
+}
 
+function ServerInfo({ row, status, tools, labels, busy, showTools, onToggleTools, onConnectOAuth, onDisconnectOAuth }) {
   let issue = null;
-  if (detail.issue) {
+  if (status?.issue) {
     let title = labels.issue;
     let tone = "failure";
-    if (detail.state === "needs_auth") {
+    if (status.state === "needs_auth") {
       title = labels.issueAuth;
       tone = "warning";
     }
-    issue = <Note tone={tone} title={title} text={detail.issue} />;
+    issue = <Note tone={tone} title={title} text={status.issue} />;
   }
 
-  let reconnectLabel = labels.reconnect;
-  let spin = "";
-  if (busy) {
-    reconnectLabel = labels.reconnecting;
-    spin = "animate-spin";
-  }
-
-  const reconnectable = detail.row.enabled;
-  const connected = detail.state === "connected";
-  const tools = detail.tools || [];
+  const connected = status?.state === "connected";
 
   return (
-    <div className="flex w-full flex-col gap-2 text-sm" data-mcp-card={detail.row.name}>
-      {back}
-      <Card>
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3">
-          <span className="break-all text-base font-semibold">{detail.row.name}</span>
-          <OriginBadge origin={detail.row.origin} labels={labels} />
-          <Badge variant="secondary" className="gap-1.5 font-normal">
-            <StateDot state={detail.state} />
-            {labels.state(detail.state)}
-          </Badge>
-          <Button variant="outline" size="sm" className={`ml-auto h-8 ${detail.row.editable ? "" : "text-muted-foreground"}`} onClick={onEdit} disabled={busy}
-            data-mcp-edit={detail.row.editable || undefined} data-mcp-settings={!detail.row.editable || undefined}>
-            <Pencil />{detail.row.editable ? labels.edit : labels.settings}
-          </Button>
-          {reconnectable ? (
-            <Button
-              variant="outline"
-              size="sm"
-              className="ml-auto h-8"
-              onClick={reconnect}
-              disabled={busy}
-            >
-              <RefreshCw className={spin} />
-              {reconnectLabel}
-            </Button>
-          ) : null}
-
-        </div>
-        <Separator />
-        <div className="flex flex-col gap-4 px-4 py-3">
-          <dl className="grid grid-cols-1 gap-y-1.5 sm:grid-cols-[max-content_minmax(0,1fr)] sm:gap-x-6">
-            <dt className="text-muted-foreground">{labels.transport}</dt>
-            <dd>{detail.row.transport}</dd>
-            <dt className="text-muted-foreground">{labels.address}</dt>
-            <dd className="break-all font-mono text-xs leading-5">{detail.row.address}</dd>
-            <dt className="text-muted-foreground">{labels.auth}</dt>
-            <dd className="flex flex-col items-start gap-2">
-              <span>{({ none: labels.authNone, bearer: labels.authBearer, oauth: labels.authOAuth, local: labels.authLocal, proxy: labels.authProxy })[detail.row.auth]}</span>
-              <div className="flex flex-wrap gap-2">
-          {detail.row.auth === "oauth" && detail.row.enabled && detail.state !== "connected" ? (
-            <Button variant="default" size="sm" className="h-8" onClick={connectOAuth} disabled={busy} data-mcp-oauth-connect>
-              <KeyRound />{labels.oauthConnect}
-            </Button>
-          ) : null}
-          {detail.row.auth === "oauth" && detail.state === "connected" ? (
-            <Button variant="outline" size="sm" className="h-8" onClick={disconnectOAuth} disabled={busy} data-mcp-oauth-disconnect>
-              <KeyRound />{labels.oauthDisconnect}
-            </Button>
-          ) : null}
-              </div>
-            </dd>
-            <dt className="text-muted-foreground">{labels.limits}</dt>
-            <dd>{detail.row.connect_timeout_sec} s / {detail.row.call_timeout_sec} s</dd>
-            <dt className="text-muted-foreground">{labels.headers}</dt>
-            <dd className="break-all">{(detail.row.headers || []).join(", ") || "—"}</dd>
-            {connected ? (
-              <>
-                <dt className="text-muted-foreground">{labels.tools}</dt>
-                <dd>{tools.length}</dd>
-              </>
+    <div className="flex flex-col gap-4 px-4 py-3">
+      <dl className="grid grid-cols-1 gap-y-1.5 sm:grid-cols-[max-content_minmax(0,1fr)] sm:gap-x-6">
+        <dt className="text-muted-foreground">{labels.transport}</dt>
+        <dd>{row.transport}</dd>
+        <dt className="text-muted-foreground">{labels.address}</dt>
+        <dd className="break-all font-mono text-xs leading-5">{row.address}</dd>
+        <dt className="text-muted-foreground">{labels.auth}</dt>
+        <dd className="flex flex-col items-start gap-2">
+          <span>{({ none: labels.authNone, bearer: labels.authBearer, oauth: labels.authOAuth, local: labels.authLocal, proxy: labels.authProxy })[row.auth]}</span>
+          <div className="flex flex-wrap gap-2">
+            {row.auth === "oauth" && row.enabled && !connected ? (
+              <Button variant="default" size="sm" className="h-8" onClick={onConnectOAuth} disabled={busy} data-mcp-oauth-connect>
+                <KeyRound />{labels.oauthConnect}
+              </Button>
             ) : null}
-          </dl>
-          {detail.row.editable ? (
-            <Button variant="outline" size="sm" className="h-8 w-fit" onClick={toggle} disabled={busy} data-mcp-toggle>
-              {detail.row.enabled ? labels.disable : labels.enable}
-            </Button>
-          ) : null}
-          {issue}
-          {error ? <Note tone="failure" title={labels.actionFailed} text={error} /> : null}
-          {connected ? (
-            <ToolList
-              tools={tools}
-              labels={labels}
-              shown={showTools}
-              onToggle={() => setShowTools(!showTools)}
-            />
-          ) : null}
-        </div>
-      </Card>
+            {row.auth === "oauth" && connected ? (
+              <Button variant="outline" size="sm" className="h-8" onClick={onDisconnectOAuth} disabled={busy} data-mcp-oauth-disconnect>
+                <KeyRound />{labels.oauthDisconnect}
+              </Button>
+            ) : null}
+          </div>
+        </dd>
+        <dt className="text-muted-foreground">{labels.limits}</dt>
+        <dd>{row.connect_timeout_sec} s / {row.call_timeout_sec} s</dd>
+        <dt className="text-muted-foreground">{labels.headers}</dt>
+        <dd className="break-all">{row.headers.join(", ") || "—"}</dd>
+        {connected ? (
+          <>
+            <dt className="text-muted-foreground">{labels.tools}</dt>
+            <dd>{status.tools}</dd>
+          </>
+        ) : null}
+      </dl>
+      {issue}
+      {connected ? (
+        <ToolList
+          tools={tools}
+          count={status.tools}
+          labels={labels}
+          shown={showTools}
+          onToggle={onToggleTools}
+        />
+      ) : null}
     </div>
   );
 }
@@ -565,7 +541,7 @@ function ChoiceGroup({ label, value, options, onChange, disabled, kind }) {
   </div>;
 }
 
-function ServerForm({ current, startRemoving, labels, onBack, onSaved, onRemoved }) {
+function ServerForm({ current, startRemoving, labels, onClose, onSaved, onRemoved }) {
   const [form, setForm] = useState({ name: "", transport: "streamable-http", url: "", auth: "none", token: "", headers: [] });
   const [ready, setReady] = useState(!current);
   const [editable, setEditable] = useState(!current);
@@ -676,7 +652,7 @@ function ServerForm({ current, startRemoving, labels, onBack, onSaved, onRemoved
   ] : [{ value: form.auth, label: ({ none: labels.authNone, bearer: labels.authBearer, oauth: labels.authOAuth, local: labels.authLocal, proxy: labels.authProxy })[form.auth] || form.auth }];
 
   return (
-    <Dialog open onOpenChange={(open) => { if (!open && !busy) onBack(); }}>
+    <Dialog open onOpenChange={(open) => { if (!open && !busy) onClose(); }}>
       <DialogContent className="max-h-[90vh] w-[calc(100%-2rem)] max-w-2xl overflow-y-auto p-0" data-mcp-form data-mcp-readonly={ready && !editable || undefined}>
         {removing ? <div className="flex flex-col gap-5 p-6" data-mcp-remove-confirm>
           <DialogHeader>
@@ -690,8 +666,8 @@ function ServerForm({ current, startRemoving, labels, onBack, onSaved, onRemoved
             <Button variant="outline" disabled={busy} onClick={() => setRemoving(false)}>{labels.cancel}</Button>
           </div>
         </div> : <div className="flex flex-col gap-4 p-5 sm:gap-5 sm:p-6">
-          <Button variant="ghost" size="sm" className="-ml-3 h-8 w-fit text-muted-foreground" onClick={onBack} disabled={busy}>
-            <ArrowLeft />{labels.back}
+          <Button variant="ghost" size="sm" className="-ml-3 h-8 w-fit text-muted-foreground" onClick={onClose} disabled={busy} data-mcp-form-close>
+            {labels.close}
           </Button>
           <DialogHeader>
             <div className="flex items-center gap-3">
@@ -746,7 +722,7 @@ function ServerForm({ current, startRemoving, labels, onBack, onSaved, onRemoved
                 </div>
               </details>
               {editable ? <div className="flex flex-wrap justify-end gap-2 border-t pt-4">
-                <Button type="button" variant="outline" onClick={onBack}>{labels.cancel}</Button>
+                <Button type="button" variant="outline" onClick={onClose}>{labels.cancel}</Button>
                 <Button type="submit" disabled={busy}>{busy ? labels.saving : savedName ? labels.save : labels.create}</Button>
               </div> : null}
             </fieldset>
@@ -760,7 +736,7 @@ function ServerForm({ current, startRemoving, labels, onBack, onSaved, onRemoved
   );
 }
 
-function ToolList({ tools, labels, shown, onToggle }) {
+function ToolList({ tools, count, labels, shown, onToggle }) {
   let Chevron = ChevronRight;
   let label = labels.showTools;
   if (shown) {
@@ -769,7 +745,7 @@ function ToolList({ tools, labels, shown, onToggle }) {
   }
 
   let list = null;
-  if (shown) {
+  if (shown && tools) {
     list = (
       <div className="max-h-[420px] divide-y overflow-y-auto rounded-md border" data-mcp-tools>
         {tools.length ? (
@@ -789,10 +765,12 @@ function ToolList({ tools, labels, shown, onToggle }) {
         className="-ml-3 h-8 w-fit"
         onClick={onToggle}
         aria-expanded={shown}
+        disabled={!tools}
+        data-mcp-tools-toggle
       >
         <Chevron />
         {label}
-        <span className="font-normal text-muted-foreground">{tools.length}</span>
+        <span className="font-normal text-muted-foreground">{count}</span>
       </Button>
       {list}
     </div>

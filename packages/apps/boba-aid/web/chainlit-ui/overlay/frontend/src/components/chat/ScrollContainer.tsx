@@ -149,19 +149,15 @@ export default function ScrollContainer({
     const step = lastUserMessageRef.current;
     if (!autoScrollUserMessage || !step) return;
 
-    let frame = 0;
+    // Компенсация высоты нужна до отрисовки: отложенный кадр даёт браузеру
+    // сначала ограничить scrollTop при сжатии ленты и затем вернуть его назад.
     const observer = new ResizeObserver(() => {
-      if (frame) return;
-      frame = requestAnimationFrame(() => {
-        frame = 0;
-        fitSpacer();
-      });
+      fitSpacer();
     });
     observer.observe(step);
     if (step.parentElement) observer.observe(step.parentElement);
     return () => {
       observer.disconnect();
-      cancelAnimationFrame(frame);
     };
   }, [autoScrollUserMessage, lastUserMessageId, fitSpacer]);
 

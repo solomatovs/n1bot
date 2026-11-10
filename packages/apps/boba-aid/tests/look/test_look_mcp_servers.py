@@ -56,8 +56,9 @@ class ServersLook:
         GROUP,
         "ms2-card",
         "Карточка сервера: транспорт, адрес, вход и сроки",
-        "«← К списку»; карточка: в шапке имя live, пометка «От роли», "
-        "значок «Подключён» и справа небольшая кнопка «Переподключить»; под "
+        "список остаётся на месте; строка live раскрыта стрелкой слева; "
+        "в шапке пометка «От роли», состояние «Подключён», заблокированный "
+        "чекбокс и справа кнопка «Переподключить»; под "
         "разделителем пары «Транспорт / streamable-http», «Адрес» моноширинным "
         "и «Инструменты» с числом; кнопка «Показать инструменты»",
         (),
@@ -112,13 +113,12 @@ class ServersLook:
         (),
     )
 
-    APP: ClassVar[str] = "div[data-mcp-servers],div[data-mcp-card]"
+    APP: ClassVar[str] = "div[data-mcp-servers]"
     SERVER: ClassVar[str] = "[data-mcp-server='{name}']"
     CARD: ClassVar[str] = "[data-mcp-card='{name}']"
     TOOLS: ClassVar[str] = "[data-mcp-tools]"
     ISSUE: ClassVar[str] = "[data-mcp-issue]"
-    TOGGLE: ClassVar[str] = "button[aria-expanded]"
-    BACK: ClassVar[str] = "К списку"
+    TOGGLE: ClassVar[str] = "[data-mcp-tools-toggle]"
     ITEM: ClassVar[str] = ".command-item"
     INPUT: ClassVar[str] = "#chat-input"
     LOGIN_USER: ClassVar[str] = "admin"
@@ -173,14 +173,17 @@ class ServersTab:
         return card
 
     def open_card(self, name: str) -> Locator:
-        """Строка сервера нажата: открыта его карточка."""
+        """Строка сервера раскрывает сведения под своей шапкой."""
         self.server(name).click()
-        return self.card(name)
+        card = self.card(name)
+        card.locator("dl").wait_for(timeout=ServersLook.WAIT_MS)
 
-    def back(self) -> None:
-        """Из карточки назад в список."""
-        self._page.get_by_text(ServersLook.BACK).last.click()
-        self.server(LIVE).wait_for(timeout=ServersLook.WAIT_MS)
+        return card
+
+    def collapse(self, name: str) -> None:
+        """Сведения скрываются, шапка остаётся в списке."""
+        self.server(name).click()
+        expect(self.server(name)).to_have_attribute("aria-expanded", "false")
 
     def show_tools(self, card: Locator) -> None:
         """Раскрыт список инструментов карточки."""
@@ -256,7 +259,7 @@ def test_mcp_servers_app_of_the_chat(
                 card.locator(ServersLook.TOOLS), ServersLook.LIVE_TOOLS, theme, size
             )
 
-            tab.back()
+            tab.collapse(LIVE)
             failed = tab.open_card(GONE)
             failed.locator(ServersLook.ISSUE).wait_for(timeout=ServersLook.WAIT_MS)
             look_pages.settle(page)
@@ -294,8 +297,8 @@ def test_mcp_server_forms(
             page.wait_for_timeout(1000)
             role_fields = role_form.locator("form").locator("..")
             look.frame(role_fields, ServersLook.ROLE_FORM, theme, size)
-            role_form.get_by_role("button", name=ServersLook.BACK, exact=True).click()
-            tab.back()
+            role_form.locator("[data-mcp-form-close]").click()
+            tab.collapse(LIVE)
             tab.list().locator("[data-mcp-add]").click()
             form = page.locator("[data-mcp-form]").last
             form.locator('[name="mcp-name"]').fill("personal")
