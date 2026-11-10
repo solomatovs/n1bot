@@ -231,10 +231,11 @@ def mcp_browser_oauth(
     app_config: Annotated[AppConfig, Depends(get_app_config)],
     store: Annotated[McpOAuthStore, Depends(mcp_oauth_store)],
 ) -> McpBrowserOAuth:
-    redirect_uri = (
-        str(app_config.server.public_url).rstrip("/") + "/api/mcp/oauth/callback"
+    return McpBrowserOAuth(
+        store,
+        str(app_config.server.public_url),
+        client_name=chainlit_config.ui.name,
     )
-    return McpBrowserOAuth(store, redirect_uri)
 
 
 def server_source(

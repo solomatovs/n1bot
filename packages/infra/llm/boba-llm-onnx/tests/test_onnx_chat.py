@@ -217,7 +217,7 @@ class TestLocalTokenCeiling:
         runtime = OnnxChatRuntime("fake-model", _FakeGenai())
         pieces: list[str] = []
 
-        with pytest.raises(LlmOutputLimitError, match="hit the token ceiling"):
+        with pytest.raises(LlmOutputLimitError, match="output token limit"):
             runtime.run(
                 "prompt",
                 RunSpec(max_tokens=5),
@@ -334,8 +334,11 @@ class TestOnnxChatModel:
         model = OnnxChatModel(OnnxChatRuntime("fake-model", _FakeGenai(eos_after=1)))
         request = ChatRequest(messages=[ChatTurn(role=ChatRole.USER, content="hi")])
 
-        with pytest.raises(LlmError, match="max_tokens"):
+        with pytest.raises(LlmError) as caught:
             await model.reply(request)
+
+        assert "max_tokens" in caught.value.diagnostic
+        assert "fake-model" not in str(caught.value)
 
     async def test_usage_counts_prompt_and_produced_tokens(self) -> None:
         model = OnnxChatModel(OnnxChatRuntime("fake-model", _FakeGenai(eos_after=2)))
@@ -356,5 +359,5 @@ class TestOnnxChatModel:
             sampling={"max_tokens": 3},
         )
 
-        with pytest.raises(LlmOutputLimitError, match="token ceiling"):
+        with pytest.raises(LlmOutputLimitError, match="output token limit"):
             await model.reply(request)

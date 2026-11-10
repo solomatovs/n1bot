@@ -19,13 +19,18 @@ LlmServiceError — подкласс LlmError: провайдер занят, н
 
 from __future__ import annotations
 
+import logging
 import re
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from enum import StrEnum
+from http import HTTPStatus
 from typing import Any, ClassVar, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from boba.core.errors import PublicError
 
 __all__ = [
     "ChatDelta",
@@ -38,8 +43,11 @@ __all__ = [
     "ChatTurn",
     "ChatUsage",
     "ContextOverflowSigns",
+    "LlmConnectionFailure",
     "LlmContextOverflowError",
     "LlmError",
+    "LlmErrorDetails",
+    "LlmErrors",
     "LlmOutputLimitError",
     "LlmServiceError",
     "LlmTrouble",
@@ -48,8 +56,14 @@ __all__ = [
 ]
 
 
-class LlmError(Exception):
+class LlmError(PublicError):
     """Обращение к модели не состоялось: загрузка, сеть, статус, мусорный ответ."""
+
+    def __init__(self, diagnostic: str) -> None:
+        super().__init__(
+            diagnostic,
+            "The model request failed. Try again or contact the administrator.",
+        )
 
 
 class LlmTrouble(StrEnum):
@@ -78,23 +92,124 @@ class LlmTrouble(StrEnum):
     """Обращение не состоялось по иной причине: подробности — в журнале."""
 
 
-class LlmServiceError(LlmError):
-    """Провайдер модели занят, недоступен, отказал или оборвал ответ: вид
-    беды и короткая причина (статус и суть ответа провайдера) для человека;
-    полный текст — в сообщении исключения для журнала."""
+class LlmErrors:
+    """Граница порта модели: журнал диагностики и упаковка неизвестного сбоя.
 
-    def __init__(self, message: str, trouble: LlmTrouble, detail: str) -> None:
-        super().__init__(message)
+    HTTP-модели и реестр провайдеров держат эту границу на всё время операции,
+    включая чтение потока; отмена задачи остаётся сигналом управления.
+    """
+
+    def __init__(self) -> None:
+        self._logger = logging.getLogger(__name__)
+
+    @contextmanager
+    def boundary(self, action: str, *, report: bool = True) -> Iterator[None]:
+        try:
+            yield
+        except LlmError as exc:
+            if report:
+                self._logger.error("%s: %s", action, exc.diagnostic, exc_info=True)
+
+            raise
+        except Exception as exc:
+            message = f"{action}: {type(exc).__name__}: {exc}"
+            if report:
+                self._logger.exception("%s", message)
+
+            raise LlmError(message) from exc
+
+
+class LlmConnectionFailure(StrEnum):
+    """Допустимые публичные причины отказа соединения с моделью."""
+
+    NO_CONNECTION = "no connection"
+    NO_ANSWER = "no answer in time"
+    CERTIFICATE = "the certificate check failed"
+    BROKE_OFF = "the connection broke off"
+    REFUSED = "the server refused the request"
+
+
+class LlmErrorDetails:
+    """Публичная причина по HTTP-статусу или закрытому перечню отказов сети.
+
+    Провайдеры формируют новые сообщения, ACP применяет тот же перечень к
+    сохранённым ошибкам при воспроизведении истории.
+    """
+
+    STATUS: ClassVar[re.Pattern[str]] = re.compile(r"^HTTP ([1-5][0-9]{2})(?:\s|$)")
+
+    def status(self, status: int) -> str:
+        try:
+            return f"HTTP {status} {HTTPStatus(status).phrase}"
+        except ValueError:
+            return f"HTTP {status}"
+
+    def public(self, detail: str) -> str:
+        if match := self.STATUS.match(detail):
+            return self.status(int(match.group(1)))
+
+        try:
+            return LlmConnectionFailure(detail).value
+        except ValueError:
+            return ""
+
+
+class LlmServiceError(LlmError):
+    """Отказ модели с видом сбоя и HTTP-статусом без данных подключения."""
+
+    def __init__(
+        self,
+        diagnostic: str,
+        trouble: LlmTrouble,
+        *,
+        status: int | None = None,
+        reason: LlmConnectionFailure | None = None,
+    ) -> None:
+        messages = {
+            LlmTrouble.BUSY: "The model service is busy. Try again later.",
+            LlmTrouble.DOWN: "The model service is unavailable. Try again later.",
+            LlmTrouble.REJECTED: (
+                "The model service rejected the request. Contact the administrator."
+            ),
+            LlmTrouble.CUT: "The model response was interrupted. Try again.",
+            LlmTrouble.BLOCKED: (
+                "The model service blocked the response with its content filter."
+            ),
+            LlmTrouble.EMPTY: "The model returned an empty response. Try again.",
+            LlmTrouble.UNKNOWN: "The model request failed. Contact the administrator.",
+        }
+        self.detail = ""
+        if reason is not None:
+            self.detail = reason.value
+
+        if status is not None:
+            self.detail = LlmErrorDetails().status(status)
+
+        message = messages[trouble]
+        if self.detail:
+            message = f"{message} ({self.detail})"
+
+        PublicError.__init__(self, diagnostic, message)
         self.trouble = trouble
-        self.detail = detail
 
 
 class LlmOutputLimitError(LlmError):
     """Ответ оборван пределом длины: модель замолчала на полуслове."""
 
+    def __init__(self, diagnostic: str) -> None:
+        PublicError.__init__(
+            self, diagnostic, "The model response reached its output token limit."
+        )
+
 
 class LlmContextOverflowError(LlmError):
     """Запрос не поместился в окно модели."""
+
+    def __init__(self, diagnostic: str) -> None:
+        PublicError.__init__(
+            self, diagnostic, "The request exceeds the model's context window."
+        )
+        self.excess = ContextOverflowSigns().excess(diagnostic)
 
 
 class ContextOverflowSigns:

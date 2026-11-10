@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import socket
+from copy import deepcopy
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import httpx
@@ -116,4 +118,94 @@ async def test_file_upload_export_matches_published_tool(
     actual = tools[FileUploadTool.NAME].model_dump(
         mode="json", by_alias=True, exclude_none=True
     )
-    assert exported[FileUploadTool.NAME]["mcp"] == actual
+    assert exported[FileUploadTool.NAME] == actual
+
+
+@pytest.mark.parametrize("mode", ["auto", "legacy"])
+@pytest.mark.parametrize("complete", [False, True])
+async def test_tool_override_publishes_one_merged_card_and_preserves_calls(
+    tmp_path: Path, mode: str, complete: bool
+) -> None:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+
+    stand = ServiceStand(tmp_path, RunLimits(max_runs=4, max_waiting=4), port, "")
+    schemas = EndpointSchemas()
+    original = FileUploadSchema().tool
+    baseline = dict(schemas.export({original.name: original})[original.name])
+    override: dict[str, Any] = {
+        "title": "Upload a document",
+        "description": "Upload an attachment into this conversation.",
+        "inputSchema": {
+            "properties": {
+                "name": {
+                    "description": "Document name including its extension.",
+                    "examples": ["report.pdf"],
+                }
+            }
+        },
+    }
+    expected = deepcopy(baseline)
+    expected["title"] = override["title"]
+    expected["description"] = override["description"]
+    assert isinstance(expected["inputSchema"], dict)
+    expected["inputSchema"]["properties"]["name"].update(
+        override["inputSchema"]["properties"]["name"]
+    )
+    if complete:
+        override = deepcopy(expected)
+
+    endpoint = stand.catalog.endpoints()[0].model_copy(
+        update={"overrides": {original.name: override}}
+    )
+    snapshot = EndpointCatalog((endpoint,))
+    stand.catalog.replace(snapshot)
+    stand.endpoints = stand.build(snapshot)
+    async with stand.serving():
+        token = await stand.dev_token(PROFILE)
+        transport = StreamableHttpTransport(stand.url(PROFILE), auth=token)
+        async with Client(transport, mode=mode) as client:
+            tools = {tool.name: tool for tool in await client.list_tools()}
+            actual = tools[original.name].model_dump(
+                mode="json", by_alias=True, exclude_none=True
+            )
+            assert actual == expected
+            arguments = {"name": "report.pdf", "scope_id": str(uuid4())}
+            assert not (await client.call_tool_mcp(original.name, arguments)).is_error
+            arguments["name"] = ""
+            assert (await client.call_tool_mcp(original.name, arguments)).is_error
+
+    assert schemas.export({original.name: original})[original.name] == baseline
+
+
+@pytest.mark.parametrize("prefix", ["", "/mcp"])
+async def test_endpoint_slash_redirect_is_relative_and_reaches_oauth_challenge(
+    tmp_path: Path, prefix: str
+) -> None:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+
+    stand = ServiceStand(tmp_path, RunLimits(max_runs=4, max_waiting=4), port, prefix)
+    source = stand.catalog.endpoints()[0]
+    root = source.model_copy(update={"prefix_url": "/", "id": uuid4()})
+    nested = source.model_copy(update={"prefix_url": "/dmp/dwh"})
+    snapshot = EndpointCatalog((root, nested))
+    stand.catalog.replace(snapshot)
+    stand.endpoints = stand.build(snapshot)
+
+    async with stand.serving(), httpx.AsyncClient(follow_redirects=False) as http:
+        address = f"http://127.0.0.1:{port}"
+        response = await http.post(address + prefix + "/dmp/dwh/")
+        assert response.status_code == 307
+        assert response.headers["location"] == prefix + "/dmp/dwh"
+        redirected = await http.post(address + response.headers["location"])
+        assert redirected.status_code == 401
+        assert "resource_metadata" in redirected.headers["www-authenticate"]
+        if prefix:
+            root_alias = await http.post(address + prefix)
+            assert root_alias.status_code == 307
+            assert root_alias.headers["location"] == prefix + "/"
+            root_reply = await http.post(address + root_alias.headers["location"])
+            assert root_reply.status_code == 401

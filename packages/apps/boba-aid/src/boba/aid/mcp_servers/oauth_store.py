@@ -1,12 +1,16 @@
-"""Persistent encrypted OAuth token and client registration storage.
+"""Зашифрованное хранилище OAuth и адаптер TokenStorage для MCP SDK.
 
-Errors:
-McpOAuthStoreError — PostgreSQL or decryption rejected a read or write.
+Ошибки:
+McpOAuthStoreError — чтение, запись, шифрование, разбор данных или поколение
+    учётных данных не позволяют выполнить операцию; причина сохранена.
+CancelledError — отмена ожидания блокировки или запроса распространяется без упаковки.
 """
 
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import StrEnum
 from uuid import UUID
@@ -16,7 +20,7 @@ from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from psycopg import sql
 from pydantic import SecretStr, ValidationError
 
-from boba.crypto import SecretCipher, SecretCryptoError
+from boba.crypto import SecretCipher
 from boba.db.postgres import PostgresPool, PostgresTable
 
 
@@ -43,58 +47,82 @@ class McpOAuthStore(PostgresTable):
     LABEL = "mcp_tokens"
 
     def __init__(self, pool: PostgresPool, schema: str, cipher: SecretCipher) -> None:
-        super().__init__(pool, schema)
-        self._cipher = cipher
+        try:
+            super().__init__(pool, schema)
+            self._cipher = cipher
+        except Exception as exc:
+            raise McpOAuthStoreError(
+                f"Configuring MCP OAuth storage in schema {schema!r} failed: {exc}"
+            ) from exc
 
-    def _failure(self, action: str, exc: Exception) -> Exception:
+    def _failure(self, action: str, exc: Exception) -> McpOAuthStoreError:
         return McpOAuthStoreError(self._detail(action, exc))
 
-    async def get_tokens(self, server_id: UUID, user_id: UUID) -> OAuthToken | None:
-        raw = await self._get(server_id, user_id, OAuthField.TOKEN)
-        if raw is None:
-            return None
+    @contextmanager
+    def _operation(self, action: str, server_id: UUID, user_id: UUID) -> Iterator[None]:
         try:
-            return OAuthToken.model_validate_json(raw)
-        except ValidationError as exc:
+            yield
+        except Exception as exc:
             raise McpOAuthStoreError(
-                "stored MCP OAuth token has invalid fields"
+                f"MCP OAuth storage {self.schema}: {action} for server "
+                f"{server_id}, user {user_id} failed: {exc}"
             ) from exc
+
+    async def get_tokens(self, server_id: UUID, user_id: UUID) -> OAuthToken | None:
+        with self._operation("reading tokens", server_id, user_id):
+            raw = await self._get(server_id, user_id, OAuthField.TOKEN)
+            if raw is None:
+                return None
+            try:
+                return OAuthToken.model_validate_json(raw)
+            except ValidationError as exc:
+                raise McpOAuthStoreError(
+                    "stored MCP OAuth token has invalid fields"
+                ) from exc
 
     async def set_tokens(
         self, server_id: UUID, user_id: UUID, tokens: OAuthToken
     ) -> None:
-        await self._put(server_id, user_id, OAuthField.TOKEN, tokens.model_dump_json())
+        with self._operation("saving tokens", server_id, user_id):
+            await self._put(
+                server_id, user_id, OAuthField.TOKEN, tokens.model_dump_json()
+            )
 
     async def get_client_info(
         self, server_id: UUID, user_id: UUID
     ) -> OAuthClientInformationFull | None:
-        raw = await self._get(server_id, user_id, OAuthField.CLIENT)
-        if raw is None:
-            return None
-        try:
-            return OAuthClientInformationFull.model_validate_json(raw)
-        except ValidationError as exc:
-            raise McpOAuthStoreError(
-                "stored MCP OAuth client has invalid fields"
-            ) from exc
+        with self._operation("reading client registration", server_id, user_id):
+            raw = await self._get(server_id, user_id, OAuthField.CLIENT)
+            if raw is None:
+                return None
+            try:
+                return OAuthClientInformationFull.model_validate_json(raw)
+            except ValidationError as exc:
+                raise McpOAuthStoreError(
+                    "stored MCP OAuth client has invalid fields"
+                ) from exc
 
     async def set_client_info(
         self, server_id: UUID, user_id: UUID, client: OAuthClientInformationFull
     ) -> None:
-        await self._put(server_id, user_id, OAuthField.CLIENT, client.model_dump_json())
+        with self._operation("saving client registration", server_id, user_id):
+            await self._put(
+                server_id, user_id, OAuthField.CLIENT, client.model_dump_json()
+            )
 
     async def delete(self, server_id: UUID, user_id: UUID) -> None:
-        query = (
-            self._query()
-            .add(
-                "delete from {schema}.mcp_tokens "
-                "where server_id = %(server_id)s and user_id = %(user_id)s",
-                server_id=server_id,
-                user_id=user_id,
+        with self._operation("deleting credentials", server_id, user_id):
+            query = (
+                self._query()
+                .add(
+                    "delete from {schema}.mcp_tokens "
+                    "where server_id = %(server_id)s and user_id = %(user_id)s",
+                    server_id=server_id,
+                    user_id=user_id,
+                )
+                .build()
             )
-            .build()
-        )
-        await self._execute(query, "disconnecting MCP OAuth")
+            await self._execute(query, "disconnecting MCP OAuth")
 
     async def _get(
         self, server_id: UUID, user_id: UUID, column: OAuthField
@@ -111,14 +139,13 @@ class McpOAuthStore(PostgresTable):
             .build()
         )
         row = await self._row(query, f"reading {column.value} for MCP OAuth")
-        if row is None or row[column.value] is None:
+        if row is None:
             return None
-        try:
-            value = self._cipher.decrypt(row[column.value])
-        except SecretCryptoError as exc:
-            raise McpOAuthStoreError(
-                "stored MCP OAuth credential cannot be decrypted"
-            ) from exc
+
+        if row[column.value] is None:
+            return None
+
+        value = self._cipher.decrypt(row[column.value])
         if not isinstance(value, str):
             raise McpOAuthStoreError("stored MCP OAuth credential is not text")
         return value
@@ -160,27 +187,43 @@ class UserOAuthTokens(TokenStorage):
         self._gate = gate
         self._generation = gate.generation
 
+    @contextmanager
+    def _operation(self, action: str) -> Iterator[None]:
+        try:
+            yield
+        except McpOAuthStoreError:
+            raise
+        except Exception as exc:
+            raise McpOAuthStoreError(
+                f"MCP OAuth adapter: {action} for server {self._server_id}, "
+                f"user {self._user_id} failed: {exc}"
+            ) from exc
+
     async def get_tokens(self) -> OAuthToken | None:
-        async with self._gate.lock:
-            self._active()
-            return await self._store.get_tokens(self._server_id, self._user_id)
+        with self._operation("reading tokens"):
+            async with self._gate.lock:
+                self._active()
+                return await self._store.get_tokens(self._server_id, self._user_id)
 
     async def set_tokens(self, tokens: OAuthToken) -> None:
-        async with self._gate.lock:
-            self._active()
-            await self._store.set_tokens(self._server_id, self._user_id, tokens)
+        with self._operation("saving tokens"):
+            async with self._gate.lock:
+                self._active()
+                await self._store.set_tokens(self._server_id, self._user_id, tokens)
 
     async def get_client_info(self) -> OAuthClientInformationFull | None:
-        async with self._gate.lock:
-            self._active()
-            return await self._store.get_client_info(self._server_id, self._user_id)
+        with self._operation("reading client registration"):
+            async with self._gate.lock:
+                self._active()
+                return await self._store.get_client_info(self._server_id, self._user_id)
 
     async def set_client_info(self, client_info: OAuthClientInformationFull) -> None:
-        async with self._gate.lock:
-            self._active()
-            await self._store.set_client_info(
-                self._server_id, self._user_id, client_info
-            )
+        with self._operation("saving client registration"):
+            async with self._gate.lock:
+                self._active()
+                await self._store.set_client_info(
+                    self._server_id, self._user_id, client_info
+                )
 
     def _active(self) -> None:
         if self._generation != self._gate.generation:

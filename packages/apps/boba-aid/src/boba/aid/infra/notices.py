@@ -96,6 +96,10 @@ class FailureText(StrEnum):
     NO_ANSWER = "aid.failure.noAnswer"
     CONNECTION_LOST = "aid.failure.connectionLost"
     REFUSED = "aid.failure.refused"
+    RESUME_FAILED = "aid.failure.resumeFailed"
+    INVALID_REQUEST = "aid.failure.invalidRequest"
+    INTERNAL_ERROR = "aid.failure.internalError"
+    TOOLS_UNAVAILABLE = "aid.failure.toolsUnavailable"
     PROFILE_MISSING = "aid.failure.profileMissing"
     BUSY = "aid.failure.busy"
     SETTINGS = "aid.failure.settings"
@@ -112,16 +116,13 @@ class FailureText(StrEnum):
 
 @dataclass(frozen=True)
 class FailureEntry:
-    """Запись каталога: способ показа и ключ слов человеку; собеседник,
-    действие и причина уходят короткой подробностью под текстом."""
+    """Запись каталога: способ показа и ключ публичного сообщения об отказе."""
 
     channel: FailureChannel
     text: FailureText
 
     def render(self, failure: AgentFailure) -> UserFailure:
-        detail = f"{failure.peer}, {failure.action}: {failure.cause}"
-
-        return UserFailure(channel=self.channel, text=self.text, detail=detail)
+        return UserFailure(channel=self.channel, text=self.text, detail="")
 
 
 @dataclass(frozen=True)
@@ -149,6 +150,18 @@ class UserFailures:
     FailureText с переводами. Держит его в поле TabNotices."""
 
     ENTRIES: ClassVar[Mapping[AgentFailureKind, FailureEntry]] = {
+        AgentFailureKind.INTERNAL_ERROR: FailureEntry(
+            FailureChannel.TOAST, FailureText.INTERNAL_ERROR
+        ),
+        AgentFailureKind.INVALID_REQUEST: FailureEntry(
+            FailureChannel.TOAST, FailureText.INVALID_REQUEST
+        ),
+        AgentFailureKind.RESUME_FAILED: FailureEntry(
+            FailureChannel.TOAST, FailureText.RESUME_FAILED
+        ),
+        AgentFailureKind.TOOLS_UNAVAILABLE: FailureEntry(
+            FailureChannel.TOAST, FailureText.TOOLS_UNAVAILABLE
+        ),
         AgentFailureKind.START_FAILED: FailureEntry(
             FailureChannel.AGENT_STATE, FailureText.START_FAILED
         ),
@@ -193,7 +206,7 @@ class UserFailures:
             return UserFailure(
                 channel=FailureChannel.AGENT_STATE,
                 text=FailureText.SETTINGS,
-                detail=str(exc),
+                detail="",
             )
 
         return self._toast(exc)

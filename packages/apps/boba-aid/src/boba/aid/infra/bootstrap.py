@@ -317,9 +317,7 @@ def _use_mcp_oauth_callback(container: Container) -> None:
     config = container.resolved(providers.get_app_config)
     oauth = container.resolved(providers.mcp_browser_oauth)
     tokens = container.resolved(services.session_tokens)
-    callback = McpOAuthCallback(
-        oauth, tokens, config.session.cookie, str(config.server.public_url)
-    )
+    callback = McpOAuthCallback(oauth, tokens, config.session.cookie)
     chainlit_app.add_api_route(
         McpOAuthCallback.ROUTE, callback.serve, methods=["GET"], include_in_schema=False
     )

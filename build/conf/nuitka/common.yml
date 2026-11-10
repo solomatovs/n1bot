@@ -1,3 +1,9 @@
+- module-name: 'anyio._backends._asyncio'
+  anti-bloat:
+    - description: 'keep the AnyIO cancellation predicate as a Python function accepted by CPython ExceptionGroup.split'
+      replacements_plain:
+        "lambda exc: (\n                            isinstance(exc, CancelledError)\n                            and is_anyio_cancellation(exc)\n                        )": 'eval("lambda exc: isinstance(exc, CancelledError) and is_anyio_cancellation(exc)")'
+
 - module-name: 'fastmcp.utilities.logging'
   anti-bloat:
     - description: 'fastmcp logs exceptions as plain text: rich tracebacks need pygments'

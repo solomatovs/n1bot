@@ -2,6 +2,9 @@
 
 Ошибки:
 McpAppError — форма нарушает контракт; значения секретов в ответ не входят.
+ValidationError — прямое создание DTO с неверными полями; методы приложения
+    переводят её в McpAppError.
+CancelledError — отмена асинхронной операции распространяется без упаковки.
 """
 
 from collections.abc import Mapping, Sequence
@@ -11,6 +14,7 @@ from urllib.parse import SplitResult, urlsplit
 
 import httpx2
 from pydantic import (
+    AnyHttpUrl,
     BaseModel,
     ConfigDict,
     Field,
@@ -20,7 +24,12 @@ from pydantic import (
 )
 
 from boba.aid.config.models import McpDefaultsConfig
-from boba.aid.mcp_servers import McpAppError, McpAuthChoice, ReservedHeader
+from boba.aid.mcp_servers import (
+    McpAppError,
+    McpAppErrors,
+    McpAuthChoice,
+    ReservedHeader,
+)
 from boba.aid.mcp_servers.store import StoredServer
 from boba.core.mcp_names import McpToolNames
 from boba.mcp_client.client import (
@@ -38,10 +47,19 @@ ServerName = Annotated[str, StringConstraints(pattern=r"^[a-zA-Z0-9_-]{1,64}$")]
 FormModel = TypeVar("FormModel", bound=BaseModel)
 
 
+class McpOAuthStart(BaseModel):
+    """Запрос входа с адресом страницы, которую пользователь покидает."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
+
+    name: ServerName
+    return_url: AnyHttpUrl
+
+
 class HeaderField(BaseModel):
     """Имя и секрет заголовка из браузера; пустой секрет сохраняет прежний."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
 
     name: str = Field(pattern=r"^[A-Za-z0-9-]{1,64}$")
     value: SecretStr
@@ -50,7 +68,7 @@ class HeaderField(BaseModel):
 class McpServerForm(BaseModel):
     """Проводная форма пользовательского сервера без сроков исполнения."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
 
     name: ServerName
     transport: Literal["streamable-http", "sse"]
@@ -63,7 +81,7 @@ class McpServerForm(BaseModel):
 class McpServerAdd(BaseModel):
     """Запрос добавления сервера из панели."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
 
     form: McpServerForm
 
@@ -77,7 +95,7 @@ class McpServerUpdate(McpServerAdd):
 class McpServerToggle(BaseModel):
     """Запрос включения или выключения своего сервера."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
 
     name: ServerName
     enabled: bool = Field(strict=True)
@@ -112,6 +130,7 @@ class McpForms:
     """
 
     def __init__(self, config: McpDefaultsConfig) -> None:
+        self._errors = McpAppErrors()
         self._limits = McpServerLimits(
             connect_timeout_sec=config.connect_timeout_sec,
             call_timeout_sec=config.call_timeout_sec,
@@ -121,11 +140,12 @@ class McpForms:
         self._reserved = frozenset(reserved)
 
     def parse(self, model: type[FormModel], raw: Mapping[str, object]) -> FormModel:
-        try:
-            return model.model_validate(raw)
-        except ValidationError as exc:
-            fields = self.fields(exc)
-            raise McpAppError(f"MCP request: invalid fields: {fields}") from None
+        with self._errors.boundary(f"Parsing MCP request {model.__name__}"):
+            try:
+                return model.model_validate(raw)
+            except ValidationError as exc:
+                fields = self.fields(exc)
+                raise McpAppError(f"MCP request: invalid fields: {fields}") from exc
 
     @staticmethod
     def fields(exc: ValidationError) -> str:
@@ -143,39 +163,46 @@ class McpForms:
     def server(
         self, form: McpServerForm, stored: StoredServer | None = None
     ) -> StoredServer:
-        self._check_name(form.name)
-        route = self._address(form.url)
-        if (
-            form.auth is McpAuthChoice.OAUTH
-            and route.service.scheme != "https"
-            and route.service.host not in ("localhost", "127.0.0.1", "::1")
-        ):
-            raise McpAppError(
-                "Saving MCP server: OAuth requires HTTPS outside loopback"
-            )
-        auth = self._auth(form, stored)
-        headers = self._headers(form.headers, stored)
-        limits = self._limits
-        if stored is not None:
-            limits = stored.limits
-
-        try:
-            endpoint: HttpEndpoint | SseEndpoint
-            if form.transport == "sse":
-                endpoint = SseEndpoint(
-                    service=route.service, path=route.path, auth=auth, headers=headers
+        with self._errors.boundary(f"Building MCP server {form.name!r} from its form"):
+            self._check_name(form.name)
+            route = self._address(form.url)
+            if (
+                form.auth is McpAuthChoice.OAUTH
+                and route.service.scheme != "https"
+                and route.service.host not in ("localhost", "127.0.0.1", "::1")
+            ):
+                raise McpAppError(
+                    "Saving MCP server: OAuth requires HTTPS outside loopback"
                 )
-            else:
-                endpoint = HttpEndpoint(
-                    service=route.service, path=route.path, auth=auth, headers=headers
-                )
+            auth = self._auth(form, stored)
+            headers = self._headers(form.headers, stored)
+            limits = self._limits
+            if stored is not None:
+                limits = stored.limits
 
-            return StoredServer(endpoint=endpoint, limits=limits)
-        except ValidationError as exc:
-            fields = self.fields(exc)
-            raise McpAppError(
-                f"Saving MCP server: invalid credentials in fields {fields}"
-            ) from None
+            try:
+                endpoint: HttpEndpoint | SseEndpoint
+                if form.transport == "sse":
+                    endpoint = SseEndpoint(
+                        service=route.service,
+                        path=route.path,
+                        auth=auth,
+                        headers=headers,
+                    )
+                else:
+                    endpoint = HttpEndpoint(
+                        service=route.service,
+                        path=route.path,
+                        auth=auth,
+                        headers=headers,
+                    )
+
+                return StoredServer(endpoint=endpoint, limits=limits)
+            except ValidationError as exc:
+                fields = self.fields(exc)
+                raise McpAppError(
+                    f"Saving MCP server: invalid credentials in fields {fields}"
+                ) from exc
 
     def _check_name(self, name: str) -> None:
         if name == "chat":
@@ -194,10 +221,10 @@ class McpForms:
             location = urlsplit(url)
             host = location.hostname
             port = location.port
-        except ValueError:
+        except ValueError as exc:
             raise McpAppError(
                 "Saving MCP server: URL expects a valid host and port"
-            ) from None
+            ) from exc
 
         scheme = location.scheme
         if scheme not in ("http", "https"):
@@ -223,15 +250,15 @@ class McpForms:
             route.url()
 
             return route
-        except httpx2.InvalidURL:
+        except httpx2.InvalidURL as exc:
             raise McpAppError(
                 "Saving MCP server: URL contains an invalid host or path"
-            ) from None
+            ) from exc
         except ValidationError as exc:
             fields = self.fields(exc)
             raise McpAppError(
                 f"Saving MCP server: invalid URL in fields {fields}"
-            ) from None
+            ) from exc
 
     @staticmethod
     def _clean_address(url: str, location: SplitResult) -> None:
@@ -268,20 +295,21 @@ class McpForms:
     def view(
         self, name: str, stored: StoredServer, editable: bool
     ) -> McpServerFormView:
-        endpoint = stored.endpoint
-        has_token = False
-        if isinstance(endpoint.auth, BearerAuth):
-            has_token = bool(endpoint.auth.token.get_secret_value())
+        with self._errors.boundary(f"Rendering MCP server {name!r} form"):
+            endpoint = stored.endpoint
+            has_token = False
+            if isinstance(endpoint.auth, BearerAuth):
+                has_token = bool(endpoint.auth.token.get_secret_value())
 
-        return McpServerFormView(
-            name=name,
-            transport=endpoint.transport,
-            url=endpoint.url(),
-            auth=endpoint.auth.auth,
-            editable=editable,
-            has_token=has_token,
-            headers=tuple(endpoint.headers),
-        )
+            return McpServerFormView(
+                name=name,
+                transport=endpoint.transport,
+                url=endpoint.url(),
+                auth=endpoint.auth.auth,
+                editable=editable,
+                has_token=has_token,
+                headers=tuple(endpoint.headers),
+            )
 
     def _auth(
         self, form: McpServerForm, stored: StoredServer | None

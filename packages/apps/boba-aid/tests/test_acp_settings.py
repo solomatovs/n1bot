@@ -483,7 +483,7 @@ class TestForkCut:
             await agent.close()
             await servers.stop()
 
-        assert "does not declare 'boba/upToMessageId'" in str(refused.value)
+        assert "does not declare 'boba/upToMessageId'" in refused.value.diagnostic
 
 
 class ChatLaunch:
@@ -872,8 +872,8 @@ class TestFailedLaunch:
         finally:
             await servers.stop()
 
-        assert "did not start" in str(refused.value)
-        assert "[agent.process].command" in str(refused.value)
+        assert "did not start" in refused.value.diagnostic
+        assert "[agent.process].command" in refused.value.diagnostic
         failure = refused.value.failure
         assert failure.kind is AgentFailureKind.START_FAILED, failure
         assert failure.peer == "agent process 'no-such-agent'", failure
@@ -891,9 +891,9 @@ class TestFailedLaunch:
         finally:
             await foreign.close()
 
-        assert "session/new" in str(cut.value)
-        assert "within 1.0s" in str(cut.value)
-        assert "request_timeout_sec" in str(cut.value)
+        assert "session/new" in cut.value.diagnostic
+        assert "within 1.0s" in cut.value.diagnostic
+        assert "request_timeout_sec" in cut.value.diagnostic
 
 
 class TestLatePrompt:
@@ -932,8 +932,8 @@ class TestLatePrompt:
             await foreign.close()
 
         assert lost.value.failure.kind is AgentFailureKind.CONNECTION_LOST
-        assert "session/prompt" in str(lost.value)
-        assert "request_timeout_sec" not in str(lost.value)
+        assert "session/prompt" in lost.value.diagnostic
+        assert "request_timeout_sec" not in lost.value.diagnostic
 
 
 class ForeignAgentFlag(StrEnum):

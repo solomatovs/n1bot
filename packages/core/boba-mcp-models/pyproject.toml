@@ -4,17 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-mcp-models"
-version = "0.0.33.dev3"
+version = "0.0.33.dev4"
 description = "Общие модели карточек и ответов MCP для агента и серверных адаптеров без транспорта и исполнения."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-core==0.0.33.dev3",
+    "boba-core==0.0.33.dev4",
     "mcp-types>=2.3,<3",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "boba-stand==0.0.33.dev3",
+    "boba-stand==0.0.33.dev4",
     "pytest>=9.1,<10",
 ]
 

@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from pathlib import Path
 from typing import ClassVar
@@ -195,6 +196,7 @@ class TestMcpApp:
         open_chat: OpenChat,
         app_texts: UiText,
         live_address: str,
+        tmp_path: Path,
     ) -> None:
         """Карточка сервера показывает транспорт, адрес и инструменты по
         кнопке; Reconnect переподключает сервер и карточка снова на связи."""
@@ -210,6 +212,29 @@ class TestMcpApp:
         tools = card.locator(view.TOOLS)
         tools.wait_for(timeout=WAIT_MS)
         expect(tools).to_contain_text("add")
+        tool = tools.locator('[data-mcp-tool="add"]')
+        expect(tool.locator("[data-mcp-tool-name]")).to_have_text("add")
+        expect(tool.locator("[data-mcp-tool-description]")).to_be_visible()
+        expect(tool.locator("[data-mcp-tool-json]")).to_be_hidden()
+        tools.screenshot(path=str(tmp_path / "mcp-tools-collapsed.png"))
+        tool.locator("summary").click()
+        expect(tool.locator("[data-mcp-tool-json]")).to_be_visible()
+        card_json = json.loads(tool.locator("[data-mcp-tool-json]").inner_text())
+        assert card_json["name"] == "add"
+        assert card_json["inputSchema"]["properties"]
+        assert card_json["annotations"]["readOnlyHint"] is True
+        expect(tool.locator("[data-mcp-tool-description]")).to_have_text(
+            card_json["description"]
+        )
+        tools.screenshot(path=str(tmp_path / "mcp-tools-expanded.png"))
+        another = tools.locator("[data-mcp-tool]").nth(1)
+        expect(another.locator("[data-mcp-tool-json]")).to_be_hidden()
+        another.locator("summary").click()
+        expect(another.locator("[data-mcp-tool-json]")).to_be_visible()
+        expect(tool.locator("[data-mcp-tool-json]")).to_be_visible()
+        tool.locator("summary").press("Enter")
+        expect(tool.locator("[data-mcp-tool-json]")).to_be_hidden()
+        expect(another.locator("[data-mcp-tool-json]")).to_be_visible()
 
         card.get_by_text(view.label("reconnect")).click()
 

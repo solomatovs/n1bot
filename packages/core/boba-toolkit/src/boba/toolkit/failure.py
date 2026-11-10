@@ -21,6 +21,7 @@ from typing import ClassVar
 
 from pydantic import ValidationError
 
+from boba.core.errors import PublicError
 from boba.core.validation import ValidationText
 from boba.toolkit.result import (
     ErrorResult,
@@ -94,6 +95,10 @@ class FailurePacker:
         self._validation = ValidationText()
 
     def pack(self, error: BaseException) -> FailureResult:
+        for link in self._chain(error):
+            if isinstance(link, PublicError):
+                return ErrorResult(message=str(link), error_kind=type(link).__name__)
+
         if isinstance(error, ReportedError):
             return error.failure()
 

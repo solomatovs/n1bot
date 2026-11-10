@@ -99,11 +99,11 @@ class TestObjectExtraction:
     async def test_truncated_json_is_an_error(self) -> None:
         cut = '{"keywords": "kerberos cloudbeaver", "expanded": "настройка kerb'
 
-        with pytest.raises(LlmError, match="expected a json object"):
+        with pytest.raises(LlmError, match="The model request failed"):
             await _ask(ScriptedChat(content=cut))
 
     async def test_plain_text_is_an_error(self) -> None:
-        with pytest.raises(LlmError, match="expected a json object"):
+        with pytest.raises(LlmError, match="The model request failed"):
             await _ask(ScriptedChat(content="1. first one\n2. second one"))
 
     async def test_empty_answer_is_an_error(self) -> None:

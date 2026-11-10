@@ -4,32 +4,32 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-sandbox"
-version = "0.0.33.dev3"
+version = "0.0.33.dev4"
 description = "Boba sandbox: реализация ToolLauncher на bubblewrap — профили, cgroup-лимиты, запуск процессов, ext4-образ пользователя через fuse2fs."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-canvas==0.0.33.dev3",
-    "boba-tool-io==0.0.33.dev3",
-    "boba-core==0.0.33.dev3",
-    "boba-toolkit==0.0.33.dev3",
-    "boba-cancellation==0.0.33.dev3",
+    "boba-canvas==0.0.33.dev4",
+    "boba-tool-io==0.0.33.dev4",
+    "boba-core==0.0.33.dev4",
+    "boba-toolkit==0.0.33.dev4",
+    "boba-cancellation==0.0.33.dev4",
     "pydantic>=2.12,<3",
 ]
 
 [project.optional-dependencies]
 host = [
     "anyio>=4,<5",
-    "boba-config==0.0.33.dev3",
-    "boba-storage==0.0.33.dev3",
+    "boba-config==0.0.33.dev4",
+    "boba-storage==0.0.33.dev4",
 ]
 payload = []
 dev = [
-    "boba-config==0.0.33.dev3",
-    "boba-stand==0.0.33.dev3",
-    "boba-tool-shell==0.0.33.dev3",
+    "boba-config==0.0.33.dev4",
+    "boba-stand==0.0.33.dev4",
+    "boba-tool-shell==0.0.33.dev4",
     "omegaconf>=2.3,<3",
     "pytest>=9.1,<10",
-    "boba-mcp==0.0.33.dev3",
+    "boba-mcp==0.0.33.dev4",
 ]
 
 [tool.setuptools.packages.find]

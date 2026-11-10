@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -145,8 +146,10 @@ async def test_wrong_dim_is_an_llm_error(monkeypatch) -> None:
         return _reply([[0.0] * (DIM + 1)])
 
     embedder = _embedder(monkeypatch, handler, 2)
-    with pytest.raises(LlmError, match="dim"):
+    with pytest.raises(LlmError) as caught:
         await embedder.embed_query("вопрос")
+
+    assert re.search("dim", caught.value.diagnostic)
 
 
 async def test_http_failure_is_an_llm_error(monkeypatch) -> None:
@@ -154,8 +157,10 @@ async def test_http_failure_is_an_llm_error(monkeypatch) -> None:
         return httpx.Response(401, content=b"denied")
 
     embedder = _embedder(monkeypatch, handler, 2)
-    with pytest.raises(LlmError, match="401"):
+    with pytest.raises(LlmError) as caught:
         await embedder.embed_query("вопрос")
+
+    assert re.search("401", caught.value.diagnostic)
 
 
 async def test_malformed_body_is_an_llm_error(monkeypatch) -> None:
@@ -163,8 +168,10 @@ async def test_malformed_body_is_an_llm_error(monkeypatch) -> None:
         return httpx.Response(200, content=b"not json")
 
     embedder = _embedder(monkeypatch, handler, 2)
-    with pytest.raises(LlmError, match="embeddings reply"):
+    with pytest.raises(LlmError) as caught:
         await embedder.embed_query("вопрос")
+
+    assert re.search("embeddings reply", caught.value.diagnostic)
 
 
 async def test_count_mismatch_is_an_llm_error(monkeypatch) -> None:
@@ -172,5 +179,7 @@ async def test_count_mismatch_is_an_llm_error(monkeypatch) -> None:
         return _reply([[0.0] * DIM])
 
     embedder = _embedder(monkeypatch, handler, 2)
-    with pytest.raises(LlmError, match="1 vectors for 2 inputs"):
+    with pytest.raises(LlmError) as caught:
         await embedder.embed_documents(["a", "b"])
+
+    assert re.search("1 vectors for 2 inputs", caught.value.diagnostic)

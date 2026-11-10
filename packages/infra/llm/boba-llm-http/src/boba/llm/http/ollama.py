@@ -38,6 +38,7 @@ from boba.llm.chat import (
     ContextOverflowSigns,
     LlmContextOverflowError,
     LlmError,
+    LlmErrors,
     LlmOutputLimitError,
     ToolCall,
 )
@@ -397,27 +398,32 @@ class OllamaBackend(LlmBackend):
             raise LlmProvidersError(msg)
 
         self._provider = provider
-        self._transport = HttpTransport(provider.connection, provider.transport)
+        self._errors = LlmErrors()
+        with self._errors.boundary("Creating the HTTP model transport"):
+            self._transport = HttpTransport(provider.connection, provider.transport)
 
     def chat(self, cfg: ChatModelConfig) -> ChatModel:
-        endpoint = LlmEndpoint(
-            self._transport,
-            self._provider.connection,
-            LlmRoute.OLLAMA_CHAT,
-            self.CHAT_LABEL,
-        )
+        with self._errors.boundary("Ollama: chat"):
+            endpoint = LlmEndpoint(
+                self._transport,
+                self._provider.connection,
+                LlmRoute.OLLAMA_CHAT,
+                self.CHAT_LABEL,
+            )
 
-        return OllamaChatModel(endpoint, cfg.model)
+            return OllamaChatModel(endpoint, cfg.model)
 
     def embedding(self, cfg: EmbeddingModelConfig) -> EmbeddingModel:
-        msg = (
-            f"ollama provider at {self._provider.connection.public_url()} "
-            f"has no embedding models, asked for {cfg.model!r}"
-        )
-        raise LlmProvidersError(msg)
+        with self._errors.boundary("Ollama: embedding"):
+            msg = (
+                f"ollama provider at {self._provider.connection.public_url()} "
+                f"has no embedding models, asked for {cfg.model!r}"
+            )
+            raise LlmProvidersError(msg)
 
     async def aclose(self) -> None:
-        await self._transport.close()
+        with self._errors.boundary("Ollama: aclose"):
+            await self._transport.close()
 
 
 MANIFEST = LlmProviderManifest(

@@ -3,6 +3,7 @@
 Ошибки: своих не выпускает.
 """
 
+from boba.core.errors import PublicError
 from boba.identity.errors import BaseError, FailureReport, InternalServiceError
 from boba.toolkit.failure import FailurePacker
 
@@ -22,6 +23,11 @@ class FailureReports:
     def describe(self, error: BaseException) -> FailureReport:
         failure = self._failures.pack(error)
         described = failure.llm_view()
+
+        if isinstance(error, PublicError):
+            return FailureReport(
+                log=error.diagnostic, view=str(error), history=str(error)
+            )
 
         if not isinstance(error, BaseError):
             return FailureReport(

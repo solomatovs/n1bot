@@ -304,8 +304,10 @@ class TestAgentThroughRelay:
         process, _, session_id = await self._session(agents, "prompt-refused")
         block = schema.TextContentBlock(text="/mcp__standard__greet")
 
-        with pytest.raises(AgentRequestError, match="argument 'name' is required"):
+        with pytest.raises(AgentRequestError, match="Check the command") as caught:
             await process.prompt(session_id, [block])
+
+        assert "argument 'name' is required" in caught.value.diagnostic
 
     @staticmethod
     def _commands(updates: RecordingUpdates) -> list[str]:

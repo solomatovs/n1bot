@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-identity-postgres"
-version = "0.0.33.dev3"
+version = "0.0.33.dev4"
 description = "Общее PostgreSQL-хранилище пользователей, ролей и членства для AID, MCP и службы агента."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-db-postgres==0.0.33.dev3",
-    "boba-identity==0.0.33.dev3",
+    "boba-db-postgres==0.0.33.dev4",
+    "boba-identity==0.0.33.dev4",
     "psycopg>=3.3,<4",
     "pydantic>=2.12,<3",
 ]
@@ -24,15 +24,15 @@ namespaces = true
 
 [project.optional-dependencies]
 locks = [
-    "boba-db-postgres[messaging]==0.0.33.dev3",
-    "boba-messaging==0.0.33.dev3",
+    "boba-db-postgres[messaging]==0.0.33.dev4",
+    "boba-messaging==0.0.33.dev4",
 ]
 dev = [
-    "boba-aid==0.0.33.dev3",
-    "boba-chat==0.0.33.dev3",
-    "boba-messaging==0.0.33.dev3",
-    "boba-stand==0.0.33.dev3",
-    "boba-db-postgres[messaging]==0.0.33.dev3",
+    "boba-aid==0.0.33.dev4",
+    "boba-chat==0.0.33.dev4",
+    "boba-messaging==0.0.33.dev4",
+    "boba-stand==0.0.33.dev4",
+    "boba-db-postgres[messaging]==0.0.33.dev4",
     "psycopg>=3.3,<4",
     "pytest>=9.1,<10",
 ]

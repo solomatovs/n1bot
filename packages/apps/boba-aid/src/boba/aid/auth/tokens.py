@@ -4,7 +4,8 @@
 Ошибки:
 TokenRejectedError — токен истёк, подписан другим секретом, выпущен при другом
     поколении сессий либо не разбирается.
-ValueError — пустой секрет или поколение при сборке.
+TokenError — сбой кодека, построения сессии или другая непредвиденная ошибка.
+ValueError — пустой секрет, поколение, issuer или audience при сборке.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ import jwt
 from boba.aid.auth.claims import (
     SessionClaims,
     TokenAlgorithm,
+    TokenError,
     TokenIssuer,
     TokenReader,
     TokenRejectedError,
@@ -60,8 +62,11 @@ class JwtTokens(TokenIssuer, TokenReader):
             )
             raise ValueError(msg)
 
-        if not issuer or not audience:
-            raise ValueError("JWT requires non-empty issuer and audience")
+        if not issuer:
+            raise ValueError("JWT requires non-empty issuer")
+
+        if not audience:
+            raise ValueError("JWT requires non-empty audience")
 
         self._issuer = issuer
         self._audience = audience
@@ -84,52 +89,78 @@ class JwtTokens(TokenIssuer, TokenReader):
         *,
         auth_time: int | None = None,
     ) -> str:
-        started = issued_at if auth_time is None else auth_time
         try:
-            expires = self._lifetime.expires_at(started, issued_at)
-        except AuthenticationError as exc:
-            raise TokenRejectedError(TokenRejection.EXPIRED, str(exc)) from exc
-        claims = SessionClaims(
-            version=2,
-            kind="session",
-            iss=self._issuer,
-            aud=self._audience,
-            sub=session.principal.id,
-            identity=session.principal.identity,
-            access=session.principal.access,
-            credential=session.credential,
-            renewal=session.renewal,
-            generation=self._generation,
-            iat=issued_at,
-            exp=expires,
-            auth_time=started,
-        )
-        return self._encode(claims)
+            started = auth_time
+            if started is None:
+                started = issued_at
+            try:
+                expires = self._lifetime.expires_at(started, issued_at)
+            except AuthenticationError as exc:
+                raise TokenRejectedError(TokenRejection.EXPIRED, str(exc)) from exc
+            claims = SessionClaims(
+                version=2,
+                kind="session",
+                iss=self._issuer,
+                aud=self._audience,
+                sub=session.principal.id,
+                identity=session.principal.identity,
+                access=session.principal.access,
+                credential=session.credential,
+                renewal=session.renewal,
+                generation=self._generation,
+                iat=issued_at,
+                exp=expires,
+                auth_time=started,
+            )
+            return self._encode(claims)
+        except TokenError:
+            raise
+        except Exception as exc:
+            raise TokenError(
+                f"Session token codec for issuer {self._issuer!r}: "
+                f"issuing token failed: {exc}"
+            ) from exc
 
     def read(self, token: str) -> SessionClaims:
-        if not token:
-            msg = "sign-in token read: expected a JWT string, got an empty one"
-            raise TokenRejectedError(TokenRejection.MALFORMED, msg)
+        try:
+            if not token:
+                msg = "sign-in token read: expected a JWT string, got an empty one"
+                raise TokenRejectedError(TokenRejection.MALFORMED, msg)
 
-        raw = self._decode(token, verify_exp=True)
+            raw = self._decode(token, verify_exp=True)
 
-        return self._current(SessionClaims.parse(raw))
+            return self._current(SessionClaims.parse(raw))
+        except TokenError:
+            raise
+        except Exception as exc:
+            raise TokenError(
+                f"Session token codec for issuer {self._issuer!r}: "
+                f"reading token failed: {exc}"
+            ) from exc
 
     def read_stale(self, token: str, grace_sec: int) -> SessionClaims:
-        if not token:
-            msg = "sign-in token read: expected a JWT string, got an empty one"
-            raise TokenRejectedError(TokenRejection.MALFORMED, msg)
+        try:
+            if not token:
+                msg = "sign-in token read: expected a JWT string, got an empty one"
+                raise TokenRejectedError(TokenRejection.MALFORMED, msg)
 
-        claims = SessionClaims.parse(self._decode(token, verify_exp=False))
-        now = int(time.time())
-        if claims.exp + grace_sec < now:
-            msg = (
-                f"sign-in token of {claims.identifier!r} expired at {claims.exp} "
-                f"and the grace of {grace_sec}s is over at {now}"
-            )
-            raise TokenRejectedError(TokenRejection.EXPIRED, msg)
+            claims = SessionClaims.parse(self._decode(token, verify_exp=False))
+            now = int(time.time())
+            if claims.exp + grace_sec < now:
+                msg = (
+                    f"sign-in token of {claims.identifier!r} expired at {claims.exp} "
+                    f"and the grace of {grace_sec}s is over at {now}"
+                )
+                raise TokenRejectedError(TokenRejection.EXPIRED, msg)
 
-        return self._current(claims)
+            return self._current(claims)
+        except TokenError:
+            raise
+        except Exception as exc:
+            raise TokenError(
+                f"Session token codec for issuer {self._issuer!r}: "
+                f"reading a stale token failed: {exc}"
+            ) from exc
 
     def _current(self, claims: SessionClaims) -> SessionClaims:
         if claims.generation != self._generation:

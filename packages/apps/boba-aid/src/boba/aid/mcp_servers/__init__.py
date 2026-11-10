@@ -19,13 +19,49 @@ McpAppError — действие приложения не исполнить: �
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from enum import StrEnum
 
-__all__ = ["McpAction", "McpAppError", "McpOrigin"]
+from boba.identity.errors import BaseError, HttpErrorMessage, ViewErrorMessage
+
+__all__ = ["McpAction", "McpAppError", "McpAppErrors", "McpOrigin"]
 
 
-class McpAppError(Exception):
-    """Операцию приложения не исполнить; текст — для пользователя."""
+class McpAppError(BaseError):
+    """Ошибка операции MCP: диагностика для журнала и сообщение для UI и истории."""
+
+    def __init__(self, message: str, *, user_message: str | None = None) -> None:
+        super().__init__(message)
+        if user_message is None:
+            user_message = message
+
+        self._user_message = user_message
+
+    def view_message(self) -> ViewErrorMessage:
+        return ViewErrorMessage(self._user_message)
+
+    def history_message(self) -> str:
+        return self._user_message
+
+    def http_message(self) -> HttpErrorMessage:
+        return HttpErrorMessage(status_code=400, content=self._user_message)
+
+
+class McpAppErrors:
+    """Переводит сбои зависимостей формы, каталога и источника в McpAppError."""
+
+    @contextmanager
+    def boundary(self, action: str) -> Iterator[None]:
+        try:
+            yield
+        except McpAppError:
+            raise
+        except Exception as exc:
+            raise McpAppError(
+                f"{action} failed: {exc}",
+                user_message=f"{action} failed. Details are in the AID log.",
+            ) from exc
 
 
 class McpOrigin(StrEnum):

@@ -4,19 +4,19 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-access-postgres"
-version = "0.0.33.dev3"
+version = "0.0.33.dev4"
 description = "Reusable PostgreSQL queries for user and role grants."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-access==0.0.33.dev3",
+    "boba-access==0.0.33.dev4",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "boba-db-postgres==0.0.33.dev3",
-    "boba-identity==0.0.33.dev3",
-    "boba-identity-postgres==0.0.33.dev3",
-    "boba-stand==0.0.33.dev3",
+    "boba-db-postgres==0.0.33.dev4",
+    "boba-identity==0.0.33.dev4",
+    "boba-identity-postgres==0.0.33.dev4",
+    "boba-stand==0.0.33.dev4",
     "psycopg>=3.3,<4",
     "pytest>=9.1,<10",
 ]

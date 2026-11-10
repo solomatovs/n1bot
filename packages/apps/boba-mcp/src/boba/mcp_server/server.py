@@ -67,7 +67,7 @@ from pydantic import (
 )
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse, RedirectResponse, Response
 from starlette.routing import BaseRoute, Mount, Route
 from starlette.types import Receive, Send
 from starlette.types import Scope as AsgiScope
@@ -85,7 +85,7 @@ from boba.mcp_server.auth import (
     CallScopes,
     TokenSubjects,
 )
-from boba.mcp_server.catalog import EndpointConfigError, McpEndpoint
+from boba.mcp_server.catalog import EndpointBuildError, EndpointConfigError, McpEndpoint
 from boba.mcp_server.config.models import RunLimits
 from boba.mcp_server.connections.params import ConnectionParams
 from boba.mcp_server.files import (
@@ -208,8 +208,8 @@ class EndpointTools(CallerServers):
             tool = tools[name]
             override = endpoint.overrides.get(name)
             if override is not None:
-                schema = schemas.effective(endpoint.prefix_url, tool, override)
-                tool = DescribedTool(tool, schema)
+                card = schemas.effective(endpoint.prefix_url, tool, override)
+                tool = DescribedTool(tool, card)
 
             selected_tools[name] = tool
 
@@ -1066,10 +1066,20 @@ class EndpointApp:
         self.app = app
 
     def serves(self, path: str) -> bool:
-        if path == self.path:
+        if path.rstrip("/") == self.path.rstrip("/"):
             return True
 
         return path.startswith(f"{self.path.rstrip('/')}/")
+
+    async def serve(self, scope: AsgiScope, receive: Receive, send: Send) -> None:
+        path = scope["path"]
+        if path != self.path:
+            if path.rstrip("/") == self.path.rstrip("/"):
+                response = RedirectResponse(self.path, status_code=307)
+                await response(scope, receive, send)
+                return
+
+        await self.app(scope, receive, send)
 
 
 class McpEndpoints:
@@ -1106,38 +1116,50 @@ class McpEndpoints:
             endpoints, key=lambda endpoint: len(endpoint.prefix_url), reverse=True
         )
         for endpoint in ordered:
-            path = endpoint.prefix_url
-            self._error_if_route_reserved(path)
+            try:
+                path = endpoint.prefix_url
+                self._error_if_route_reserved(path)
 
-            provider = auth.resource(path, [path])
-            resources = EndpointResources(endpoint, journals, storage, files, published)
-            tools = EndpointTools(
-                registry,
-                resources.subjects,
-                endpoint,
-                params,
-                [resources.upload],
-            )
-            contexts = CallContextMiddleware(
-                runs,
-                journals,
-                resources.subjects,
-                self.OPERATIONS,
-                resources.bus,
-                resources.listed,
-            )
+                provider = auth.resource(path, [path])
+                resources = EndpointResources(
+                    endpoint, journals, storage, files, published
+                )
+                tools = EndpointTools(
+                    registry,
+                    resources.subjects,
+                    endpoint,
+                    params,
+                    [resources.upload],
+                )
+                contexts = CallContextMiddleware(
+                    runs,
+                    journals,
+                    resources.subjects,
+                    self.OPERATIONS,
+                    resources.bus,
+                    resources.listed,
+                )
 
-            server = McpServer(endpoint, provider, tools, resources, contexts, limits)
-            served = server.mcp().http_app(path=path, stateless_http=True)
-            servers.append(server)
-            endpoint_apps.append(EndpointApp(endpoint.path_under(published), served))
-            discovery.extend(provider.get_well_known_routes(path))
+                server = McpServer(
+                    endpoint, provider, tools, resources, contexts, limits
+                )
+                served = server.mcp().http_app(path=path, stateless_http=True)
+                servers.append(server)
+                endpoint_apps.append(
+                    EndpointApp(endpoint.path_under(published), served)
+                )
+                discovery.extend(provider.get_well_known_routes(path))
+            except EndpointConfigError as exc:
+                raise EndpointBuildError(endpoint, str(exc)) from exc
 
         service_routes: list[BaseRoute] = [
             Route(self.HEALTH, self._health, methods=["GET"]),
             Mount("/", app=self._dispatch),
         ]
         routes = auth.app_routes(discovery, service_routes)
+        if published:
+            redirect = RedirectResponse(published + "/", status_code=307)
+            routes.insert(0, Route(published, endpoint=redirect))
 
         self._servers = servers
         self._endpoints = endpoint_apps
@@ -1190,7 +1212,7 @@ class McpEndpoints:
             if not endpoint.serves(path):
                 continue
 
-            await endpoint.app(scope, receive, send)
+            await endpoint.serve(scope, receive, send)
             return
 
         known = ", ".join(self.paths())

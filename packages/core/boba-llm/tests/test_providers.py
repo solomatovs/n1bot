@@ -114,7 +114,7 @@ class TestProviderRef:
             raise AssertionError(holder.provider)
 
     def test_unknown_kind_names_installed_kinds(self) -> None:
-        with pytest.raises(ValidationError, match="installed kinds: \\['echo'\\]"):
+        with pytest.raises(ValidationError, match="model configuration is unavailable"):
             Holder.model_validate({"provider": {"kind": "nope"}})
 
     def test_dump_keeps_the_provider_fields(self) -> None:

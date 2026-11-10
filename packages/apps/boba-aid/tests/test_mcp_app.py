@@ -22,6 +22,7 @@ from uuid import UUID
 import pytest
 from acp_stand import REPO_ROOT, StandPorts
 from aid_stand import FixedServers
+from mcp.types import Tool as McpTool
 from pydantic import SecretStr
 
 from boba.aid.config.models import McpDefaultsConfig
@@ -30,7 +31,6 @@ from boba.aid.mcp_servers.directory import (
     McpDirectory,
     McpOrigin,
     McpState,
-    McpToolRow,
     McpViewer,
 )
 from boba.mcp_client.client import (
@@ -197,7 +197,17 @@ class TestMcpApp:
         names = [tool.name for tool in detail.tools]
         assert "add" in names, detail
         for tool in detail.tools:
-            assert isinstance(tool, McpToolRow), tool
+            assert isinstance(tool, McpTool), tool
+
+        port = await servers.servers.port(HTTP, VIEWER.caller())
+        listed = await port.tools(McpServers.OWN)
+        assert list(detail.tools) == listed.tools
+        serialized = detail.model_dump(mode="json", by_alias=True, exclude_none=True)
+        cards = {tool["name"]: tool for tool in serialized["tools"]}
+        assert "inputSchema" in cards["add"]
+        assert "input_schema" not in cards["add"]
+        assert cards["add"]["inputSchema"]["properties"]
+        assert cards["add"]["annotations"]["readOnlyHint"] is True
 
         gone = await directory.detail(VIEWER, GONE)
         assert gone.state is McpState.FAILED, gone

@@ -385,8 +385,11 @@ class TestServiceMode:
             mode.menus,
         )
         try:
-            with pytest.raises(AgentProcessError, match="is not among them"):
+            with pytest.raises(AgentProcessError) as caught:
                 await agent.start()
+
+            assert "is not among them" in caught.value.diagnostic
+            assert "127.0.0.1" not in str(caught.value)
         finally:
             await agent.close()
 

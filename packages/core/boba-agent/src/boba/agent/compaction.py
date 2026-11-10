@@ -73,7 +73,7 @@ from boba.agent.template import AgentTemplate, AgentTemplateFile
 from boba.agent.tools import AgentTools
 from boba.agent.writer import HistoryWriter, RecordKeeper, RequestRecorder
 from boba.cancellation import RunCancellation, StopReason
-from boba.llm.chat import ChatReply, ChatRequest, ContextOverflowSigns
+from boba.llm.chat import ChatReply, ChatRequest
 
 logger = logging.getLogger(__name__)
 
@@ -590,7 +590,6 @@ class Summarizer:
         self._templates = templates
         self._estimator = estimator
         self._grouper = RoundGrouper()
-        self._signs = ContextOverflowSigns()
         self._instruction = SummaryInstruction(templates)
         self._ids = ids
         self._clock = clock
@@ -647,7 +646,7 @@ class Summarizer:
                 return outcome
 
             overflow = outcome.error
-            step = self._covering(list(reversed(sizes[:cut])), overflow)
+            step = self._covering(list(reversed(sizes[:cut])), outcome.excess)
             preserve += step
             logger.info(
                 "compaction: the summary request overflowed, %d more round(s) "
@@ -686,7 +685,7 @@ class Summarizer:
                 return outcome
 
             overflow = outcome.error
-            dropped += self._dropped(self._sizes(groups[dropped:]), overflow)
+            dropped += self._dropped(self._sizes(groups[dropped:]), outcome.excess)
             logger.info(
                 "compaction: the last-resort summary request overflowed, "
                 "%d oldest round(s) dropped",
@@ -710,19 +709,17 @@ class Summarizer:
 
         return 1 + self._count_covering(before, need)
 
-    def _covering(self, newest_first: Sequence[int], overflow: str) -> int:
+    def _covering(self, newest_first: Sequence[int], excess: int | None) -> int:
         """Сколько групп с конца перенести в хвост: покрывающих превышение,
         названное сервером, иначе одну."""
-        excess = self._signs.excess(overflow)
         if excess is None:
             return 1
 
         return max(1, self._count_covering(newest_first, excess))
 
-    def _dropped(self, oldest_first: Sequence[int], overflow: str) -> int:
+    def _dropped(self, oldest_first: Sequence[int], excess: int | None) -> int:
         """Сколько старших групп отбросить: покрывающих превышение, иначе
         HEAD_SHARE групп, не меньше одной."""
-        excess = self._signs.excess(overflow)
         if excess is None:
             return max(1, int(len(oldest_first) * self.HEAD_SHARE))
 

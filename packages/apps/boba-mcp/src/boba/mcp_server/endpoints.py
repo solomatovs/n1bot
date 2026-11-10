@@ -1,12 +1,15 @@
 """Чтение опубликованных endpoint'ов MCP и их ролевых grants из PostgreSQL.
 
 Ошибки:
-EndpointStoreError — каталог недоступен или строка не проходит валидацию;
+EndpointStoreError — каталог недоступен или строка не содержит идентификатор;
     запуск или reload отказывает, сохраняя причину ошибки.
 """
 
 from collections.abc import Sequence
 from typing import ClassVar
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from boba.db.postgres import PostgresTable
 from boba.mcp_server.catalog import McpEndpoint
@@ -14,6 +17,16 @@ from boba.mcp_server.catalog import McpEndpoint
 
 class EndpointStoreError(Exception):
     """Снимок каталога не получен; пустой каталог этим отказом не подменяется."""
+
+
+class EndpointRejected(BaseModel):
+    """Идентичность некорректной строки и причина отказа для операции reload."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    id: UUID
+    prefix_url: str
+    reason: str
 
 
 class McpEndpointStore(PostgresTable):
@@ -24,7 +37,7 @@ class McpEndpointStore(PostgresTable):
     def _failure(self, action: str, exc: Exception) -> EndpointStoreError:
         return EndpointStoreError(self._detail(action, exc))
 
-    async def endpoint_list(self) -> Sequence[McpEndpoint]:
+    async def endpoint_list(self) -> Sequence[McpEndpoint | EndpointRejected]:
         query = (
             self._query()
             .add("""
@@ -63,4 +76,15 @@ class McpEndpointStore(PostgresTable):
             query, "reading enabled endpoint definitions and grants"
         )
 
-        return tuple(self._parse(McpEndpoint, row) for row in rows)
+        records: list[McpEndpoint | EndpointRejected] = []
+        for row in rows:
+            try:
+                endpoint = McpEndpoint.model_validate(row)
+            except ValidationError as exc:
+                rejected = self._parse(EndpointRejected, {**row, "reason": str(exc)})
+                records.append(rejected)
+                continue
+
+            records.append(endpoint)
+
+        return records

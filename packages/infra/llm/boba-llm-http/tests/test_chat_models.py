@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -278,8 +279,10 @@ class TestOpenAiChatModel:
             )
             return httpx.Response(200, content=body)
 
-        with pytest.raises(LlmError, match="content filter"):
+        with pytest.raises(LlmError) as caught:
             await _events(_openai(monkeypatch, handler), REQUEST)
+
+        assert re.search("content filter", caught.value.diagnostic)
 
     async def test_unknown_finish_reason_is_an_honest_error(
         self, monkeypatch: pytest.MonkeyPatch
@@ -295,8 +298,10 @@ class TestOpenAiChatModel:
             )
             return httpx.Response(200, content=body)
 
-        with pytest.raises(LlmError, match="insufficient_system_resource"):
+        with pytest.raises(LlmError) as caught:
             await _events(_openai(monkeypatch, handler), REQUEST)
+
+        assert re.search("insufficient_system_resource", caught.value.diagnostic)
 
     async def test_stop_and_tool_calls_finishes_are_complete(
         self, monkeypatch: pytest.MonkeyPatch
@@ -484,8 +489,10 @@ class TestOpenAiChatModel:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(401, content=b"denied")
 
-        with pytest.raises(LlmError, match=r"401.*denied"):
+        with pytest.raises(LlmError) as caught:
             await _events(_openai(monkeypatch, handler), REQUEST)
+
+        assert re.search("401.*denied", caught.value.diagnostic)
 
 
 def _ndjson(*chunks: dict[str, Any]) -> bytes:
@@ -594,8 +601,10 @@ class TestOllamaChatModel:
             )
             return httpx.Response(200, content=body)
 
-        with pytest.raises(LlmOutputLimitError, match="token ceiling"):
+        with pytest.raises(LlmOutputLimitError) as caught:
             await _events(_ollama(monkeypatch, handler), REQUEST)
+
+        assert re.search("token ceiling", caught.value.diagnostic)
 
 
 OVERFLOW_BODY = {
@@ -620,8 +629,10 @@ class TestErrorKinds:
             )
             return httpx.Response(200, content=body)
 
-        with pytest.raises(LlmOutputLimitError, match="token ceiling"):
+        with pytest.raises(LlmOutputLimitError) as caught:
             await _events(_openai(monkeypatch, handler), REQUEST)
+
+        assert re.search("token ceiling", caught.value.diagnostic)
 
     async def test_openai_context_overflow_is_recognised_by_the_body(
         self, monkeypatch: pytest.MonkeyPatch
@@ -629,8 +640,10 @@ class TestErrorKinds:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(400, json=OVERFLOW_BODY)
 
-        with pytest.raises(LlmContextOverflowError, match="400"):
+        with pytest.raises(LlmContextOverflowError) as caught:
             await _events(_openai(monkeypatch, handler), REQUEST)
+
+        assert re.search("400", caught.value.diagnostic)
 
     async def test_openai_other_400_stays_a_plain_error(
         self, monkeypatch: pytest.MonkeyPatch
@@ -642,7 +655,7 @@ class TestErrorKinds:
             await _events(_openai(monkeypatch, handler), REQUEST)
 
         assert caught.value.trouble is LlmTrouble.REJECTED
-        assert caught.value.detail == "HTTP 400 Bad Request: bad tool schema"
+        assert caught.value.detail == "HTTP 400 Bad Request"
 
     @pytest.mark.parametrize(
         ("status", "body", "trouble", "detail"),
@@ -651,7 +664,7 @@ class TestErrorKinds:
                 429,
                 b'{"error":{"message":"rate limit exceeded","type":"x","code":"y"}}',
                 LlmTrouble.BUSY,
-                "HTTP 429 Too Many Requests: rate limit exceeded",
+                "HTTP 429 Too Many Requests",
             ),
             (
                 502,
@@ -664,12 +677,12 @@ class TestErrorKinds:
                 503,
                 b'{"error":"model is loading"}',
                 LlmTrouble.DOWN,
-                "HTTP 503 Service Unavailable: model is loading",
+                "HTTP 503 Service Unavailable",
             ),
         ],
         ids=["429-json", "502-html", "401-text", "503-ollama"],
     )
-    async def test_refusal_detail_takes_only_the_standard_message(
+    async def test_refusal_detail_contains_only_the_http_status(
         self,
         monkeypatch: pytest.MonkeyPatch,
         status: int,
@@ -677,8 +690,7 @@ class TestErrorKinds:
         trouble: LlmTrouble,
         detail: str,
     ) -> None:
-        """В короткую причину для человека идёт статус и error.message (или
-        строка error) тела, сырое тело — только в текст для журнала."""
+        """Тело отказа провайдера не попадает в публичную причину."""
 
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(status, content=body)
@@ -697,8 +709,10 @@ class TestErrorKinds:
             body = _sse(_delta_chunk({"content": "нач"}))
             return httpx.Response(200, content=body)
 
-        with pytest.raises(LlmError, match="without a finish_reason"):
+        with pytest.raises(LlmError) as caught:
             await _events(_openai(monkeypatch, handler), REQUEST)
+
+        assert re.search("without a finish_reason", caught.value.diagnostic)
 
     async def test_openai_stream_asks_for_usage(
         self, monkeypatch: pytest.MonkeyPatch
@@ -739,8 +753,10 @@ class TestErrorKinds:
             body = _ndjson({"error": "the request exceeds the available context size"})
             return httpx.Response(200, content=body)
 
-        with pytest.raises(LlmContextOverflowError, match="context size"):
+        with pytest.raises(LlmContextOverflowError) as caught:
             await _events(_ollama(monkeypatch, handler), REQUEST)
+
+        assert re.search("context size", caught.value.diagnostic)
 
     async def test_ollama_context_overflow_by_status(
         self, monkeypatch: pytest.MonkeyPatch
@@ -748,8 +764,10 @@ class TestErrorKinds:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(400, json={"error": "input exceeds context length"})
 
-        with pytest.raises(LlmContextOverflowError, match="400"):
+        with pytest.raises(LlmContextOverflowError) as caught:
             await _events(_ollama(monkeypatch, handler), REQUEST)
+
+        assert re.search("400", caught.value.diagnostic)
 
     async def test_ollama_stream_without_done_is_an_error(
         self, monkeypatch: pytest.MonkeyPatch
@@ -758,5 +776,7 @@ class TestErrorKinds:
             body = _ndjson({"message": {"role": "assistant", "content": "нач"}})
             return httpx.Response(200, content=body)
 
-        with pytest.raises(LlmError, match="without a done chunk"):
+        with pytest.raises(LlmError) as caught:
             await _events(_ollama(monkeypatch, handler), REQUEST)
+
+        assert re.search("without a done chunk", caught.value.diagnostic)

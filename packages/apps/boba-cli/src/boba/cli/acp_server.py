@@ -97,7 +97,7 @@ from collections.abc import (
     Mapping,
     Sequence,
 )
-from contextlib import AsyncExitStack, aclosing, asynccontextmanager
+from contextlib import AsyncExitStack, aclosing, asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -116,6 +116,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from boba.agent.agent import Agent
 from boba.agent.attachments import ConnectedServer
+from boba.agent.compaction import SummaryFailure
 from boba.agent.control import (
     AllowAnswer,
     CanUseToolRequest,
@@ -206,8 +207,10 @@ from boba.core.commands import (
     PromptCommand,
     PromptMarks,
 )
+from boba.core.errors import PublicError
 from boba.core.mcp_names import McpToolNameError, McpToolNames
 from boba.core.validation import ValidationText
+from boba.llm.chat import LlmErrorDetails, LlmTrouble
 from boba.transport.acp.protocol import (
     AcpErrorCode,
     AcpTransportError,
@@ -228,6 +231,8 @@ from boba.transport.acp.protocol import (
     McpVersion,
     MetaKey,
     SessionCommandsRequest,
+    SessionFailureData,
+    SessionFailureKind,
     SessionRecordParams,
     SessionRecordRequest,
     StopReason,
@@ -363,8 +368,43 @@ class SessionRefusedError(Exception):
     """Сборка сессии отвергла параметры запроса."""
 
 
-class SessionOpenError(Exception):
+class SessionOpenError(PublicError):
     """Сессию открыть не удалось: хранилище, сервер MCP, профиль."""
+
+    def __init__(
+        self,
+        diagnostic: str,
+        kind: SessionFailureKind = SessionFailureKind.UNAVAILABLE,
+    ) -> None:
+        super().__init__(
+            diagnostic, "The chat could not be opened. Contact the administrator."
+        )
+        self.kind = kind
+
+
+class SessionErrors:
+    """Преобразует ошибку открытия в публичный отказ ACP и запись журнала."""
+
+    @contextmanager
+    def boundary(self, action: str) -> Iterator[None]:
+        try:
+            yield
+        except (SessionOpenError, SessionRefusedError, HistoryError):
+            raise
+        except Exception as exc:
+            raise SessionOpenError(f"{action}: {type(exc).__name__}: {exc}") from exc
+
+    def reply(self, error: Exception) -> RequestError:
+        kind = SessionFailureKind.UNAVAILABLE
+        diagnostic = str(error)
+        if isinstance(error, SessionOpenError):
+            kind = error.kind
+            diagnostic = error.diagnostic
+
+        logger.error("Opening the agent session failed: %s", diagnostic, exc_info=error)
+        data = SessionFailureData(kind=kind)
+
+        return RequestError.internal_error(data.model_dump(mode="json"))
 
 
 class SessionBusyError(Exception):
@@ -998,6 +1038,18 @@ class AcpMapping:
     }
     MILLIS: ClassVar[float] = 1000.0
 
+    FAILURE_NOTICES: ClassVar[Mapping[TurnOutcome, Sequence[AgentTemplateFile]]] = {
+        TurnOutcome.BLOCKING_LIMIT: (
+            AgentTemplateFile.WINDOW_FULL_NOTICE,
+            AgentTemplateFile.WINDOW_UNSHORTENED_NOTICE,
+        ),
+        TurnOutcome.COMPACT_FAILURE_BREAKER: (
+            AgentTemplateFile.WINDOW_UNSHORTENED_NOTICE,
+        ),
+        TurnOutcome.RAPID_REFILL_BREAKER: (AgentTemplateFile.WINDOW_THRASHING_NOTICE,),
+        TurnOutcome.OUTPUT_LIMIT: (AgentTemplateFile.OUTPUT_LIMIT_NOTICE,),
+    }
+
     CALL_STATUSES: ClassVar[Mapping[CallStatus, ToolStatus]] = {
         CallStatus.COMPLETED: ToolStatus.COMPLETED,
         CallStatus.FAILED: ToolStatus.FAILED,
@@ -1020,6 +1072,7 @@ class AcpMapping:
         self._titles = ToolTitles()
         self._templates = AgentTemplate()
         self._troubles = ModelTroubleTexts(self._templates)
+        self._llm_details = LlmErrorDetails()
         self._commands = LocalCommandText()
 
     def turn_ended(self, record: TurnEndRecord) -> Iterator[Update]:
@@ -1029,14 +1082,46 @@ class AcpMapping:
         пометка уже говорит, что случилось."""
         if record.notice:
             detail = record.detail
-            if detail == record.notice:
+            if record.outcome is TurnOutcome.API_ERROR:
+                detail = self._llm_details.public(detail)
+
+            if record.outcome in self.FAILURE_NOTICES:
+                detail = self._compaction_error(detail)
+
+            if record.detail == record.notice:
                 detail = ""
 
-            yield self.notice(record.level, record.notice, detail)
+            yield self.notice(record.level, self._turn_notice(record), detail)
 
         yield schema.IdleSessionStateUpdate(
             stop_reason=self.STOP_REASONS[record.outcome]
         )
+
+    def _turn_notice(self, record: TurnEndRecord) -> str:
+        if record.outcome is TurnOutcome.API_ERROR:
+            for trouble in LlmTrouble:
+                public = self._troubles.failed(trouble)
+                if record.notice == public:
+                    return public
+
+            template = self._templates.read(AgentTemplateFile.MANUAL_COMPACTION_FAILED)
+            for reason in SummaryFailure:
+                public = template.format(detail=reason.describe(""))
+                if record.notice == public:
+                    return public
+
+            return self._troubles.failed(LlmTrouble.UNKNOWN)
+
+        choices = self.FAILURE_NOTICES.get(record.outcome)
+        if choices is None:
+            return record.notice
+
+        for template in choices:
+            public = self._templates.read(template)
+            if record.notice == public:
+                return public
+
+        return self._templates.read(choices[0])
 
     def notice(
         self, level: NoticeLevel, text: str, detail: str
@@ -1067,7 +1152,9 @@ class AcpMapping:
         text = self._troubles.retry(
             record.trouble, record.retry_attempt, record.max_retries, seconds
         )
-        return self.notice(NoticeLevel.WARNING, text, record.detail)
+        return self.notice(
+            NoticeLevel.WARNING, text, self._llm_details.public(record.detail)
+        )
 
     def tool_kind(self, hints: ToolHints | None) -> ToolKindName:
         """`kind` по пометкам MCP: читающий — read, разрушающий — execute,
@@ -1243,13 +1330,28 @@ class AcpMapping:
         прервано."""
         error: str | None = None
         if record.error:
-            error = record.error
+            error = self._compaction_error(record.error)
 
         status = self.COMPACTION_STATUSES[record.phase]
 
         return schema.SessionCompactionUpdate(
             compaction_id=record.compaction_id, status=status.value, error=error
         )
+
+    def _compaction_error(self, detail: str) -> str:
+        if not detail:
+            return ""
+
+        for reason in SummaryFailure:
+            public = reason.describe("")
+            if detail.startswith(public):
+                suffix = detail.removeprefix(public).removeprefix(": ")
+                if status := self._llm_details.public(suffix):
+                    return reason.describe(status)
+
+                return public
+
+        return "Conversation compaction failed. Try again or contact the administrator."
 
     def compacted(self, record: CompactSummaryRecord) -> schema.SessionCompactionUpdate:
         """Пересказ — состоявшееся сжатие с ним; id сжатия — uuid пересказа."""
@@ -4143,6 +4245,7 @@ class AcpSession:
         self._opened = opened
         self._relay = relay
         self._mapping = mapping
+        self._session_errors = SessionErrors()
         self._mcp = mcp
         self._commands = SessionCommands()
         self._forms = CommandForms()
@@ -4205,9 +4308,7 @@ class AcpSession:
                 {ErrorDataKey.DETAILS.value: str(exc)}
             ) from exc
         except (SessionBusyError, SessionOpenError) as exc:
-            raise RequestError.internal_error(
-                {ErrorDataKey.DETAILS.value: str(exc)}
-            ) from exc
+            raise self._session_errors.reply(exc) from exc
 
     def busy(self) -> bool:
         """Ход идёт или ждёт в очереди."""
@@ -4511,6 +4612,7 @@ class AcpAgent(AcpAgentProtocol):
         self._features = SessionFeatures()
         self._sessions: dict[str, HostedSession] = {}
         self._mapping = AcpMapping()
+        self._session_errors = SessionErrors()
         self._options = SessionOptions()
         self._records: TypeAdapter[SessionRecordParams] = TypeAdapter(
             SessionRecordParams
@@ -4710,9 +4812,7 @@ class AcpAgent(AcpAgentProtocol):
                     {ErrorDataKey.DETAILS.value: str(exc)}
                 ) from exc
             except (SessionOpenError, HistoryError) as exc:
-                raise RequestError.internal_error(
-                    {ErrorDataKey.DETAILS.value: str(exc)}
-                ) from exc
+                raise self._session_errors.reply(exc) from exc
 
             owned.pop_all()
 
@@ -4877,9 +4977,7 @@ class AcpAgent(AcpAgentProtocol):
             await self._closed(session_id, hosted)
             raise self._unknown(session_id) from exc
         except (SessionOpenError, HistoryError) as exc:
-            raise RequestError.internal_error(
-                {ErrorDataKey.DETAILS.value: str(exc)}
-            ) from exc
+            raise self._session_errors.reply(exc) from exc
 
         hosted.held = session
         logger.info("session %s: the observer took the lock", session_id)
@@ -5143,9 +5241,7 @@ class AcpAgent(AcpAgentProtocol):
                     {ErrorDataKey.DETAILS.value: str(exc)}
                 ) from exc
             except (SessionOpenError, HistoryError) as exc:
-                raise RequestError.internal_error(
-                    {ErrorDataKey.DETAILS.value: str(exc)}
-                ) from exc
+                raise self._session_errors.reply(exc) from exc
 
             owned.pop_all()
 

@@ -10,6 +10,7 @@
 провайдера (транспорт, загруженные веса) и раздаёт модели.
 
 Ошибки:
+LlmError — создание или закрытие модели завершилось неожиданным сбоем.
 LlmProvidersError — entry point не отдал манифест, kind не установлен или
     провайдер не поддерживает запрошенную способность.
 """
@@ -24,7 +25,8 @@ from typing import Annotated, Any, ClassVar
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, SerializeAsAny
 
-from boba.llm.chat import ChatModel
+from boba.core.errors import PublicError
+from boba.llm.chat import ChatModel, LlmError, LlmErrors
 from boba.llm.embedding import EmbeddingModel
 
 __all__ = [
@@ -40,12 +42,19 @@ __all__ = [
 ]
 
 
-class LlmProvidersError(ValueError):
+class LlmProvidersError(LlmError, ValueError):
     """Реестр провайдеров не собрался или провайдер не даёт такой модели.
 
     Наследует ValueError: из валидатора конфига pydantic заворачивает её в
     ValidationError, и ошибка секции читается как ошибка конфига.
     """
+
+    def __init__(self, diagnostic: str) -> None:
+        PublicError.__init__(
+            self,
+            diagnostic,
+            "The model configuration is unavailable. Contact the administrator.",
+        )
 
 
 class LlmProvider(BaseModel):
@@ -259,19 +268,23 @@ class LlmProviders:
 
     def __init__(self, types: LlmProviderTypes) -> None:
         self._types = types
+        self._errors = LlmErrors()
         self._backends: list[tuple[LlmProvider, LlmBackend]] = []
 
     def chat(self, cfg: ChatModelConfig) -> ChatModel:
-        return self._backend(cfg.provider).chat(cfg)
+        with self._errors.boundary("Creating a chat model"):
+            return self._backend(cfg.provider).chat(cfg)
 
     def embedding(self, cfg: EmbeddingModelConfig) -> EmbeddingModel:
-        return self._backend(cfg.provider).embedding(cfg)
+        with self._errors.boundary("Creating an embedding model"):
+            return self._backend(cfg.provider).embedding(cfg)
 
     async def aclose(self) -> None:
-        for _, backend in self._backends:
-            await backend.aclose()
+        with self._errors.boundary("Closing model providers"):
+            for _, backend in self._backends:
+                await backend.aclose()
 
-        self._backends.clear()
+            self._backends.clear()
 
     def _backend(self, provider: LlmProvider) -> LlmBackend:
         for known, backend in self._backends:

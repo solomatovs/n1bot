@@ -5043,20 +5043,24 @@ class TestTurnEndNotices:
         assert notices[0].description == detail, notices[0]
 
     def test_refusal_without_detail_has_no_description(self) -> None:
-        text = "This conversation no longer fits in the model's memory."
+        text = (
+            "This conversation no longer fits in the model's memory. "
+            "Start a new chat to continue."
+        )
         notices = self._notices(self._turn_end(text, ""))
 
         assert [(notice.title, notice.description) for notice in notices] == [
             (text, None)
         ]
 
-    def test_detail_that_repeats_the_text_is_dropped(self) -> None:
+    def test_legacy_raw_error_is_replaced_by_a_public_notice(self) -> None:
         error = "openai chat: POST http://model/v1: expected 2xx, got 500"
         notices = self._notices(self._turn_end(error, error))
 
-        assert [(notice.title, notice.description) for notice in notices] == [
-            (error, None)
-        ]
+        assert len(notices) == 1
+        assert "http://model" not in notices[0].title
+        assert "context" in notices[0].title or "memory" in notices[0].title
+        assert notices[0].description is None
 
 
 class TestToolSource:

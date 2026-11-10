@@ -32,7 +32,7 @@ import logging
 from abc import abstractmethod
 from asyncio.subprocess import Process
 from collections.abc import Awaitable, Iterator, Mapping, Sequence
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
 from http import HTTPStatus
@@ -43,6 +43,7 @@ from uuid import UUID
 import httpx2
 from acp.exceptions import RequestError
 from acp.experimental.v2 import Client, schema
+from acp.experimental.v2.meta import AGENT_METHODS
 from acp.http.client import AcpHttpStatusError
 from acp.transports import spawn_stdio_transport
 from mcp.client.auth.exceptions import OAuthFlowError
@@ -52,9 +53,11 @@ from boba.aid.agent.relay import ClientName, McpRelay
 from boba.aid.agent.settings import AgentWorkdir, WorkdirFile
 from boba.aid.config.models import AgentServiceConfig
 from boba.aid.rendering.acp_view import SessionUpdate
+from boba.core.errors import PublicError
 from boba.mcp_client.client import McpCaller, McpClientError
 from boba.transport.acp.http import HttpStream
 from boba.transport.acp.protocol import (
+    AcpErrorCode,
     AcpVersion,
     BobaExtension,
     ClientConnection,
@@ -63,6 +66,8 @@ from boba.transport.acp.protocol import (
     McpOutcome,
     MetaKey,
     SessionCommandsRequest,
+    SessionFailureData,
+    SessionFailureKind,
     SessionRecordRequest,
     ToolSourceReply,
     ToolSourceRequest,
@@ -140,13 +145,66 @@ class AgentFailureKind(StrEnum):
     PROFILE_MISSING = "profile-missing"
     """Агент не может вести профиль чата этой вкладки."""
 
+    RESUME_FAILED = "resume-failed"
+    """Сохранённый чат не удалось восстановить."""
+
+    INVALID_REQUEST = "invalid-request"
+    """Агент отклонил параметры команды."""
+
+    INTERNAL_ERROR = "internal-error"
+    """Неожиданный сбой клиента при обработке запроса к агенту."""
+
+    TOOLS_UNAVAILABLE = "tools-unavailable"
+    """Для восстановления чата недоступны ранее объявленные инструменты."""
+
+    def message(self) -> str:
+        messages = {
+            self.INTERNAL_ERROR: (
+                "The agent request could not be processed. Contact the administrator."
+            ),
+            self.INVALID_REQUEST: (
+                "The agent rejected the request. Check the command and its arguments."
+            ),
+            self.START_FAILED: "The agent could not start. Contact the administrator.",
+            self.UNREACHABLE: "The agent service is unavailable. Try again later.",
+            self.SIGN_IN_REFUSED: (
+                "The agent service denied access. Contact the administrator."
+            ),
+            self.BAD_ANSWER: (
+                "The agent returned an invalid response. Contact the administrator."
+            ),
+            self.NO_ANSWER: "The agent did not respond in time. Try again.",
+            self.CONNECTION_LOST: (
+                "The connection to the agent was interrupted. Try again."
+            ),
+            self.REFUSED: (
+                "The agent could not complete the request. Try again or contact the "
+                "administrator."
+            ),
+            self.PROFILE_MISSING: (
+                "The chat profile is unavailable. Select another profile or contact "
+                "the administrator."
+            ),
+            self.RESUME_FAILED: (
+                "The chat could not be restored. Try again later or contact the "
+                "administrator."
+            ),
+            self.TOOLS_UNAVAILABLE: (
+                "The chat could not be restored because its tools are unavailable. "
+                "Try again later or contact the administrator."
+            ),
+        }
+
+        return messages[self]
+
 
 @dataclass(frozen=True)
 class AgentFailure:
-    """Отказ агента словами для человека: вид, собеседник (процесс или
-    служба с адресом), что делалось и что получено — без журналов агента и
-    внутренних путей. Строит LinkFailures и места отказов клиента; читает
-    UserFailures чата."""
+    """Вид отказа агента и приватный контекст для диагностики.
+
+    LinkFailures строит отказ на границе клиента; UserFailures использует
+    только kind, остальные поля не передаются в интерфейс.
+    """
 
     kind: AgentFailureKind
     peer: str
@@ -154,8 +212,13 @@ class AgentFailure:
     cause: str
 
 
-class AcpClientError(Exception):
+class AcpClientError(PublicError):
     """Основа ошибок клиента ACP."""
+
+    def __init__(
+        self, diagnostic: str, kind: AgentFailureKind = AgentFailureKind.REFUSED
+    ) -> None:
+        super().__init__(diagnostic, kind.message())
 
 
 class AgentProcessError(AcpClientError):
@@ -163,25 +226,37 @@ class AgentProcessError(AcpClientError):
     для человека."""
 
     def __init__(self, message: str, failure: AgentFailure) -> None:
-        super().__init__(message)
+        super().__init__(message, failure.kind)
         self.failure = failure
 
 
 class AgentRequestError(AcpClientError):
-    """Агент ответил ошибкой JSON-RPC; текст — метод, код, сообщение и
-    подробности из `data.details`, когда агент их прислал."""
+    """Публичный отказ агента с отдельной диагностикой ответа JSON-RPC."""
 
     def __init__(
         self, method: str, code: int, message: str, data: Any, peer: str
     ) -> None:
         cause = self._cause(code, message, data)
-        super().__init__(f"{method}: agent answered {cause}")
+        kind = AgentFailureKind.REFUSED
+        if method == AGENT_METHODS["session_resume"]:
+            kind = AgentFailureKind.RESUME_FAILED
+
+        if code == AcpErrorCode.INVALID_PARAMS:
+            kind = AgentFailureKind.INVALID_REQUEST
+
+        try:
+            failure_data = SessionFailureData.model_validate(data)
+        except ValidationError:
+            failure_data = SessionFailureData()
+
+        if failure_data.kind is SessionFailureKind.TOOLS_UNAVAILABLE:
+            kind = AgentFailureKind.TOOLS_UNAVAILABLE
+
+        super().__init__(f"{peer}, {method}: agent answered {cause}", kind)
         self.method = method
         self.code = code
         self.data = data
-        self.failure = AgentFailure(
-            kind=AgentFailureKind.REFUSED, peer=peer, action=method, cause=cause
-        )
+        self.failure = AgentFailure(kind=kind, peer=peer, action=method, cause=cause)
 
     @staticmethod
     def _cause(code: int, message: str, data: Any) -> str:
@@ -206,6 +281,18 @@ class LinkFailures:
         {HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN}
     )
 
+    @contextmanager
+    def boundary(self, peer: str, action: str) -> Iterator[None]:
+        try:
+            yield
+        except AcpClientError as exc:
+            logger.error("%s", exc.diagnostic, exc_info=True)
+            raise
+        except Exception as exc:
+            message = f"{peer}: {action} failed: {type(exc).__name__}: {exc}"
+            logger.exception("%s", message)
+            raise AgentProcessError(message, self.of(peer, action, exc)) from exc
+
     def of(self, peer: str, action: str, exc: BaseException) -> AgentFailure:
         kind, cause = self._classified(exc)
 
@@ -221,14 +308,23 @@ class LinkFailures:
         if isinstance(exc, OAuthFlowError | McpClientError):
             return AgentFailureKind.SIGN_IN_REFUSED, str(exc)
 
-        if isinstance(exc, httpx2.ConnectError | httpx2.ConnectTimeout):
-            return AgentFailureKind.UNREACHABLE, f"connecting failed: {exc}"
-
         if isinstance(exc, ValidationError):
             cause = "the answer does not follow the ACP v2 schema"
             return AgentFailureKind.BAD_ANSWER, cause
 
-        return AgentFailureKind.CONNECTION_LOST, f"{type(exc).__name__}: {exc}"
+        return self._network(exc)
+
+    def _network(self, exc: BaseException) -> tuple[AgentFailureKind, str]:
+        if isinstance(exc, httpx2.ConnectError | httpx2.ConnectTimeout):
+            return AgentFailureKind.UNREACHABLE, f"connecting failed: {exc}"
+
+        if isinstance(exc, TimeoutError | httpx2.TimeoutException):
+            return AgentFailureKind.NO_ANSWER, str(exc)
+
+        if isinstance(exc, ConnectionError | httpx2.NetworkError):
+            return AgentFailureKind.CONNECTION_LOST, str(exc)
+
+        return AgentFailureKind.INTERNAL_ERROR, f"{type(exc).__name__}: {exc}"
 
 
 class SessionUpdates(Protocol):
@@ -634,52 +730,57 @@ class AgentLink:
         """Новая сессия с серверами соединения; id и настройки
         (`configOptions`) выдаёт агент, режим разрешений по ним выставляет
         клиент."""
-        connection = self._require_connection()
+        with self._failures.boundary(self.peer(), "open_session"):
+            connection = self._require_connection()
 
-        opened = await self._request(
-            "session/new",
-            connection.new_session(cwd=self._cwd(), mcp_servers=list(self._servers)),
-        )
-        await self._configure(opened.session_id, opened.config_options)
+            opened = await self._request(
+                "session/new",
+                connection.new_session(
+                    cwd=self._cwd(), mcp_servers=list(self._servers)
+                ),
+            )
+            await self._configure(opened.session_id, opened.config_options)
 
-        return opened
+            return opened
 
     async def resume_session(
         self, session_id: str, replay: bool
     ) -> schema.ResumeSessionResponse:
         """Открытие сохранённой сессии; replay — беседа воспроизводится
         приёмнику с начала до ответа, иначе прошлых ходов он не получает."""
-        connection = self._require_connection()
-        replay_from: schema.ReplayFromStartVariant | None = None
-        if replay:
-            replay_from = schema.ReplayFromStartVariant()
+        with self._failures.boundary(self.peer(), "resume_session"):
+            connection = self._require_connection()
+            replay_from: schema.ReplayFromStartVariant | None = None
+            if replay:
+                replay_from = schema.ReplayFromStartVariant()
 
-        resumed = await self._request(
-            "session/resume",
-            connection.resume_session(
-                session_id=session_id,
-                cwd=self._cwd(),
-                mcp_servers=list(self._servers),
-                replay_from=replay_from,
-            ),
-        )
-        await self._configure(session_id, resumed.config_options)
+            resumed = await self._request(
+                "session/resume",
+                connection.resume_session(
+                    session_id=session_id,
+                    cwd=self._cwd(),
+                    mcp_servers=list(self._servers),
+                    replay_from=replay_from,
+                ),
+            )
+            await self._configure(session_id, resumed.config_options)
 
-        return resumed
+            return resumed
 
     async def set_config_option(
         self, session_id: str, config_id: str, value: str
     ) -> schema.SetSessionConfigOptionResponse:
         """Настройка сессии `session/set_config_option`: ответ — полный список
         настроек после смены."""
-        connection = self._require_connection()
+        with self._failures.boundary(self.peer(), "set_config_option"):
+            connection = self._require_connection()
 
-        return await self._request(
-            "session/set_config_option",
-            connection.set_config_option(
-                config_id=config_id, session_id=session_id, value=value
-            ),
-        )
+            return await self._request(
+                "session/set_config_option",
+                connection.set_config_option(
+                    config_id=config_id, session_id=session_id, value=value
+                ),
+            )
 
     async def prompt(self, session_id: str, blocks: Sequence[PromptBlock]) -> str:
         """Вопрос в сессию; ответ — messageId, который агент дал вопросу. Он
@@ -695,49 +796,53 @@ class AgentLink:
         AgentProcessError — агент дал вопросу id, который не uuid, ушёл или
             ответил не по схеме.
         """
-        connection = self._require_connection()
-        response = await self._answer_of(
-            "session/prompt",
-            connection.prompt(session_id=session_id, prompt=list(blocks)),
-        )
-        try:
-            UUID(response.message_id)
-        except ValueError as exc:
-            msg = (
-                f"session/prompt of session {session_id}: the agent named the "
-                f"question {response.message_id!r}, expected a uuid that becomes "
-                "the id of the question step"
+        with self._failures.boundary(self.peer(), "prompt"):
+            connection = self._require_connection()
+            response = await self._answer_of(
+                "session/prompt",
+                connection.prompt(session_id=session_id, prompt=list(blocks)),
             )
-            failure = AgentFailure(
-                kind=AgentFailureKind.BAD_ANSWER,
-                peer=self.peer(),
-                action="session/prompt",
-                cause=f"the question id {response.message_id!r} is not a uuid",
-            )
-            raise AgentProcessError(msg, failure) from exc
+            try:
+                UUID(response.message_id)
+            except ValueError as exc:
+                msg = (
+                    f"session/prompt of session {session_id}: the agent named the "
+                    f"question {response.message_id!r}, expected a uuid that becomes "
+                    "the id of the question step"
+                )
+                failure = AgentFailure(
+                    kind=AgentFailureKind.BAD_ANSWER,
+                    peer=self.peer(),
+                    action="session/prompt",
+                    cause=f"the question id {response.message_id!r} is not a uuid",
+                )
+                raise AgentProcessError(msg, failure) from exc
 
-        return response.message_id
+            return response.message_id
 
     async def cancel(self, session_id: str) -> None:
-        connection = self._require_connection()
-        try:
-            await connection.cancel_session(session_id=session_id)
-        except ConnectionError as exc:
-            msg = f"session/cancel: the agent connection is closed: {exc}"
-            failure = self._failures.of(self.peer(), "session/cancel", exc)
-            raise AgentProcessError(msg, failure) from exc
+        with self._failures.boundary(self.peer(), "cancel"):
+            connection = self._require_connection()
+            try:
+                await connection.cancel_session(session_id=session_id)
+            except ConnectionError as exc:
+                msg = f"session/cancel: the agent connection is closed: {exc}"
+                failure = self._failures.of(self.peer(), "session/cancel", exc)
+                raise AgentProcessError(msg, failure) from exc
 
     async def close_session(self, session_id: str) -> None:
-        connection = self._require_connection()
-        await self._request(
-            "session/close", connection.close_session(session_id=session_id)
-        )
+        with self._failures.boundary(self.peer(), "close_session"):
+            connection = self._require_connection()
+            await self._request(
+                "session/close", connection.close_session(session_id=session_id)
+            )
 
     async def delete_session(self, session_id: str) -> None:
-        connection = self._require_connection()
-        await self._request(
-            "session/delete", connection.delete_session(session_id=session_id)
-        )
+        with self._failures.boundary(self.peer(), "delete_session"):
+            connection = self._require_connection()
+            await self._request(
+                "session/delete", connection.delete_session(session_id=session_id)
+            )
 
     @staticmethod
     def _cuts_forks(session: schema.SessionCapabilities | None) -> bool:
@@ -792,10 +897,13 @@ class AgentLink:
         AgentRequestError — агент отказал в записи.
         AgentProcessError — агент ушёл или соединение закрыто.
         """
-        connection = self._require_connection()
-        method = BobaExtension.SESSION_RECORD.value
-        params = request.model_dump(mode="json", by_alias=True, exclude_none=True)
-        await self._answer_of(method, connection.send_extension_request(method, params))
+        with self._failures.boundary(self.peer(), "record"):
+            connection = self._require_connection()
+            method = BobaExtension.SESSION_RECORD.value
+            params = request.model_dump(mode="json", by_alias=True, exclude_none=True)
+            await self._answer_of(
+                method, connection.send_extension_request(method, params)
+            )
 
     def forks_by_message(self) -> bool:
         """Агент объявил в `capabilities.session.fork._meta`, что режет ветку
@@ -807,22 +915,23 @@ class AgentLink:
     ) -> schema.ForkSessionResponse:
         """Ветвь сессии до вопроса up_to_message_id (сам вопрос и всё после
         него в ветку не идут); id ветки и её настройки выдаёт агент."""
-        connection = self._require_connection()
-        # SDK кладёт лишние именованные аргументы метода в _meta запроса
-        meta: dict[str, Any] = {MetaKey.UP_TO_MESSAGE_ID.value: up_to_message_id}
+        with self._failures.boundary(self.peer(), "fork"):
+            connection = self._require_connection()
+            # SDK кладёт лишние именованные аргументы метода в _meta запроса
+            meta: dict[str, Any] = {MetaKey.UP_TO_MESSAGE_ID.value: up_to_message_id}
 
-        forked = await self._request(
-            "session/fork",
-            connection.fork_session(
-                session_id=session_id,
-                cwd=self._cwd(),
-                mcp_servers=list(self._servers),
-                **meta,
-            ),
-        )
-        await self._configure(forked.session_id, forked.config_options)
+            forked = await self._request(
+                "session/fork",
+                connection.fork_session(
+                    session_id=session_id,
+                    cwd=self._cwd(),
+                    mcp_servers=list(self._servers),
+                    **meta,
+                ),
+            )
+            await self._configure(forked.session_id, forked.config_options)
 
-        return forked
+            return forked
 
     async def _configure(
         self, session_id: str, options: Sequence[ConfigOption] | None
@@ -1017,10 +1126,12 @@ class AgentProcess(AgentLink):
 
     async def exited(self) -> int:
         """Код выхода процесса, когда он завершится."""
-        return await self._require_process().wait()
+        with self._failures.boundary(self.peer(), "exited"):
+            return await self._require_process().wait()
 
     async def ended(self) -> None:
-        await self.exited()
+        with self._failures.boundary(self.peer(), "ended"):
+            await self.exited()
 
     def _cwd(self) -> str:
         return str(self._workdir.path)
@@ -1032,76 +1143,80 @@ class AgentProcess(AgentLink):
         Ошибки:
         AgentProcessError — запуск или initialize не состоялись.
         """
-        executable = self._command.executable
-        stderr_path = self._workdir.stderr_path
-        try:
-            stderr = stderr_path.open("ab")
-        except OSError as exc:
-            self._workdir.remove()
-            msg = (
-                f"agent process {executable!r}: opening its stderr log "
-                f"{stderr_path} failed: {exc}"
-            )
-            failure = AgentFailure(
-                kind=AgentFailureKind.START_FAILED,
-                peer=self.peer(),
-                action=LinkAction.STARTING,
-                cause=f"its log file cannot be opened: {exc.strerror}",
-            )
-            raise AgentProcessError(msg, failure) from exc
-
-        with stderr:
+        with self._failures.boundary(self.peer(), "start"):
+            executable = self._command.executable
+            stderr_path = self._workdir.stderr_path
             try:
-                stdout, stdin, process = await self._stack.enter_async_context(
-                    spawn_stdio_transport(
-                        executable,
-                        *self._command.argv(self._workdir.settings_path),
-                        cwd=self._workdir.path,
-                        stderr=stderr.fileno(),
-                        limit=self.LINE_LIMIT,
-                        shutdown_timeout=self._command.stop_timeout_sec,
-                    )
-                )
+                stderr = stderr_path.open("ab")
             except OSError as exc:
                 self._workdir.remove()
                 msg = (
-                    f"agent process {executable!r} did not start from "
-                    f"{self._workdir.path}: {exc}; check [agent.process].command"
+                    f"agent process {executable!r}: opening its stderr log "
+                    f"{stderr_path} failed: {exc}"
                 )
                 failure = AgentFailure(
                     kind=AgentFailureKind.START_FAILED,
                     peer=self.peer(),
                     action=LinkAction.STARTING,
-                    cause=f"{exc.strerror}; check [agent.process].command",
+                    cause=f"its log file cannot be opened: {exc.strerror}",
                 )
                 raise AgentProcessError(msg, failure) from exc
 
-        self._process = process
-        connection = ClientConnection(
-            self._client, self._answer, self._source, stdin, stdout
-        )
-        # соединение закрывается раньше процесса: выход из стека — в обратном порядке
-        self._stack.push_async_callback(connection.close)
-        try:
-            return await self._handshake(connection, self._command.start_timeout_sec)
-        except AgentProcessError:
-            await self.close()
-            raise
+            with stderr:
+                try:
+                    stdout, stdin, process = await self._stack.enter_async_context(
+                        spawn_stdio_transport(
+                            executable,
+                            *self._command.argv(self._workdir.settings_path),
+                            cwd=self._workdir.path,
+                            stderr=stderr.fileno(),
+                            limit=self.LINE_LIMIT,
+                            shutdown_timeout=self._command.stop_timeout_sec,
+                        )
+                    )
+                except OSError as exc:
+                    self._workdir.remove()
+                    msg = (
+                        f"agent process {executable!r} did not start from "
+                        f"{self._workdir.path}: {exc}; check [agent.process].command"
+                    )
+                    failure = AgentFailure(
+                        kind=AgentFailureKind.START_FAILED,
+                        peer=self.peer(),
+                        action=LinkAction.STARTING,
+                        cause=f"{exc.strerror}; check [agent.process].command",
+                    )
+                    raise AgentProcessError(msg, failure) from exc
+
+            self._process = process
+            connection = ClientConnection(
+                self._client, self._answer, self._source, stdin, stdout
+            )
+            # стек закрывает соединение до остановки процесса
+            self._stack.push_async_callback(connection.close)
+            try:
+                return await self._handshake(
+                    connection, self._command.start_timeout_sec
+                )
+            except AgentProcessError:
+                await self.close()
+                raise
 
     async def close(self) -> None:
         """Соединение закрывается, процесс гасит SDK (конец ввода, ожидание,
         terminate и kill); каталог с файлом настроек удаляется в любом исходе."""
-        try:
-            await self._stack.aclose()
-        finally:
-            self._workdir.remove()
+        with self._failures.boundary(self.peer(), "close"):
+            try:
+                await self._stack.aclose()
+            finally:
+                self._workdir.remove()
 
-        if self._process is not None:
-            logger.info(
-                "agent process exited: pid=%s code=%s",
-                self._process.pid,
-                self._process.returncode,
-            )
+            if self._process is not None:
+                logger.info(
+                    "agent process exited: pid=%s code=%s",
+                    self._process.pid,
+                    self._process.returncode,
+                )
 
     def log_tail(self) -> str:
         """Хвост stderr агента: причина отказа без него не видна."""
@@ -1251,8 +1366,9 @@ class AgentService(AgentLink):
         return self._connection.connected()
 
     async def ended(self) -> None:
-        while self.alive():
-            await asyncio.sleep(self.WATCH_SEC)
+        with self._failures.boundary(self.peer(), "ended"):
+            while self.alive():
+                await asyncio.sleep(self.WATCH_SEC)
 
     def log_tail(self) -> str:
         return "the agent service log names the cause"
@@ -1264,25 +1380,27 @@ class AgentService(AgentLink):
         """Ошибки:
         AgentProcessError — вход, соединение или рукопожатие не состоялись.
         """
-        auth = self._config.auth.on_behalf_of(self._caller).httpx_auth(self._url)
-        # поток событий, молчащий дольше срока чтения, транспорт закрывает, и
-        # ждущие ответа запросы получают обрыв соединения
-        timeout = httpx2.Timeout(None, read=self._config.silence_timeout_sec)
-        http = httpx2.AsyncClient(auth=auth, timeout=timeout)
-        self._stack.push_async_callback(http.aclose)
-        transport = HttpStream(self._url, client=http, owns_client=False)
-        connection = ClientConnection(
-            self._client, self._answer, self._source, transport, None
-        )
-        self._stack.push_async_callback(connection.close)
-        try:
-            return await self._handshake(connection, self._config.start_timeout_sec)
-        except AgentProcessError:
-            await self.close()
-            raise
+        with self._failures.boundary(self.peer(), "start"):
+            auth = self._config.auth.on_behalf_of(self._caller).httpx_auth(self._url)
+            # поток событий, молчащий дольше срока чтения, транспорт закрывает, и
+            # ждущие ответа запросы получают обрыв соединения
+            timeout = httpx2.Timeout(None, read=self._config.silence_timeout_sec)
+            http = httpx2.AsyncClient(auth=auth, timeout=timeout)
+            self._stack.push_async_callback(http.aclose)
+            transport = HttpStream(self._url, client=http, owns_client=False)
+            connection = ClientConnection(
+                self._client, self._answer, self._source, transport, None
+            )
+            self._stack.push_async_callback(connection.close)
+            try:
+                return await self._handshake(connection, self._config.start_timeout_sec)
+            except AgentProcessError:
+                await self.close()
+                raise
 
     async def close(self) -> None:
-        await self._stack.aclose()
+        with self._failures.boundary(self.peer(), "close"):
+            await self._stack.aclose()
 
     async def _configure(
         self, session_id: str, options: Sequence[ConfigOption] | None

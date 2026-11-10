@@ -109,11 +109,16 @@ __all__ = [
     "ToolServer",
     "ToolTexts",
     "ToolsError",
+    "ToolsUnavailableError",
 ]
 
 
 class ToolsError(Exception):
     """Набор инструментов противоречив: имена совпали."""
+
+
+class ToolsUnavailableError(ToolsError):
+    """Сервер не отдал инструменты, нужные для восстановления чата."""
 
 
 class ToolServer(Protocol):

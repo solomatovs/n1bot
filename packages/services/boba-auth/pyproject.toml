@@ -4,29 +4,29 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-auth"
-version = "0.0.33.dev3"
+version = "0.0.33.dev4"
 description = "Boba auth: общие сценарии входа, подтверждения пользователя и обновления прав."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-config==0.0.33.dev3",
-    "boba-core==0.0.33.dev3",
-    "boba-identity==0.0.33.dev3",
-    "boba-kerberos==0.0.33.dev3",
-    "boba-toolkit==0.0.33.dev3",
+    "boba-config==0.0.33.dev4",
+    "boba-core==0.0.33.dev4",
+    "boba-identity==0.0.33.dev4",
+    "boba-kerberos==0.0.33.dev4",
+    "boba-toolkit==0.0.33.dev4",
     "pydantic>=2.12,<3",
 ]
 
 [project.optional-dependencies]
-kerberos = ["boba-krb[seal]==0.0.33.dev3"]
+kerberos = ["boba-krb[seal]==0.0.33.dev4"]
 http = ["starlette>=1.0,<2"]
 dev = [
-    "boba-ldap==0.0.33.dev3",
-    "boba-config==0.0.33.dev3",
-    "boba-stand==0.0.33.dev3",
-    "boba-stand-core==0.0.33.dev3",
+    "boba-ldap==0.0.33.dev4",
+    "boba-config==0.0.33.dev4",
+    "boba-stand==0.0.33.dev4",
+    "boba-stand-core==0.0.33.dev4",
     "omegaconf>=2.3,<3",
     "pytest>=9.1,<10",
-    "boba-oauth[server]==0.0.33.dev3",
+    "boba-oauth[server]==0.0.33.dev4",
     "PyJWT>=2.10,<3",
 ]
 

@@ -1,4 +1,10 @@
-"""Контракт JWT браузерной сессии AID и порты его выпуска и чтения."""
+"""Контракт JWT браузерной сессии AID и порты его выпуска и чтения.
+
+Ошибки:
+TokenRejectedError — разобранный токен не соответствует контракту сессии.
+TokenError — непредвиденный сбой разбора данных сессии.
+ValidationError — прямое создание модели сессии с неверными полями.
+"""
 
 from __future__ import annotations
 
@@ -37,7 +43,11 @@ class TokenRejection(StrEnum):
     IDENTITY = "identity"
 
 
-class TokenRejectedError(Exception):
+class TokenError(Exception):
+    """Выпуск или чтение токена сорвались; причина сохранена для вызывающего."""
+
+
+class TokenRejectedError(TokenError):
     """Токен входа не принят; причина различима для журнала и ответа."""
 
     def __init__(self, reason: TokenRejection, message: str) -> None:
@@ -83,8 +93,10 @@ class SessionClaims(BaseModel):
         try:
             return cls.model_validate(raw)
         except ValidationError as exc:
-            msg = "session token does not match the version 2 claims contract"
+            msg = f"session token does not match the version 2 claims contract: {exc}"
             raise TokenRejectedError(TokenRejection.MALFORMED, msg) from exc
+        except Exception as exc:
+            raise TokenError(f"Parsing session token claims failed: {exc}") from exc
 
     def render(self) -> dict[str, Any]:
         return self.model_dump(mode="json")
@@ -104,7 +116,7 @@ class SessionClaims(BaseModel):
 
 
 class TokenIssuer(Protocol):
-    """Подписывает сессию после применения правил BrowserSessions."""
+    """Подписывает сессию; отказ — TokenRejectedError, прочий сбой — TokenError."""
 
     @abstractmethod
     def issue(
@@ -117,7 +129,7 @@ class TokenIssuer(Protocol):
 
 
 class TokenReader(Protocol):
-    """Чтение токена входа; негодный токен — TokenRejectedError."""
+    """Читает сессию; отказ — TokenRejectedError, прочий сбой — TokenError."""
 
     @abstractmethod
     def read(self, token: str) -> SessionClaims: ...

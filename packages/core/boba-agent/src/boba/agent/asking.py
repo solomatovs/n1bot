@@ -13,18 +13,20 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 
 from boba.agent.events import EventSink, StreamEvent
 from boba.cancellation import RunCancellation, StopReason, ToolStopped
 from boba.llm.chat import (
     ChatDelta,
+    ChatEvent,
     ChatModel,
     ChatReply,
     ChatRequest,
     LlmContextOverflowError,
     LlmError,
+    LlmErrors,
     LlmOutputLimitError,
     LlmServiceError,
     LlmTrouble,
@@ -85,13 +87,13 @@ class Overflowed:
     """Запрос не поместился в окно модели."""
 
     error: str
+    excess: int | None = None
 
 
 @dataclass(frozen=True)
 class Errored:
     """Обращение не состоялось: сеть, статус, мусорный ответ, поток без финала.
-    error — полный текст для журнала, trouble и detail — вид беды и короткая
-    причина для человека."""
+    error — публичный текст, trouble и detail — вид сбоя и HTTP-статус."""
 
     error: str
     trouble: LlmTrouble
@@ -119,6 +121,7 @@ class ModelAsk:
     def __init__(self, model: ChatModel, sink: EventSink) -> None:
         self._model = model
         self._sink = sink
+        self._errors = LlmErrors()
 
     async def attempt(
         self,
@@ -135,7 +138,7 @@ class ModelAsk:
         except (ToolStopped, asyncio.CancelledError) as exc:
             return self._aborted(exc, partial, cancellation)
         except LlmContextOverflowError as exc:
-            return Overflowed(str(exc))
+            return Overflowed(str(exc), exc.excess)
         except LlmOutputLimitError as exc:
             return OutputLimited(partial, str(exc))
         except LlmServiceError as exc:
@@ -160,7 +163,7 @@ class ModelAsk:
 
         reply: ChatReply | None = None
         with cancellation.abort_with(self._canceller(task)):
-            async for event in self._model.chat(request):
+            async for event in self._events(request):
                 if isinstance(event, ChatReply):
                     reply = event
                     continue
@@ -180,9 +183,14 @@ class ModelAsk:
                 "The model stream ended without a final reply: the provider closed "
                 "the connection before the answer was complete."
             )
-            raise LlmServiceError(msg, LlmTrouble.CUT, "the stream stopped early")
+            raise LlmServiceError(msg, LlmTrouble.CUT)
 
         return reply
+
+    async def _events(self, request: ChatRequest) -> AsyncIterator[ChatEvent]:
+        with self._errors.boundary("Reading the model response"):
+            async for event in self._model.chat(request):
+                yield event
 
     def _aborted(
         self, exc: BaseException, partial: Partial, cancellation: RunCancellation

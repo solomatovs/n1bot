@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+from functools import partial
 from uuid import UUID
 
 import jwt
@@ -9,9 +11,11 @@ import pytest
 from aid_stand import StandTokens
 from pydantic import ValidationError
 
-from boba.aid.auth.claims import TokenRejectedError, TokenRejection
+from boba.aid.auth.claims import TokenError, TokenRejectedError, TokenRejection
+from boba.aid.auth.tokens import JwtTokens
 from boba.identity.authentication import RenewalKind
 from boba.identity.context import DelegatedTicket
+from boba.identity.lifetime import SessionLifetime
 from boba.identity.principal import UserIdentity
 
 SECRET = "token-contract-test-secret"
@@ -86,3 +90,50 @@ def test_modified_signature_is_refused() -> None:
 def test_claims_reject_an_empty_identity(login: str) -> None:
     with pytest.raises((TokenRejectedError, ValidationError)):
         StandTokens.session(login, UUID(int=7))
+
+
+@pytest.fixture
+def codec() -> JwtTokens:
+    return JwtTokens(
+        SECRET,
+        SessionLifetime(ttl_sec=3600, max_sec=7200),
+        "boundary-test",
+        issuer="token-boundary",
+        audience="token-boundary",
+    )
+
+
+@pytest.mark.parametrize("stale", [False, True])
+def test_unexpected_jwt_decoder_failure_has_token_boundary(
+    codec: JwtTokens, stale: bool
+) -> None:
+    token = codec.issue(StandTokens.session("alice", UUID(int=7)), int(time.time()))
+    unreadable_key = JwtTokens(
+        "\ud800",
+        SessionLifetime(ttl_sec=3600, max_sec=7200),
+        "boundary-test",
+        issuer="token-boundary",
+        audience="token-boundary",
+    )
+    operation = unreadable_key.read
+    if stale:
+        operation = partial(unreadable_key.read_stale, grace_sec=60)
+
+    with pytest.raises(TokenError) as failed:
+        operation(token)
+
+    assert not isinstance(failed.value, TokenRejectedError)
+    assert isinstance(failed.value.__cause__, UnicodeEncodeError)
+    assert "token-boundary" in str(failed.value)
+    assert token not in str(failed.value)
+
+
+def test_token_issuance_preserves_model_failure_within_its_contract(
+    codec: JwtTokens,
+) -> None:
+    session = StandTokens.session("alice", UUID(int=7))
+    with pytest.raises(TokenError) as failed:
+        codec.issue(session, issued_at=0)
+
+    assert isinstance(failed.value.__cause__, ValidationError)
+    assert "issuing token failed" in str(failed.value)

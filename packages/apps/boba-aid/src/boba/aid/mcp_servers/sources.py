@@ -11,6 +11,8 @@ McpServerStore, пользователя по логину вызывающег�
 McpAppError — набор зрителя или запись сервера не прочитаны, сервер зрителю
     не выдан либо операция над чужим сервером запрещена.
 McpClientError — конфиг сервера для клиента не прочитан.
+ValidationError — прямое создание DTO с неверными полями.
+CancelledError — отмена асинхронной операции распространяется без упаковки.
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.aid.mcp_servers import McpAppError, McpOrigin
+from boba.aid.mcp_servers import McpAppError, McpAppErrors, McpOrigin
 from boba.aid.mcp_servers.oauth import McpBrowserOAuth
 from boba.aid.mcp_servers.store import (
     McpServerStore,
@@ -157,6 +159,7 @@ class StoredServers(ServerSource):
         users: UserRows,
         oauth: McpBrowserOAuth | None = None,
     ) -> None:
+        self._errors = McpAppErrors()
         self._store = store
         self._users = users
         self._oauth = oauth
@@ -167,20 +170,21 @@ class StoredServers(ServerSource):
         Ошибки:
         McpAppError — строки mcp_servers не прочитаны.
         """
-        try:
-            stored = await self._store.visible_to(viewer.user_id, viewer.roles)
-        except McpServerStoreError as exc:
-            msg = (
-                f"the MCP servers app of {viewer.login!r} did not read the servers "
-                f"granted to it: {exc}"
-            )
-            raise McpAppError(msg) from exc
+        with self._errors.boundary(f"Reading granted MCP servers for {viewer.login!r}"):
+            try:
+                stored = await self._store.visible_to(viewer.user_id, viewer.roles)
+            except McpServerStoreError as exc:
+                msg = (
+                    f"the MCP servers app of {viewer.login!r} did not read the servers "
+                    f"granted to it: {exc}"
+                )
+                raise McpAppError(msg) from exc
 
-        records: list[ServerRecord] = []
-        for server in stored:
-            records.append(self._record(server))
+            records: list[ServerRecord] = []
+            for server in stored:
+                records.append(self._record(server))
 
-        return records
+            return records
 
     async def record(self, viewer: McpViewer, name: str) -> ServerRecord:
         """Запись сервера name из набора зрителя.
@@ -188,25 +192,28 @@ class StoredServers(ServerSource):
         Ошибки:
         McpAppError — сервера нет в наборе зрителя либо набор не прочитан.
         """
-        records = await self.visible(viewer)
-        for record in records:
-            if record.name == name:
-                return record
+        with self._errors.boundary(
+            f"Reading granted MCP server {name!r} for {viewer.login!r}"
+        ):
+            records = await self.visible(viewer)
+            for record in records:
+                if record.name == name:
+                    return record
 
-        names: list[str] = []
-        for record in records:
-            names.append(record.name)
+            names: list[str] = []
+            for record in records:
+                names.append(record.name)
 
-        listed = ", ".join(names)
-        if not listed:
-            listed = "none"
+            listed = ", ".join(names)
+            if not listed:
+                listed = "none"
 
-        msg = (
-            f"the MCP servers app of {viewer.login!r} did not find the server "
-            f"{name!r}: it is not granted to this user, the servers granted are "
-            f"{listed}"
-        )
-        raise McpAppError(msg)
+            msg = (
+                f"the MCP servers app of {viewer.login!r} did not find the server "
+                f"{name!r}: it is not granted to this user, the servers granted are "
+                f"{listed}"
+            )
+            raise McpAppError(msg)
 
     async def config_of(self, name: str, caller: McpCaller) -> McpServerConfig | None:
         """Конфиг сервера name для клиента; None — сервер не выдан вызывающему.
@@ -215,23 +222,30 @@ class StoredServers(ServerSource):
         McpClientError — строка users вызывающего или запись сервера не
             прочитана.
         """
-        user_id = await self._user_id(caller)
         try:
-            stored = await self._store.granted(name, user_id, caller.roles)
-        except McpServerStoreError as exc:
-            msg = (
-                f"mcp servers of {caller.login!r}: reading the server {name!r} "
-                f"failed: {exc}"
-            )
-            raise McpClientError(msg) from exc
+            user_id = await self._user_id(caller)
+            try:
+                stored = await self._store.granted(name, user_id, caller.roles)
+            except McpServerStoreError as exc:
+                msg = (
+                    f"mcp servers of {caller.login!r}: reading the server {name!r} "
+                    f"failed: {exc}"
+                )
+                raise McpClientError(msg) from exc
 
-        if stored is None:
-            return None
+            if stored is None:
+                return None
 
-        if not stored.enabled:
-            return None
+            if not stored.enabled:
+                return None
 
-        return self._config(stored.server, stored.id, user_id)
+            return self._config(stored.server, stored.id, user_id)
+        except McpClientError:
+            raise
+        except Exception as exc:
+            raise McpClientError(
+                f"Reading MCP server {name!r} config for {caller.login!r} failed: {exc}"
+            ) from exc
 
     async def add(
         self, viewer: McpViewer, name: str, server: StoredServer
@@ -241,23 +255,26 @@ class StoredServers(ServerSource):
         Ошибки:
         McpAppError — имя занято либо строка не сохранена.
         """
-        try:
-            server_id = await self._store.add(name, server, viewer.user_id)
-        except McpServerStoreError as exc:
-            msg = (
-                f"the MCP servers app of {viewer.login!r} did not add the server "
-                f"{name!r}: {exc}"
-            )
-            raise McpAppError(msg) from exc
+        with self._errors.boundary(
+            f"Adding granted MCP server {name!r} for {viewer.login!r}"
+        ):
+            try:
+                server_id = await self._store.add(name, server, viewer.user_id)
+            except McpServerStoreError as exc:
+                msg = (
+                    f"the MCP servers app of {viewer.login!r} did not add the server "
+                    f"{name!r}: {exc}"
+                )
+                raise McpAppError(msg) from exc
 
-        return ServerRecord(
-            server_id=server_id,
-            name=name,
-            origin=McpOrigin.USER,
-            editable=True,
-            enabled=True,
-            config=self._config(server),
-        )
+            return ServerRecord(
+                server_id=server_id,
+                name=name,
+                origin=McpOrigin.USER,
+                editable=True,
+                enabled=True,
+                config=self._config(server),
+            )
 
     async def replace(
         self, viewer: McpViewer, current: str, name: str, server: StoredServer
@@ -269,21 +286,24 @@ class StoredServers(ServerSource):
         McpAppError — сервер не выдан зрителю лично, имя занято либо строка
             не сохранена.
         """
-        record = await self._own(viewer, current)
-        try:
-            if self._oauth is None:
-                await self._store.replace(record.server_id, name, server)
-            else:
-                async with self._oauth.editing(record.server_id):
+        with self._errors.boundary(
+            f"Replacing granted MCP server {current!r} for {viewer.login!r}"
+        ):
+            record = await self._own(viewer, current)
+            try:
+                if self._oauth is None:
                     await self._store.replace(record.server_id, name, server)
-        except McpServerStoreError as exc:
-            msg = (
-                f"the MCP servers app of {viewer.login!r} did not replace the "
-                f"server {current!r} with {name!r}: {exc}"
-            )
-            raise McpAppError(msg) from exc
+                else:
+                    async with self._oauth.editing(record.server_id):
+                        await self._store.replace(record.server_id, name, server)
+            except McpServerStoreError as exc:
+                msg = (
+                    f"the MCP servers app of {viewer.login!r} did not replace the "
+                    f"server {current!r} with {name!r}: {exc}"
+                )
+                raise McpAppError(msg) from exc
 
-        return replace(record, name=name, config=self._config(server))
+            return replace(record, name=name, config=self._config(server))
 
     async def set_enabled(
         self, viewer: McpViewer, name: str, enabled: bool
@@ -293,17 +313,20 @@ class StoredServers(ServerSource):
         Ошибки:
         McpAppError — сервер не выдан зрителю лично либо строка не сохранена.
         """
-        record = await self._own(viewer, name)
-        try:
-            await self._store.set_enabled(record.server_id, enabled)
-        except McpServerStoreError as exc:
-            msg = (
-                f"the MCP servers app of {viewer.login!r} did not set the server "
-                f"{name!r} to enabled={enabled}: {exc}"
-            )
-            raise McpAppError(msg) from exc
+        with self._errors.boundary(
+            f"Updating granted MCP server {name!r} for {viewer.login!r}"
+        ):
+            record = await self._own(viewer, name)
+            try:
+                await self._store.set_enabled(record.server_id, enabled)
+            except McpServerStoreError as exc:
+                msg = (
+                    f"the MCP servers app of {viewer.login!r} did not set the server "
+                    f"{name!r} to enabled={enabled}: {exc}"
+                )
+                raise McpAppError(msg) from exc
 
-        return replace(record, enabled=enabled)
+            return replace(record, enabled=enabled)
 
     async def remove(self, viewer: McpViewer, name: str) -> None:
         """Удаление своего сервера вместе с выдачами.
@@ -311,15 +334,18 @@ class StoredServers(ServerSource):
         Ошибки:
         McpAppError — сервер не выдан зрителю лично либо строка не удалена.
         """
-        record = await self._own(viewer, name)
-        try:
-            await self._store.remove(record.server_id)
-        except McpServerStoreError as exc:
-            msg = (
-                f"the MCP servers app of {viewer.login!r} did not remove the "
-                f"server {name!r}: {exc}"
-            )
-            raise McpAppError(msg) from exc
+        with self._errors.boundary(
+            f"Removing granted MCP server {name!r} for {viewer.login!r}"
+        ):
+            record = await self._own(viewer, name)
+            try:
+                await self._store.remove(record.server_id)
+            except McpServerStoreError as exc:
+                msg = (
+                    f"the MCP servers app of {viewer.login!r} did not remove the "
+                    f"server {name!r}: {exc}"
+                )
+                raise McpAppError(msg) from exc
 
     async def _own(self, viewer: McpViewer, name: str) -> ServerRecord:
         """Запись сервера, выданного зрителю лично.

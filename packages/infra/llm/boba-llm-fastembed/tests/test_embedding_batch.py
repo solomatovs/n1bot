@@ -132,8 +132,11 @@ class TestCacheOnly:
             progress_every=1,
         )
 
-        with pytest.raises(LlmError, match="Could not load model"):
+        with pytest.raises(LlmError) as caught:
             FastembedBackend(provider).embedding(config)
+
+        assert "Could not load model" in caught.value.diagnostic
+        assert str(tmp_path) not in str(caught.value)
 
         fetched = sorted(str(path) for path in tmp_path.rglob("*") if not path.is_dir())
         if fetched:

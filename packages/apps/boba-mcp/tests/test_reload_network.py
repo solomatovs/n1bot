@@ -363,7 +363,7 @@ async def test_failed_reload_keeps_serving_and_recovers_after_db_repair(
         )
 
     try:
-        await network.reload(success=False)
+        await network.reload(success=failure != "missing_table")
         async with network.client(token, 1) as client:
             assert not (await client.call_tool_mcp("fake_whoami", {})).is_error
     finally:
@@ -528,13 +528,13 @@ async def test_stop_cancels_two_users_calls_and_incomplete_http_request(
         ),
     ],
 )
-async def test_invalid_catalog_survives_failed_reload_and_blocks_restart_until_repaired(
+async def test_invalid_endpoint_is_isolated_on_reload_and_startup(
     network: NetworkServer,
     database: CatalogDatabase,
     test_postgres: PostgresConfig,
     invalid: InvalidEndpoint,
 ) -> None:
-    """Одна БД и каталог процесса: reload сохраняет кеш, перезапуск его теряет."""
+    """Ошибка отдельной записи не мешает новым endpoint'ам и отзыву grants."""
     token = await network.token("bob", "weak")
     await database.endpoint("/added", ("dev",))
     await database.execute(
@@ -545,43 +545,38 @@ async def test_invalid_catalog_survives_failed_reload_and_blocks_restart_until_r
     snapshot = await database.snapshot()
     original_pid = network.process.pid
     mark = len(network.log())
-    await network.reload(success=False)
+    await network.reload()
     assert invalid.reason in network.log()[mark:]
+    assert "endpoint will not start" in network.log()[mark:]
     assert network.process.poll() is None
     assert network.process.pid == original_pid
     assert await database.snapshot() == snapshot
-    await network.catalog_is(("/service", "/narrow"))
-    async with network.client(token, 1) as client:
-        answer = await client.call_tool_mcp("fake_whoami", {})
-        assert not answer.is_error
-        assert "bob|weak|/service" in text(answer)
-
-    assert (await network.http.post(network.urls[0] + "/added")).status_code == 404
+    await network.catalog_is(("/service", "/narrow", "/added"))
+    denied = await network.http.post(
+        network.urls[1] + "/service", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert denied.status_code == 403
     await network.stop(signal.SIGTERM)
     await network.close()
 
-    # Повторный процесс использует ту же БД, схему и рабочий каталог.
-    failed = NetworkServer(network.workdir, test_postgres.dbname, database.schema)
+    restarted = NetworkServer(network.workdir, test_postgres.dbname, database.schema)
     try:
-        await failed.rejected_start(invalid.reason)
+        await restarted.ready()
+        assert invalid.reason in restarted.log()
+        await restarted.catalog_is(("/service", "/narrow", "/added"))
         assert await database.snapshot() == snapshot
-    finally:
-        await failed.close()
-
-    await database.execute(
-        "delete from {}.mcp_endpoints where prefix_url=%s", (invalid.path,)
-    )
-    recovered = NetworkServer(network.workdir, test_postgres.dbname, database.schema)
-    try:
-        await recovered.ready()
-        await recovered.catalog_is(("/service", "/narrow", "/added"))
-        allowed = await recovered.token("alice", "dev", "/added")
-        async with recovered.client(allowed, 1, "/added") as client:
+        await database.execute(
+            "delete from {}.mcp_endpoints where prefix_url=%s", (invalid.path,)
+        )
+        await database.endpoint("/repaired", ("dev",))
+        await restarted.reload()
+        allowed = await restarted.token("alice", "dev", "/repaired")
+        async with restarted.client(allowed, 1, "/repaired") as client:
             assert not (await client.call_tool_mcp("fake_whoami", {})).is_error
 
-        await recovered.stop(signal.SIGTERM)
+        await restarted.stop(signal.SIGTERM)
     finally:
-        await recovered.close()
+        await restarted.close()
 
 
 @pytest.mark.parametrize("path", ["/token", "/token/admin"])
@@ -598,11 +593,11 @@ async def test_reserved_route_rejection_can_be_retried_without_restart(
     pid = network.process.pid
     for _ in range(2):
         mark = len(network.log())
-        await network.reload(success=False)
+        await network.reload()
         assert f"endpoint {path!r}: route is reserved" in network.log()[mark:]
-        assert "MCP reload complete" not in network.log()[mark:]
+        assert "endpoint will not start" in network.log()[mark:]
         assert await database.snapshot() == snapshot
-        await network.catalog_is(("/service", "/narrow"))
+        await network.catalog_is(("/service", "/narrow", "/added"))
 
     await database.execute("delete from {}.mcp_endpoints where prefix_url=%s", (path,))
     await network.reload()
@@ -612,3 +607,115 @@ async def test_reserved_route_rejection_can_be_retried_without_restart(
     token = await network.token("alice", "dev", "/added")
     async with network.client(token, 1, "/added") as client:
         assert not (await client.call_tool_mcp("fake_whoami", {})).is_error
+
+
+@pytest.mark.parametrize(
+    ("override", "reason"),
+    [
+        pytest.param(
+            {"inputSchema": {"properties": {"text": {"type": "integer"}}}},
+            "/inputSchema/properties/text/type",
+            id="changed-type",
+        ),
+        pytest.param(
+            {"inputSchema": {"properties": {"typo": {"description": "Unknown"}}}},
+            "/inputSchema/properties/typo",
+            id="unknown-argument",
+        ),
+        pytest.param("not a tool card", "overrides.fake_echo", id="invalid-row"),
+    ],
+)
+async def test_overrides_reload_preserves_only_invalid_endpoint_and_startup_skips_it(
+    network: NetworkServer,
+    database: CatalogDatabase,
+    test_postgres: PostgresConfig,
+    override: Any,
+    reason: str,
+) -> None:
+    bob = await network.token("bob", "weak")
+    alice = await network.token("alice", "dev", "/narrow")
+    async with (
+        network.client(bob) as client,
+        network.client(alice, 1, "/narrow") as narrow,
+    ):
+        initial = {tool.name: tool for tool in await client.list_tools()}
+        schema = initial["fake_echo"].input_schema
+        documented = {
+            "fake_echo": {
+                "description": "Endpoint description v1",
+                "inputSchema": {
+                    "properties": {"text": {"description": "Text for this endpoint"}}
+                },
+            }
+        }
+        await database.execute(
+            "update {}.mcp_endpoints set overrides=%s where prefix_url='/service'",
+            (Jsonb(documented),),
+        )
+        await network.reload()
+        listed = {tool.name: tool for tool in await client.list_tools()}
+        assert listed["fake_echo"].description == "Endpoint description v1"
+        effective = listed["fake_echo"].input_schema
+        assert (
+            effective["properties"]["text"]["description"] == "Text for this endpoint"
+        )
+        assert effective["properties"]["repeat"] == schema["properties"]["repeat"]
+        assert effective["required"] == schema["required"]
+        assert not (
+            await client.call_tool_mcp("fake_echo", {"text": "hello", "repeat": 1})
+        ).is_error
+        assert (
+            await client.call_tool_mcp("fake_echo", {"text": "hello", "repeat": 0})
+        ).is_error
+
+        await database.execute(
+            "update {}.mcp_endpoints set overrides=%s where prefix_url='/service'",
+            (Jsonb({"fake_echo": override}),),
+        )
+        await database.execute(
+            "delete from {0}.grants where tgt_kind_id in "
+            "(select id from {0}.roles where role='weak')"
+        )
+        await database.execute(
+            "update {}.mcp_endpoints set overrides=%s where prefix_url='/narrow'",
+            (Jsonb({"fake_echo": {"description": "Narrow description v2"}}),),
+        )
+        snapshot = await database.snapshot()
+        mark = len(network.log())
+        await network.reload()
+        assert reason in network.log()[mark:]
+        assert (
+            "keeping its previously published definition and roles"
+            in network.log()[mark:]
+        )
+        retained = {tool.name: tool for tool in await client.list_tools()}
+        assert retained["fake_echo"] == listed["fake_echo"]
+        updated = {tool.name: tool for tool in await narrow.list_tools()}
+        assert updated["fake_echo"].description == "Narrow description v2"
+        assert await database.snapshot() == snapshot
+
+    await network.stop(signal.SIGTERM)
+    await network.close()
+    restarted = NetworkServer(network.workdir, test_postgres.dbname, database.schema)
+    try:
+        await restarted.ready()
+        await restarted.catalog_is(("/narrow",))
+        assert reason in restarted.log()
+        assert "endpoint will not start" in restarted.log()
+        assert (
+            await restarted.http.post(restarted.urls[0] + "/service")
+        ).status_code == 404
+        await database.execute(
+            "update {}.mcp_endpoints set overrides=%s where prefix_url='/service'",
+            (Jsonb(documented),),
+        )
+        await restarted.reload()
+        await restarted.catalog_is(("/service", "/narrow"))
+        token = await restarted.token("alice", "dev")
+        async with restarted.client(token) as repaired:
+            tools = {tool.name: tool for tool in await repaired.list_tools()}
+            assert tools["fake_echo"].description == "Endpoint description v1"
+
+        await restarted.stop(signal.SIGTERM)
+    finally:
+        await restarted.close()

@@ -97,6 +97,8 @@ __all__ = [
     "MetaKey",
     "RecordedKind",
     "SessionCommandsRequest",
+    "SessionFailureData",
+    "SessionFailureKind",
     "SessionRecordParams",
     "SessionRecordRequest",
     "StdioTransport",
@@ -186,6 +188,36 @@ class ErrorDataKey(StrEnum):
     DETAILS = "details"
     SESSION_ID = "sessionId"
     UP_TO_MESSAGE_ID = "upToMessageId"
+
+
+class SessionFailureKind(StrEnum):
+    """Публичные причины отказа открытия чата, общие для агента и клиента."""
+
+    UNAVAILABLE = "session-unavailable"
+    TOOLS_UNAVAILABLE = "tools-unavailable"
+
+
+class SessionFailureData(StrictModel):
+    """Публичные данные отказа ACP без диагностики и параметров подключения."""
+
+    kind: SessionFailureKind = SessionFailureKind.UNAVAILABLE
+
+
+class AgentRequestErrors:
+    """Граница входа ACP: внутренние ошибки уходят в журнал, наружу — код."""
+
+    def data(self, error: RequestError) -> SessionFailureData:
+        try:
+            return SessionFailureData.model_validate(error.data)
+        except ValidationError:
+            return SessionFailureData()
+
+    def internal(self, error: Exception) -> RequestError:
+        data = SessionFailureData()
+        if isinstance(error, RequestError):
+            data = self.data(error)
+
+        return RequestError.internal_error(data.model_dump(mode="json"))
 
 
 class MetaKey(StrEnum):
@@ -708,6 +740,7 @@ class AgentSide:
         self._receivers: dict[str, Callable[[McpMessage], Awaitable[None]]] = {}
         self._outcomes: TypeAdapter[McpOutcome] = TypeAdapter(McpOutcome)
         self._state = NegotiationState()
+        self._errors = AgentRequestErrors()
         self._connection = Connection(self, transport, listening=listening)
 
         def attach(connection: AgentSideConnection) -> object:
@@ -718,6 +751,23 @@ class AgentSide:
         self._sdk, self._router = AgentSideConnection.attach(attach, self._connection)
 
     async def __call__(
+        self, method: str, params: JsonValue | None, is_notification: bool
+    ) -> JsonValue | None:
+        try:
+            return await self._dispatch(method, params, is_notification)
+        except RequestError as exc:
+            if exc.code != AcpErrorCode.INTERNAL_ERROR:
+                raise
+
+            logger.exception("ACP %s failed: %s; data=%r", method, exc, exc.data)
+            raise self._errors.internal(exc) from exc
+        except ValidationError as exc:
+            raise RequestError.invalid_params() from exc
+        except Exception as exc:
+            logger.exception("ACP %s failed: %s", method, exc)
+            raise self._errors.internal(exc) from exc
+
+    async def _dispatch(
         self, method: str, params: JsonValue | None, is_notification: bool
     ) -> JsonValue | None:
         # роутер rc3 проверяет отсутствующие params моделью, схема v2 их не требует
@@ -749,13 +799,19 @@ class AgentSide:
                 params = self._negotiate(params)
 
             if method == AGENT_METHODS["session_resume"]:
-                ResumeParams.model_validate(params)
+                try:
+                    ResumeParams.model_validate(params)
+                except ValidationError as exc:
+                    raise RequestError.invalid_params() from exc
 
         return await self._router(method, params, is_notification)
 
     @staticmethod
     def _negotiate(params: JsonValue) -> dict[str, Any]:
-        request = InitializationParams.model_validate(params)
+        try:
+            request = InitializationParams.model_validate(params)
+        except ValidationError as exc:
+            raise RequestError.invalid_params() from exc
         if request.protocol_version < AcpVersion.V2:
             raise RequestError(
                 AcpErrorCode.UNSUPPORTED_PROTOCOL_VERSION,

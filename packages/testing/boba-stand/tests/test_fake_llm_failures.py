@@ -150,7 +150,7 @@ class StandClients:
 
                 deltas += 1
         except LlmError as exc:
-            return Outcome(reply=None, error=str(exc), deltas=deltas)
+            return Outcome(reply=None, error=exc.diagnostic, deltas=deltas)
 
         return Outcome(reply=reply, error="", deltas=deltas)
 
@@ -436,9 +436,9 @@ class TestWindow:
         found = re.search(
             r"maximum context length is 40 tokens\. However, your messages "
             r"resulted in (\d+) tokens",
-            str(overflow.value),
+            overflow.value.diagnostic,
         )
-        assert found is not None, str(overflow.value)
+        assert found is not None, overflow.value.diagnostic
         assert int(found.group(1)) > len(long) // self.WINDOW.chars_per_token
 
     async def test_reset_lifts_the_window(

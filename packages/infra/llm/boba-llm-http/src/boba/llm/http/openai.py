@@ -43,6 +43,7 @@ from boba.llm.chat import (
     ChatTurn,
     ChatUsage,
     LlmError,
+    LlmErrors,
     LlmOutputLimitError,
     LlmServiceError,
     LlmTrouble,
@@ -333,7 +334,7 @@ class StreamAssembly(ChunkAssembly[WireChunk]):
                 f"{self._where}: the stream ended without a finish_reason: the reply "
                 "is cut off or the server closed the connection early"
             )
-            raise LlmServiceError(msg, LlmTrouble.CUT, "the stream stopped early")
+            raise LlmServiceError(msg, LlmTrouble.CUT)
 
         if FinishReason.is_complete(self._finish_reason):
             return
@@ -346,14 +347,13 @@ class StreamAssembly(ChunkAssembly[WireChunk]):
                 f"{self._where}: reply blocked by the provider content filter "
                 "(finish_reason=content_filter)"
             )
-            raise LlmServiceError(msg, LlmTrouble.BLOCKED, "content filter")
+            raise LlmServiceError(msg, LlmTrouble.BLOCKED)
 
         msg = (
             f"{self._where}: generation ended abnormally, expected "
             f"finish_reason=stop or tool_calls, got finish_reason={self._finish_reason}"
         )
-        detail = f"finish_reason={self._finish_reason}"
-        raise LlmServiceError(msg, LlmTrouble.CUT, detail)
+        raise LlmServiceError(msg, LlmTrouble.CUT)
 
     def _ceiling_error(self) -> LlmOutputLimitError:
         """Ошибка обрыва по потолку токенов: расход, недописанный вызов, совет."""
@@ -604,34 +604,37 @@ class OpenAiEmbeddingModel(EmbeddingModel):
     def __init__(self, endpoint: LlmEndpoint, cfg: EmbeddingModelConfig) -> None:
         self._endpoint = endpoint
         self._cfg = cfg
+        self._errors = LlmErrors()
 
     async def embed_documents(
         self,
         contents: Sequence[str],
     ) -> Sequence[Sequence[float]]:
-        vectors: list[Sequence[float]] = []
-        elapsed = Elapsed()
-        logged = 0
+        with self._errors.boundary("OpenAi: embed_documents"):
+            vectors: list[Sequence[float]] = []
+            elapsed = Elapsed()
+            logged = 0
 
-        for start in range(0, len(contents), self._cfg.batch_size):
-            batch = list(contents[start : start + self._cfg.batch_size])
-            vectors.extend(await self._request(batch))
+            for start in range(0, len(contents), self._cfg.batch_size):
+                batch = list(contents[start : start + self._cfg.batch_size])
+                vectors.extend(await self._request(batch))
 
-            if len(vectors) - logged >= self._cfg.progress_every:
-                logged = len(vectors)
-                logger.info(
-                    "embedding progress: %d/%d in %dms",
-                    len(vectors),
-                    len(contents),
-                    elapsed.ms(),
-                )
+                if len(vectors) - logged >= self._cfg.progress_every:
+                    logged = len(vectors)
+                    logger.info(
+                        "embedding progress: %d/%d in %dms",
+                        len(vectors),
+                        len(contents),
+                        elapsed.ms(),
+                    )
 
-        return vectors
+            return vectors
 
     async def embed_query(self, content: str) -> Sequence[float]:
-        vectors = await self._request([content])
+        with self._errors.boundary("OpenAi: embed_query"):
+            vectors = await self._request([content])
 
-        return vectors[0]
+            return vectors[0]
 
     def dim(self) -> int:
         return self._cfg.dim
@@ -704,20 +707,25 @@ class OpenAiBackend(LlmBackend):
             raise LlmProvidersError(msg)
 
         self._provider = provider
-        self._transport = HttpTransport(provider.connection, provider.transport)
+        self._errors = LlmErrors()
+        with self._errors.boundary("Creating the HTTP model transport"):
+            self._transport = HttpTransport(provider.connection, provider.transport)
 
     def chat(self, cfg: ChatModelConfig) -> ChatModel:
-        endpoint = self._endpoint(LlmRoute.CHAT_COMPLETIONS, self.CHAT_LABEL)
+        with self._errors.boundary("OpenAi: chat"):
+            endpoint = self._endpoint(LlmRoute.CHAT_COMPLETIONS, self.CHAT_LABEL)
 
-        return OpenAiChatModel(endpoint, cfg.model)
+            return OpenAiChatModel(endpoint, cfg.model)
 
     def embedding(self, cfg: EmbeddingModelConfig) -> EmbeddingModel:
-        endpoint = self._endpoint(LlmRoute.EMBEDDINGS, self.EMBEDDING_LABEL)
+        with self._errors.boundary("OpenAi: embedding"):
+            endpoint = self._endpoint(LlmRoute.EMBEDDINGS, self.EMBEDDING_LABEL)
 
-        return OpenAiEmbeddingModel(endpoint, cfg)
+            return OpenAiEmbeddingModel(endpoint, cfg)
 
     async def aclose(self) -> None:
-        await self._transport.close()
+        with self._errors.boundary("OpenAi: aclose"):
+            await self._transport.close()
 
     def _endpoint(self, route: LlmRoute, label: str) -> LlmEndpoint:
         return LlmEndpoint(self._transport, self._provider.connection, route, label)

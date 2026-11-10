@@ -4,18 +4,18 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-db-postgres"
-version = "0.0.33.dev3"
+version = "0.0.33.dev4"
 description = "Boba PostgreSQL: PostgresConfig + AsyncPostgresPool — единственный async-пул системы, с kerberos-кредами на подключение."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-tool-io==0.0.33.dev3",
-    "boba-core==0.0.33.dev3",
+    "boba-tool-io==0.0.33.dev4",
+    "boba-core==0.0.33.dev4",
     "pydantic>=2.12,<3",
-    "boba-connections==0.0.33.dev3",
-    "boba-kerberos==0.0.33.dev3",
-    "boba-cancellation==0.0.33.dev3",
-    "boba-krb==0.0.33.dev3",
-    "boba-toolkit==0.0.33.dev3",
+    "boba-connections==0.0.33.dev4",
+    "boba-kerberos==0.0.33.dev4",
+    "boba-cancellation==0.0.33.dev4",
+    "boba-krb==0.0.33.dev4",
+    "boba-toolkit==0.0.33.dev4",
     "psycopg[binary]>=3.3,<4",
     "psycopg-pool>=3.3,<4",
 ]
@@ -28,25 +28,25 @@ postgres = "boba.db.postgres.manifest:MANIFEST"
 
 [project.optional-dependencies]
 cli = [
-    "boba-config==0.0.33.dev3",
-    "boba-krb[config]==0.0.33.dev3",
+    "boba-config==0.0.33.dev4",
+    "boba-krb[config]==0.0.33.dev4",
     "omegaconf>=2.3,<3",
 ]
 messaging = [
-    "boba-identity==0.0.33.dev3",
-    "boba-messaging==0.0.33.dev3",
+    "boba-identity==0.0.33.dev4",
+    "boba-messaging==0.0.33.dev4",
 ]
 arrow = [
-    "boba-tool-io[arrow]==0.0.33.dev3",
+    "boba-tool-io[arrow]==0.0.33.dev4",
     "pyarrow>=25,<26",
 ]
 dev = [
-    "boba-stand==0.0.33.dev3",
+    "boba-stand==0.0.33.dev4",
     "pytest>=9.1,<10",
-    "boba-aid==0.0.33.dev3",
-    "boba-chat==0.0.33.dev3",
-    "boba-identity==0.0.33.dev3",
-    "boba-messaging==0.0.33.dev3",
+    "boba-aid==0.0.33.dev4",
+    "boba-chat==0.0.33.dev4",
+    "boba-identity==0.0.33.dev4",
+    "boba-messaging==0.0.33.dev4",
 ]
 
 [tool.boba.extras]

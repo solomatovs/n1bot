@@ -235,7 +235,7 @@ class TestHistory:
 
         observer = await agents.start(RecordingUpdates(), "observer")
         await observer.resume_session(session_id, True)
-        with pytest.raises(AgentRequestError, match="held by another process"):
+        with pytest.raises(AgentRequestError, match="could not complete the request"):
             await observer.prompt(session_id, [_text(text)])
 
         await holder.close_session(session_id)

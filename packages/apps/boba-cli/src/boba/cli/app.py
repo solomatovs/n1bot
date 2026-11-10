@@ -17,6 +17,8 @@
 сбрасывает журналы; `SIGTERM` и `SIGINT` прерывают ходы причиной SHUTDOWN, выход 0.
 
 Ошибки:
+SessionOpenError — сборка сессии не смогла открыть модель, хранилище или инструменты.
+HistoryError — хранилище отказало в открытии, чтении или изменении сессии.
 SystemExit — настройки, профиль модели, хранилище или скиллы не годятся
     для запуска либо самопроверка не нашла данных пакетов в бинарнике; текст
     называет причину, код выхода 1. Без режима — код выхода 2.
@@ -56,13 +58,12 @@ from boba.agent.history import (
 from boba.agent.ids import IdMint, SystemClock
 from boba.agent.loader import HistoryLoader, SessionDigests
 from boba.agent.mcp import ToolHints
-from boba.agent.permissions import PermissionModeError
 from boba.agent.profile import ModelProfile, ProfileError
 from boba.agent.records import ChainRecord, EnvironmentSnapshot
 from boba.agent.session import SessionError
 from boba.agent.skills import Skill, SkillsDir, SkillsError
 from boba.agent.template import AgentTemplate
-from boba.agent.tools import McpServerSet, ToolsError, ToolServer
+from boba.agent.tools import McpServerSet, ToolServer, ToolsUnavailableError
 from boba.cancellation import ProcessStop, StopAction, StopReason
 from boba.cli.acp_server import (
     AcpAgent,
@@ -70,6 +71,7 @@ from boba.cli.acp_server import (
     OpenedSession,
     SessionAssembly,
     SessionBusyError,
+    SessionErrors,
     SessionOpenError,
     SessionPage,
     SessionRefusedError,
@@ -97,7 +99,7 @@ from boba.llm.http.ollama import MANIFEST as OLLAMA
 from boba.llm.http.openai import MANIFEST as OPENAI
 from boba.llm.onnx.chat import MANIFEST as ONNX
 from boba.llm.providers import LlmProviders, LlmProvidersError, LlmProviderTypes
-from boba.transport.acp.protocol import AgentSide, StdioTransport
+from boba.transport.acp.protocol import AgentSide, SessionFailureKind, StdioTransport
 
 logger = logging.getLogger(__name__)
 
@@ -619,6 +621,7 @@ class AgentAssembly(SessionAssembly):
             store, AgentTemplate(), IdMint(), SystemClock(), version
         )
         self._digests = SessionDigests(store)
+        self._errors = SessionErrors()
 
     async def open(  # noqa: PLR0913 — сессия собирается всеми частями запроса
         self,
@@ -640,18 +643,21 @@ class AgentAssembly(SessionAssembly):
         SessionOpenError — профиль, режим, инструменты, хранилище или
             модель не дали открыть сессию.
         """
-        models = SessionModels(self._catalog, self._types)
-        try:
-            agent = await self._attached(
-                session_id, cwd, tools, servers, sink, resume, questions, models
+        with self._errors.boundary(f"open agent session {session_id.value}"):
+            models = SessionModels(self._catalog, self._types)
+            try:
+                agent = await self._attached(
+                    session_id, cwd, tools, servers, sink, resume, questions, models
+                )
+            except BaseException:
+                await models.close()
+                raise
+
+            settings = self._settings
+
+            return AssembledSession(
+                agent, self._catalog, models, settings, settings.model
             )
-        except BaseException:
-            await models.close()
-            raise
-
-        settings = self._settings
-
-        return AssembledSession(agent, self._catalog, models, settings, settings.model)
 
     def models(self) -> Sequence[str]:
         """Профили сессий этой сборки: у `boba serve` — выданные вошедшему."""
@@ -666,9 +672,12 @@ class AgentAssembly(SessionAssembly):
         sink: EventSink,
         questions: bool,
     ) -> ObservedSession:
-        await self._present(session_id)
+        with self._errors.boundary(f"observe agent session {session_id.value}"):
+            await self._present(session_id)
 
-        return AssembledObserver(self, session_id, cwd, tools, servers, sink, questions)
+            return AssembledObserver(
+                self, session_id, cwd, tools, servers, sink, questions
+            )
 
     def history(self, session_id: SessionId) -> AsyncGenerator[ChainRecord, None]:
         return self._loader.records(session_id)
@@ -727,14 +736,10 @@ class AgentAssembly(SessionAssembly):
             await agent.open(session_id, resume=resume)
         except (SessionHeldError, SessionNotFoundError):
             raise
-        except (
-            HistoryError,
-            ProfileError,
-            PermissionModeError,
-            ToolsError,
-            SettingsError,
-            LlmError,
-        ) as exc:
+        except ToolsUnavailableError as exc:
+            msg = f"session {session_id.value} cannot be opened: {exc}"
+            raise SessionOpenError(msg, SessionFailureKind.TOOLS_UNAVAILABLE) from exc
+        except Exception as exc:
             msg = f"session {session_id.value} cannot be opened: {exc}"
             raise SessionOpenError(msg) from exc
 

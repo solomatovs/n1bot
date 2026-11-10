@@ -6,7 +6,7 @@ import asyncio
 import importlib.metadata
 import json
 import socket
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
@@ -39,6 +39,8 @@ from boba.transport.acp.protocol import (
     McpOutcome,
     McpResultOutcome,
     McpVersion,
+    SessionFailureData,
+    SessionFailureKind,
     StdioTransport,
     ToolSourceContent,
     ToolSourceReply,
@@ -112,6 +114,100 @@ class StandClient(Client):
         self.sourced.append(request)
 
         return ToolSourceReply(source={"tool": request.name})
+
+
+class RefusingAgent(StandAgent):
+    """Агент стенда с отказом открытия сессии для проверки границы ACP."""
+
+    login = Agent.login
+    logout = Agent.logout
+    list_providers = Agent.list_providers
+    set_provider = Agent.set_provider
+    disable_provider = Agent.disable_provider
+    list_sessions = Agent.list_sessions
+    delete_session = Agent.delete_session
+    fork_session = Agent.fork_session
+    resume_session = Agent.resume_session
+    close_session = Agent.close_session
+    set_config_option = Agent.set_config_option
+    prompt = Agent.prompt
+    cancel_session = Agent.cancel_session
+    mcp_message = Agent.mcp_message
+    notify_mcp = Agent.notify_mcp
+    start_nes = Agent.start_nes
+    suggest_nes = Agent.suggest_nes
+    accept_nes = Agent.accept_nes
+    reject_nes = Agent.reject_nes
+    close_nes = Agent.close_nes
+    did_open = Agent.did_open
+    did_change = Agent.did_change
+    did_close = Agent.did_close
+    did_save = Agent.did_save
+    did_focus = Agent.did_focus
+
+    def __init__(
+        self, side: AgentSide, connection: AgentSideConnection, failure: Exception
+    ) -> None:
+        super().__init__(side, connection)
+        self._failure = failure
+
+    async def new_session(
+        self,
+        cwd: str,
+        mcp_servers: Sequence[schema.AcpMcpServer] | None = None,
+        **kwargs: Any,
+    ) -> schema.NewSessionResponse:
+        raise self._failure
+
+
+class RefusingAgents:
+    """Фабрика агента с конкретным отказом для настоящего соединения SDK."""
+
+    def __init__(self, failure: Exception) -> None:
+        self._failure = failure
+
+    def create(self, side: AgentSide, connection: AgentSideConnection) -> RefusingAgent:
+        return RefusingAgent(side, connection, self._failure)
+
+
+class TestPrivateErrors:
+    @pytest.mark.parametrize("known", [True, False])
+    async def test_internal_reply_has_only_a_public_kind(
+        self,
+        known: bool,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        secret = "http://private-agent.local:18347/acp?token=secret"
+        failure: Exception = LookupError(secret)
+        expected = SessionFailureKind.UNAVAILABLE
+        if known:
+            expected = SessionFailureKind.TOOLS_UNAVAILABLE
+            failure = RequestError.internal_error(
+                {"kind": expected.value, "details": secret}
+            )
+
+        factory = RefusingAgents(failure)
+        agent_end, client_end = memory_transport_pair()
+        agent = AgentSide(factory.create, agent_end)
+        serving = asyncio.create_task(agent.serve())
+        stand = StandClient()
+        client = ClientConnection(stand, stand.answer, stand.source, client_end, None)
+        try:
+            await client.initialize(
+                protocol_version=AcpVersion.V2,
+                info=schema.Implementation(name="private-errors", version="0"),
+            )
+            with pytest.raises(RequestError) as caught:
+                await client.new_session(cwd="/", mcp_servers=[])
+
+            assert caught.value.code == AcpErrorCode.INTERNAL_ERROR
+            assert SessionFailureData.model_validate(caught.value.data).kind is expected
+            assert "private-agent" not in str(caught.value)
+            assert "private-agent" not in json.dumps(caught.value.data)
+            assert secret in caplog.text
+        finally:
+            await client.close()
+            await serving
 
 
 @dataclass(frozen=True)

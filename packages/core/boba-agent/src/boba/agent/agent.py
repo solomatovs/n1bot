@@ -80,8 +80,8 @@ from boba.agent.tools import (
     ResultBound,
     ToolRunner,
     ToolSearchTool,
-    ToolsError,
     ToolServer,
+    ToolsUnavailableError,
     ToolTexts,
 )
 from boba.agent.turn import ContextUsage, TurnLoop
@@ -432,7 +432,7 @@ class Agent:
             "The server is probably unreachable; the agent will not record the tools "
             "as removed. Check the MCP server and start again."
         )
-        raise ToolsError(msg)
+        raise ToolsUnavailableError(msg)
 
     async def _restored(self, session: Session, resume: bool) -> LoadReport:
         """Ошибки:

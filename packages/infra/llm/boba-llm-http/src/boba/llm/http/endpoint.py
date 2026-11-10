@@ -4,20 +4,19 @@ API, обмен json-телами через HttpTransport проекта и к�
 Провайдер не собирает URL и не трогает httpx: адрес, auth, ретраи и дамп
 даёт HttpConnection с HttpTransportConfig, а сюда приходят только маршрут
 и тело запроса. Ошибки транспорта переводятся в LlmError с адресом и
-телом ответа. HttpChatModel ведёт обмен одинаково для любого wire-формата:
+телом ответа в диагностике. HttpChatModel ведёт обмен одинаково для любого wire-формата:
 реализация даёт тело запроса, разбор строки и тела и склейку чанков.
 
 Ошибки:
 LlmContextOverflowError — 4xx с текстом о длине контекста: запрос не поместился в окно.
 LlmServiceError — endpoint недоступен или ответил статусом после ретраев: вид
-    беды и короткая причина (статус и error.message ответа) для человека.
+    беды и HTTP-статус без параметров подключения и тела ответа.
 LlmError — endpoint оборвал или задержал поток либо ответил не по
     wire-контракту.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 from abc import abstractmethod
 from collections.abc import AsyncIterator, Mapping, Sequence
@@ -34,8 +33,10 @@ from boba.llm.chat import (
     ChatReply,
     ChatRequest,
     ContextOverflowSigns,
+    LlmConnectionFailure,
     LlmContextOverflowError,
     LlmError,
+    LlmErrors,
     LlmServiceError,
     LlmTrouble,
     ToolSpec,
@@ -87,28 +88,8 @@ class HttpLlmProvider(LlmProvider):
     )
 
 
-class ErrorBodyKey(StrEnum):
-    """Стандартные поля тела отказа: error.message OpenAI и строка error ollama."""
-
-    ERROR = "error"
-    MESSAGE = "message"
-
-
 class ProviderRefusal:
-    """Отказ провайдера словами для человека: статус и суть из стандартного
-    поля ответа — error.message (OpenAI и совместимые) или строки error
-    (ollama); тело другого вида в текст не идёт, оно остаётся в журнале.
-    Держит его в поле LlmEndpoint."""
-
-    LIMIT: ClassVar[int] = 200
-
-    def detail(self, status: int, body: str) -> str:
-        message = self._message(body)
-        phrase = self._phrase(status)
-        if not message:
-            return phrase
-
-        return f"{phrase}: {message[: self.LIMIT]}"
+    """Вид отказа по HTTP-статусу; тело ответа остаётся в диагностике."""
 
     def trouble(self, status: int) -> LlmTrouble:
         if status == HTTPStatus.TOO_MANY_REQUESTS:
@@ -118,35 +99,6 @@ class ProviderRefusal:
             return LlmTrouble.DOWN
 
         return LlmTrouble.REJECTED
-
-    @staticmethod
-    def _phrase(status: int) -> str:
-        try:
-            return f"HTTP {status} {HTTPStatus(status).phrase}"
-        except ValueError:
-            return f"HTTP {status}"
-
-    def _message(self, body: str) -> str:
-        try:
-            document = json.loads(body)
-        except json.JSONDecodeError:
-            return ""
-
-        if not isinstance(document, dict):
-            return ""
-
-        error = document.get(ErrorBodyKey.ERROR.value)
-        if isinstance(error, str):
-            return error
-
-        if not isinstance(error, dict):
-            return ""
-
-        message = error.get(ErrorBodyKey.MESSAGE.value)
-        if isinstance(message, str):
-            return message
-
-        return ""
 
 
 class LlmRoute(StrEnum):
@@ -173,12 +125,15 @@ class LlmEndpoint:
         route: LlmRoute,
         label: str,
     ) -> None:
-        self._transport = transport
-        self._route = route
-        self._label = label
-        self._where = f"{label}: {self.METHOD} {connection.url_of(route.value)}"
-        self._overflow = ContextOverflowSigns()
-        self._refusal = ProviderRefusal()
+        self._errors = LlmErrors()
+
+        with self._errors.boundary(f"{label}: preparing HTTP endpoint", report=False):
+            self._transport = transport
+            self._route = route
+            self._label = label
+            self._where = f"{label}: {self.METHOD} {connection.url_of(route.value)}"
+            self._overflow = ContextOverflowSigns()
+            self._refusal = ProviderRefusal()
 
     @property
     def where(self) -> str:
@@ -187,34 +142,36 @@ class LlmEndpoint:
 
     async def post(self, payload: Mapping[str, Any]) -> bytes:
         """Один запрос-ответ: тело ответа целиком, разбор — у провайдера."""
-        try:
-            async with self._transport.fetch(self._request(payload)) as response:
-                return await response.stream.read()
-        except HttpStatusError as exc:
-            raise self._status_error(exc, f"{self._label}: {exc}") from exc
-        except TransportError as exc:
-            raise self._unreachable(exc, f"{self._label}: {exc}") from exc
+        with self._errors.boundary(f"{self.where}: reading the response", report=False):
+            try:
+                async with self._transport.fetch(self._request(payload)) as response:
+                    return await response.stream.read()
+            except HttpStatusError as exc:
+                raise self._status_error(exc, f"{self._label}: {exc}") from exc
+            except TransportError as exc:
+                raise self._unreachable(exc, f"{self._label}: {exc}") from exc
 
     async def stream(self, payload: Mapping[str, Any]) -> AsyncIterator[str]:
         """Строки потокового ответа; обрыв посреди потока — ошибка, не повтор."""
-        try:
-            async with self._transport.fetch(self._request(payload)) as response:
-                async for line in response.stream.lines():
-                    yield line
-        except HttpStatusError as exc:
-            message = f"{self._label}: stream failed: {exc}"
-            raise self._status_error(exc, message) from exc
-        except TransportError as exc:
-            message = f"{self._label}: stream failed: {exc}"
-            raise self._unreachable(exc, message) from exc
+        with self._errors.boundary(
+            f"{self.where}: streaming the response", report=False
+        ):
+            try:
+                async with self._transport.fetch(self._request(payload)) as response:
+                    async for line in response.stream.lines():
+                        yield line
+            except HttpStatusError as exc:
+                message = f"{self._label}: stream failed: {exc}"
+                raise self._status_error(exc, message) from exc
+            except TransportError as exc:
+                message = f"{self._label}: stream failed: {exc}"
+                raise self._unreachable(exc, message) from exc
 
     def _status_error(self, exc: HttpStatusError, message: str) -> LlmError:
         """4xx с текстом о длине контекста — переполнение окна, остальное —
         LlmServiceError с видом беды по статусу."""
         trouble = self._refusal.trouble(exc.status)
-        refused = LlmServiceError(
-            message, trouble, self._refusal.detail(exc.status, exc.body)
-        )
+        refused = LlmServiceError(message, trouble, status=exc.status)
         if trouble is not LlmTrouble.REJECTED:
             return refused
 
@@ -224,7 +181,9 @@ class LlmEndpoint:
         return refused
 
     def _unreachable(self, exc: TransportError, message: str) -> LlmServiceError:
-        return LlmServiceError(message, LlmTrouble.DOWN, exc.failure.value)
+        reason = LlmConnectionFailure(exc.failure.value)
+
+        return LlmServiceError(message, LlmTrouble.DOWN, reason=reason)
 
     def _request(self, payload: Mapping[str, Any]) -> HttpRequest:
         return HttpRequest(url=self._route.value, method=self.METHOD, json=payload)
@@ -272,6 +231,7 @@ class HttpChatModel(ChatModel, Generic[C]):
     def __init__(self, endpoint: LlmEndpoint, model: str) -> None:
         self._endpoint = endpoint
         self._model = model
+        self._errors = LlmErrors()
 
     @property
     def where(self) -> str:
@@ -290,29 +250,30 @@ class HttpChatModel(ChatModel, Generic[C]):
     def _assembly(self) -> ChunkAssembly[C]: ...
 
     async def chat(self, request: ChatRequest) -> AsyncIterator[ChatEvent]:
-        payload = self._payload(request)
+        with self._errors.boundary(f"{self.where}: generating a chat response"):
+            payload = self._payload(request)
 
-        elapsed = Elapsed()
-        assembly = self._assembly()
-        if request.stream:
-            async for chunk in self._chunks(payload):
-                emitted = assembly.take(chunk)
-                if emitted is not None:
-                    yield emitted
-        else:
-            body = await self._endpoint.post(payload)
-            assembly.take(self._parse_body(body))
+            elapsed = Elapsed()
+            assembly = self._assembly()
+            if request.stream:
+                async for chunk in self._chunks(payload):
+                    emitted = assembly.take(chunk)
+                    if emitted is not None:
+                        yield emitted
+            else:
+                body = await self._endpoint.post(payload)
+                assembly.take(self._parse_body(body))
 
-        reply = assembly.reply(streamed=request.stream)
-        logger.info(
-            "%s: %s replied in %dms (%d call(s))",
-            self._endpoint.where,
-            self._model,
-            elapsed.ms(),
-            len(reply.tool_calls),
-        )
+            reply = assembly.reply(streamed=request.stream)
+            logger.info(
+                "%s: %s replied in %dms (%d call(s))",
+                self._endpoint.where,
+                self._model,
+                elapsed.ms(),
+                len(reply.tool_calls),
+            )
 
-        yield reply
+            yield reply
 
     async def _chunks(self, payload: Mapping[str, Any]) -> AsyncIterator[C]:
         decoder = self._decoder()

@@ -118,7 +118,6 @@ from boba.llm.chat import (
     ChatReply,
     ChatRequest,
     ChatUsage,
-    ContextOverflowSigns,
     LlmTrouble,
 )
 
@@ -242,7 +241,6 @@ class TurnLoop:
         self._agent = agent_name
         self._commands = LocalCommandText()
         self._last_failure = ""
-        self._overflow_signs = ContextOverflowSigns()
         self._builder = RequestBuilder()
         self._bind_model(profile, model)
 
@@ -584,7 +582,7 @@ class TurnLoop:
         pressure = SummaryPressure(
             trigger=CompactTrigger.AUTO,
             last_resort=True,
-            excess=self._overflow_signs.excess(asked.error),
+            excess=asked.excess,
             instructions="",
         )
         compacted = await self._compact(fill, pressure, cancellation, None)

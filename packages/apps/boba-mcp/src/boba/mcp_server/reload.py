@@ -14,16 +14,17 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Callable, Sequence
 from contextlib import asynccontextmanager
+from uuid import UUID
 
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.routing import Mount
 from starlette.types import Receive, Scope, Send
 
-from boba.mcp_server.catalog import EndpointCatalog
-from boba.mcp_server.endpoints import McpEndpointStore
+from boba.mcp_server.catalog import EndpointBuildError, EndpointCatalog, McpEndpoint
+from boba.mcp_server.endpoints import EndpointRejected, McpEndpointStore
 from boba.mcp_server.server import McpEndpoints
 
 logger = logging.getLogger(__name__)
@@ -44,8 +45,9 @@ class _PublishedEndpoints:
     reload, а закрыть в задаче последнего HTTP-запроса.
     """
 
-    def __init__(self, endpoints: McpEndpoints) -> None:
+    def __init__(self, endpoints: McpEndpoints, catalog: EndpointCatalog) -> None:
         self.endpoints = endpoints
+        self.catalog = catalog
         self.app = endpoints.app()
         self._requests = 0
         self._idle = asyncio.Event()
@@ -120,12 +122,57 @@ class _EndpointPublications:
     def __init__(self, build: Callable[[EndpointCatalog], McpEndpoints]) -> None:
         self._build = build
 
-    async def prepare(self, snapshot: EndpointCatalog) -> _PublishedEndpoints:
-        endpoints = self._build(snapshot)
-        candidate = _PublishedEndpoints(endpoints)
+    async def prepare(
+        self,
+        records: Sequence[McpEndpoint | EndpointRejected],
+        previous: Sequence[McpEndpoint],
+    ) -> _PublishedEndpoints:
+        saved = {endpoint.id: endpoint for endpoint in previous}
+        accepted: list[McpEndpoint] = []
+        rejected: set[UUID] = set()
+        for record in records:
+            if isinstance(record, McpEndpoint):
+                accepted.append(record)
+                continue
+
+            rejected.add(record.id)
+            fallback = saved.get(record.id)
+            self._rejected(record.prefix_url, record.reason, fallback)
+            if fallback is not None:
+                accepted.append(fallback)
+
+        while True:
+            snapshot = EndpointCatalog(accepted)
+            try:
+                endpoints = self._build(snapshot)
+            except EndpointBuildError as exc:
+                endpoint = exc.endpoint
+                if endpoint.id in rejected:
+                    raise
+
+                rejected.add(endpoint.id)
+                accepted.remove(endpoint)
+                fallback = saved.get(endpoint.id)
+                self._rejected(endpoint.prefix_url, str(exc), fallback)
+                if fallback is not None:
+                    accepted.append(fallback)
+
+                continue
+
+            break
+
+        candidate = _PublishedEndpoints(endpoints, snapshot)
         await candidate.start()
 
         return candidate
+
+    @staticmethod
+    def _rejected(path: str, reason: str, previous: McpEndpoint | None) -> None:
+        action = "endpoint will not start"
+        if previous is not None:
+            action = "keeping its previously published definition and roles"
+
+        logger.error("MCP endpoint %r rejected; %s: %s", path, action, reason)
 
 
 class ReloadableMcp:
@@ -165,10 +212,9 @@ class ReloadableMcp:
                 records = await self._mcp_store.endpoint_list()
                 self._ensure_running()
 
-                snapshot = EndpointCatalog(records)
-                async with self._replacement(snapshot) as candidate:
+                async with self._replacement(records) as candidate:
                     self._ensure_running()
-                    self._publish(snapshot, candidate)
+                    self._publish(candidate)
             except Exception as exc:
                 msg = f"reloading MCP endpoint catalog failed: {exc}"
                 raise McpReloadError(msg) from exc
@@ -178,22 +224,24 @@ class ReloadableMcp:
 
     @asynccontextmanager
     async def _replacement(
-        self, snapshot: EndpointCatalog
+        self, records: Sequence[McpEndpoint | EndpointRejected]
     ) -> AsyncGenerator[_PublishedEndpoints, None]:
         """Запускает замену и закрывает её, если владение не перешло в _current."""
-        candidate = await self._publications.prepare(snapshot)
+        previous: Sequence[McpEndpoint] = ()
+        if self._current is not None:
+            previous = self._current.catalog.endpoints()
+
+        candidate = await self._publications.prepare(records, previous)
         try:
             yield candidate
         finally:
             if candidate is not self._current:
                 await candidate.discard()
 
-    def _publish(
-        self, snapshot: EndpointCatalog, candidate: _PublishedEndpoints
-    ) -> None:
+    def _publish(self, candidate: _PublishedEndpoints) -> None:
         """Меняет кеш и приложение без await; старые запросы завершаются отдельно."""
         previous = self._current
-        self._cache.replace(snapshot)
+        self._cache.replace(candidate.catalog)
         self._current = candidate
         self._live.add(candidate)
         candidate.task.add_done_callback(lambda task: self._finished(candidate, task))

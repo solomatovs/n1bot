@@ -20,7 +20,15 @@ from boba.identity.signin import ProfileCatalog
 
 
 class EndpointConfigError(Exception):
-    """Каталог нельзя опубликовать; приложение прекращает запуск до открытия порта."""
+    """Описание endpoint'а нельзя опубликовать."""
+
+
+class EndpointBuildError(EndpointConfigError):
+    """Ошибка сборки с определением endpoint'а для сохранения прежней версии."""
+
+    def __init__(self, endpoint: McpEndpoint, reason: str) -> None:
+        super().__init__(reason)
+        self.endpoint = endpoint
 
 
 class PromptArgumentFile(BaseModel):

@@ -24,6 +24,7 @@ McpClientError — сервер не согласовал версию прот�
 McpUnansweredError — подкласс McpClientError: сервер недоступен, не ответил
     на запрос за срок, ответил не как сервер MCP или забыл сессию клиента;
     короткая причина для человека — в brief.
+McpAuthRequired — подкласс McpUnansweredError: нужен вход пользователя.
 MCPError (mcp.shared.exceptions) — сервер ответил на запрос ошибкой MCP.
 """
 
@@ -55,7 +56,7 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 from functools import partial
 from http import HTTPStatus
-from typing import Annotated, Any, ClassVar, Literal, Protocol, Self, TypeVar
+from typing import Annotated, Any, ClassVar, Literal, NoReturn, Protocol, Self, TypeVar
 from urllib.parse import quote
 from uuid import UUID, uuid4
 
@@ -813,11 +814,29 @@ class BrowserOAuthAuth(McpAuthEntry):
         return bound
 
     def httpx_auth(self, resource: str) -> httpx2.Auth:
-        if self._runtime is None or self._server_id is None or self._user_id is None:
+        if self._runtime is None:
             raise McpClientError(
                 "browser OAuth server has no user-bound token provider"
             )
-        return self._runtime.provider(self._server_id, self._user_id, resource)
+
+        if self._server_id is None:
+            raise McpClientError(
+                "browser OAuth server has no user-bound token provider"
+            )
+
+        if self._user_id is None:
+            raise McpClientError(
+                "browser OAuth server has no user-bound token provider"
+            )
+
+        try:
+            return self._runtime.provider(self._server_id, self._user_id, resource)
+        except McpClientError:
+            raise
+        except Exception as exc:
+            raise McpClientError(
+                f"Creating browser OAuth provider for MCP {resource!r} failed: {exc}"
+            ) from exc
 
 
 McpAuth = Annotated[
@@ -886,6 +905,21 @@ class ErrorCauses:
 
     def text(self, error: BaseException) -> str:
         return "; ".join(self._leaves(error))
+
+    def authorization(self, error: BaseException) -> McpAuthRequired | None:
+        """Сохраняет отказ провайдера входа внутри обёрток SDK и групп anyio."""
+        if isinstance(error, McpAuthRequired):
+            return error
+
+        if isinstance(error, BaseExceptionGroup):
+            for inner in error.exceptions:
+                if required := self.authorization(inner):
+                    return required
+
+        if error.__cause__ is not None:
+            return self.authorization(error.__cause__)
+
+        return None
 
     def _leaves(self, error: BaseException) -> list[str]:
         if isinstance(error, BaseExceptionGroup):
@@ -1689,13 +1723,12 @@ class McpConnection:
 
         try:
             await task
+        except McpClientError:
+            raise
         except Exception as exc:
-            logger.info(
-                "mcp %s: the session closed with %s: %s",
-                self._transport.label(),
-                type(exc).__name__,
-                exc,
-            )
+            raise McpClientError(
+                f"mcp {self._transport.label()}: closing the session failed: {exc}"
+            ) from exc
 
     def _negotiated(self) -> str | None:
         """Версия открытой сессии; None — сессия не открыта."""
@@ -1728,22 +1761,31 @@ class McpConnection:
                         ready.set_result(session)
                         await stop.wait()
             except Exception as exc:
-                if not ready.done():
-                    msg = (
-                        f"mcp {self._transport.label()}: connecting and "
-                        f"initializing failed: {refusal.text(exc)}"
-                    )
-                    if refusal.denied():
-                        ready.set_exception(
-                            McpAuthRequired(msg, refusal.brief(Silence.DENIED.value))
-                        )
-                        return
+                if ready.done():
+                    raise McpClientError(
+                        f"mcp {self._transport.label()}: session failed: {exc}"
+                    ) from exc
 
-                    brief = refusal.brief(Silence.HANDSHAKE.value)
-                    ready.set_exception(McpUnansweredError(msg, brief))
+                try:
+                    self._connection_failed(exc, refusal)
+                except McpClientError as failure:
+                    ready.set_exception(failure)
                     return
 
-                raise
+    def _connection_failed(self, exc: Exception, refusal: HttpRefusal) -> NoReturn:
+        """Передаёт ошибку фонового подключения через ready с исходной причиной."""
+        msg = (
+            f"mcp {self._transport.label()}: connecting and "
+            f"initializing failed: {refusal.text(exc)}"
+        )
+        if required := self._causes.authorization(exc):
+            raise McpAuthRequired(msg, required.brief) from exc
+
+        if refusal.denied():
+            raise McpAuthRequired(msg, refusal.brief(Silence.DENIED.value)) from exc
+
+        brief = refusal.brief(Silence.HANDSHAKE.value)
+        raise McpUnansweredError(msg, brief) from exc
 
     async def _negotiated_by(
         self, session: IdentifiedSession, version: str | None

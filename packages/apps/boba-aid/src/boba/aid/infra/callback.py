@@ -98,6 +98,7 @@ from boba.aid.mcp_servers.directory import (
 )
 from boba.aid.mcp_servers.form import (
     McpForms,
+    McpOAuthStart,
     McpServerAdd,
     McpServerFormView,
     McpServerToggle,
@@ -901,13 +902,14 @@ class McpViewerFactory:
 def _mcp_answer(
     answer: McpServerList | McpServerStatus | McpServerDetail | McpServerFormView,
 ) -> dict[str, Any]:
-    return answer.model_dump(mode="json")
+    return answer.model_dump(mode="json", by_alias=True, exclude_none=True)
 
 
 def _mcp_app_error(exc: Exception) -> dict[str, Any]:
-    """Ответ с ошибкой приложения: фронт показывает её строкой."""
+    """Показывает сообщение домена; полная причина остаётся в журнале."""
     if isinstance(exc, McpAppError):
-        return {"error": str(exc)}
+        logging.getLogger(__name__).error("MCP action failed: %s", exc, exc_info=exc)
+        return {"error": exc.view_message().content}
 
     msg = f"the MCP servers app did not answer: {exc}"
     raise RuntimeError(msg) from exc
@@ -1092,7 +1094,7 @@ async def on_mcp_oauth_start(
 ) -> dict[str, Any]:
     """Begin authorization only for an OAuth server granted to this user."""
     try:
-        request = forms.parse(McpServerRequest, action.payload)
+        request = forms.parse(McpOAuthStart, action.payload)
         viewer = McpViewerFactory(current_session()).viewer()
         record = await source.record(viewer, request.name)
         endpoint = record.config.endpoint
@@ -1101,7 +1103,11 @@ async def on_mcp_oauth_start(
         if not isinstance(endpoint.auth, BrowserOAuthAuth):
             raise McpAppError("MCP server does not use browser OAuth")
         url = await oauth.begin(
-            record.server_id, viewer.user_id, viewer.login, endpoint.url()
+            record.server_id,
+            viewer.user_id,
+            viewer.login,
+            endpoint,
+            return_url=request.return_url,
         )
         return {"url": url}
     except McpAppError as exc:

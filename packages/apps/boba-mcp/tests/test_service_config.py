@@ -79,7 +79,7 @@ class TestDatabaseEndpointCatalog:
         with pytest.raises(ConfigError, match="endpoints"):
             bind(raw, path="app", model=McpAppConfig)
 
-    def test_endpoint_names_exported_tools_and_allows_schema_override(self) -> None:
+    def test_endpoint_names_exported_tools_and_allows_card_override(self) -> None:
         endpoint = McpEndpoint(
             id=uuid4(),
             prefix_url="/dq/all",
@@ -87,8 +87,8 @@ class TestDatabaseEndpointCatalog:
             tools=("pg_query",),
             overrides={
                 "pg_query": {
-                    "type": "object",
-                    "properties": {"sql": {"type": "string"}},
+                    "description": "Run a database query",
+                    "inputSchema": {"properties": {"sql": {"type": "string"}}},
                 }
             },
             roles=frozenset({"analyst"}),
