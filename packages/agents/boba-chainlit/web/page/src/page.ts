@@ -197,3 +197,34 @@ if (root !== null) {
 }
 browser.onReady(inject);
 inject();
+
+
+/* AID — загрузка переключателя favicon */
+function loadFaviconTheme(): void {
+  const cssUrl = Array.from(
+      document.querySelectorAll<HTMLLinkElement>(
+          'link[rel="stylesheet"]'
+      )
+  )
+      .map(link => link.href)
+      .find(url => url.includes("/public/ui.css"));
+
+  if (!cssUrl || document.getElementById("aid-favicon-theme")) {
+    return;
+  }
+
+  const script = document.createElement("script");
+  script.id = "aid-favicon-theme";
+  script.src = new URL("favicon-theme.js", cssUrl).href;
+
+  document.head.appendChild(script);
+}
+
+if (document.readyState === "complete") {
+  loadFaviconTheme();
+} else {
+  window.addEventListener("load", loadFaviconTheme, {
+    once: true
+  });
+}
+

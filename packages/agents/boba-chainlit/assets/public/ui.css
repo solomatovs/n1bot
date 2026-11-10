@@ -202,3 +202,209 @@ button[id^="step-"] {
   outline: none !important;
   box-shadow: none !important;
 }
+
+
+/* AID — логотип в боковой панели */
+
+[data-sidebar="header"]::after {
+  content: "";
+  display: block;
+  width: 80px;
+  height: 24px;
+  margin: 0 auto 0 14px;
+  flex-shrink: 0;
+
+  background-image: url("./sidebar-logo.svg");
+  background-repeat: no-repeat;
+  background-position: left center;
+  background-size: contain;
+}
+
+/* Скрытие при сворачивании */
+[data-state="collapsed"] [data-sidebar="header"]::after {
+  display: none;
+}
+
+/* AID — логотип на стартовой странице диалогов */
+#welcome-screen > img.logo {
+  display: none !important;
+}
+
+#welcome-screen::before {
+  content: "";
+  display: block;
+  width: min(100%, 520px);
+  height: 80px;
+  flex-shrink: 0;
+
+  background-image: url("./aid-welcome-banner.svg");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: contain;
+}
+
+
+/* ==========================================
+   AID — Login Screen
+   ========================================== */
+
+/* Полноэкранный фон */
+body:has(#password) .grid.min-h-svh {
+  position: relative;
+  display: block !important;
+  width: 100%;
+  min-height: 100svh;
+
+  background-color: #edf6ff;
+  background-image: url("./aid-login-background.svg");
+  background-repeat: no-repeat;
+  background-position: center center;
+  background-size: cover;
+}
+
+/* Убираем стандартную правую колонку */
+body:has(#password) .grid.min-h-svh > div:nth-child(2) {
+  display: none !important;
+}
+
+/* Убираем старую карточку */
+body:has(#password) .grid.min-h-svh > div:first-child {
+  position: static;
+  display: block;
+  width: 100%;
+  max-width: none;
+  min-height: 100svh;
+  padding: 0 !important;
+
+  background: transparent !important;
+  border: none;
+  border-radius: 0;
+  box-shadow: none !important;
+}
+
+/* ==========================================
+   Верхний логотип AID
+   ========================================== */
+
+body:has(#password) .grid.min-h-svh
+> div:first-child > div:first-child {
+  position: absolute;
+  top: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+
+  display: flex !important;
+  justify-content: center !important;
+  align-items: center;
+
+  width: 290px;
+  height: 60px;
+  padding: 0;
+  z-index: 2;
+}
+
+/* Скрываем штатный логотип Chainlit */
+body:has(#password) .grid.min-h-svh
+> div:first-child > div:first-child img.logo {
+  display: none !important;
+}
+
+/* Показываем логотип дизайнера */
+body:has(#password) .grid.min-h-svh
+> div:first-child > div:first-child::before {
+  content: "";
+  display: block;
+
+  width: 194px;
+  height: 40px;
+
+  background: url("./aid-login-logo.svg")
+  center / contain no-repeat;
+}
+
+/* ==========================================
+   Форма входа справа
+   ========================================== */
+
+body:has(#password) .grid.min-h-svh
+> div:first-child > div:nth-child(2) {
+  position: absolute;
+  top: 50%;
+  left: 67%;
+  transform: translate(-50%, -50%);
+
+  display: block !important;
+  width: 360px;
+  max-width: calc(100% - 48px);
+  padding: 0;
+  margin: 0;
+  flex: none;
+}
+
+/* Снимаем ограничение ширины Chainlit */
+body:has(#password) .max-w-xs {
+  width: 100%;
+  max-width: none !important;
+}
+
+/* Заголовок */
+body:has(#password) form h1 {
+  color: #161616;
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+/* Подписи полей */
+body:has(#password) form label {
+  color: #202020;
+  font-size: 13px;
+}
+
+/* Поля логина и пароля */
+body:has(#password) form input {
+  height: 40px;
+  border-radius: 3px;
+  background: #ffffff;
+  color: #202020;
+}
+
+/* Кнопки авторизации */
+body:has(#password) form button[type="submit"],
+body:has(#password) #sso-login-btn {
+  height: 42px;
+  border-radius: 4px;
+
+  background: #0079cd;
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+/* Состояние наведения */
+body:has(#password) form button[type="submit"]:hover,
+body:has(#password) #sso-login-btn:hover {
+  background: #0065b0;
+}
+
+/* ==========================================
+   Узкие окна браузера на ПК
+   ========================================== */
+
+@media (max-width: 1200px) {
+  body:has(#password) .grid.min-h-svh
+  > div:first-child > div:nth-child(2) {
+    left: 72%;
+    width: 320px;
+  }
+}
+
+@media (max-width: 900px) {
+  body:has(#password) .grid.min-h-svh
+  > div:first-child > div:nth-child(2) {
+    left: auto;
+    right: 24px;
+    transform: translateY(-50%);
+  }
+}
+
