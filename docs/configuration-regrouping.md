@@ -67,8 +67,8 @@ boba-mcp serve --config /etc/boba/mcp.toml \
       max_lifetime_sec = 28800
       generation       = "mcp-1"
 
-   # Системная авторизация: sys_provider, sys_role_source, sys_oauth_client.
-   # Связи провайдеров с источниками — sys_provider_role_source.
+   # Системная авторизация: sys_auth_provider, sys_role_provider, sys_oauth_client.
+   # Связи провайдеров с источниками — sys_auth_role.
 
 [workspace]
    kind         = "image"
@@ -334,8 +334,8 @@ table_shape    = { row_layout_max_columns = 4, row_layout_min_rows = 3 }
       generation       = "aid-1"
       cookie           = { name = "access_token", same_site = "lax" }
 
-   # Системная авторизация: sys_provider, sys_role_source, sys_oauth_client.
-   # Связи провайдеров с источниками — sys_provider_role_source.
+   # Системная авторизация: sys_auth_provider, sys_role_provider, sys_oauth_client.
+   # Связи провайдеров с источниками — sys_auth_role.
 
 [messaging]
    provider = "postgres"
@@ -398,8 +398,8 @@ table_shape    = { row_layout_max_columns = 4, row_layout_min_rows = 3 }
       max_lifetime_sec = 28800
       generation       = "boba-1"
 
-   # Системная авторизация: sys_provider, sys_role_source, sys_oauth_client.
-   # Связи провайдеров с источниками — sys_provider_role_source.
+   # Системная авторизация: sys_auth_provider, sys_role_provider, sys_oauth_client.
+   # Связи провайдеров с источниками — sys_auth_role.
 
 [logging]
    loggers = { "uvicorn.access" = { level = "WARNING" } }
@@ -436,8 +436,7 @@ mounts — к песочнице инструмента. Само объявле
 ### Авторизация
 
 Провайдеры входа, источники ролей и их credentials хранятся в БД.
-В TOML остаются connection к самой БД, корневые ключи и `auth.session`
-с параметрами срока и cookie сессии.
+В TOML остаются connection к самой БД, секретные ключи для шифрования данных внутри базы, шифрования сессий и прочего, другая мелочь
 
 ### Секретные ключи
 
@@ -447,7 +446,7 @@ mounts — к песочнице инструмента. Само объявле
 | `server.session_key`          | Подпись JWT и шифрование OAuth-состояния; общий у реплик службы                                        |
 | `auth.session.credential_key` | Шифрование передаваемых Kerberos credentials; общий у обменивающихся ими служб                         |
 
-Корневые ключи остаются вне БД. Ключи и shared secrets: 32 случайных байта,
+Ключи шифрования остаются вне БД. Ключи и shared secrets: 32 случайных байта,
 URL-safe Base64. Шифрование — Fernet, подписи — HS256/HMAC-SHA256,
 внутренние ключи назначения выводятся через HKDF-SHA256.
 
@@ -459,13 +458,12 @@ python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 ## DDL таблиц управления приложением
 
 В приложении используются таблицы:
-- sys_provider - провайдеры атворизации в приложении
-- sys_role_source - источник ролей, которые назначаются после авторизации
-- sys_provider_role_source - таблица сшивает провайдеры авторизации и источники ролей
+- sys_auth_provider - провайдеры атворизации в приложении
+- sys_role_provider - источник ролей, которые назначаются после авторизации
+- sys_auth_role - таблица сшивает провайдеры авторизации и источники ролей
 - sys_oauth_client - доверенные приложения oauth которые проходят через proxy авторизацию
 
-При старте приложение читает активные настройки, расшифровывает `credential`
-и собирает провайдеры в памяти. Далее приложение не читает таблицы, все необходимо храниться в памяти до момента когда придет сигнал SIGHUP для обновления. В этот момент системные таблицы перечитываются и память обновляется.
+При старте приложение читает активные настройки для работы сервиса авторизации и собирает их в памяти. Далее приложение не читает таблицы, все необходимое храниться в памяти до момента когда придет сигнал SIGHUP который запускает обновление конфига и прочего. В этот момент системные таблицы перечитываются и начинают действовать новые настройки.
 
 
 ```sql
@@ -475,7 +473,7 @@ python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 create schema aid;
 
 -- провайдеры авторизации
-create table aid.sys_provider (
+create table aid.sys_auth_provider (
    name        varchar     primary key,
    kind        varchar     not null, -- local, ldap, kerberos, proxy
    payload     jsonb       not null default '{}'::jsonb check (jsonb_typeof(payload) = 'object'),
@@ -488,7 +486,11 @@ create table aid.sys_provider (
 
 Примеры строк представлены в виде json для удобства. Обрати внимание, что секретная часть должна быть зашифрована, механизм шифрования уже разработан в коде и его надо использовать для секретной части. Для удобства в примерах нет шифрования.
 
-Так мог бы выглядеть `payload`, `credential` для приложения:
+Обрати внимание что примеры ниже отображают те модели, которые уже есть в коде с той разницей, что они перенесены в базу данных, в отдельные поля. Однако же, сейчас система авторизации в целом готова, и требуется в основном сменить источник ее конфигураций.
+
+Так или иначе, в примерах описана целевая форма конфигурирования к которой я стремлюсь и нужно постараться найти несоответствия с ней, указать мне и вместе решить что с этим делать.
+
+Так мог бы выглядеть `payload` и `credential` для приложения:
 
 ```json
 {
@@ -497,7 +499,7 @@ create table aid.sys_provider (
    "payload": {},
    "credential": {
       "users": {
-         "first": "$argon2id$..."
+         "local_user": "$argon2id$..."
       }
    }
 }
@@ -559,7 +561,7 @@ Keytab здесь указан как файл на файловой систе�
 
 ```sql
 -- источники ролей со своими правилами и параметрами connection
-create table aid.sys_role_source (
+create table aid.sys_role_provider (
    name        varchar     primary key,
    kind        varchar     not null, -- local, ldap, principal, proxy
    payload     jsonb       not null default '{}'::jsonb check (jsonb_typeof(payload) = 'object'),
@@ -650,28 +652,28 @@ Proxy-источник получает роли из проверенного �
 
 ```sql
 -- таблица объединяет провайдеры авторизации и источники ролей, которые присвоены этим провайдерам авторизации
-create table aid.sys_provider_role_source (
-   provider_name     varchar     not null references aid.sys_provider (name),
-   role_source_name  varchar     not null references aid.sys_role_source (name),
-   enable            boolean     not null default true,
-   created_at        timestamptz not null default now(),
-   updated_at        timestamptz not null default now(),
+create table aid.sys_auth_role (
+   name                 varchar     not null references aid.sys_auth_provider (name),
+   role_provider_name   varchar     not null references aid.sys_role_provider (name),
+   enable               boolean     not null default true,
+   created_at           timestamptz not null default now(),
+   updated_at           timestamptz not null default now(),
 
-   primary key (provider_name, role_source_name)
+   primary key (name, role_provider_name)
 );
 ```
 
 Примеры строк связи из исходного конфига:
 
-| `provider_name` | `role_source_name` |
-| --------------- | ------------------ |
-| `local_users`   | `local`            |
-| `ldap`          | `ldap`             |
-| `kerberos`      | `kerberos`         |
-| `kerberos`      | `ldap`             |
-| `proxy`         | `proxy`            |
-| `proxy`         | `ldap`             |
-| `proxy`         | `local`            |
+| `name`          | `role_provider_name` |
+| --------------- | -------------------- |
+| `local_users`   | `local`              |
+| `ldap`          | `ldap`               |
+| `kerberos`      | `kerberos`           |
+| `kerberos`      | `ldap`               |
+| `proxy`         | `proxy`              |
+| `proxy`         | `ldap`               |
+| `proxy`         | `local`              |
 
 ```sql
 -- одно доверенное приложение из auth.oauth.clients
@@ -707,32 +709,30 @@ create table aid.sys_oauth_client (
 Префикс `app_` используется для общих таблиц приложения.
 Ниже используется схема `aid`, но в приложениях boba, mcp будет использоваться собственная.
 
-Система работает через общую таблицу сквозных id которые генерируются в таблице app_ident.
-Все остальные таблиц получают идентификатор который ссылкается на эту таблицу.
-Это позволяет выдавать grants на любой объект в приложении.
-Для управления консистентным состоянием используются транзакции в postgres (это очень важно!)
+В основном здесь будет описываться система ролевого доступа к объектам приложения.
+Система ролевого доступа держиться на 4-х таблицах.
+
+Любой объект в системе имеет свой адрес, состоящий из: <таблица> и <id> записи.
+В ролейвой модели участвуют следующие сущности:
+- permissions - типы связей между объектами: use, read, edit, delete, grant
+- grants - таблица связей с permission объектов:
+**src** и **src_id** - кому выдано право
+**tgt** и **tgt_id** - на что выдано право
+**permission** - какое выдано право
+- default_grants - таблица прав, которые назначаются по умолчанию, в процессе работы системы, к примеру при создании нового пользователя, connection, skill и так далее
+- capability - таблица возможностей, которые явно невозможно связать. К примеру можно ли авторизоваться?, можно ли удалять?
+grants связывает запись пользователей (роли, команды) с capability через id записей, точно также, как связывает этих же пользователей с connection, skill, prompt и другими таблицами, объекты которых контролируются ролевой моделью.
 
 
 ```sql
--- сквозная нумерация прикладных объектов
-create table aid.app_ident (
-   id    bigserial not null,
-   -- название конкретного типа идентификатора
-   kind  varchar   not null check (length(kind) > 0),
-
-   primary key (id)
-);
-
 -- таблица пользователей, ролей, команд и внутренних служб приложения.
--- таблица выполнена в виде набора идентификаторов с типом и именем
+-- таблица выполнена в виде набора идентификаторов c именем
 -- членство задаётся через app_identity_member
 -- например для группировки по ролям или по командам
 create table aid.app_identity (
    id          bigint      not null references aid.app_ident (id),
    -- имя уникально среди всех identity, независимо от kind: first, read, admin и другие
    name        varchar     not null check (length(name) > 0),
-   -- service используется только внутренним обработчиком, не для входа пользователя
-   kind        varchar     not null check (kind in ('user', 'role', 'team', 'service')),
    created_at  timestamptz not null default now(),
    updated_at  timestamptz not null default now(),
    primary key (id)
@@ -836,7 +836,7 @@ Capability разрешает `recipient` выполнять `capability` (де�
 | `app_capability.name`        | Приложение     | Что разрешает `can_use` на эту capability                                                        |
 | ---------------------------- | -------------- | ------------------------------------------------------------------------------------------------ |
 | `auth.login`                 | AID, BOBA, MCP | Войти в приложение.                                                                              |
-| `auth.login.<provider_name>` | AID, BOBA, MCP | Войти через указанный `sys_provider.name`; также нужен `can_use` на `auth.login`.                |
+| `auth.login.<name>` | AID, BOBA, MCP | Войти через указанный `sys_auth_provider.name`; также нужен `can_use` на `auth.login`.                |
 | `connection.create`          | AID, BOBA, MCP | Создать connection.                                                                              |
 | `auth.create`                | AID, BOBA, MCP | Добавить credentials в `app_auth`.                                                               |
 | `session.create`             | AID, BOBA, MCP | Создать исходящую `app_session`; также нужен `can_use` на connection и используемые credentials. |
@@ -1613,7 +1613,7 @@ commit;
 `payload = []` оставляет объект без grants, в том числе для создателя.
 Отсутствующая или выключенная capability запрещает саму операцию создания.
 Ошибка в `payload` отменяет создание. Изменение `payload` не меняет ранее выданные grants.
-Для `auth.login`, `auth.login.<provider_name>` и `tool.*.execute` используется `[]`:
+Для `auth.login`, `auth.login.<name>` и `tool.*.execute` используется `[]`:
 эти операции не назначают первоначальные права на новый объект реестра.
 
 #### Выдать создателю начальные права на новый объект
@@ -1907,7 +1907,7 @@ commit;
 | `app_capability.name`                          | Получатель     | Разрешённая операция                                                |
 | ---------------------------------------------- | -------------- | ------------------------------------------------------------------- |
 | `auth.login`                                   | `read`         | Вход в приложение                                                   |
-| `auth.login.<provider_name>`                   | `read`         | Вход через конкретный первоначально настроенный `sys_provider.name` |
+| `auth.login.<name>`                   | `read`         | Вход через конкретный первоначально настроенный `sys_auth_provider.name` |
 | `connection.create`, `auth.create`             | `read`         | Создание connection или credentials                                 |
 | `session.create`                               | `read`         | Создание исходящей сессии после проверки доступа к connection/auth  |
 | `identity.user.create`                         | `auth-service` | Создание пользователя после проверки credentials                    |
@@ -1917,7 +1917,7 @@ commit;
 Отключение личного grant не запрещает право, полученное от `read`.
 
 `sys_*` остаются независимыми от прикладных таблиц. Обработчик входа выбирает
-`auth.login.<provider_name>` по имени провайдера. Новый провайдер требует новой capability
+`auth.login.<name>` по имени провайдера. Новый провайдер требует новой capability
 и явных grants. Наличие capability не включает провайдер и не заменяет проверку credentials.
 
 Начальный `app_capability.payload` в каждой БД; каждое имя — отдельная строка:
@@ -1927,7 +1927,7 @@ commit;
 | `connection.create`, `auth.create`                                 | `["can_view", "can_use", "can_edit", "can_delete", "can_grant", "can_revoke"]` |
 | `identity.role.create`, `identity.team.create`                     | `["can_view", "can_edit", "can_delete", "can_grant", "can_revoke"]`            |
 | `session.create`                                                   | `["can_view", "can_delete"]`                                                   |
-| `identity.user.create`, `auth.login`, `auth.login.<provider_name>` | `[]`                                                                           |
+| `identity.user.create`, `auth.login`, `auth.login.<name>` | `[]`                                                                           |
 
 При создании `app_session` проверяются `can_use` на `session.create`, connection и credentials,
 если они используются. После создания `app_apply_initial_grants` применяет `session.create.payload`;

@@ -15,13 +15,14 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
+from itertools import pairwise
 from pathlib import Path
 from typing import ClassVar
 
 import pytest
 from acp_stand import AppsHost, ClosedEndpoint
-from chat_ui import BOOT_TIMEOUT_SEC, OpenChat
+from chat_ui import BOOT_TIMEOUT_SEC, OpenChat, PageWatch
 from playwright.sync_api import Locator, Page, expect
 from pydantic import BaseModel, TypeAdapter
 
@@ -163,7 +164,9 @@ class TestMcpApp:
         tmp_path: Path,
         width: int,
     ) -> None:
+        """Раскрытие плавное, шапка не прыгает в длинном чате и при повторе."""
         view = McpAppPage(open_chat(mcp_stand, ""), app_texts)
+        watch = PageWatch(view.page)
         view.page.set_viewport_size({"width": width, "height": 720})
         for count in range(1, 4):
             view.run()
@@ -177,30 +180,36 @@ class TestMcpApp:
         trigger.scroll_into_view_if_needed()
         view.page.wait_for_timeout(700)
         raw = trigger.evaluate("""node => new Promise(resolve => {
-            let scroll = node.parentElement;
-            while (scroll && getComputedStyle(scroll).overflowY !== 'auto') {
-                scroll = scroll.parentElement;
-            }
             const card = node.closest('[data-mcp-card]');
             const samples = [];
             const sample = () => {
                 samples.push({
                     top: node.getBoundingClientRect().top,
-                    height: card.getBoundingClientRect().height,
-                    scroll: scroll.scrollTop,
-                    spacer: scroll.lastElementChild.getBoundingClientRect().height
+                    height: card.getBoundingClientRect().height
                 });
                 if ([2, 102, 202].includes(samples.length)) node.click();
-                if (samples.length < 300) requestAnimationFrame(sample);
+                if (samples.length < 300) {
+                    requestAnimationFrame(() => setTimeout(sample, 0));
+                }
                 else resolve(samples);
             };
-            requestAnimationFrame(sample);
+            requestAnimationFrame(() => setTimeout(sample, 0));
         })""")
-        frames = TypeAdapter(list[McpLayoutFrame]).validate_python(raw)
-        encoded = TypeAdapter(list[McpLayoutFrame]).dump_json(frames, indent=2)
+        reader = TypeAdapter(Sequence[McpLayoutFrame])
+        frames = reader.validate_python(raw)
+        encoded = reader.dump_json(frames, indent=2)
         (tmp_path / "motion.json").write_bytes(encoded)
         tops = [frame.top for frame in frames]
         assert max(tops) - min(tops) <= 2, (min(tops), max(tops))
+        for start in (0, 200):
+            heights = [frame.height for frame in frames[start : start + 100]]
+            steps = [right - left for left, right in pairwise(heights)]
+            distance = max(heights) - min(heights)
+            assert distance > 0
+            assert max(steps) < distance / 2, (distance, max(steps))
+            assert min(steps) >= -2, min(steps)
+
+        assert not watch.complaints, watch.complaints
 
     def test_slash_shows_the_mcp_command(
         self, mcp_stand: StandProcess, open_chat: OpenChat, app_texts: UiText
@@ -366,9 +375,7 @@ class TestMcpApp:
 
 
 class McpLayoutFrame(BaseModel):
-    """Измерение положения строки и прокрутки браузером при раскрытии."""
+    """Положение шапки и высота карточки в отрисованном кадре браузера."""
 
     top: float
     height: float
-    scroll: float
-    spacer: float
