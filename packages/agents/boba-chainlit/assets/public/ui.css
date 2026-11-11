@@ -5,7 +5,7 @@
 
 body {
   font-family: "Inter", -apple-system, BlinkMacSystemFont,
-  "Segoe UI", sans-serif;
+    "Segoe UI", sans-serif;
   font-size: 16px;
   line-height: 1.5;
 }
@@ -32,9 +32,9 @@ select {
 button.bg-primary {
   font-weight: 400;
   transition:
-          background-color 150ms ease,
-          color 150ms ease,
-          box-shadow 150ms ease;
+    background-color 150ms ease,
+    color 150ms ease,
+    box-shadow 150ms ease;
 }
 
 /* Цвета светлой темы Consta.
@@ -59,8 +59,8 @@ html:not(.dark) button.bg-primary:hover:not(:disabled) {
   textarea
 ).border-input {
   transition:
-          border-color 150ms ease,
-          box-shadow 150ms ease;
+    border-color 150ms ease,
+    box-shadow 150ms ease;
 }
 
 html:not(.dark) :is(
@@ -181,7 +181,7 @@ button[id^="step-"] {
 
 /* =========================================================
    Убираем всю обводку фокуса
-   Должно стоять в конце файла.
+   Должно стоять в конце файла (среди общих правил).
    ========================================================= */
 
 *,
@@ -203,8 +203,9 @@ button[id^="step-"] {
   box-shadow: none !important;
 }
 
-
-/* AID — логотип в боковой панели */
+/* =========================================================
+   AID — логотип в боковой панели
+   ========================================================= */
 
 [data-sidebar="header"]::after {
   content: "";
@@ -214,7 +215,7 @@ button[id^="step-"] {
   margin: 0 auto 0 14px;
   flex-shrink: 0;
 
-  background-image: url("./sidebar-logo.svg");
+  background-image: url("./aid-sidebar-logo.svg");
   background-repeat: no-repeat;
   background-position: left center;
   background-size: contain;
@@ -226,6 +227,7 @@ button[id^="step-"] {
 }
 
 /* AID — логотип на стартовой странице диалогов */
+
 #welcome-screen > img.logo {
   display: none !important;
 }
@@ -242,7 +244,6 @@ button[id^="step-"] {
   background-position: center;
   background-size: contain;
 }
-
 
 /* ==========================================
    AID — Login Screen
@@ -287,7 +288,7 @@ body:has(#password) .grid.min-h-svh > div:first-child {
    ========================================== */
 
 body:has(#password) .grid.min-h-svh
-> div:first-child > div:first-child {
+  > div:first-child > div:first-child {
   position: absolute;
   top: 40px;
   left: 50%;
@@ -305,13 +306,13 @@ body:has(#password) .grid.min-h-svh
 
 /* Скрываем штатный логотип Chainlit */
 body:has(#password) .grid.min-h-svh
-> div:first-child > div:first-child img.logo {
+  > div:first-child > div:first-child img.logo {
   display: none !important;
 }
 
 /* Показываем логотип дизайнера */
 body:has(#password) .grid.min-h-svh
-> div:first-child > div:first-child::before {
+  > div:first-child > div:first-child::before {
   content: "";
   display: block;
 
@@ -319,7 +320,7 @@ body:has(#password) .grid.min-h-svh
   height: 40px;
 
   background: url("./aid-login-logo.svg")
-  center / contain no-repeat;
+    center / contain no-repeat;
 }
 
 /* ==========================================
@@ -327,7 +328,7 @@ body:has(#password) .grid.min-h-svh
    ========================================== */
 
 body:has(#password) .grid.min-h-svh
-> div:first-child > div:nth-child(2) {
+  > div:first-child > div:nth-child(2) {
   position: absolute;
   top: 50%;
   left: 67%;
@@ -393,7 +394,7 @@ body:has(#password) #sso-login-btn:hover {
 
 @media (max-width: 1200px) {
   body:has(#password) .grid.min-h-svh
-  > div:first-child > div:nth-child(2) {
+    > div:first-child > div:nth-child(2) {
     left: 72%;
     width: 320px;
   }
@@ -401,10 +402,53 @@ body:has(#password) #sso-login-btn:hover {
 
 @media (max-width: 900px) {
   body:has(#password) .grid.min-h-svh
-  > div:first-child > div:nth-child(2) {
+    > div:first-child > div:nth-child(2) {
     left: auto;
     right: 24px;
     transform: translateY(-50%);
   }
 }
 
+/* ==========================================
+   AID — тёмная тема
+   Меняем SVG, сохраняя геометрию светлой темы.
+   ========================================== */
+
+/* Тёмный фон страницы входа */
+html.dark body:has(#password) .grid.min-h-svh {
+  background-color: #0b1729;
+  background-image: url("./aid-login-background-dark.svg");
+}
+
+/* Тёмный вариант верхнего логотипа страницы входа */
+html.dark body:has(#password) .grid.min-h-svh
+  > div:first-child > div:first-child::before {
+  background-image: url("./aid-login-logo-dark.svg");
+}
+
+/* Тёмный вариант логотипа боковой панели */
+html.dark [data-sidebar="header"]::after {
+  background-image: url("./aid-sidebar-logo-dark.svg");
+}
+
+/* Тёмный вариант приветственного баннера */
+html.dark #welcome-screen::before {
+  background-image: url("./aid-welcome-banner-dark.svg");
+}
+
+/* Заголовок и подписи формы авторизации */
+html.dark body:has(#password) form h1,
+html.dark body:has(#password) form label {
+  color: #f4f8ff;
+}
+
+/* Поля ввода в тёмной теме */
+html.dark body:has(#password) form input {
+  background-color: #142840;
+  border-color: #3f5c7d;
+  color: #f4f8ff;
+}
+
+html.dark body:has(#password) form input::placeholder {
+  color: #99aec5;
+}
