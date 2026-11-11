@@ -653,13 +653,13 @@ Proxy-источник получает роли из проверенного �
 ```sql
 -- таблица объединяет провайдеры авторизации и источники ролей, которые присвоены этим провайдерам авторизации
 create table aid.sys_auth_role (
-   name                 varchar     not null references aid.sys_auth_provider (name),
+   role_auth_name       varchar     not null references aid.sys_auth_provider (name),
    role_provider_name   varchar     not null references aid.sys_role_provider (name),
    enable               boolean     not null default true,
    created_at           timestamptz not null default now(),
    updated_at           timestamptz not null default now(),
 
-   primary key (name, role_provider_name)
+   primary key (role_auth_name, role_provider_name)
 );
 ```
 
@@ -726,12 +726,14 @@ grants связывает запись пользователей (роли, к�
 
 ```sql
 -- таблица пользователей, ролей, команд и внутренних служб приложения.
--- таблица выполнена в виде набора идентификаторов c именем
--- членство задаётся через app_identity_member
--- например для группировки по ролям или по командам
+-- на уровне таблицы нет различия между user, role, team, это все одни записи одного порядка, у которых сквозной id
+-- таблица выполнена в виде набора идентификаторов c name
+-- членство identity в другом identity задаётся через app_identity_member, там по сути храниться иерархия identity
+-- это можно использовать что-бы в приложении создавать identity, которые будут выступать как роли или команды
+-- но по факту, это обычные identity. Различие будет наблюдаться лишь в наборе grants
 create table aid.app_identity (
-   id          bigint      not null references aid.app_ident (id),
-   -- имя уникально среди всех identity, независимо от kind: first, read, admin и другие
+   id          bigserial   not null,
+   -- имя уникально среди всех identity
    name        varchar     not null check (length(name) > 0),
    created_at  timestamptz not null default now(),
    updated_at  timestamptz not null default now(),
@@ -742,62 +744,110 @@ create unique index uk_app_identity_name on aid.app_identity(name);
 -- таблица содержит вложение identity друг в друга
 -- роли, команды, пользователи
 create table aid.app_identity_member (
-   id             bigint      not null references aid.app_ident (id),
-   -- участник: пользователь, служба, роль или команда
-   identity_id    bigint      not null references aid.app_identity (id),
-   -- родительская identity; допустимость связи и отсутствие циклов проверяются при записи
+   id             bigserial   not null,
+   -- identity_id команды, в которую входит member_id (тут имеется ввиду все что угодно, это может быть роль, команда и любая другая группирующая identity_id которую создали что бы быть командой)
+   team_id        bigint      not null references aid.app_identity (id),
+   -- identity_id участника команды
    member_id      bigint      not null references aid.app_identity (id),
    created_at     timestamptz not null default now(),
    updated_at     timestamptz not null default now(),
-   check (member_id <> identity_id),
+   check (member_id <> team_id),
    
    primary key (id)
 );
-create unique index uk_app_identity_member on aid.app_identity_member(identity_id, member_id);
+create unique index uk_app_identity_member on aid.app_identity_member(team_id, member_id);
 
 
--- возможности, которые не привязаны к конкретным объектам
--- к примеру "возможно ли авторизоваться?"
--- такие возможности добавляются в таблицу app_capability и таким образом получают свой ident.id
--- и поэтому их становиться возможно проверять в общей ролевой системе, выдавая grant на нужный capability
--- добавление в таблицу app_ident производиться с kind = 'app_capability'
+-- таблица app_grant содержит взаимосвязи, которые означают "какие права выданы объекту"
+create table aid.app_grant (
+   id             bigserial   not null,
+   -- получаетль прав
+   -- identity содержит название таблицы в которой есть identity_id указывающий на полчателя прав
+   -- обычно получатель прав это одна из записей в таблице identity
+   identity_id    bigint      not null,
+   -- право (разрешение) которое выдано
+   access         varchar     not null check (grant in ('can_read', 'can_use', 'can_edit', 'can_delete', 'can_create')),
+   -- объект, на который выдается разрешение
+   taget          varchar     not null,
+   -- id объекта, на который выдается разрешение
+   target_id      bigint      not null,
+   -- вкл/выкл
+   enable         boolean     not null default true,
+   created_at     timestamptz not null default now(),
+   updated_at     timestamptz not null default now(),
+
+   primary key (id)
+);
+create index idx_app_grant_identity_target_target_id on aid.app_grant(identity_id, access, target, target_id) using (enable);
+
+
+-- Таблица возможностей - описывает набор возможностей, которые не являются явными объектами
+-- например возможность авторизоваться, возможность создать пользователя, возможность создать connection, возможность создать skill
+-- Возможности перечислены в таблице capability
+-- Так как возможности записываются в таблице, то их можно выдать через таблицу grant (через связывание в таблице grants)
 create table aid.app_capability (
-   id          bigint      not null references aid.app_ident (id),
-   -- стабильное имя операции, известное приложению
+   id          bigserial   not null,
+   -- имя capability. Эти имена знает и приложение, поэтому может забрать id capability для проверки в таблице grants
    name        varchar     not null check (length(name) > 0),
    description varchar     not null check (length(description) > 0),
-   -- начальные права создателю на новый объект; [] — без первоначальных grants
-   -- для операций без создаваемого объекта (вход, вызов инструмента) — []
-   payload     jsonb       not null default '[]'::jsonb
-                           check (jsonb_typeof(payload) = 'array'),
-   -- false запрещает операцию; создание без начальных прав задаётся через payload = []
-   enable      boolean     not null default true,
    created_at  timestamptz not null default now(),
    updated_at  timestamptz not null default now(),
 
-   primary key (id),
-   unique (name)
+   primary key (id)
 );
+create unique index uk_app_capability on aid.app_capability(name);
 
--- recipient_id разрешено действие action на target_id
--- все строки равноправны: источник первоначальных прав не сохраняется
-create table aid.app_grant (
-   id           bigint      not null references aid.app_ident (id),
-   -- получатель: пользователь, роль, команда или служба
-   recipient_id bigint      not null references aid.app_identity (id),
-   -- конкретный ресурс или capability
-   target_id    bigint      not null references aid.app_ident (id),
-   action       varchar     not null check (action in (
-      'can_view', 'can_use', 'can_edit', 'can_delete', 'can_grant', 'can_revoke'
-   )),
-   enable       boolean     not null default true,
-   created_at   timestamptz not null default now(),
-   updated_at   timestamptz not null default now(),
 
-   primary key (id),
-   constraint uk_app_grant_recipient_target_action unique (recipient_id, target_id, action)
+-- Когда создается новый объект очень часто нужно раздать права на объекты
+-- К примеру раздать права на новый созданный объект другим, а также раздать права тем кто должен получить права на новый объект (к примеру самому создателю объекта)
+-- В это таблице указывается набор прав, который нужно раздать и кому нужно раздать
+-- Приложение не угадывает это, оно просто берет от сюда этот набор
+-- Наборы прав имеют имена, эти же имена должно использовать приложение, что бы выбирать корректные наборы
+-- Администратор системы может менять наборы default прав если захочет. Задача программиста продумать начальные значения и заполнить таблицу тем, что он считает значениями по умолчаиню
+create table aid.app_default_grant (
+   id             bigserial   not null,
+   -- имена default grants, которые ищет приложение, что бы выдать их для identity.
+   -- эти имена знает приложение (они будут перечислены в коде)
+   -- так приложение и база связывают возможности
+   name           varchar     not null check (length(name) > 0),
+   -- получатель прав в виде псевдонима для объекта, которому выдаются права
+   -- псевдоним нужен потому что конкретный объект известен только в момент совершения действия из capability
+   -- - own - объект, который воспользовался capability и создал объект
+   -- - new - объект, который был создан тем, кто воспользовался capability
+   recipient   varchar     not null check (recipient in ('own', 'new')),
+   -- здесь указываюся права, которые должны быть розданы в виде json сериализованного объекта
+   grants      jsonb       not null check (jsonb_typeof(credential) = 'object'),
+   description varchar     not null check (length(description) > 0),
+   created_at  timestamptz not null default now(),
+   updated_at  timestamptz not null default now(),
+
+   primary key (id)
 );
-create index idx_app_grant_target on aid.app_grant(target_id, action, recipient_id);
+create unique index uk_app_default_grant on aid.app_default_grant(name, recipient);
+-- Пример:
+-- - Alice (identity_id = 10) создал postgres connection с именем pg (id = 1).
+-- В этом случае предполагается, что создателю объекта выдаются все права на этот объект.
+-- Для того, что бы описать такие defaul права можно использовать следующую запись:
+insert into app_default_grants(name, recipient, target) values ("connection_create", "own", );
+-- Предположим что создание connection это capability_id = 8
+-- для выдачи прав будет использоваться полный набор:  [ "can_use", "can_edit", "can_read", "can_delete", "can_grant" ]
+-- в поле recipient будет записано как: new
+-- потому что это эти права мы выдает на вновь создаваемый объект
+-- получается что в таблицу app_grant будет выполнен insert:
+insert into app_grant(identity_id, access, target, target_id, enable) values
+   (10, "can_use",      1, "connection", 1, true),
+   (10, "can_edit",     1, "connection", 1, true),
+   (10, "can_read",     1, "connection", 1, true),
+   (10, "can_delete",   1, "connection", 1, true),
+   (10, "can_grant",    1, "connection", 1, true)
+on conflict (identity_id, access, target, target_id)
+do update
+set enable = true,
+      updated_at = now()
+;
+-- Другой пример:
+-- - Bob (identity_id = 11) создал другую роль с именем n1 (identity_id = 90).
+-- В этом случае предполагается, что права выдаются 
 ```
 
 ### Действия и единая проверка grants
