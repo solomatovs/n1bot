@@ -20,7 +20,7 @@ x-runtime: &runtime
 services:
   chainlit:
     <<: *runtime
-    image: boba-chainlit:0.0.28.dev2
+    image: boba-chainlit:0.0.28.dev3
     hostname: chainlit
     container_name: chainlit
     networks:
@@ -38,7 +38,7 @@ services:
   
   chainlit2:
     <<: *runtime
-    image: boba-chainlit:0.0.28.dev2
+    image: boba-chainlit:0.0.28.dev3
     hostname: chainlit2
     container_name: chainlit2
     networks:
