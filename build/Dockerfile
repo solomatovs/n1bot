@@ -48,6 +48,8 @@ RUN if [ -f /tmp/conf/uv.toml ]; then cp /tmp/conf/uv.toml /index/etc/uv/uv.toml
 # среда сборки: gcc + наш python поверх системного, uv, CA и индексы контура
 FROM ${GCC_IMAGE} AS base
 
+ARG PYTHON_VERSION=3.11
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libssl1.1 libffi6 libsqlite3-0 libbz2-1.0                \
         liblzma5 libreadline7 libncurses5 zlib1g                 \
@@ -90,9 +92,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends patch \
 
 COPY build/scripts/oracledb-${ORACLEDB_VERSION}-arrow-duplicates.patch  /tmp/oracledb.patch
 
-RUN pip3 install --no-cache-dir "cython==${CYTHON_VERSION}" \
+RUN /usr/local/bin/python${PYTHON_VERSION} -m pip install --no-cache-dir "cython==${CYTHON_VERSION}" \
         "setuptools==${SETUPTOOLS_VERSION}" "wheel==${WHEEL_VERSION}"
-RUN pip3 download --no-cache-dir --no-deps --no-binary :all: --no-build-isolation \
+RUN /usr/local/bin/python${PYTHON_VERSION} -m pip download --no-cache-dir --no-deps --no-binary :all: --no-build-isolation \
         "oracledb==${ORACLEDB_VERSION}" -d /tmp/sdist
 RUN echo "${ORACLEDB_SHA256}  /tmp/sdist/oracledb-${ORACLEDB_VERSION}.tar.gz" | sha256sum -c -
 
@@ -103,7 +105,7 @@ RUN sed -i "s/^__version__ = \"${ORACLEDB_VERSION}\"$/__version__ = \"${ORACLEDB
         src/oracledb/version.py \
     && grep -q "^__version__ = \"${ORACLEDB_VERSION}+${ORACLEDB_LOCAL}\"$" src/oracledb/version.py
 # без отладочных символов: колесо с ними в четыре раза тяжелее
-RUN CFLAGS="-g0" pip3 wheel . --no-cache-dir --no-deps --no-build-isolation -w /out && ls -l /out
+RUN CFLAGS="-g0" /usr/local/bin/python${PYTHON_VERSION} -m pip wheel . --no-cache-dir --no-deps --no-build-isolation -w /out && ls -l /out
 
 
 # bubblewrap статически с libcap: у meson bwrap нет такой опции, поэтому
@@ -188,7 +190,7 @@ COPY --from=oracledb-wheel /out/  /tmp/wheels/
 COPY --from=oracledb-wheel /out/  /tmp/boba/build/out/oracledb/
 
 WORKDIR /tmp/boba
-RUN uv build --all-packages --wheel --no-sources -o /tmp/wheels
+RUN uv build --python /usr/local/bin/python${PYTHON_VERSION} --all-packages --wheel --no-sources -o /tmp/wheels
 RUN uv export --frozen --all-packages --all-extras --no-emit-workspace --no-hashes \
         -o /tmp/wheels/constraints.txt
 
@@ -208,20 +210,20 @@ RUN mkdir -p /opt/site /opt/code-sandbox /opt/plugin-root /opt/plugin-setup.d \
     && : > /opt/plugin-apt.txt && : > /opt/plugin-data.txt
 
 RUN [ -z "${PLUGIN}" ] || { \
-        python3 /tmp/plugin_rootfs.py names /tmp/packages ${PLUGIN} > /tmp/names.txt && cat /tmp/names.txt; }
-RUN [ -z "${PLUGIN}" ] || uv pip install --python "$(command -v python3)" --target /opt/site \
+        /usr/local/bin/python${PYTHON_VERSION} /tmp/plugin_rootfs.py names /tmp/packages ${PLUGIN} > /tmp/names.txt && cat /tmp/names.txt; }
+RUN [ -z "${PLUGIN}" ] || uv pip install --python /usr/local/bin/python${PYTHON_VERSION} --target /opt/site \
         --constraint /tmp/wheels/constraints.txt --find-links=/tmp/wheels \
         $(cat /tmp/names.txt)
 
-RUN [ -z "${PLUGIN}" ] || python3 /tmp/plugin_rootfs.py apt /tmp/packages ${PLUGIN} > /opt/plugin-apt.txt
-RUN [ -z "${PLUGIN}" ] || python3 /tmp/plugin_rootfs.py data /tmp/packages ${PLUGIN} > /opt/plugin-data.txt
+RUN [ -z "${PLUGIN}" ] || /usr/local/bin/python${PYTHON_VERSION} /tmp/plugin_rootfs.py apt /tmp/packages ${PLUGIN} > /opt/plugin-apt.txt
+RUN [ -z "${PLUGIN}" ] || /usr/local/bin/python${PYTHON_VERSION} /tmp/plugin_rootfs.py data /tmp/packages ${PLUGIN} > /opt/plugin-data.txt
 
-RUN [ -z "${PLUGIN}" ] || for root in $(python3 /tmp/plugin_rootfs.py root /tmp/packages ${PLUGIN}); do \
+RUN [ -z "${PLUGIN}" ] || for root in $(/usr/local/bin/python${PYTHON_VERSION} /tmp/plugin_rootfs.py root /tmp/packages ${PLUGIN}); do \
         cp -a "$root/." /opt/plugin-root/; \
     done
 
 RUN [ -z "${PLUGIN}" ] || { index=0 \
-    && for setup in $(python3 /tmp/plugin_rootfs.py setup /tmp/packages ${PLUGIN}); do \
+    && for setup in $(/usr/local/bin/python${PYTHON_VERSION} /tmp/plugin_rootfs.py setup /tmp/packages ${PLUGIN}); do \
            cp "$setup" "/opt/plugin-setup.d/$index.sh"; index=$((index + 1)); \
        done; }
 
@@ -299,7 +301,7 @@ RUN mkdir -p "${BOBA_DIR}/conf/krb" ${SANDBOX_DEV_KRB}
 
 COPY --from=plugin-site /opt/site          /usr/local/lib/python${PYTHON_VERSION}/site-packages
 COPY --from=plugin-site /opt/code-sandbox  /usr/src
-RUN PYTHONHOME=/usr/local LD_LIBRARY_PATH=/usr/local/lib /usr/local/bin/python3 \
+RUN PYTHONHOME=/usr/local LD_LIBRARY_PATH=/usr/local/lib /usr/local/bin/python${PYTHON_VERSION} \
         -m compileall -q -j "${JOBS}" -x "/(test|tests|lib2to3|idle_test)/" \
         /usr/local/lib/python${PYTHON_VERSION} /usr/src
 
@@ -402,7 +404,7 @@ ARG APP_PACKAGES="boba-chainlit boba-llm-http boba-llm-onnx[generation] boba-llm
 
 COPY --from=boba-wheels /tmp/wheels/  /tmp/wheels/
 
-RUN uv pip install --python "$(command -v python3)" --target /opt/app-site \
+RUN uv pip install --python /usr/local/bin/python${PYTHON_VERSION} --target /opt/app-site \
         --constraint /tmp/wheels/constraints.txt --find-links=/tmp/wheels \
         ${APP_PACKAGES}
 

@@ -53,23 +53,34 @@ fi
 
 export PATH="$DIR/build/out/uv:$PATH"
 
+if [ ! -d "$DIR/.venv" ]; then
+  if ! (cd "$DIR" && uv venv --python 3.11 --clear --no-managed-python); then
+    echo "dev: не удалось создать .venv на Python 3.11" >&2
+    return 1 2> /dev/null || exit 1
+  fi
+fi
+
 # python-oracledb в .venv идёт патченным колесом из build/out/oracledb
 # (find-links в pyproject); без него uv sync не соберёт окружение
 ORACLEDB_WHEELS="$DIR/build/out/oracledb"
+ORACLEDB_PIN="$(sed -n 's/^[[:space:]]*"\(oracledb==[^"]*\)".*/\1/p' "$DIR/packages/infra/db/boba-db-oracle/pyproject.toml")"
+ORACLEDB_CHECK=(uv pip install --python 3.11 --no-managed-python --dry-run
+  --reinstall --no-deps --no-index --offline --find-links "$ORACLEDB_WHEELS" "$ORACLEDB_PIN")
 
-if ! ls "$ORACLEDB_WHEELS"/oracledb-*.whl > /dev/null 2>&1; then
+if ! "${ORACLEDB_CHECK[@]}" > /dev/null 2>&1; then
   echo "dev: собираю колесо python-oracledb в $ORACLEDB_WHEELS"
   if ! make -C "$DIR/build" "$ORACLEDB_WHEELS"; then
     echo "dev: колесо python-oracledb не собралось, .venv не готовится" >&2
     return 1 2> /dev/null || exit 1
   fi
+
+  if ! "${ORACLEDB_CHECK[@]}"; then
+    echo "dev: в $ORACLEDB_WHEELS нет $ORACLEDB_PIN, совместимого с Python 3.11" >&2
+    return 1 2> /dev/null || exit 1
+  fi
 fi
 
-if [ ! -d "$DIR/.venv" ]; then
-  (cd "$DIR" && uv venv --python 3.11 --clear --no-managed-python)
-fi
-
-(cd "$DIR" && uv sync -v --system-certs --find-links "$ORACLEDB_WHEELS")
+(cd "$DIR" && uv sync -v --python 3.11 --no-managed-python --system-certs --find-links build/out/oracledb)
 OK=$?
 
 if [ $OK -eq 0 ]; then
@@ -79,6 +90,7 @@ if [ $OK -eq 0 ]; then
   echo "dev: окружение .venv активировано"
 else
   echo "dev: ошибка подготовки окружения (.venv не активировано)" >&2
+  return "$OK" 2> /dev/null || exit "$OK"
 fi
 
 # BOBA_* для отладки заданы в .vscode/launch.json.

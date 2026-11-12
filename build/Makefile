@@ -28,13 +28,13 @@ APP_PREFIX      := /boba
 SHELL           := /bin/bash
 .SHELLFLAGS     := -eu -o pipefail -c
 
-PYTHON_VERSION  ?= 3.11
+PYTHON_VERSION  := 3.11
 
 # Для чтения pyproject.toml и деклараций плагинов нужен Python проекта.
 # Пока .venv нет (его создаёт dev.sh), берётся
 # python версии проекта из PATH
 ifeq ($(origin PYTHON),undefined)
-PYTHON          := $(firstword $(wildcard $(SRC_DIR)/.venv/bin/python) $(shell command -v python$(PYTHON_VERSION)))
+PYTHON          := $(firstword $(wildcard $(SRC_DIR)/.venv/bin/python$(PYTHON_VERSION)) $(shell command -v python$(PYTHON_VERSION)))
 endif
 ifeq ($(PYTHON),)
 $(error нет ни $(SRC_DIR)/.venv/bin/python, ни python$(PYTHON_VERSION) в PATH: поставь python $(PYTHON_VERSION) или задай PYTHON=<путь>)
