@@ -19,6 +19,7 @@ CLAUDE.md
 /release/
 /debug/
 /compose/*
+!/compose/.env
 !/compose/docker-compose.yml
 !/compose/docker-compose-test.yml
 

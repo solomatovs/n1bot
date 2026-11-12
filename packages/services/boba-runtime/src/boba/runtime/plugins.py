@@ -195,7 +195,7 @@ class ToolLoader:
         if OmegaConf.select(self._raw, section) is None:
             msg = (
                 f"config section [{section}] is missing: stream groups need "
-                "open_sec, stall_sec, poll_sec, pipe_bytes and pipe_bytes_max"
+                "open_sec, stall_sec and poll_sec"
             )
             raise StreamGroupsConfigError(msg)
 

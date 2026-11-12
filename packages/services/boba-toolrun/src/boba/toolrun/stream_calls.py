@@ -81,10 +81,12 @@ class StreamGroupsConfig(BaseModel):
     )
     poll_sec: float = Field(gt=0, description="Шаг проверки сроков группы.")
     pipe_bytes: int = Field(
+        default=65536,
         ge=PIPE_BYTES_FLOOR,
         description="Буфер пайпа канала, когда вызов его не назвал.",
     )
     pipe_bytes_max: int = Field(
+        default=1048576,
         ge=PIPE_BYTES_FLOOR,
         description="Потолок буфера, который можно запросить полем вызова.",
     )

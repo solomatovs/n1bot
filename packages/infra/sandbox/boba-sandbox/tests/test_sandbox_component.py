@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -13,7 +14,9 @@ from omegaconf.errors import InterpolationKeyError
 
 from boba.config import bind
 from boba.sandbox import SandboxConfig, SandboxProfile, SandboxToolConfig
+from boba.sandbox.zygote import ZygotePolicy, ZygoteSpawner, ZygoteStartError
 from boba.stand.zygote import ROOTFS_IMAGE, ProfileFields
+from boba.workspace.binaries import SandboxBinary
 
 
 def _bin_dirs() -> list[str]:
@@ -87,6 +90,81 @@ def _tool_config(**profile_kw: Any) -> SandboxToolConfig:
 def _raw_profile(**flat: Any) -> dict[str, Any]:
     """Сырой словарь профиля: им пользуются проверки наследования."""
     return ProfileFields.merged(_PROFILE_BASE, flat)
+
+
+@pytest.fixture
+def workspace_profile(tmp_path: Path) -> SandboxProfile:
+    profile = _profile(
+        workspace={
+            "template": str(tmp_path / "template.ext4"),
+            "mount": f"{tmp_path}/data/workspace/{{user_id}}.ext4:/workspace",
+        }
+    )
+
+    if not profile.host.binaries.has(SandboxBinary.FUSE2FS):
+        pytest.skip("fuse2fs is required for workspace preparation")
+
+    return profile
+
+
+class TestWorkspacePreparation:
+    """Подготовка спавнера создаёт хранилище образов до первого пользователя."""
+
+    def test_fresh_data_directory(
+        self, tmp_path: Path, workspace_profile: SandboxProfile
+    ) -> None:
+        ZygoteSpawner(workspace_profile, (), ZygotePolicy())
+
+        images = tmp_path / "data" / "workspace"
+        assert images.is_dir()
+        assert not tuple(images.iterdir())
+
+    def test_existing_images_survive_repeated_preparation(
+        self, tmp_path: Path, workspace_profile: SandboxProfile
+    ) -> None:
+        images = tmp_path / "data" / "workspace"
+        images.mkdir(parents=True)
+        image = images / "user.ext4"
+        image.write_bytes(b"existing workspace")
+
+        ZygoteSpawner(workspace_profile, (), ZygotePolicy())
+        ZygoteSpawner(workspace_profile, (), ZygotePolicy())
+
+        assert image.read_bytes() == b"existing workspace"
+
+    def test_file_instead_of_directory_reports_path_and_cause(
+        self, tmp_path: Path, workspace_profile: SandboxProfile
+    ) -> None:
+        images = tmp_path / "data" / "workspace"
+        images.parent.mkdir()
+        images.write_bytes(b"keep this file")
+
+        with pytest.raises(ZygoteStartError, match="cannot prepare workspace") as error:
+            ZygoteSpawner(workspace_profile, (), ZygotePolicy())
+
+        assert str(images) in str(error.value)
+        assert isinstance(error.value.__cause__, FileExistsError)
+        assert images.read_bytes() == b"keep this file"
+
+    @pytest.mark.skipif(
+        os.geteuid() == 0, reason="root can bypass directory permissions"
+    )
+    def test_permission_denied_reports_path_and_cause(
+        self, tmp_path: Path, workspace_profile: SandboxProfile
+    ) -> None:
+        data = tmp_path / "data"
+        data.mkdir(mode=0o500)
+
+        try:
+            with pytest.raises(
+                ZygoteStartError, match="cannot prepare workspace"
+            ) as error:
+                ZygoteSpawner(workspace_profile, (), ZygotePolicy())
+
+            assert str(data / "workspace") in str(error.value)
+            assert isinstance(error.value.__cause__, PermissionError)
+        finally:
+            data.chmod(0o700)
 
 
 class TestProfileRegistry:

@@ -11,7 +11,7 @@
 деградация.
 
 Ошибки:
-ZygoteStartError — зигота не поднялась за отведённые попытки.
+ZygoteStartError — не удалось подготовить каталог образов или поднять зиготу.
 ZygoteUnavailableError — вызов пришёл, когда зигота не готова.
 ZygoteCallError — зигота умерла посреди вызова, нарушила протокол либо не
     отдала конверт tool_result.
@@ -136,7 +136,7 @@ Spawner = Callable[[int], subprocess.Popen[bytes]]
 
 
 class ZygoteStartError(LauncherError):
-    """Зигота не поднялась: попытки старта исчерпаны."""
+    """Подготовка или запуск зиготы завершились ошибкой."""
 
 
 class ZygoteUnavailableError(LauncherError):
@@ -1184,22 +1184,23 @@ def _kill_quietly(pid: int) -> None:
 
 
 class ZygoteMounts:
-    """Считает пути обвязки монтирования образов внутри зиготы (шаблон,
-    fuse2fs, каталог образов) по фиксированным точкам SandboxLayout и
-    проверяет их предпосылки на хосте."""
+    """Готовит каталог образов пользователей и пути монтирования для зиготы.
+
+    ZygoteSpawner использует его при подготовке секции с workspace.
+    """
 
     def __init__(self, profile: SandboxProfile) -> None:
         self._profile = profile
 
     def check(self) -> None:
-        """Предпосылки монтирования образов: бинарь есть, каталог образов есть."""
+        """Проверяет fuse2fs и создаёт каталог образов пользователей."""
         self._profile.host.binaries.resolve(SandboxBinary.FUSE2FS)
 
         workspace = self._profile.mounts.workspace
         if workspace is None:
             return
 
-        self._check_directory(workspace.images_dir())
+        self._prepare_directory(workspace.images_dir())
 
     def template(self) -> str:
         """Эталон образа внутри песочницы."""
@@ -1223,16 +1224,18 @@ class ZygoteMounts:
 
         return (SandboxMount.SETUP.value,)
 
-    @staticmethod
-    def _check_directory(directory: str) -> None:
+    def _prepare_directory(self, directory: str) -> None:
         if "{" in directory:
             return
 
-        if Path(directory).is_dir():
-            return
-
-        msg = f"zygote: images directory {directory!r} does not exist on the host"
-        raise ZygoteStartError(msg)
+        try:
+            Path(directory).mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            msg = (
+                "zygote: cannot prepare workspace images directory "
+                f"{directory!r}: {exc}"
+            )
+            raise ZygoteStartError(msg) from exc
 
 
 class ZygoteSpawner:
