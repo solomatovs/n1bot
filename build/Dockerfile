@@ -3,6 +3,7 @@ ARG GLIBC_IMAGE=dmp/glibc:2.28
 ARG GCC_IMAGE=dmp/gcc:8.5.0
 ARG PYTHON_IMAGE=dmp/python:${PYTHON_VERSION}-dist
 ARG NODE_IMAGE=dmp/nodejs:20
+ARG SANDBOX_IMAGE=scratch
 
 FROM ${PYTHON_IMAGE} AS python-dist
 
@@ -73,7 +74,7 @@ ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt        \
 
 # python-oracledb с патчем: sdist ровно той версии из индекса pypi с проверкой sha256,
 # патч из scripts/, локальный суффикс версии — чтобы установщик не подменил колесо
-# готовым с индекса. Колесо уходит и в образ (boba-wheels), и в src/ для .venv хоста
+# готовым с индекса. Колесо уходит в boba-wheels и в out/oracledb для .venv хоста
 FROM base AS oracledb-wheel
 
 ARG ORACLEDB_VERSION=26.0.0
@@ -151,22 +152,25 @@ RUN strip misc/fuse2fs && install -D -m 0755 misc/fuse2fs /out/fuse2fs
 
 RUN ! ldd /out/fuse2fs | grep fuse && /out/fuse2fs -V
 
-# mke2fs линкован только с libc: им make делает workspace.ext4 и rootfs плагинов вне сборки
+# mke2fs линкован только с libc и создаёт ext4 без монтирования.
 RUN install -D -m 0755 misc/mke2fs /out/mke2fs && cp misc/mke2fs.conf /out/mke2fs.conf
 
 
-# артефакты песочницы: make забирает /third и /tools через docker cp
-FROM scratch AS sandbox-out
+FROM ${GLIBC_IMAGE} AS ext4-tools
 
-ARG LIBSTDCXX_VERSION=6.0.25
-
-COPY --from=bwrap-build   /out/bwrap        /third/bin/bwrap
-COPY --from=fuse2fs-build /out/fuse2fs      /third/bin/fuse2fs
-COPY --from=base /usr/lib/x86_64-linux-gnu/libstdc++.so.6                    /third/lib/
-COPY --from=base /usr/lib/x86_64-linux-gnu/libstdc++.so.${LIBSTDCXX_VERSION} /third/lib/
-COPY --from=base /usr/lib/x86_64-linux-gnu/libgcc_s.so.1                     /third/lib/
 COPY --from=fuse2fs-build /out/mke2fs       /tools/mke2fs
 COPY --from=fuse2fs-build /out/mke2fs.conf  /tools/mke2fs.conf
+ENV MKE2FS_CONFIG=/tools/mke2fs.conf
+
+
+FROM ext4-tools AS workspace-image
+
+ARG SANDBOX_WS_SIZE=1G
+
+RUN mkdir -p /out \
+    && truncate -s "${SANDBOX_WS_SIZE}" /out/workspace.ext4 \
+    && /tools/mke2fs -F -q -t ext4 -O ^has_journal -m 0 -L workspace /out/workspace.ext4 \
+    && chmod 0644 /out/workspace.ext4
 
 
 # колёса всех пакетов репозитория и constraints из uv.lock: обе стадии установки
@@ -199,9 +203,6 @@ COPY --from=boba-wheels /tmp/wheels/          /tmp/wheels/
 COPY --from=boba-wheels /tmp/boba/packages/   /tmp/packages/
 COPY build/scripts/plugin_rootfs.py  /tmp/plugin_rootfs.py
 
-# классический builder проходит все стадии до --target, и make build приходит сюда
-# с пустым PLUGIN. Тогда стадия отдаёт пустые заготовки, которые ждут plugin-root и
-# plugin-site-out, а шаги плагина пропускаются. make plugin-rootfs без PLUGIN не стартует
 RUN mkdir -p /opt/site /opt/code-sandbox /opt/plugin-root /opt/plugin-setup.d \
     && : > /opt/plugin-apt.txt && : > /opt/plugin-data.txt
 
@@ -229,18 +230,6 @@ RUN [ -z "${PLUGIN}" ] || { \
         mv /opt/site/boba /opt/code-sandbox/boba \
         && mv /opt/site/boba_*.dist-info /opt/code-sandbox/ \
         && echo /usr/src > /opt/site/boba-src.pth; }
-
-
-# site-packages и код плагина по путям корня: make plugin-rootfs забирает /usr этой
-# стадии docker cp и стримит в mke2fs вторым tar'ом после plugin-root.
-# Стадия стоит сразу за plugin-site: классический builder собирает все стадии до
-# --target, и sandbox-base с plugin-root ради неё не пересобираются
-FROM scratch AS plugin-site-out
-
-ARG PYTHON_VERSION=3.11
-
-COPY --from=plugin-site /opt/site          /usr/local/lib/python${PYTHON_VERSION}/site-packages
-COPY --from=plugin-site /opt/code-sandbox  /usr/src
 
 
 # общая база корней плагинов: glibc, нативные зависимости, одинаковые у всех
@@ -273,12 +262,12 @@ RUN mkdir -p /usr/src /workspace /mnt/pgsock
 
 
 # корень одного плагина поверх базы: apt и оверлей из декларации, точки монтирования.
-# site-packages сюда не копируются: make plugin-rootfs стримит эту стадию и
-# plugin-site-out двумя tar'ами (docker cp в stdout) в mke2fs, ext4 нигде не оседает
 FROM sandbox-base AS plugin-root
 
 ARG BOBA_DIR=/app/boba
 ARG SANDBOX_DEV_KRB=/app/boba/conf/krb
+ARG PYTHON_VERSION=3.11
+ARG JOBS=4
 
 COPY --from=plugin-site /opt/plugin-apt.txt   /tmp/plugin-apt.txt
 COPY --from=plugin-site /opt/plugin-setup.d/  /tmp/plugin-setup.d/
@@ -306,6 +295,33 @@ RUN for path in $(cat /tmp/plugin-data.txt); do mkdir -p "$path"; done \
     && for path in $(cat /tmp/plugin-data.txt); do test -d "$path"; done \
     && rm -f /tmp/plugin-data.txt
 RUN mkdir -p "${BOBA_DIR}/conf/krb" ${SANDBOX_DEV_KRB}
+
+COPY --from=plugin-site /opt/site          /usr/local/lib/python${PYTHON_VERSION}/site-packages
+COPY --from=plugin-site /opt/code-sandbox  /usr/src
+RUN PYTHONHOME=/usr/local LD_LIBRARY_PATH=/usr/local/lib /usr/local/bin/python3 \
+        -m compileall -q -j "${JOBS}" -x "/(test|tests|lib2to3|idle_test)/" \
+        /usr/local/lib/python${PYTHON_VERSION} /usr/src
+
+
+FROM ext4-tools AS plugin-image
+
+COPY --from=plugin-root / /tree/
+RUN used_mb=$(du -sm /tree | cut -f1) \
+    && inodes=$(find /tree | wc -l) \
+    && mkdir -p /out \
+    && truncate -s "$((used_mb + used_mb / 20 + 16))M" /out/rootfs.ext4 \
+    && /tools/mke2fs -F -q -t ext4 -O ^has_journal -m 0 -L rootfs \
+        -N "$((inodes + inodes / 5 + 1000))" -d /tree /out/rootfs.ext4 \
+    && chmod 0644 /out/rootfs.ext4
+
+
+FROM ${SANDBOX_IMAGE} AS sandbox-input
+
+FROM sandbox-input AS sandbox-images
+
+ARG PLUGIN
+
+COPY --from=plugin-image /out/rootfs.ext4 /plugins/${PLUGIN}/rootfs.ext4
 
 
 # --- фронт: стадии node, на хосте node не нужен -----------------------------------
@@ -452,8 +468,8 @@ RUN chown ${BOBA_UID}:${BOBA_GID} ${BOBA_DIR}/app_root \
        ${BOBA_DIR}/app_root/.chainlit ${BOBA_DIR}/app_root/public
 
 # Собственные ext4-файлы каждого образа: rebuild не меняет файлы живых контейнеров.
-COPY build/out/sandbox/plugins/       ${BOBA_DIR}/sandbox/plugins/
-COPY build/out/sandbox/workspace.ext4 ${BOBA_DIR}/sandbox/workspace.ext4
+COPY --from=sandbox-input /plugins/                 ${BOBA_DIR}/sandbox/plugins/
+COPY --from=workspace-image /out/workspace.ext4     ${BOBA_DIR}/sandbox/workspace.ext4
 
 EXPOSE 8501
 USER ${BOBA_UID}:${BOBA_GID}

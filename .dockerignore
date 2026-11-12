@@ -11,12 +11,6 @@ build/src/*
 !build/src/chainlit-[0-9]*.tar.gz
 build/out/*
 !build/out/uv
-!build/out/sandbox
-build/out/sandbox/*
-!build/out/sandbox/plugins
-!build/out/sandbox/workspace.ext4
-build/out/sandbox/plugins/*/*
-!build/out/sandbox/plugins/*/rootfs.ext4
 
 **/__pycache__
 packages/**/*.egg-info

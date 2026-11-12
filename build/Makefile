@@ -43,8 +43,6 @@ endif
 # Готовые бинарники и результаты сборки лежат в out.
 BUILD_OUT       := $(BASE_DIR)/out
 MODELS_DIR      := $(BUILD_OUT)/models
-THIRD_DIR       := $(BUILD_OUT)/third
-SANDBOX_DIR     := $(BUILD_OUT)/sandbox
 SANDBOX_DEV_KRB := $(SRC_DIR)/compose/conf/krb
 
 # --- docker ---------------------------------------------------------------------
@@ -76,15 +74,6 @@ ifeq ($(origin JOBS),undefined)
 JOBS            := $(shell $(cpu-quota))
 endif
 
-# от кого идёт docker run с томами хоста и кому отдаются его результаты. Rootless-демон
-# отображает root контейнера на пользователя демона, а его же uid внутри контейнера —
-# на чужой subuid, которому каталоги хоста закрыты: там контейнер идёт от root.
-# Обычному демону называется пользователь хоста, иначе результаты достались бы root
-RUN_OWNER       := $(shell id -u):$(shell id -g)
-ifneq ($(findstring name=rootless,$(shell docker info --format '{{.SecurityOptions}}' 2>/dev/null)),)
-RUN_OWNER       := 0:0
-endif
-
 # версия у всех пакетов одна, лежит в их pyproject.toml (менять: make version-set)
 VERSION         := $(shell $(PYTHON) -c 'import tomllib; print(tomllib.load(open("$(SRC_DIR)/packages/agents/boba-$(APP)/pyproject.toml", "rb"))["project"]["version"])')
 # плагины приложения — пакеты с entry points группы boba.tools; списка в extras нет
@@ -95,6 +84,7 @@ BOBA_TAG        ?= $(VERSION)
 DEST_DIR        ?= /app/boba
 
 IMAGE           := boba-$(APP):$(BOBA_TAG)
+SANDBOX_IMAGE   := boba-$(APP)-sandbox:$(BOBA_TAG)
 
 GLIBC_IMAGE     ?= dmp/glibc:2.28
 GCC_IMAGE       ?= dmp/gcc:8.5.0
@@ -202,7 +192,7 @@ PROGRESS        ?= $(shell docker build --help 2>/dev/null | grep -q -- '--progr
 CA_CHAIN        := $(wildcard $(CONF_DIR)/ca-chain.crt)
 CURL_OPTS       := $(if $(CA_CHAIN),--cacert "$(CA_CHAIN)")
 
-# прокси: в docker build аргументами, в docker run окружением
+# прокси передаются аргументами docker build
 PROXY_VARS      := http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY
 PROXY_ARGS      := $(foreach v,$(PROXY_VARS),$(if $($(v)),--build-arg $(v)="$($(v))"))
 
@@ -219,6 +209,7 @@ DOCKER_ARGS      = --build-arg GLIBC_IMAGE=$(GLIBC_IMAGE)              \
     --build-arg ORACLEDB_SHA256=$(ORACLEDB_SHA256)                     \
     --build-arg ORACLEDB_LOCAL=$(ORACLEDB_LOCAL)                       \
     --build-arg CYTHON_VERSION=$(CYTHON_VERSION)                       \
+    --build-arg SANDBOX_WS_SIZE=$(SANDBOX_WS_SIZE)                     \
     --build-arg JOBS=$(JOBS)
 
 # аргументы стадий одного приложения
@@ -234,7 +225,7 @@ docker build -f $(BASE_DIR)/Dockerfile $(NO_CACHE_OPT) $(DOCKER_ARGS) $(PROXY_AR
     --target $(1) --tag $(2) $(PROGRESS) $(BUILD_CONTEXT)
 endef
 
-# образ стадии без тега, работает и без buildkit: $(1) — стадия, $(2) — файл для ID
+# образ стадии без тега: $(1) — стадия, $(2) — файл для ID
 # образа, $(3) — аргументы. Лог сборки уходит в stderr: stdout рецепта бывает занят tar'ом
 define docker-image
 docker build -f $(BASE_DIR)/Dockerfile $(NO_CACHE_OPT) $(DOCKER_ARGS) $(PROXY_ARGS) $(3) \
@@ -266,14 +257,15 @@ define HELP
 Сборка boba-$(APP) $(VERSION)
   fetch                 скачать исходники в build/src, модели и uv в build/out
   all                   собрать все sandbox, фронт и Docker-образ
-  plugin-rootfs         пересобрать один sandbox: PLUGIN=boba-tool-postgres
+  plugin-rootfs         обновить sandbox в Docker: PLUGIN=boba-tool-postgres
   web                   собрать фронт в assets пакета для F5 на хосте
   version               показать версию приложения
   version-set VER=X.Y.Z  изменить версии пакетов и их внутренние пины
 
 Порядок: make fetch; make all
 Внешние загрузки выполняет только fetch. all использует локальный src
-и реестры из настроек образов и conf/. Песочницы входят в Docker-образ.
+и реестры из настроек образов и conf/. Песочницы собираются внутри Docker
+и входят в образ приложения; на хост не выгружаются.
 Переменные: BOBA_TAG, JOBS, NO_CACHE=1.
 endef
 
@@ -379,67 +371,24 @@ $(WEBASSETS_DIR)/mermaid/mermaid.min.js:
 	cp "$$tmp/package/dist/mermaid.min.js" "$@"
 	rm -rf "$$tmp"
 
-# --- sandbox: результаты лежат в out, контейнеры их с хоста не монтируют ----------
+# --- sandbox: ext4 остаются в служебном Docker-образе ---------------------------
 
-$(SANDBOX_DIR)/workspace.ext4: $(BUILD_INPUTS) $(BASE_DIR)/Dockerfile
-	@mkdir -p "$(BUILD_OUT)" "$(SANDBOX_DIR)"
-	tmp=$$(mktemp -d)
-	trap 'rm -rf "$$tmp"' EXIT
-	$(call docker-image,sandbox-out,$$tmp/sandbox.iid)
-	rm -rf "$(THIRD_DIR)" "$(SANDBOX_DIR)/tools"
-	$(call image-copy,$$(cat "$$tmp/sandbox.iid"),/third,$(BUILD_OUT))
-	$(call image-copy,$$(cat "$$tmp/sandbox.iid"),/tools,$(SANDBOX_DIR))
-	docker run --rm -e MKE2FS_CONFIG=/tools/mke2fs.conf \
-	    -v "$(SANDBOX_DIR)/tools:/tools:ro" -v "$(SANDBOX_DIR):/out" \
-	    --entrypoint sh $(GLIBC_IMAGE) -ec '
-	    out=$$(mktemp /out/workspace.ext4.XXXXXX)
-	    trap "rm -f $$out" EXIT
-	    truncate -s "$(SANDBOX_WS_SIZE)" "$$out"
-	    /tools/mke2fs -F -q -t ext4 -O ^has_journal -m 0 -L workspace "$$out"
-	    chown "$(RUN_OWNER)" "$$out"
-	    chmod 0644 "$$out"
-	    mv -f "$$out" /out/workspace.ext4'
-	chmod -R go-w "$(THIRD_DIR)" "$(SANDBOX_DIR)"
-
-PLUGIN_ROOTFS = $(SANDBOX_DIR)/plugins/$(PLUGIN)/rootfs.ext4
-plugin-rootfs: $(BUILD_INPUTS) $(SANDBOX_DIR)/workspace.ext4
+plugin-rootfs: $(BUILD_INPUTS)
 	@$(if $(PLUGIN),,$(error укажи PLUGIN=<имя пакета>))
-	mkdir -p "$(dir $(PLUGIN_ROOTFS))"
-	tmp=$$(mktemp -d)
-	root_cid= site_cid=
-	trap 'docker rm -f $$root_cid $$site_cid > /dev/null 2>&1 || true; rm -rf "$$tmp"' EXIT
-	$(call docker-image,plugin-root,$$tmp/root.iid,$(APP_ARGS) --build-arg PLUGIN=$(PLUGIN))
-	$(call docker-image,plugin-site-out,$$tmp/site.iid,$(APP_ARGS) --build-arg PLUGIN=$(PLUGIN))
-	root_cid=$$(docker create "$$(cat "$$tmp/root.iid")" /bin/true)
-	site_cid=$$(docker create "$$(cat "$$tmp/site.iid")" /bin/true)
-	{
-	    docker cp "$$root_cid:/." -
-	    docker cp "$$site_cid:/usr" -
-	} | docker run --rm -i -e MKE2FS_CONFIG=/tools/mke2fs.conf \
-	    -v "$(SANDBOX_DIR)/tools:/tools:ro" -v "$(dir $(PLUGIN_ROOTFS)):/out" \
-	    --entrypoint sh $(GLIBC_IMAGE) -ec '
-	    out=$$(mktemp /out/rootfs.ext4.XXXXXX)
-	    trap "rm -f $$out" EXIT
-	    mkdir -p /tree
-	    tar -x -i -f - -C /tree
-	    rm -f /tree/.dockerenv
-	    PYTHONHOME=/tree/usr/local LD_LIBRARY_PATH=/tree/usr/local/lib /tree/usr/local/bin/python3 \
-	        -m compileall -q -j $(JOBS) -s /tree -p / -x "/(test|tests|lib2to3|idle_test)/" \
-	        /tree/usr/local/lib/python$(PYTHON_VERSION) /tree/usr/src
-	    used_mb=$$(du -sm /tree | cut -f1)
-	    inodes=$$(find /tree | wc -l)
-	    truncate -s "$$((used_mb + used_mb / 20 + 16))M" "$$out"
-	    /tools/mke2fs -F -q -t ext4 -O ^has_journal -m 0 -L rootfs \
-	        -N "$$((inodes + inodes / 5 + 1000))" -d /tree "$$out"
-	    chown "$(RUN_OWNER)" "$$out"
-	    chmod 0644 "$$out"
-	    mv -f "$$out" /out/rootfs.ext4'
+	base="$(SANDBOX_BASE)"
+	if [ -z "$$base" ]; then
+	    base="$(SANDBOX_IMAGE)"
+	    docker image inspect "$$base" > /dev/null 2>&1 || base=scratch
+	fi
+	$(call docker-stage,sandbox-images,$(SANDBOX_IMAGE),$(APP_ARGS) --build-arg PLUGIN=$(PLUGIN) --build-arg SANDBOX_IMAGE="$$base")
 
-all: $(BUILD_INPUTS) $(SANDBOX_DIR)/workspace.ext4
-	@for name in $(PLUGIN_PACKAGES); do
-	    make -f "$(MAKEFILE)" plugin-rootfs PLUGIN=$$name
+all: $(BUILD_INPUTS)
+	@base=scratch
+	for name in $(PLUGIN_PACKAGES); do
+	    make -f "$(MAKEFILE)" plugin-rootfs PLUGIN=$$name SANDBOX_BASE="$$base"
+	    base="$(SANDBOX_IMAGE)"
 	done
-	$(call docker-stage,runtime-$(APP),$(IMAGE),--tag boba-$(APP):latest $(APP_ARGS))
+	$(call docker-stage,runtime-$(APP),$(IMAGE),--tag boba-$(APP):latest $(APP_ARGS) --build-arg SANDBOX_IMAGE=$(SANDBOX_IMAGE))
 
 web: $(BUILD_INPUTS)
 	@tmp=$$(mktemp -d)
