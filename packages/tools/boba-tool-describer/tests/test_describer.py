@@ -39,7 +39,7 @@ from boba.tool.describer.nodes import (
     describe_list_nodes,
     describe_node,
 )
-from boba.tool.describer.store import DescriberToolConfig, WriteAction
+from boba.tool.describer.store import DescriberError, DescriberToolConfig, WriteAction
 from boba.toolkit.entry import ToolMain
 
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]
@@ -171,6 +171,85 @@ async def test_node_is_upserted_by_address(
 
     rows = await _nodes(cfg, scope)
     assert rows[0][NodeListColumn.DESCRIPTION] == "registered users"
+
+
+async def test_node_keeps_edm_fields(cfg: DescriberToolConfig, scope: Scope) -> None:
+    written = await _body(describe_node)(
+        kind=PgNodeKind.TABLE,
+        address=PG_TABLE,
+        name_ed="Users",
+        description_ed="Registered shop users",
+        abbreviation_ed="USR",
+        source_ed="EDM",
+        scope=scope,
+        cfg=cfg,
+    )
+    assert written.rows[0]["action"] == WriteAction.INSERTED
+
+    rows = await _nodes(cfg, scope)
+    assert rows[0][NodeListColumn.NAME_ED] == "Users"
+    assert rows[0][NodeListColumn.DESCRIPTION_ED] == "Registered shop users"
+    assert rows[0][NodeListColumn.DESCRIPTION] == "Registered shop users"
+    assert rows[0][NodeListColumn.ABBREVIATION_ED] == "USR"
+    assert rows[0][NodeListColumn.SOURCE_ED] == "EDM"
+
+    updated = await _body(describe_node)(
+        kind=PgNodeKind.TABLE,
+        address=PG_TABLE,
+        name_ed="Customers",
+        description_ed="Verified customers",
+        abbreviation_ed=None,
+        source_ed="DDL",
+        scope=scope,
+        cfg=cfg,
+    )
+    assert updated.rows[0]["action"] == WriteAction.UPDATED
+
+    rows = await _nodes(cfg, scope)
+    assert len(rows) == 1
+    assert rows[0][NodeListColumn.NAME_ED] == "Customers"
+    assert rows[0][NodeListColumn.DESCRIPTION] == "Verified customers"
+    assert rows[0][NodeListColumn.ABBREVIATION_ED] is None
+    assert rows[0][NodeListColumn.SOURCE_ED] == "DDL"
+
+
+async def test_node_migrates_old_schema_and_preserves_edges(
+    cfg: DescriberToolConfig, scope: Scope, pool: AsyncPostgresPool
+) -> None:
+    await _graph(cfg, scope)
+    before = await _nodes(cfg, scope)
+    edges = await _edges(cfg, scope)
+
+    async with pool.connection() as conn:
+        await conn.execute(
+            sql.SQL(
+                "alter table {}.node drop column name_ed, "
+                "drop column description_ed, drop column abbreviation_ed, "
+                "drop column source_ed"
+            ).format(sql.Identifier(SCHEMA))
+        )
+
+    migrated = await _nodes(cfg, scope)
+    assert migrated == before
+    assert await _edges(cfg, scope) == edges
+    assert await _nodes(cfg, scope) == migrated
+
+
+@pytest.mark.parametrize(
+    "descriptions",
+    [{}, {"description": "old", "description_ed": "different"}],
+)
+async def test_node_rejects_missing_or_conflicting_description(
+    cfg: DescriberToolConfig, scope: Scope, descriptions: dict[str, str]
+) -> None:
+    with pytest.raises(DescriberError, match="describing"):
+        await _body(describe_node)(
+            kind=PgNodeKind.TABLE,
+            address=PG_TABLE,
+            scope=scope,
+            cfg=cfg,
+            **descriptions,
+        )
 
 
 async def test_edge_links_nodes_across_systems(

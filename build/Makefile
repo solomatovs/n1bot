@@ -73,6 +73,7 @@ endef
 ifeq ($(origin JOBS),undefined)
 JOBS            := $(shell $(cpu-quota))
 endif
+PARALLEL        ?= 8
 
 # версия у всех пакетов одна, лежит в их pyproject.toml (менять: make version-set)
 VERSION         := $(shell $(PYTHON) -c 'import tomllib; print(tomllib.load(open("$(SRC_DIR)/packages/agents/boba-$(APP)/pyproject.toml", "rb"))["project"]["version"])')
@@ -266,7 +267,8 @@ define HELP
 Внешние загрузки выполняет только fetch. all использует локальный src
 и реестры из настроек образов и conf/. Песочницы собираются внутри Docker
 и входят в образ приложения; на хост не выгружаются.
-Переменные: BOBA_TAG, JOBS, NO_CACHE=1.
+Переменные: BOBA_TAG, PARALLEL=$(PARALLEL) (плагинов одновременно),
+JOBS=$(JOBS) (заданий внутри одной сборки), NO_CACHE=1.
 endef
 
 .PHONY: help version version-set fetch plugin-rootfs all web
@@ -383,9 +385,16 @@ plugin-rootfs: $(BUILD_INPUTS)
 	$(call docker-stage,sandbox-images,$(SANDBOX_IMAGE),$(APP_ARGS) --build-arg PLUGIN=$(PLUGIN) --build-arg SANDBOX_IMAGE="$$base")
 
 all: $(BUILD_INPUTS)
-	@base=scratch
+	@[[ "$(PARALLEL)" =~ ^[1-9][0-9]*$$ ]] || { echo 'PARALLEL должен быть целым числом больше нуля' >&2; exit 1; }
+	build_plugin() {
+	    local name="$$1"
+	    $(call docker-stage,plugin-output,$(SANDBOX_IMAGE)-$$name,$(APP_ARGS) --build-arg PLUGIN="$$name")
+	}
+	export -f build_plugin
+	printf '%s\0' $(PLUGIN_PACKAGES) | xargs -0 -r -n 1 -P "$(PARALLEL)" bash -c 'build_plugin "$$1"' _
+	base=scratch
 	for name in $(PLUGIN_PACKAGES); do
-	    make -f "$(MAKEFILE)" plugin-rootfs PLUGIN=$$name SANDBOX_BASE="$$base"
+	    $(call docker-stage,sandbox-images,$(SANDBOX_IMAGE),$(APP_ARGS) --build-arg PLUGIN="$$name" --build-arg PLUGIN_IMAGE="$(SANDBOX_IMAGE)-$$name" --build-arg SANDBOX_IMAGE="$$base")
 	    base="$(SANDBOX_IMAGE)"
 	done
 	$(call docker-stage,runtime-$(APP),$(IMAGE),--tag boba-$(APP):latest $(APP_ARGS) --build-arg SANDBOX_IMAGE=$(SANDBOX_IMAGE))

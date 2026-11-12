@@ -4,6 +4,7 @@ ARG GCC_IMAGE=dmp/gcc:8.5.0
 ARG PYTHON_IMAGE=dmp/python:${PYTHON_VERSION}-dist
 ARG NODE_IMAGE=dmp/nodejs:20
 ARG SANDBOX_IMAGE=scratch
+ARG PLUGIN_IMAGE=plugin-output
 
 FROM ${PYTHON_IMAGE} AS python-dist
 
@@ -315,13 +316,20 @@ RUN used_mb=$(du -sm /tree | cut -f1) \
     && chmod 0644 /out/rootfs.ext4
 
 
+FROM scratch AS plugin-output
+
+COPY --from=plugin-image /out/rootfs.ext4 /out/rootfs.ext4
+
+
+FROM ${PLUGIN_IMAGE} AS plugin-input
+
 FROM ${SANDBOX_IMAGE} AS sandbox-input
 
 FROM sandbox-input AS sandbox-images
 
 ARG PLUGIN
 
-COPY --from=plugin-image /out/rootfs.ext4 /plugins/${PLUGIN}/rootfs.ext4
+COPY --from=plugin-input /out/rootfs.ext4 /plugins/${PLUGIN}/rootfs.ext4
 
 
 # --- фронт: стадии node, на хосте node не нужен -----------------------------------

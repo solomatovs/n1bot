@@ -7,7 +7,7 @@
 потребитель забирает строки и делает truncate, схему и таблицы не трогает.
 
 Ошибки:
-DescriberError — область вызова не годится ключом: id не uuid.
+DescriberError — область вызова не uuid или описание узла некорректно.
 PostgresError — до базы приложения не достучаться.
 psycopg.Error — СУБД отклонила запрос.
 """
@@ -54,7 +54,7 @@ class DescriberToolConfig(SecretRevealing):
 
 
 class DescriberError(Exception):
-    """Область вызова не годится ключом хранилища."""
+    """Некорректная область вызова или описание узла."""
 
 
 class WriteAction(StrEnum):
@@ -154,6 +154,17 @@ class DescriberStore:
                     description varchar not null,
                     s__wrt_ts   timestamptz not null default now()
                 );
+                alter table {schema}.node
+                    add column if not exists name_ed varchar not null default '',
+                    add column if not exists description_ed varchar not null default '',
+                    add column if not exists abbreviation_ed varchar default '',
+                    add column if not exists source_ed varchar not null default '';
+                update {schema}.node
+                    set description_ed = description
+                    where description_ed = '' and description <> '';
+                update {schema}.node
+                    set description = description_ed
+                    where description = '' and description_ed <> '';
                 create unique index if not exists node_uk
                     on {schema}.node (scope_id, address);
                 create index if not exists node_address_gin

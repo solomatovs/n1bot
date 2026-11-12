@@ -18,6 +18,11 @@ if [ -f "$CONF/uv.toml" ]; then
   echo "dev: uv.toml = $UV_CONFIG_FILE"
 fi
 
+if [ -f "$CONF/npmrc" ]; then
+  export NPM_CONFIG_FILE="$CONF/npmrc"
+  echo "dev: npmrc = $NPM_CONFIG_FILE"
+fi
+
 if [ -f "$CONF/ca-chain.crt" ]; then
   export REQUESTS_CA_BUNDLE="$CONF/ca-chain.crt"
   export CURL_CA_BUNDLE="$CONF/ca-chain.crt"
@@ -64,7 +69,7 @@ if [ ! -d "$DIR/.venv" ]; then
   (cd "$DIR" && uv venv --python 3.11 --clear --no-managed-python)
 fi
 
-(cd "$DIR" && uv sync -v --system-certs)
+(cd "$DIR" && uv sync -v --system-certs --find-links "$ORACLEDB_WHEELS")
 OK=$?
 
 if [ $OK -eq 0 ]; then

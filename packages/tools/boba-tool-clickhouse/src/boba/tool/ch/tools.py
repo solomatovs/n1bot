@@ -1302,10 +1302,36 @@ async def ch_address(connection: ChConnection) -> TableResult:
 
 
 @tool
-async def ch_edm_general_describe(  # noqa: PLR0913 — ширина подписи задана контрактом
+async def ch_edm_general_describe(  # noqa: PLR0913 — аргументы фильтра ЕДМ
     connection: ChConnection,
-    database: DatabaseFilter,
-    table: TableFilter,
+    db_name: DatabaseFilter,
+    schema_name: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                """Название схемы в формате LIKE %schema_name%, * — все схемы]"""
+            ),
+        ),
+    ],
+    table_name: TableFilter,
+    sql_where_stmt: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                """любое выражение в формате: and [условие_для_поиска]
+                колонки описание в ЕДМ по которым можно искать описание:
+                system_name,db_name,db_short_description,db_extended_description,
+                db_description_from_source,schema_name,schema_short_description,schema_extended_description,
+                schema_description_from_source,table_name,table_short_description_edm,
+                table_extended_description_edm,table_description_from_source,column_name,
+                column_short_description_edm,
+                column_extended_description_edm,column_description_from_source
+                 """
+            ),
+        ),
+    ] = "*",
     system_name: Annotated[
         str,
         Field(
@@ -1314,12 +1340,12 @@ async def ch_edm_general_describe(  # noqa: PLR0913 — ширина подпи�
                 """Название системы в формате LIKE %system_name%, * — все системы"""
             ),
         ),
-    ],
+    ] = "*",
     *,
     offset: RowOffset,
     limit: RowLimit,
 ) -> SqlResult:
-    """ ""Эталонные описания метаданных из ЕДМ (EDM) в ADQM из БД cmn_cds.
+    """Эталонные описания метаданных из cmn_cds_test.dm_edm_describe.
     С окном выборки данных offset/limit.
     Выдача постраничная: сколько показано и как листать, сказано в note.
     """
@@ -1327,118 +1353,35 @@ async def ch_edm_general_describe(  # noqa: PLR0913 — ширина подпи�
         ChQueryBuilder()
         .add(
             """
--- описания из ЕДМ
-with w_pdm_table as (
-select  al.etalon_id table_etalon_id
-      ,a.path table_path
-      ,maxIf(al.value, a.type = 'pdm_table' and al.attribute_id = 'name') as table_name
-      ,maxIf(al.value, al.attribute_id = 'short_description_edm')
-          as table_short_description_edm
-      ,maxIf(al.value, al.attribute_id = 'extended_description_edm')
-          as table_extended_description_edm
-      ,maxIf(al.value, al.attribute_id = 'description') as table_description_from_source
-  from cmn_cds.dp_edm__com_dg_export_data__attribute_list_physical_current_versions al
-         inner join cmn_cds.dp_edm__com_dg_export_data__assets_current_versions a
-           on a.id = al.etalon_id
-where al.attribute_id in ('short_description_edm', 'extended_description_edm',
-                          'description', 'name')
-and a.type  in ('pdm_table')
---and path like '%ods_cnmd_gpn_journal%'
-group by a.path, al.etalon_id)
-, w_pdm_col as (
-select  al.etalon_id column_etalon_id
-      ,a.path column_path
-      ,maxIf(al.value, al.attribute_id = 'name') as column_name
-      ,maxIf(al.value, al.attribute_id = 'short_description_edm')
-          as column_short_description_edm
-      ,maxIf(al.value, al.attribute_id = 'extended_description_edm')
-          as column_extended_description_edm
-      ,maxIf(al.value, al.attribute_id = 'description')
-          as column_description_from_source
-  from cmn_cds.dp_edm__com_dg_export_data__attribute_list_physical_current_versions al
-         inner join cmn_cds.dp_edm__com_dg_export_data__assets_current_versions a
-           on a.id = al.etalon_id
-where al.attribute_id in ('short_description_edm', 'extended_description_edm',
-                          'description', 'name')
-and a.type  in ('pdm_table_column')
---and path like '%ods_cnmd_gpn_journal%'
-group by a.path, al.etalon_id
-)
-, w_pdm as (
- select * from w_pdm_table t1
-   inner join w_pdm_col c1 on c1.column_path = t1.table_path||'/'||table_name  )
-, w_ed as (
-      select r.etalon_id_from as etalon_id_ed
-            ,r.etalon_id_to as etalon_id_pdm
-            ,a.value as ed_name
-        from cmn_cds.dp_edm__com_dg_export_data__relations_current_version r
-         inner join
-           cmn_cds.dp_edm__com_dg_export_data__attribute_list_current_versions a
-           on a.etalon_id = r.etalon_id_from
-          and a.attribute_id in ('ed_entity_name', 'ed_attribute_name')
-      where r.name = 'lnk_ldm_physical_relationship'
-)
-, w_conn as (
-      select a.etalon_id
-            ,splitByChar('_', COALESCE(a.value, '_'))[4] as host
-            ,CASE splitByChar('_', COALESCE(a.value, '_'))[3]
-                  WHEN 'pg' THEN 5432
-                  WHEN 'adb' THEN 5432
-                  WHEN 'adqm' THEN 8443
-                  WHEN 'oracle' THEN 1521
-                  WHEN 'mssql' THEN 1433
-                  WHEN '1c' THEN 443
-                  ELSE 443
-             END as port
-            ,splitByChar('_',
-                COALESCE(replace(a.value, 'gazprom-neft', ''), '_'))[5] as db
-            ,CASE splitByChar('_', COALESCE(a.value, '_'))[3]
-                  WHEN 'pg' THEN 'postgres'
-                  WHEN 'adb' THEN 'postgres'
-                  WHEN 'adqm' THEN 'clickhouse'
-                  WHEN 'oracle' THEN 'oracle'
-                  WHEN 'mssql' THEN 'mssql'
-                  WHEN '1c' THEN 'https'
-                  ELSE 'https'
-             END as source_type
-        from
-          cmn_cds.dp_edm__com_dg_export_data__attribute_list_physical_current_versions a
-      where a.attribute_id = 'connection'
-),
- q1 as (
-select pdm.*
-      ,c1.source_type || '://' || c1.host || ':' || c1.port || '/' || c1.db
-          as table_connection
-      ,ed_tab.ed_name table_ed_name
-      ,ed_col.ed_name column_ed_name
-  from w_pdm pdm
-         left join w_ed ed_tab
-           on ed_tab.etalon_id_pdm = pdm.table_etalon_id
-        left join w_conn c1 on c1.etalon_id = pdm.table_etalon_id
-		left join w_ed ed_col
-           on ed_col.etalon_id_pdm = pdm.column_etalon_id
-           )
-select * from q1
-where (table_short_description_edm is not null
-or table_extended_description_edm is not null
-or table_description_from_source is not null
-or table_ed_name is not null
-or column_short_description_edm is not null
-or column_extended_description_edm is not null
-or column_description_from_source is not null
-or column_ed_name is not null )
+            -- описания из ЕДМ
+            select * from cmn_cds_test.dm_edm_describe
+            where 1=1
+            and column_name is not null
+            and (table_short_description_edm is not null
+            or table_extended_description_edm is not null
+            or column_short_description_edm is not null
+            or column_extended_description_edm is not null
+            )
 """,
         )
+        .when(db_name != "*", "and db_name like {db_name:String}", db_name=db_name)
         .when(
-            database != "*", "and column_path like {database:String}", database=database
+            schema_name != "*",
+            "and schema_name like {schema_name:String}",
+            schema_name=schema_name,
         )
-        .when(table != "*", "and column_path like {table:String}", table=table)
+        .when(
+            table_name != "*",
+            "and table_name like {table_name:String}",
+            table_name=table_name,
+        )
         .when(
             system_name != "*",
-            "and column_path like {system_name:String}",
+            "and system_name like {system_name:String}",
             system_name=system_name,
         )
-        .add("order by column_path")
+        .when(sql_where_stmt != "*", sql_where_stmt)
+        .add("order by system_name, db_name, schema_name, table_name, column_name")
     )
 
     return await run_and_collect(
@@ -1539,6 +1482,66 @@ where 1=1
     )
 
 
+@tool
+async def ch_query_log_describe(
+    connection: ChConnection,
+    db_name: DatabaseFilter,
+    table_name: TableFilter,
+    *,
+    offset: RowOffset = 0,
+    limit: RowLimit,
+) -> SqlResult:
+    """SQL-запросы с JOIN или EXISTS из system.query_log для таблицы или view.
+
+    Колонки: databases, tables, columns, query. Поиск среди SELECT других
+    пользователей с точкой в имени, кроме admin и системных запросов.
+    Выдача постраничная: как листать, сказано в note.
+    """
+    object_like = f"%.{table_name}"
+    if db_name != "*":
+        object_like = f"{db_name}.{table_name}"
+
+    builder = (
+        ChQueryBuilder()
+        .add(
+            """
+            select
+                arrayStringConcat(q.databases, ', ') as databases,
+                arrayStringConcat(q.tables, ', ')    as tables,
+                arrayStringConcat(q.columns, ', ')   as columns,
+                toString(query)                    as query
+            from
+                system.query_log as q
+            where 1=1
+                AND user != currentUser()
+                AND user ILIKE '%.%'
+                AND user not ILIKE '%admin%'
+                AND query ILIKE '%SELECT %'
+                AND (query ILIKE '%JOIN %'
+                    OR query ILIKE '%EXISTS %'
+                    )
+                AND query not ILIKE '%information_schema.%'
+                AND query not ILIKE '%system.%'
+            """,
+        )
+        .when(
+            db_name != "*",
+            "and arrayExists(d -> d LIKE {db_name:String}, q.databases)",
+            db_name=db_name,
+        )
+        .when(
+            table_name != "*",
+            "and arrayExists(t -> t LIKE {object_like:String}, q.tables)",
+            object_like=object_like,
+        )
+        .add("order by event_time desc, query_id, type")
+    )
+
+    return await run_and_collect(
+        connection, builder.build(), RowWindow(offset=offset, limit=limit)
+    )
+
+
 TOOLS: Final = ToolMain.toolset(
     ch_query,
     ch_address,
@@ -1551,6 +1554,7 @@ TOOLS: Final = ToolMain.toolset(
     ch_sequences_describe,
     ch_types_describe,
     ch_edm_general_describe,
+    ch_query_log_describe,
     ch_edm_table_describe,
     ch_edm_structure,
     ch_edm_descriptions,

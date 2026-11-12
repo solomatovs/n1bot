@@ -33,6 +33,7 @@ class TestChTools:
         "ch_sequences_describe",
         "ch_types_describe",
         "ch_edm_general_describe",
+        "ch_query_log_describe",
         "ch_edm_table_describe",
         "ch_edm_structure",
         "ch_edm_descriptions",

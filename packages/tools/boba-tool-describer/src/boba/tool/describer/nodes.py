@@ -9,7 +9,7 @@ describe_list_nodes, describe_delete_node.
 AddressError — url не является адресом заявленного вида.
 NodeIdsMissingError — среди id на удаление есть не из области; ничего не
     удалено, к тексту приложены отсутствующие id.
-DescriberError — область вызова не годится ключом (id не uuid).
+DescriberError — область вызова не uuid или описание узла некорректно.
 PostgresError — до базы приложения не достучаться.
 psycopg.Error — СУБД отклонила запрос.
 """
@@ -23,7 +23,7 @@ from typing import Annotated, Any, ClassVar, Final
 
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from boba.connections.address import Address
 from boba.identity.context import Scope
@@ -74,11 +74,24 @@ class NodeColumn(StrEnum):
     KIND = "kind"
     URL = "url_address"
     DESCRIPTION = "description"
+    NAME_ED = "name_ed"
+    DESCRIPTION_ED = "description_ed"
+    ABBREVIATION_ED = "abbreviation_ed"
+    SOURCE_ED = "source_ed"
     INSERTED = "inserted"
     CASCADED = "cascaded"
 
 
-class NodeRecord(BaseModel):
+class NodeDescription(BaseModel):
+    """Смысл объекта данных: текст, название, сокращение и источник."""
+
+    name_ed: str = ""
+    description_ed: str = Field(min_length=1)
+    abbreviation_ed: str | None = ""
+    source_ed: str = ""
+
+
+class NodeRecord(NodeDescription):
     """Узел области как он лежит в таблице."""
 
     id: int
@@ -87,7 +100,7 @@ class NodeRecord(BaseModel):
     description: str
 
 
-class NodeWrite(BaseModel):
+class NodeWrite(NodeDescription):
     """Итог записи узла: канонический url для дальнейших ссылок."""
 
     kind: str
@@ -111,7 +124,7 @@ class NodeTable:
         self._session = session
 
     async def upsert(
-        self, scope: ScopeKey, address: Address, description: str
+        self, scope: ScopeKey, address: Address, details: NodeDescription
     ) -> NodeWrite:
         url = address.render()
         query = (
@@ -124,7 +137,11 @@ class NodeTable:
                     kind,
                     address,
                     url_address,
-                    description
+                    description,
+                    name_ed,
+                    description_ed,
+                    abbreviation_ed,
+                    source_ed
                 )
                 values (
                     %(scope_kind)s,
@@ -132,12 +149,20 @@ class NodeTable:
                     %(kind)s,
                     %(address)s,
                     %(url)s,
-                    %(description)s
+                    %(description)s,
+                    %(name_ed)s,
+                    %(description_ed)s,
+                    %(abbreviation_ed)s,
+                    %(source_ed)s
                 )
                 on conflict (scope_id, address) do update set
                     kind        = excluded.kind,
                     url_address = excluded.url_address,
                     description = excluded.description,
+                    name_ed = excluded.name_ed,
+                    description_ed = excluded.description_ed,
+                    abbreviation_ed = excluded.abbreviation_ed,
+                    source_ed = excluded.source_ed,
                     s__wrt_ts   = now()
                 returning
                     (xmax = 0) as inserted
@@ -147,7 +172,11 @@ class NodeTable:
                 kind=type(address).KIND,
                 address=Jsonb(address.to_json()),
                 url=url,
-                description=description,
+                description=details.description_ed,
+                name_ed=details.name_ed,
+                description_ed=details.description_ed,
+                abbreviation_ed=details.abbreviation_ed,
+                source_ed=details.source_ed,
             )
             .build()
         )
@@ -164,7 +193,11 @@ class NodeTable:
             kind=type(address).KIND,
             url=url,
             action=WriteAction.of(bool(row[NodeColumn.INSERTED.value])),
-            description=description,
+            description=details.description_ed,
+            name_ed=details.name_ed,
+            description_ed=details.description_ed,
+            abbreviation_ed=details.abbreviation_ed,
+            source_ed=details.source_ed,
         )
 
     async def list(self, scope: ScopeKey) -> Sequence[NodeRecord]:
@@ -176,7 +209,11 @@ class NodeTable:
                     id,
                     kind,
                     url_address,
-                    description
+                    description,
+                    name_ed,
+                    description_ed,
+                    abbreviation_ed,
+                    source_ed
                 from
                     {schema}.node
                 where
@@ -200,6 +237,10 @@ class NodeTable:
                         kind=row[NodeColumn.KIND.value],
                         url=row[NodeColumn.URL.value],
                         description=row[NodeColumn.DESCRIPTION.value],
+                        name_ed=row[NodeColumn.NAME_ED.value],
+                        description_ed=row[NodeColumn.DESCRIPTION_ED.value],
+                        abbreviation_ed=row[NodeColumn.ABBREVIATION_ED.value],
+                        source_ed=row[NodeColumn.SOURCE_ED.value],
                     )
                 )
 
@@ -292,6 +333,10 @@ class NodeListColumn(StrEnum):
     KIND = "kind"
     URL = "url"
     DESCRIPTION = "description"
+    NAME_ED = "name_ed"
+    DESCRIPTION_ED = "description_ed"
+    ABBREVIATION_ED = "abbreviation_ed"
+    SOURCE_ED = "source_ed"
 
 
 class NodeListing:
@@ -318,6 +363,10 @@ class NodeListing:
                 NodeListColumn.KIND.value: node.kind,
                 NodeListColumn.URL.value: node.url,
                 NodeListColumn.DESCRIPTION.value: node.description,
+                NodeListColumn.NAME_ED.value: node.name_ed,
+                NodeListColumn.DESCRIPTION_ED.value: node.description_ed,
+                NodeListColumn.ABBREVIATION_ED.value: node.abbreviation_ed,
+                NodeListColumn.SOURCE_ED.value: node.source_ed,
             }
 
 
@@ -352,14 +401,25 @@ class NodeDeleteListing:
 
 
 @tool
-async def describe_node(
+async def describe_node(  # noqa: PLR0913 — поля описания и зависимости инструмента
     kind: Annotated[str, Field(min_length=1, description=NodePrompt.kind())],
     address: Annotated[str, Field(min_length=1, description=NodePrompt.address())],
-    description: Annotated[
-        str, Field(min_length=1, description=NodePrompt.DESCRIPTION)
-    ],
     scope: Annotated[Scope, Injected],
     cfg: Annotated[DescriberToolConfig, Injected],
+    description: Annotated[
+        str,
+        Field(description="Описание объекта; совместимый с description_ed аргумент."),
+    ] = "",
+    *,
+    name_ed: Annotated[str, Field(description="Наименование элемента данных.")] = "",
+    description_ed: Annotated[str, Field(description=NodePrompt.DESCRIPTION)] = "",
+    abbreviation_ed: Annotated[
+        str | None,
+        Field(description="Сокращение элемента данных; может отсутствовать."),
+    ] = "",
+    source_ed: Annotated[
+        str, Field(description="Источник смысла: ЕДМ, DDL или запрос к данным.")
+    ] = "",
 ) -> TableResult:
     """Сохранить описание объекта данных по его адресу.
 
@@ -367,11 +427,35 @@ async def describe_node(
     канонический url узла (его использует describe_edge) и action:
     inserted или updated.
     """
+    legacy_given = bool(description)
+    edm_given = bool(description_ed)
+    texts_differ = description != description_ed
+    conflicting = all((legacy_given, edm_given, texts_differ))
+    if conflicting:
+        raise DescriberError(
+            f"describing {address}: description and description_ed must match"
+        )
+
+    if not description_ed:
+        description_ed = description
+
+    try:
+        details = NodeDescription(
+            name_ed=name_ed,
+            description_ed=description_ed,
+            abbreviation_ed=abbreviation_ed,
+            source_ed=source_ed,
+        )
+    except ValidationError as exc:
+        raise DescriberError(
+            f"describing {address}: invalid description: {exc}"
+        ) from exc
+
     key = ScopeKey.of(scope)
     parsed = Addresses.parse(kind, address)
 
     async with DescriberStore(cfg).session() as session:
-        written = await NodeTable(session).upsert(key, parsed, description)
+        written = await NodeTable(session).upsert(key, parsed, details)
 
     return TableResult(rows=[written.model_dump(mode="json")])
 
@@ -383,7 +467,8 @@ async def describe_list_nodes(
     scope: Annotated[Scope, Injected],
     cfg: Annotated[DescriberToolConfig, Injected],
 ) -> TableResult:
-    """Узлы, уже описанные в этом треде: id, kind, url, description.
+    """Узлы треда: id, kind, url, description, name_ed, description_ed,
+    abbreviation_ed, source_ed.
 
     Помогает не описывать объект дважды, брать url для describe_edge и id
     для describe_delete_node. Выдача постраничная: как листать, сказано в note.

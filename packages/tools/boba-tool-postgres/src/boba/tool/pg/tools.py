@@ -83,6 +83,17 @@ SchemaFilter = Annotated[
 """LLM-аргумент schema_name: точное имя или `*`."""
 
 
+TableFilter = Annotated[
+    str,
+    Field(min_length=1, description="Имя таблицы или view: LIKE-шаблон или `*` — все."),
+]
+
+DatabaseFilter = Annotated[
+    str,
+    Field(min_length=1, description="Имя базы: LIKE-шаблон или `*` — все базы."),
+]
+
+
 BeforeSteps = Annotated[
     Sequence[str],
     Field(
@@ -1449,6 +1460,829 @@ async def pg_address(connection: PgConnection) -> TableResult:
     return TableResult(rows=[row])
 
 
+@tool
+async def gp_address(connection: PgConnection) -> TableResult:
+    """Базовый url соединения Greenplum: postgresql://host:port/database.
+
+    Ничего не выполняет в базе. Объект адресуется ролями в query поверх
+    этого url: ?schema=dm&table=fact_orders, ?schema=dm&table=t&column=c.
+    """
+    base = PgAddresses.base_of(connection)
+    row = {
+        AddressColumn.CONNECTION.value: connection.source.name,
+        AddressColumn.URL.value: base.render(),
+    }
+
+    return TableResult(rows=[row])
+
+
+@tool
+async def gp_query(
+    connection: PgConnection,
+    sql: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Произвольный SQL базы Greenplum. Запрос с выборкой возвращает "
+                "строки окном "
+                "offset/limit; INSERT/UPDATE/DELETE/DDL возвращают число "
+                "затронутых строк и статус сервера. Команд может быть несколько "
+                "через `;` — они идут одной транзакцией, и в ответ придёт итог "
+                "каждой по порядку; падение любой откатывает весь набор."
+            ),
+        ),
+        MarkdownResult(language="sql"),
+    ],
+    *,
+    offset: RowOffset,
+    limit: RowLimit,
+) -> SqlResult:
+    """Выполнить Greenplum SQL на подключении: строки либо счётчик затронутых.
+    Для широкой таблицы выдача приходит частями — как листать, сказано в note.
+    """
+
+    return await run_script(connection, sql, RowWindow(offset=offset, limit=limit))
+
+
+@tool
+async def gp_database_describe(
+    connection: PgConnection,
+    db_name: DatabaseFilter,
+    *,
+    offset: RowOffset,
+    limit: RowLimit,
+) -> SqlResult:
+    """Описание баз данных Greenplum, SQL запрос, строки выборки возвращаются:
+    описание баз данных кластера из pg_catalog.pg_database.
+    Колонки: address (db), name, owner, encoding, collate, allow_conn,
+    is_template, comment.
+    С окном выборки данных offset/limit.
+    """
+    builder = (
+        PgQueryBuilder()
+        .add(
+            """
+            select
+                d.datname                                          as address,
+                d.datname                                          as name,
+                pg_catalog.pg_get_userbyid(d.datdba)               as owner,
+                pg_catalog.pg_encoding_to_char(d.encoding)         as encoding,
+                d.datcollate                                       as collate,
+                d.datallowconn                                     as allow_conn,
+                d.datistemplate                                    as is_template,
+                pg_catalog.shobj_description(d.oid, 'pg_database') as comment
+            from pg_catalog.pg_database d
+            where true
+            """
+        )
+        .when(db_name != "*", "and d.datname like %(db_name)s", db_name=db_name)
+        .add("order by d.datname")
+    )
+
+    return await run_and_collect(
+        connection, builder.build(), RowWindow(offset=offset, limit=limit)
+    )
+
+
+@tool
+async def gp_schema_describe(
+    connection: PgConnection,
+    schema_name: SchemaFilter,
+    *,
+    offset: RowOffset,
+    limit: RowLimit,
+) -> SqlResult:
+    """Описание схем текущей базы Greenplum из pg_catalog.pg_namespace.
+    Колонки: address (db.schema), database, name, owner, comment.
+    Отличие от Postgres — в GP схемы размножаются по сегментам, но в
+    каталоге видны один раз на координаторе.
+    Для широкой таблицы выдача приходит частями — как листать, сказано в note.
+    """
+    builder = (
+        PgQueryBuilder()
+        .add(
+            """
+            select
+                concat_ws('.', current_database(), n.nspname)      as address,
+                current_database()                                 as database,
+                n.nspname                                          as name,
+                pg_catalog.pg_get_userbyid(n.nspowner)             as owner,
+                pg_catalog.obj_description(n.oid, 'pg_namespace')  as comment
+            from pg_catalog.pg_namespace n
+            where true
+            """
+        )
+        .when(
+            schema_name != "*",
+            "and n.nspname = %(schema_name)s",
+            schema_name=schema_name,
+        )
+        .add("order by n.nspname")
+    )
+
+    return await run_and_collect(
+        connection, builder.build(), RowWindow(offset=offset, limit=limit)
+    )
+
+
+@tool
+async def gp_table_describe(
+    connection: PgConnection,
+    schema_name: SchemaFilter,
+    table_name: TableFilter,
+    *,
+    offset: RowOffset,
+    limit: RowLimit,
+) -> SqlResult:
+    """Таблицы и view Greenplum с политикой распределения и типом хранения.
+    Колонки: schema, table_name, kind, storage (heap/ao_row/ao_column),
+    distribution (hash/random/replicated), distribution_key, segments,
+    approx_rows, owner, total_bytes, comment.
+    Для широкой таблицы выдача приходит частями — как листать, сказано в note.
+    """
+    builder = (
+        PgQueryBuilder()
+        .add(
+            """
+            select
+                concat_ws('.', current_database(), n.nspname, c.relname) as address,
+                current_database()                                 as database,
+                n.nspname                                     as schema,
+                c.relname                                     as table_name,
+                c.relkind                                     as kind,
+                case
+                    when (to_json(ao)->>'columnstore')::boolean
+                        or am.amname = 'ao_column' then 'ao_column'
+                    when ao.relid is not null then 'ao_row'
+                    else 'heap'
+                end                                           as storage,
+                case
+                    when dp.policytype = 'r' then 'replicated'
+                    when dp.policytype = 'p' and cardinality(dp.distkey) = 0
+                        then 'random'
+                    when dp.policytype = 'p' then 'hash'
+                end                                           as distribution,
+                (select array_agg(a.attname order by k.ord)
+                 from unnest(dp.distkey) with ordinality as k(attnum, ord)
+                     join pg_catalog.pg_attribute a
+                       on a.attrelid = c.oid and a.attnum = k.attnum
+                )                                             as distribution_key,
+                dp.numsegments                                as segments,
+                c.reltuples::bigint                           as approx_rows,
+                pg_catalog.pg_get_userbyid(c.relowner)        as owner,
+                pg_catalog.pg_total_relation_size(c.oid)      as total_bytes,
+                pg_catalog.obj_description(c.oid, 'pg_class') as comment
+            from pg_catalog.pg_class c
+                join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+                left join pg_catalog.gp_distribution_policy dp on dp.localoid = c.oid
+                left join pg_catalog.pg_appendonly ao on ao.relid = c.oid
+                left join pg_catalog.pg_am am on am.oid = c.relam
+            where c.relkind = any(%(relkinds)s)
+            """,
+            relkinds=["r", "p", "v", "m", "f"],
+        )
+        .when(
+            schema_name != "*",
+            "and n.nspname = %(schema_name)s",
+            schema_name=schema_name,
+        )
+        .when(
+            table_name != "*",
+            "and c.relname like %(table_name)s",
+            table_name=table_name,
+        )
+        .add("order by n.nspname, c.relname")
+    )
+
+    return await run_and_collect(
+        connection, builder.build(), RowWindow(offset=offset, limit=limit)
+    )
+
+
+@tool
+async def gp_column_describe(
+    connection: PgConnection,
+    schema_name: SchemaFilter,
+    table_name: TableFilter,
+    *,
+    offset: RowOffset,
+    limit: RowLimit,
+) -> SqlResult:
+    """Колонки отношения Greenplum из pg_attribute + признак ключа
+    распределения.
+    Колонки: address, database, schema, relation, name, ordinal, type,
+    nullable, default, collation, is_distribution_key,
+    comment. Дропнутые атрибуты пропускаются.
+    Для широкой таблицы выдача приходит частями — как листать, сказано в note.
+    """
+    builder = (
+        PgQueryBuilder()
+        .add(
+            """
+            select
+                concat_ws('.', current_database(), n.nspname, c.relname,
+                          a.attname)                               as address,
+                current_database()                                 as database,
+                n.nspname                                          as schema,
+                c.relname                                          as relation,
+                a.attname                                          as name,
+                a.attnum                                           as ordinal,
+                pg_catalog.format_type(a.atttypid, a.atttypmod)    as type,
+                not a.attnotnull                                   as nullable,
+                pg_catalog.pg_get_expr(d.adbin, d.adrelid)         as "default",
+                case when a.attcollation <> t.typcollation
+                    then co.collname end                           as collation,
+                (dp.distkey is not null and a.attnum = any(dp.distkey))
+                    as is_distribution_key,
+                pg_catalog.col_description(a.attrelid, a.attnum)   as comment
+            from pg_catalog.pg_attribute a
+                join pg_catalog.pg_class c on c.oid = a.attrelid
+                join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+                join pg_catalog.pg_type t on t.oid = a.atttypid
+                left join pg_catalog.pg_attrdef d
+                    on d.adrelid = a.attrelid and d.adnum = a.attnum
+                left join pg_catalog.pg_collation co on co.oid = a.attcollation
+                left join pg_catalog.gp_distribution_policy dp
+                    on dp.localoid = c.oid
+            where c.relkind in ('r', 'p', 'v', 'm', 'f')
+              and a.attnum > 0
+              and not a.attisdropped
+            """
+        )
+        .when(
+            schema_name != "*",
+            "and n.nspname = %(schema_name)s",
+            schema_name=schema_name,
+        )
+        .when(
+            table_name != "*",
+            "and c.relname like %(table_name)s",
+            table_name=table_name,
+        )
+        .add("order by n.nspname, c.relname, a.attnum")
+    )
+
+    return await run_and_collect(
+        connection, builder.build(), RowWindow(offset=offset, limit=limit)
+    )
+
+
+@tool
+async def gp_constraints_describe(
+    connection: PgConnection,
+    schema_name: SchemaFilter,
+    table_name: TableFilter,
+    *,
+    offset: RowOffset,
+    limit: RowLimit,
+) -> SqlResult:
+    """Ограничения отношений Greenplum из pg_constraint.
+    Каталог тот же, что в Postgres; ограничения primary/unique/fk
+    поддерживаются только при совпадении с ключом распределения.
+    Колонки: address, database, schema, relation, name, kind, columns,
+    ref_schema, ref_relation, ref_columns, on_update, on_delete,
+    deferrable, initially_deferred, definition, comment.
+    Для широкой таблицы выдача приходит частями — как листать, сказано в note.
+    """
+    builder = (
+        PgQueryBuilder()
+        .add(
+            """
+            select
+                concat_ws('.', current_database(), n.nspname, c.relname,
+                        con.conname)                             as address,
+                current_database()                                 as database,
+                n.nspname                                          as schema,
+                c.relname                                          as relation,
+                con.conname                                        as name,
+                case con.contype
+                    when 'p' then 'primary'
+                    when 'u' then 'unique'
+                    when 'f' then 'foreign'
+                    when 'c' then 'check'
+                    when 'x' then 'exclusion'
+                end                                                as kind,
+                array(
+                    select a.attname
+                    from unnest(con.conkey) with ordinality as k(attnum, ord)
+                        join pg_catalog.pg_attribute a
+                        on a.attrelid = con.conrelid
+                        and a.attnum = k.attnum
+                    order by k.ord
+                )                                                  as columns,
+                rn.nspname                                         as ref_schema,
+                rc.relname                                         as ref_relation,
+                case
+                    when con.confrelid <> 0 then array(
+                        select a.attname
+                        from unnest(con.confkey) with ordinality as k(attnum, ord)
+                            join pg_catalog.pg_attribute a
+                            on a.attrelid = con.confrelid
+                            and a.attnum = k.attnum
+                        order by k.ord
+                    )
+                end                                                as ref_columns,
+                case
+                    when con.contype = 'f' then
+                        case con.confupdtype
+                            when 'a' then 'no action'
+                            when 'r' then 'restrict'
+                            when 'c' then 'cascade'
+                            when 'n' then 'set null'
+                            when 'd' then 'set default'
+                        end
+                end                                                as on_update,
+                case
+                    when con.contype = 'f' then
+                        case con.confdeltype
+                            when 'a' then 'no action'
+                            when 'r' then 'restrict'
+                            when 'c' then 'cascade'
+                            when 'n' then 'set null'
+                            when 'd' then 'set default'
+                        end
+                end                                                as on_delete,
+                con.condeferrable                                  as deferrable,
+                con.condeferred                              as initially_deferred,
+                pg_catalog.pg_get_constraintdef(con.oid, true)     as definition,
+                pg_catalog.obj_description(con.oid, 'pg_constraint') as comment
+            from pg_catalog.pg_constraint con
+                join pg_catalog.pg_class c on c.oid = con.conrelid
+                join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+                left join pg_catalog.pg_class rc on rc.oid = con.confrelid
+                left join pg_catalog.pg_namespace rn on rn.oid = rc.relnamespace
+            where c.relkind in ('r', 'p', 'v', 'm', 'f')
+            and con.contype in ('p', 'u', 'f', 'c', 'x')
+            """
+        )
+        .when(
+            schema_name != "*",
+            "and n.nspname = %(schema_name)s",
+            schema_name=schema_name,
+        )
+        .when(
+            table_name != "*",
+            "and c.relname like %(table_name)s",
+            table_name=table_name,
+        )
+        .add("order by n.nspname, c.relname, con.conname")
+    )
+
+    return await run_and_collect(
+        connection, builder.build(), RowWindow(offset=offset, limit=limit)
+    )
+
+
+@tool
+async def gp_indexes_describe(
+    connection: PgConnection,
+    schema_name: SchemaFilter,
+    table_name: TableFilter,
+    *,
+    offset: RowOffset,
+    limit: RowLimit,
+) -> SqlResult:
+    """Индексы отношений Greenplum из pg_index.
+    Колонки: address, database, schema, relation, name, method, unique,
+    primary, columns, predicate, definition, total_bytes, comment.
+    В GP индексы на AO/CO таблицах строятся иначе; definition всё
+    описывает.
+    Для широкой таблицы выдача приходит частями — как листать, сказано в note.
+    """
+    builder = (
+        PgQueryBuilder()
+        .add(
+            """
+            select
+                concat_ws('.', current_database(), n.nspname, c.relname,
+                        ic.relname)                              as address,
+                current_database()                                 as database,
+                n.nspname                                          as schema,
+                c.relname                                          as relation,
+                ic.relname                                         as name,
+                am.amname                                          as method,
+                i.indisunique                                      as unique,
+                i.indisprimary                                     as primary,
+                array(
+                    select a.attname
+                    from unnest(i.indkey) with ordinality as k(attnum, ord)
+                        join pg_catalog.pg_attribute a
+                        on a.attrelid = i.indrelid
+                        and a.attnum = k.attnum
+                    where k.attnum > 0
+                    order by k.ord
+                )                                                  as columns,
+                pg_catalog.pg_get_expr(i.indpred, i.indrelid, true) as predicate,
+                pg_catalog.pg_get_indexdef(i.indexrelid)           as definition,
+                pg_catalog.pg_relation_size(i.indexrelid)          as total_bytes,
+                pg_catalog.obj_description(i.indexrelid, 'pg_class') as comment
+            from pg_catalog.pg_index i
+                join pg_catalog.pg_class c on c.oid = i.indrelid
+                join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+                join pg_catalog.pg_class ic on ic.oid = i.indexrelid
+                join pg_catalog.pg_am am on am.oid = ic.relam
+            where c.relkind in ('r', 'p', 'v', 'm', 'f')
+            """
+        )
+        .when(
+            schema_name != "*",
+            "and n.nspname = %(schema_name)s",
+            schema_name=schema_name,
+        )
+        .when(
+            table_name != "*",
+            "and c.relname like %(table_name)s",
+            table_name=table_name,
+        )
+        .add("order by n.nspname, c.relname, ic.relname")
+    )
+
+    return await run_and_collect(
+        connection, builder.build(), RowWindow(offset=offset, limit=limit)
+    )
+
+
+@tool
+async def gp_routines_describe(
+    connection: PgConnection,
+    schema_name: SchemaFilter,
+    routine_name: Annotated[
+        str,
+        Field(min_length=1, description="Имя рутины. `*` — все в схеме."),
+    ],
+    *,
+    offset: RowOffset,
+    limit: RowLimit,
+) -> SqlResult:
+    """Рутины Greenplum из pg_proc. Каталог совпадает с Postgres;
+    различие — функции на языке PL/Python, PL/Container, PL/R и
+    множественные схемы (public на каждом сегменте).
+    Колонки: address, database, schema, name, signature, kind, owner,
+    language, arguments, returns, returns_set, volatility, strict,
+    security_definer, cost, rows, body, definition, comment.
+    Для широкой таблицы выдача приходит частями — как листать, сказано в note.
+    """
+    builder = (
+        PgQueryBuilder()
+        .add(
+            """
+            select
+                concat_ws('.', current_database(), n.nspname, p.proname) as address,
+                current_database()                                 as database,
+                n.nspname                                          as schema,
+                p.proname                                          as name,
+                pg_catalog.oidvectortypes(p.proargtypes)           as signature,
+                case
+                    when coalesce(to_json(p)->>'prokind', '') = 'a'
+                        or (to_json(p)->>'proisagg')::boolean then 'aggregate'
+                    when coalesce(to_json(p)->>'prokind', '') = 'w'
+                        or (to_json(p)->>'proiswindow')::boolean then 'window'
+                    when to_json(p)->>'prokind' = 'p' then 'procedure'
+                    else 'function'
+                end                                                as kind,
+                pg_catalog.pg_get_userbyid(p.proowner)             as owner,
+                l.lanname                                          as language,
+                pg_catalog.pg_get_function_arguments(p.oid)        as arguments,
+                case when not coalesce(
+                    (to_json(p)->>'proisagg')::boolean,
+                    to_json(p)->>'prokind' = 'a', false)
+                    then pg_catalog.pg_get_function_result(p.oid) end as returns,
+                p.proretset                                        as returns_set,
+                case p.provolatile
+                    when 'i' then 'immutable'
+                    when 's' then 'stable'
+                    when 'v' then 'volatile'
+                end                                                as volatility,
+                p.proisstrict                                      as strict,
+                p.prosecdef                                        as security_definer,
+                p.procost                                          as cost,
+                case when p.proretset then p.prorows end           as rows,
+                coalesce(p.prosrc, '')                             as body,
+                case when not coalesce(
+                    (to_json(p)->>'proisagg')::boolean,
+                    to_json(p)->>'prokind' = 'a', false)
+                    then coalesce(pg_catalog.pg_get_functiondef(p.oid), '')
+                    else '' end                                   as definition,
+                pg_catalog.obj_description(p.oid, 'pg_proc')       as comment
+            from pg_catalog.pg_proc p
+                join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+                join pg_catalog.pg_language l on l.oid = p.prolang
+            where true
+            """
+        )
+        .when(
+            schema_name != "*",
+            "and n.nspname = %(schema_name)s",
+            schema_name=schema_name,
+        )
+        .when(
+            routine_name != "*",
+            "and p.proname = %(routine_name)s",
+            routine_name=routine_name,
+        )
+        .add("order by n.nspname, p.proname, p.oid")
+    )
+
+    return await run_and_collect(
+        connection, builder.build(), RowWindow(offset=offset, limit=limit)
+    )
+
+
+@tool
+async def gp_routine_arg_describe(
+    connection: PgConnection,
+    schema_name: SchemaFilter,
+    routine_name: Annotated[
+        str,
+        Field(min_length=1, description="Имя рутины. `*` — все в схеме."),
+    ],
+    *,
+    offset: RowOffset,
+    limit: RowLimit,
+) -> SqlResult:
+    """Аргументы рутин Greenplum (развёртка proallargtypes).
+    Колонки: address, database, schema, routine, signature, position,
+    name, type, mode (in/out/inout/variadic/table).
+    Для широкой таблицы выдача приходит частями — как листать, сказано в note.
+    """
+    builder = (
+        PgQueryBuilder()
+        .add(
+            """
+            select
+                concat_ws('.', current_database(), n.nspname, p.proname,
+                          nullif(p.proargnames[u.n], ''))          as address,
+                current_database()                                 as database,
+                n.nspname                                          as schema,
+                p.proname                                          as routine,
+                pg_catalog.oidvectortypes(p.proargtypes)           as signature,
+                u.n - 1                                            as position,
+                nullif(p.proargnames[u.n], '')                     as name,
+                pg_catalog.format_type(u.t, null)                  as type,
+                case coalesce(p.proargmodes[u.n], 'i')
+                    when 'i' then 'in'
+                    when 'o' then 'out'
+                    when 'b' then 'inout'
+                    when 'v' then 'variadic'
+                    when 't' then 'table'
+                end                                                as mode
+            from pg_catalog.pg_proc p
+                join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+                cross join lateral
+                    unnest(coalesce(p.proallargtypes, p.proargtypes::oid[]))
+                    with ordinality as u(t, n)
+            where true
+            """
+        )
+        .when(
+            schema_name != "*",
+            "and n.nspname = %(schema_name)s",
+            schema_name=schema_name,
+        )
+        .when(
+            routine_name != "*",
+            "and p.proname = %(routine_name)s",
+            routine_name=routine_name,
+        )
+        .add("order by n.nspname, p.proname, p.oid, u.n")
+    )
+
+    return await run_and_collect(
+        connection, builder.build(), RowWindow(offset=offset, limit=limit)
+    )
+
+
+@tool
+async def gp_sequences_describe(
+    connection: PgConnection,
+    schema_name: SchemaFilter,
+    sequence_name: Annotated[
+        str,
+        Field(min_length=1, description="Имя последовательности. `*` — все."),
+    ],
+    *,
+    offset: RowOffset,
+    limit: RowLimit,
+) -> SqlResult:
+    """Последовательности Greenplum из pg_class и information_schema.sequences.
+    cache и last_value не читаются и возвращаются как null.
+    Колонки: address, database, schema, name, type, start, minimum,
+    maximum, increment, cycle, cache, last_value, owned_by, comment.
+    Для широкой таблицы выдача приходит частями — как листать, сказано в note.
+    """
+    builder = (
+        PgQueryBuilder()
+        .add(
+            """
+        select
+            concat_ws('.', current_database(), n.nspname, c.relname) as address,
+            current_database()                                  as database,
+            n.nspname                                           as schema,
+            c.relname                                           as name,
+            'bigint'                                            as type,
+            s.start_value                                       as start,
+            s.minimum_value                                     as minimum,
+            s.maximum_value                                     as maximum,
+            s.increment                                         as increment,
+            (s.cycle_option = 'YES')                            as cycle,
+            null::bigint                                        as cache,
+            null::bigint                                        as last_value,
+            (select on_.nspname || '.' || oc.relname || '.' || oa.attname
+                from pg_catalog.pg_depend dep
+                    join pg_catalog.pg_class oc on oc.oid = dep.refobjid
+                    join pg_catalog.pg_namespace on_ on on_.oid = oc.relnamespace
+                    join pg_catalog.pg_attribute oa
+                        on oa.attrelid = dep.refobjid
+                    and oa.attnum = dep.refobjsubid
+                where dep.objid = c.oid
+                and dep.deptype = 'a'
+                and dep.classid = 'pg_class'::regclass
+                limit 1)                                        as owned_by,
+            pg_catalog.obj_description(c.oid, 'pg_class')       as comment
+        from pg_catalog.pg_class c
+            join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+            left join information_schema.sequences s
+                on s.sequence_schema = n.nspname
+            and s.sequence_name = c.relname
+        where c.relkind = 'S'
+            """
+        )
+        .when(
+            schema_name != "*",
+            "and n.nspname = %(schema_name)s",
+            schema_name=schema_name,
+        )
+        .when(
+            sequence_name != "*",
+            "and c.relname = %(sequence_name)s",
+            sequence_name=sequence_name,
+        )
+        .add("order by n.nspname, c.relname")
+    )
+
+    return await run_and_collect(
+        connection, builder.build(), RowWindow(offset=offset, limit=limit)
+    )
+
+
+@tool
+async def gp_types_describe(
+    connection: PgConnection,
+    schema_name: SchemaFilter,
+    type_name: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description="Имя типа. `*` — все пользовательские типы схемы.",
+        ),
+    ],
+    *,
+    offset: RowOffset,
+    limit: RowLimit,
+) -> SqlResult:
+    """Пользовательские типы Greenplum из pg_type: enum, domain,
+    composite, range. Каталоги совпадают с Postgres.
+    Колонки: address, database, schema, name, kind, owner, labels,
+    base_type, constraint, attributes, comment.
+    Для широкой таблицы выдача приходит частями — как листать, сказано в note.
+    """
+    builder = (
+        PgQueryBuilder()
+        .add(
+            """
+             select
+                concat_ws('.', current_database(), n.nspname, t.typname) as address,
+                current_database()                                 as database,
+                n.nspname                                          as schema,
+                t.typname                                          as name,
+                case t.typtype
+                    when 'e' then 'enum'
+                    when 'd' then 'domain'
+                    when 'c' then 'composite'
+                    when 'r' then 'range'
+                end                                                as kind,
+                pg_catalog.pg_get_userbyid(t.typowner)             as owner,
+                case when t.typtype = 'e' then array(
+                    select e.enumlabel from pg_catalog.pg_enum e
+                    where e.enumtypid = t.oid
+                    order by e.enumsortorder
+                ) end                                              as labels,
+                case when t.typtype = 'd'
+                    then pg_catalog.format_type(t.typbasetype, t.typtypmod) end
+                                                                as base_type,
+                case when t.typtype = 'd' then (
+                    select string_agg(
+                        pg_catalog.pg_get_constraintdef(dc.oid, true), ' ')
+                    from pg_catalog.pg_constraint dc
+                    where dc.contypid = t.oid
+                ) end                                              as constraint,
+                case when t.typtype = 'c' then coalesce((
+                    select json_agg(
+                        json_build_object(
+                            'name', a.attname::text,
+                            'type',
+                            pg_catalog.format_type(a.atttypid, a.atttypmod)::text)
+                        order by a.attnum)
+                    from pg_catalog.pg_attribute a
+                    where a.attrelid = t.typrelid
+                    and a.attnum > 0
+                    and not a.attisdropped
+                ), '[]'::json) end                                 as attributes,
+                pg_catalog.obj_description(t.oid, 'pg_type')       as comment
+            from pg_catalog.pg_type t
+                join pg_catalog.pg_namespace n on n.oid = t.typnamespace
+                left join pg_catalog.pg_class c on c.oid = t.typrelid
+            where t.typtype in ('e', 'd', 'c', 'r')
+            and (t.typtype <> 'c' or c.relkind = 'c')
+            """
+        )
+        .when(
+            schema_name != "*",
+            "and n.nspname = %(schema_name)s",
+            schema_name=schema_name,
+        )
+        .when(
+            type_name != "*",
+            "and t.typname = %(type_name)s",
+            type_name=type_name,
+        )
+        .add("order by n.nspname, t.typname")
+    )
+
+    return await run_and_collect(
+        connection, builder.build(), RowWindow(offset=offset, limit=limit)
+    )
+
+
+@tool
+async def gp_distribution_describe(
+    connection: PgConnection,
+    schema_name: SchemaFilter,
+    table_name: TableFilter,
+    *,
+    offset: RowOffset,
+    limit: RowLimit,
+) -> SqlResult:
+    """Политика распределения таблиц Greenplum из gp_distribution_policy.
+    Колонки: address, database, schema, relation, policy_type
+    (hash/random/replicated), distribution_key, distribution_opclass,
+    num_segments, distributed_by (каноническая строка
+    pg_get_table_distributedby). Без политики (view) — null.
+    Для широкой таблицы выдача приходит частями — как листать, сказано в note.
+    """
+    builder = (
+        PgQueryBuilder()
+        .add(
+            """
+            select
+                concat_ws('.', current_database(), n.nspname, c.relname) as address,
+                current_database()                                 as database,
+                n.nspname                                          as schema,
+                c.relname                                          as relation,
+                case
+                    when dp.policytype = 'r' then 'replicated'
+                    when dp.policytype = 'p' and cardinality(dp.distkey) = 0
+                        then 'random'
+                    when dp.policytype = 'p' then 'hash'
+                end                                                as policy_type,
+                (select array_agg(a.attname order by k.ord)
+                 from unnest(dp.distkey) with ordinality as k(attnum, ord)
+                     join pg_catalog.pg_attribute a
+                       on a.attrelid = c.oid and a.attnum = k.attnum
+                )                                                  as distribution_key,
+                (select array_agg(op.opcname order by k.ord)
+                 from unnest(dp.distclass) with ordinality as k(opclass, ord)
+                     join pg_catalog.pg_opclass op on op.oid = k.opclass
+                )                                           as distribution_opclass,
+                dp.numsegments                                     as num_segments,
+                case when dp.policytype is not null
+                     then pg_catalog.pg_get_table_distributedby(c.oid) end
+                                                                   as distributed_by
+            from pg_catalog.pg_class c
+                join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+                left join pg_catalog.gp_distribution_policy dp on dp.localoid = c.oid
+            where c.relkind in ('r', 'p')
+            """
+        )
+        .when(
+            schema_name != "*",
+            "and n.nspname = %(schema_name)s",
+            schema_name=schema_name,
+        )
+        .when(
+            table_name != "*",
+            "and c.relname like %(table_name)s",
+            table_name=table_name,
+        )
+        .add("order by n.nspname, c.relname")
+    )
+
+    return await run_and_collect(
+        connection, builder.build(), RowWindow(offset=offset, limit=limit)
+    )
+
+
 TOOLS: Final = ToolMain.toolset(
     pg_list_tables,
     pg_describe_table,
@@ -1466,6 +2300,19 @@ TOOLS: Final = ToolMain.toolset(
     pg_routine_arg_describe,
     pg_sequences_describe,
     pg_types_describe,
+    gp_address,
+    gp_query,
+    gp_database_describe,
+    gp_schema_describe,
+    gp_table_describe,
+    gp_column_describe,
+    gp_constraints_describe,
+    gp_indexes_describe,
+    gp_routines_describe,
+    gp_routine_arg_describe,
+    gp_sequences_describe,
+    gp_types_describe,
+    gp_distribution_describe,
 )
 
 if __name__ == "__main__":
