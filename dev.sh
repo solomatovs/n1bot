@@ -3,7 +3,7 @@
 # запускать через: source dev.sh
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONF="$DIR/build/chainlit/conf"
+CONF="$DIR/build/conf"
 
 unset PYTHONHOME
 unset PYTHONPATH
@@ -27,10 +27,10 @@ if [ -f "$CONF/ca-chain.crt" ]; then
   echo "dev: ca-chain = $CONF/ca-chain.crt"
 fi
 
-PACKAGES="make gcc python3-dev libkrb5-dev curl tar xz-utils gettext-base ca-certificates"
+PACKAGES="make gcc python3-dev libkrb5-dev curl tar xz-utils ca-certificates"
 
 NEED_PACKAGES=""
-for CMD in make gcc curl tar xz envsubst krb5-config; do
+for CMD in make gcc curl tar xz krb5-config; do
   if ! command -v "$CMD" > /dev/null; then
     NEED_PACKAGES="yes"
   fi
@@ -46,15 +46,15 @@ else
   apt-get install -y $PACKAGES
 fi
 
-export PATH="$DIR/build/chainlit/src/uv:$PATH"
+export PATH="$DIR/build/out/uv:$PATH"
 
-# python-oracledb в .venv идёт патченным колесом из build/chainlit/src/oracledb
+# python-oracledb в .venv идёт патченным колесом из build/out/oracledb
 # (find-links в pyproject); без него uv sync не соберёт окружение
-ORACLEDB_WHEELS="$DIR/build/chainlit/src/oracledb"
+ORACLEDB_WHEELS="$DIR/build/out/oracledb"
 
 if ! ls "$ORACLEDB_WHEELS"/oracledb-*.whl > /dev/null 2>&1; then
-  echo "dev: собираю колесо python-oracledb: make -C build/chainlit oracledb-wheel"
-  if ! make -C "$DIR/build/chainlit" oracledb-wheel; then
+  echo "dev: собираю колесо python-oracledb в $ORACLEDB_WHEELS"
+  if ! make -C "$DIR/build" "$ORACLEDB_WHEELS"; then
     echo "dev: колесо python-oracledb не собралось, .venv не готовится" >&2
     return 1 2> /dev/null || exit 1
   fi
@@ -70,11 +70,10 @@ OK=$?
 if [ $OK -eq 0 ]; then
   source "$DIR/.venv/bin/activate"
   # activate перезаписывает PATH, поэтому uv возвращаем обратно
-  export PATH="$DIR/build/chainlit/src/uv:$PATH"
+  export PATH="$DIR/build/out/uv:$PATH"
   echo "dev: окружение .venv активировано"
 else
   echo "dev: ошибка подготовки окружения (.venv не активировано)" >&2
 fi
 
-# BOBA_* сюда не тянем: их подключает launch.json через envFile.
-# в терминале при нужде: set -a; source .vscode/boba-debug.env; set +a
+# BOBA_* для отладки заданы в .vscode/launch.json.

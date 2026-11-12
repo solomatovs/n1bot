@@ -43,15 +43,14 @@ class StandError(Exception):
 
 class StandPaths(StrEnum):
     """Пути репозитория, которые стенд подставляет вместо рантайма релиза:
-    конфиги и базы приложений — деревья отладки debug/<приложение>, зависимости —
-    общий каталог runtime."""
+    конфиг — compose/conf, интерфейс — assets пакета, зависимости — build/out."""
 
-    BASE_CONFIG = "debug/chainlit/conf/config.toml"
-    STUDIO_BASE_CONFIG = "debug/studio/conf/config.toml"
-    CHAINLIT_BASE = "debug/chainlit"
-    STUDIO_BASE = "debug/studio"
-    SANDBOX = "runtime/sandbox"
-    MODELS = "runtime/models"
+    BASE_CONFIG = "compose/conf/config.toml"
+    CHAINLIT_BASE = "compose"
+    APP_ROOT = "packages/agents/boba-chainlit/assets"
+    SANDBOX = "build/out/sandbox"
+    MODELS = "build/out/models"
+    THIRD = "build/out/third"
     PACKAGES = "packages"
 
     def under(self, root: Path) -> Path:
@@ -104,51 +103,34 @@ class StandApp(StrEnum):
     """Приложения стенда: у каждого свой корень рантайма, конфиг, данные и порт."""
 
     CHAINLIT = "chainlit"
-    STUDIO = "studio"
 
     @property
     def module(self) -> str:
-        if self is StandApp.CHAINLIT:
-            return "boba.chainlit.main"
-
-        return "boba.studio"
+        return "boba.chainlit.main"
 
     @property
     def base(self) -> StandPaths:
-        if self is StandApp.CHAINLIT:
-            return StandPaths.CHAINLIT_BASE
-
-        return StandPaths.STUDIO_BASE
+        return StandPaths.CHAINLIT_BASE
 
     @property
     def base_config(self) -> StandPaths:
-        if self is StandApp.CHAINLIT:
-            return StandPaths.BASE_CONFIG
-
-        return StandPaths.STUDIO_BASE_CONFIG
+        return StandPaths.BASE_CONFIG
 
     @property
     def cgroup_base(self) -> str:
-        if self is StandApp.CHAINLIT:
-            return "/sys/fs/cgroup/boba.slice/boba-sandbox"
-
-        return "/sys/fs/cgroup/boba.slice/boba-sandbox-studio"
+        return os.environ.get(
+            "BOBA_CGROUP_BASE", "/sys/fs/cgroup/boba.slice/boba-sandbox"
+        )
 
     @property
     def ready_path(self) -> str:
         """Путь готовности под префиксом приложения."""
-        if self is StandApp.CHAINLIT:
-            return "/"
-
-        return "/api/openapi.json"
+        return "/"
 
     @property
     def data_layer_section(self) -> str:
         """Секция конфига со схемой хранения приложения."""
-        if self is StandApp.CHAINLIT:
-            return "data_layer"
-
-        return "automation"
+        return "data_layer"
 
 
 @dataclass
@@ -247,11 +229,9 @@ class StandConfig:
 
         self._use_fake_llm(doc)
         self._use_test_profiles(doc)
-        self._use_catalog_roles(doc)
         self._use_test_database(doc)
         self._use_local_storage(doc)
         self._use_local_auth(doc)
-        self._use_studio(doc)
         self._use_sandbox_artifacts(doc)
         self._shrink_pools(doc)
 
@@ -296,6 +276,10 @@ class StandConfig:
 
         env = dict(os.environ)
         env["BOBA_BASE"] = str(self.app.base.under(REPO_ROOT))
+        env["BOBA_APP_ROOT"] = str(StandPaths.APP_ROOT.under(REPO_ROOT))
+        env["BOBA_MODELS"] = str(StandPaths.MODELS.under(REPO_ROOT))
+        env["BOBA_SANDBOX"] = str(StandPaths.SANDBOX.under(REPO_ROOT))
+        env["BOBA_THIRD"] = str(StandPaths.THIRD.under(REPO_ROOT))
         env["BOBA_DATA"] = str(data_dir)
         env["BOBA_CGROUP_BASE"] = self.app.cgroup_base
         env["BOBA_PORT"] = str(self.app_port)
@@ -312,16 +296,6 @@ class StandConfig:
         env.pop("KRB5_CLIENT_KTNAME", None)
         env.pop("KRB5CCNAME", None)
         return env
-
-    @staticmethod
-    def _use_catalog_roles(doc: MutableMapping[str, Any]) -> None:
-        """Каталог стенда studio: DEV читает, ADM правит; у chainlit секция
-        [catalog] — лишь подключение инструмента снятия, ролей там нет."""
-        if "studio" not in doc:
-            return
-
-        doc["catalog"]["view_roles"] = ["DEV"]
-        doc["catalog"]["edit_roles"] = ["ADM"]
 
     def _use_fake_llm(self, doc: MutableMapping[str, Any]) -> None:
         """Провайдер стенда: fake llm процесса тестов вместо секций [llm] конфига."""
@@ -457,16 +431,6 @@ class StandConfig:
             }
 
         doc["app"]["auth"] = providers
-
-    @staticmethod
-    def _use_studio(doc: MutableMapping[str, Any]) -> None:
-        """Студия стенда: сборка страницы из dist конфига, слушает все адреса хоста."""
-        if "studio" not in doc:
-            return
-
-        # SSO-тесты ходят доменным именем площадки, оно резолвится в адрес хоста
-        doc["studio"]["host"] = "0.0.0.0"  # noqa: S104 — стенд, а не прод  # nosec B104
-        doc["studio"]["page"] = "built"
 
     def _use_sandbox_artifacts(self, doc: MutableMapping[str, Any]) -> None:
         """Стенд с песочницей берёт rootfs плагинов и workspace.ext4 из сборки."""

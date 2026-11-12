@@ -1,20 +1,22 @@
-(
-  set -eu
+#!/bin/bash
+set -eu
 
-  cd /mnt/store/alexeyk500/docker/compose/boba
-  PROJECT_DIR="$PWD"
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$PROJECT_DIR"
 
-  make -C "$PROJECT_DIR/build/chainlit" \
-    debug \
-    DEBUG_PORT=8611 \
-    DEBUG_PREFIX=/alexeyk500/boba-debug
+unset PYTHONHOME PYTHONPATH
+export PYTHONUNBUFFERED=1
+export PATH="$PROJECT_DIR/.venv/bin:$PATH"
+export KRB5_CONFIG="$PROJECT_DIR/compose/conf/krb/krb5.conf"
+export BOBA_BASE="$PROJECT_DIR/compose"
+export BOBA_APP_ROOT="$PROJECT_DIR/packages/agents/boba-chainlit/assets"
+export BOBA_DATA="$PROJECT_DIR/compose/data"
+export BOBA_MODELS="$PROJECT_DIR/build/out/models"
+export BOBA_PORT="${BOBA_PORT:-8601}"
+export BOBA_URL_PREFIX="${BOBA_URL_PREFIX:-/boba}"
+export BOBA_INSTANCE_ID=dev
+export BOBA_MESSAGING=local
+export BOBA_TOOL_LAUNCHER=process
 
-  export PATH="$PROJECT_DIR/.venv/bin:$PROJECT_DIR/runtime/third/bin:$PATH"
-  export LD_LIBRARY_PATH="$PROJECT_DIR/runtime/third/lib"
-
-  cd "$PROJECT_DIR/debug/chainlit"
-
-  "$PROJECT_DIR/.vscode/python-debug-slice.sh" \
-    "$PROJECT_DIR/packages/agents/boba-chainlit/src/boba/chainlit/main.py" \
-    --config "$PROJECT_DIR/debug/chainlit/conf/config.toml"
-)
+exec "$PROJECT_DIR/.venv/bin/python" -m boba.chainlit.main \
+  --config "$PROJECT_DIR/compose/conf/config.toml" "$@"

@@ -38,9 +38,9 @@ from boba.toolkit.protocol import REPLY, ReplyOk
 from boba.toolkit.stream import Chunk
 
 REPO = Path(__file__).resolve().parents[5]
-SANDBOX = REPO / "runtime" / "sandbox"
+SANDBOX = REPO / "build" / "out" / "sandbox"
 ROOTFS_IMAGE = SANDBOX / "plugins" / "boba-tool-shell" / "rootfs.ext4"
-FUSE2FS = REPO / "runtime" / "third" / "bin" / "fuse2fs"
+FUSE2FS = REPO / "build" / "out" / "third" / "bin" / "fuse2fs"
 
 TESTS_DIR = str(Path(__file__).resolve().parent)
 
@@ -48,7 +48,7 @@ needs_bwrap = pytest.mark.skipif(
     shutil.which("bwrap") is None or not ROOTFS_IMAGE.exists() or not FUSE2FS.exists(),
     reason=(
         "нет bwrap или артефактов песочницы "
-        "(собрать: make fetch sandbox plugin-rootfs-all)"
+        "(собрать: make -C build fetch all)"
     ),
 )
 needs_userns = pytest.mark.skipif(

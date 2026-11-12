@@ -18,14 +18,12 @@ CLAUDE.md
 
 /release/
 /debug/
-/runtime/
-/compose/*/*
-!/compose/*/docker-compose.yml
-!/compose/*/docker-compose-test.yml
+/compose/*
+!/compose/docker-compose.yml
+!/compose/docker-compose-test.yml
 
 packages/**/build/
 packages/**/dist/
-!packages/agents/boba-studio/web/workflow/src/**
 
 .ruff_cache
 .pytest_cache
@@ -35,29 +33,20 @@ packages/**/dist/
 # ассеты — готовый app_root: debug-сессия читает их напрямую ([env].app_root конфига отладки)
 !/packages/agents/boba-chainlit/assets/.chainlit/
 
-/build/*/src/
-/build/*/test/__pycache__/
+/build/src/
 /sec/semgrep/
 
-# статика фронта: кладёт make fetch, в образ идёт из build/<app>/src/webassets
+# статика фронта: make fetch кладёт в build/src/webassets
 packages/agents/boba-chainlit/assets/public/vendor/
 
-# страница workflow: зависимости, кэши и сборка (собирает Dockerfile / make web)
-packages/agents/boba-studio/web/workflow/node_modules/
-packages/agents/boba-studio/web/workflow/.vite/
-packages/agents/boba-studio/web/workflow/openapi.json
-packages/agents/boba-studio/web/workflow/src/api/schema.d.ts
-packages/agents/boba-studio/web/workflow/.eslintcache
-packages/agents/boba-studio/web/workflow/coverage/
-packages/agents/boba-studio/web/workflow/*.tsbuildinfo
-packages/agents/boba-studio/assets/workflow/
+# страница Chainlit: зависимости, кэши и сборка (собирает Dockerfile / make web)
 packages/agents/boba-chainlit/web/page/node_modules/
 packages/agents/boba-chainlit/web/page/.vite/
 packages/agents/boba-chainlit/web/page/.eslintcache
 packages/agents/boba-chainlit/web/page/*.tsbuildinfo
 packages/agents/boba-chainlit/assets/public/page.js
 
-# страница каталога: зависимости, кэши и сборка (собирает Dockerfile / make web-catalog)
+# страница каталога: зависимости, кэши и сборка
 packages/agents/boba-chainlit/web/catalog/node_modules/
 packages/agents/boba-chainlit/web/catalog/.vite/
 packages/agents/boba-chainlit/web/catalog/src/api/schema.d.ts
@@ -66,3 +55,6 @@ packages/agents/boba-chainlit/web/catalog/*.tsbuildinfo
 packages/agents/boba-chainlit/assets/catalog/
 packages/agents/boba-chainlit/assets/ui/
 /docs/catalog.md
+
+# Локальные результаты сборки.
+/build/out/

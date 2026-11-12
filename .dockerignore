@@ -5,21 +5,23 @@
 !packages
 !build
 
-build/*/src/*
-!build/*/src/uv
-!build/*/src/webassets
-!build/*/src/*.tar.xz
-!build/*/src/chainlit-[0-9]*.tar.gz
-build/*/test
-build/*/packages
+build/src/*
+!build/src/webassets
+!build/src/*.tar.xz
+!build/src/chainlit-[0-9]*.tar.gz
+build/out/*
+!build/out/uv
+!build/out/sandbox
+build/out/sandbox/*
+!build/out/sandbox/plugins
+!build/out/sandbox/workspace.ext4
+build/out/sandbox/plugins/*/*
+!build/out/sandbox/plugins/*/rootfs.ext4
 
 **/__pycache__
 packages/**/*.egg-info
 packages/**/node_modules
 
-packages/agents/boba-studio/assets/workflow
-packages/agents/boba-studio/web/workflow/openapi.json
-packages/agents/boba-studio/web/workflow/src/api/schema.d.ts
 packages/agents/boba-chainlit/assets/public/page.js
 packages/agents/boba-chainlit/assets/public/vendor
 packages/agents/boba-chainlit/assets/ui

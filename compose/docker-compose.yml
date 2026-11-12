@@ -1,0 +1,63 @@
+name: chainlit
+
+x-runtime: &runtime
+  init: true
+  user: "${BOBA_UID}:${BOBA_GID}"
+  devices:
+    - /dev/fuse
+  security_opt:
+    - seccomp=./conf/seccomp-sandbox.json
+    - systempaths=unconfined
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  mem_limit: 16g
+  cpus: 8
+  pids_limit: 2048
+  restart: unless-stopped
+  stop_grace_period: 30s
+
+services:
+  chainlit:
+    <<: *runtime
+    image: boba-chainlit:0.0.28.dev1
+    hostname: chainlit
+    container_name: chainlit
+    networks:
+      default:
+        ipv4_address: ${BOBA_IP_ADDRESS}
+    env_file: ./conf/boba.env
+    volumes:
+      - ./conf:/app/boba/conf:ro
+      - ./conf/krb/krb5.conf:/etc/krb5.conf:ro
+      - ../build/out/models:/app/boba/models:ro
+      - ./data:/app/boba/data:rw
+      - ${BOBA_SANDBOX_CGROUP}:/cgroup:rw
+    ports:
+      - "8501"
+  
+  chainlit2:
+    <<: *runtime
+    image: boba-chainlit:0.0.28.dev1
+    hostname: chainlit2
+    container_name: chainlit2
+    networks:
+      default:
+        ipv4_address: ${BOBA_IP_ADDRESS_2}
+    env_file: ./conf/boba.env
+    environment:
+      BOBA_INSTANCE_ID: ${BOBA_INSTANCE_ID_2}
+    volumes:
+      - ./conf:/app/boba/conf:ro
+      - ./conf/krb/krb5.conf:/etc/krb5.conf:ro
+      - ../build/out/models:/app/boba/models:ro
+      - ./data:/app/boba/data:rw
+      - ${BOBA_SANDBOX_CGROUP}:/cgroup:rw
+    ports:
+      - "8501"
+
+
+networks:
+  default:
+    name: ${BOBA_NETWORK}
+    external: true

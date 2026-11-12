@@ -13,17 +13,12 @@ from typing import ClassVar
 
 from playwright.sync_api import Locator, Page
 
-from boba.stand.ui.stand import REPO_ROOT
-
 __all__ = ["Box", "Css", "Tokens", "close", "fluid", "no_horizontal_scroll"]
 
 
 class Tokens:
     """Токены tokens.css по темам; значения цветов — как их отдаёт getComputedStyle."""
 
-    PATH: ClassVar[Path] = (
-        REPO_ROOT / "packages/agents/boba-studio/web/workflow/src/styles/tokens.css"
-    )
     BLOCK: ClassVar[re.Pattern[str]] = re.compile(r"([^{}]+)\{([^{}]*)\}", re.S)
     TOKEN: ClassVar[re.Pattern[str]] = re.compile(r"--([a-z0-9-]+):\s*([^;]+);")
     LIGHT: ClassVar[str] = 'data-theme="light"'
@@ -33,11 +28,11 @@ class Tokens:
         self._light = light
 
     @classmethod
-    def load(cls) -> Tokens:
-        """Токены страницы studio из tokens.css."""
+    def load(cls, path: Path) -> Tokens:
+        """Токены страницы из указанного tokens.css."""
         dark: dict[str, str] = {}
         light: dict[str, str] = {}
-        for selector, body in cls.BLOCK.findall(cls.PATH.read_text(encoding="utf-8")):
+        for selector, body in cls.BLOCK.findall(path.read_text(encoding="utf-8")):
             target = light if cls.LIGHT in selector else dark
             for name, value in cls.TOKEN.findall(body):
                 target[name] = value.strip()

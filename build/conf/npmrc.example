@@ -1,0 +1,2 @@
+# registry=https://nexus.example.com/repository/npm-nodejs-external
+# cafile=/usr/local/share/ca-certificates/ca-chain.crt

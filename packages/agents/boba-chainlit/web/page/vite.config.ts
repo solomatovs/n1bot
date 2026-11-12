@@ -1,7 +1,7 @@
 import { defineConfig } from "vite";
 
 /** Скрипт страницы chainlit одним IIFE-файлом: сервер подставляет адреса в плейсхолдеры
- * и отдаёт его через custom_js; сборка кладётся в assets/public рядом с остальной статикой. */
+ * и отдаёт его через custom_js; для F5 сборка кладётся в assets/public пакета. */
 export default defineConfig({
   build: {
     outDir: "../../assets/public",

@@ -19,7 +19,6 @@ from psycopg import sql
 from psycopg.errors import InsufficientPrivilege
 
 from boba.catalog_service import CatalogConfig, CatalogTable
-from boba.catalog_service import ConnectionTable as SnapshotTable
 from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connections.manifest import ConnectionTypes
@@ -33,7 +32,6 @@ from boba.db.clickhouse.connection import ClickHouseConfig
 from boba.db.clickhouse.snapshot import ChSourceKind
 from boba.db.postgres import AsyncPostgresPool, PgQuery, PgQueryBuilder
 from boba.db.postgres.connection.config import PostgresConfig
-from boba.identity.session import UserMetadataField
 from boba.ix_core.database import IxDatabase
 from boba.runtime.config import DataLayerConfig
 from boba.stand.database import TestDatabase
@@ -142,7 +140,6 @@ class StandDatabase:
     }
 
     def __init__(self, app: StandApp, name: str) -> None:
-        self._app = app
         self._name = name
         self._built = StandLayers.compose(app.base_config.under(REPO_ROOT))
         layer = bind(self._built, path=app.data_layer_section, model=DataLayerConfig)
@@ -177,47 +174,6 @@ class StandDatabase:
                     .build()
                 )
                 await cur.execute(query.text, query.params)
-
-        # каталог живёт в studio: домен сносится схемой, таблицы приложения —
-        # поимённо, схема приложения общая с users; у chainlit секция
-        # [catalog] — лишь подключение инструмента снятия к домену
-        if self._app is StandApp.STUDIO:
-            catalog = bind(self._built, path="catalog", model=CatalogConfig)
-            async with self._pool() as pool, pool.cursor() as cur:
-                query = (
-                    PgQueryBuilder()
-                    .add(
-                        "drop schema if exists {schema} cascade",
-                        schema=sql.Identifier(catalog.db_schema),
-                    )
-                    .build()
-                )
-                await cur.execute(query.text, query.params)
-                for table in CatalogTable:
-                    query = (
-                        PgQueryBuilder()
-                        .add(
-                            "drop table if exists {table} cascade",
-                            table=sql.Identifier(catalog.app_schema, table.value),
-                        )
-                        .build()
-                    )
-                    await cur.execute(query.text, query.params)
-
-                for snapshot_table in SnapshotTable:
-                    query = (
-                        PgQueryBuilder()
-                        .add(
-                            "drop table if exists {table} cascade",
-                            table=sql.Identifier(
-                                catalog.app_schema, snapshot_table.value
-                            ),
-                        )
-                        .build()
-                    )
-                    await cur.execute(query.text, query.params)
-
-        await self._forget_studio_profiles()
 
     async def _ensure_database(self) -> None:
         maintenance = AsyncPostgresPool(self._maintenance)
@@ -258,24 +214,6 @@ class StandDatabase:
                 except InsufficientPrivilege as exc:
                     msg = f"{extension.manual_hint(self._name)}: {exc}"
                     raise StandError(msg) from exc
-
-    async def _forget_studio_profiles(self) -> None:
-        """Выбор профиля studio хранится на пользователе и пережил бы прогон."""
-        query = (
-            PgQueryBuilder(schema=sql.Identifier(self._schema))
-            .add(
-                "update {schema}.users set meta = meta - %(key)s where meta ? %(key)s",
-                key=UserMetadataField.STUDIO_PROFILE,
-            )
-            .build()
-        )
-        try:
-            async with self._pool() as pool, pool.cursor() as cur:
-                await cur.execute(query.text, query.params)
-        except Exception as exc:
-            # таблицы users ещё нет у чистой базы: приложение создаст её на старте
-            if "does not exist" not in str(exc):
-                raise
 
     def wipe_llm_settings(self) -> None:
         """Снимает сохранённые настройки LLM у всех пользователей базы."""

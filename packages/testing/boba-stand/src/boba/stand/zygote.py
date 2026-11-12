@@ -23,9 +23,9 @@ from boba.sandbox.zygote import (
 from boba.stand.shell import ShellRun
 
 REPO = Path(__file__).resolve().parents[6]
-SANDBOX = REPO / "runtime" / "sandbox"
+SANDBOX = REPO / "build" / "out" / "sandbox"
 ROOTFS_IMAGE = SANDBOX / "plugins" / "boba-tool-shell" / "rootfs.ext4"
-DEPLOY_BIN = REPO / "runtime" / "third" / "bin"
+DEPLOY_BIN = REPO / "build" / "out" / "third" / "bin"
 """Бинарные артефакты сборки: bwrap и fuse2fs из make sandbox."""
 
 

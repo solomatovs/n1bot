@@ -43,7 +43,6 @@ pythonpath = [
     "packages/core/boba-indexing/src",
     "packages/infra/config/boba-config/src",
     "packages/core/boba-toolkit/src",
-    "packages/agents/boba-studio/src",
     "packages/agents/boba-chainlit/src",
     "packages/tools/boba-tool-shell/src",
     "packages/tools/boba-tool-connections/src",
@@ -79,7 +78,7 @@ markers = [
 ]
 
 [tool.pyright]
-include = ["packages", "build/chainlit/test", "build/studio/test"]
+include = ["packages", "build/scripts"]
 exclude = [
     ".venv",
     "**/node_modules",
@@ -129,7 +128,6 @@ extraPaths = [
     "packages/core/boba-indexing/src",
     "packages/infra/config/boba-config/src",
     "packages/core/boba-toolkit/src",
-    "packages/agents/boba-studio/src",
     "packages/agents/boba-chainlit/src",
     "packages/tools/boba-tool-shell/src",
     "packages/tools/boba-tool-connections/src",
@@ -241,7 +239,6 @@ boba-connection-broker = { workspace = true }
 boba-catalog-service = { workspace = true }
 boba-runtime = { workspace = true }
 boba-auth = { workspace = true }
-boba-studio = { workspace = true }
 boba-indexing       = { workspace = true }
 boba-toolkit        = { workspace = true }
 boba-tool-shell     = { workspace = true }
@@ -305,7 +302,7 @@ dev = [
 ]
 
 [tool.uv]
-find-links = ["build/chainlit/src/oracledb"]
+find-links = ["build/out/oracledb"]
 python-downloads = "never"
 python-preference = "only-system"
 environments = ["python_full_version >= '3.11' and python_full_version < '3.12' and sys_platform == 'linux'"]
