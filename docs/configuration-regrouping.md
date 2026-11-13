@@ -646,7 +646,7 @@ create table aid.sys_role_provider (
 
 Для анонимного LDAP-поиска в `credential`:
 `{"connection":{"bind":{"method":"anonymous"}}}`.
-Правила назначают роли по имени из `app_identity(kind='role')`;
+Правила назначают роли по имени из `sys_identity(kind='role')`;
 совпадение `deny=true` запрещает вход.
 Proxy-источник получает роли из проверенного утверждения.
 
@@ -701,7 +701,7 @@ create table aid.sys_oauth_client (
 его утверждение о пользователе. В БД непустой `credential` шифруется целиком:
 `{"ciphertext":"<fernet>"}`.
 
-Подтверждённый логин сопоставляется с `app_identity(kind='user')`.
+Подтверждённый логин сопоставляется с `sys_identity(kind='user')`.
 Пользователи, членство и прикладные grants остаются в `app_`.
 
 ## DDL таблиц приложения (общие таблицы для приложений aid, boba, mcp)
@@ -725,13 +725,13 @@ grants связывает запись пользователей (роли, к�
 
 
 ```sql
--- таблица пользователей, ролей, команд и внутренних служб приложения.
+-- таблица пользователей, ролей, команд
 -- на уровне таблицы нет различия между user, role, team, это все одни записи одного порядка, у которых сквозной id
 -- таблица выполнена в виде набора идентификаторов c name
--- членство identity в другом identity задаётся через app_identity_member, там по сути храниться иерархия identity
+-- членство identity в другом identity задаётся через sys_identity_member, там по сути храниться иерархия identity
 -- это можно использовать что-бы в приложении создавать identity, которые будут выступать как роли или команды
 -- но по факту, это обычные identity. Различие будет наблюдаться лишь в наборе grants
-create table aid.app_identity (
+create table aid.sys_identity (
    id          bigserial   not null,
    -- имя уникально среди всех identity
    name        varchar     not null check (length(name) > 0),
@@ -739,34 +739,34 @@ create table aid.app_identity (
    updated_at  timestamptz not null default now(),
    primary key (id)
 );
-create unique index uk_app_identity_name on aid.app_identity(name);
+create unique index uk_sys_identity_name on aid.sys_identity(name);
 
 -- таблица содержит вложение identity друг в друга
 -- роли, команды, пользователи
-create table aid.app_identity_member (
+create table aid.sys_identity_member (
    id             bigserial   not null,
    -- identity_id команды, в которую входит member_id (тут имеется ввиду все что угодно, это может быть роль, команда и любая другая группирующая identity_id которую создали что бы быть командой)
-   team_id        bigint      not null references aid.app_identity (id),
+   team_id        bigint      not null references aid.sys_identity (id),
    -- identity_id участника команды
-   member_id      bigint      not null references aid.app_identity (id),
+   member_id      bigint      not null references aid.sys_identity (id),
    created_at     timestamptz not null default now(),
    updated_at     timestamptz not null default now(),
    check (member_id <> team_id),
    
    primary key (id)
 );
-create unique index uk_app_identity_member on aid.app_identity_member(team_id, member_id);
+create unique index uk_sys_identity_member on aid.sys_identity_member(team_id, member_id);
 
 
--- таблица app_grant содержит взаимосвязи, которые означают "какие права выданы объекту"
-create table aid.app_grant (
+-- таблица sys_grant содержит взаимосвязи, которые означают "какие права выданы объекту"
+create table aid.sys_grant (
    id             bigserial   not null,
    -- получаетль прав
    -- identity содержит название таблицы в которой есть identity_id указывающий на полчателя прав
    -- обычно получатель прав это одна из записей в таблице identity
    identity_id    bigint      not null,
    -- право (разрешение) которое выдано
-   access         varchar     not null check (grant in ('can_read', 'can_use', 'can_edit', 'can_delete', 'can_create')),
+   access         varchar     not null check (access in ('can_read', 'can_use', 'can_edit', 'can_delete', 'can_create', 'can_grant')),
    -- объект, на который выдается разрешение
    taget          varchar     not null,
    -- id объекта, на который выдается разрешение
@@ -778,14 +778,14 @@ create table aid.app_grant (
 
    primary key (id)
 );
-create index idx_app_grant_identity_target_target_id on aid.app_grant(identity_id, access, target, target_id) using (enable);
+create index idx_sys_grant_identity_target_target_id on aid.sys_grant(identity_id, access, target, target_id) using (enable);
 
 
--- Таблица возможностей - описывает набор возможностей, которые не являются явными объектами
--- например возможность авторизоваться, возможность создать пользователя, возможность создать connection, возможность создать skill
--- Возможности перечислены в таблице capability
--- Так как возможности записываются в таблице, то их можно выдать через таблицу grant (через связывание в таблице grants)
-create table aid.app_capability (
+-- Реестр возможностей приложения, например connection, skill, auth.login.
+-- Конкретное действие задаётся в sys_grant.access: can_create, can_use и т. д.
+-- Grant на capability позволяет проверить право, когда конкретного объекта ещё нет
+-- или действие не связано с отдельным прикладным объектом, например вход в приложение.
+create table aid.sys_capability (
    id          bigserial   not null,
    -- имя capability. Эти имена знает и приложение, поэтому может забрать id capability для проверки в таблице grants
    name        varchar     not null check (length(name) > 0),
@@ -795,7 +795,7 @@ create table aid.app_capability (
 
    primary key (id)
 );
-create unique index uk_app_capability on aid.app_capability(name);
+create unique index uk_sys_capability on aid.sys_capability(name);
 
 
 -- Когда создается новый объект очень часто нужно раздать права на объекты
@@ -804,7 +804,7 @@ create unique index uk_app_capability on aid.app_capability(name);
 -- Приложение не угадывает это, оно просто берет от сюда этот набор
 -- Наборы прав имеют имена, эти же имена должно использовать приложение, что бы выбирать корректные наборы
 -- Администратор системы может менять наборы default прав если захочет. Задача программиста продумать начальные значения и заполнить таблицу тем, что он считает значениями по умолчаиню
-create table aid.app_default_grant (
+create table aid.sys_default_grant (
    id             bigserial   not null,
    -- имена default grants, которые ищет приложение, что бы выдать их для identity.
    -- эти имена знает приложение (они будут перечислены в коде)
@@ -812,177 +812,141 @@ create table aid.app_default_grant (
    name           varchar     not null check (length(name) > 0),
    -- получатель прав в виде псевдонима для объекта, которому выдаются права
    -- псевдоним нужен потому что конкретный объект известен только в момент совершения действия из capability
-   -- - own - объект, который воспользовался capability и создал объект
+   -- - creaator - объект, который воспользовался capability и создал объект
    -- - new - объект, который был создан тем, кто воспользовался capability
-   recipient   varchar     not null check (recipient in ('own', 'new')),
+   recipient   varchar     not null check (recipient in ('creaator', 'new')),
    -- здесь указываюся права, которые должны быть розданы в виде json сериализованного объекта
-   grants      jsonb       not null check (jsonb_typeof(credential) = 'object'),
+   grant       jsonb       not null check (jsonb_typeof(credential) = 'object'),
    description varchar     not null check (length(description) > 0),
    created_at  timestamptz not null default now(),
    updated_at  timestamptz not null default now(),
 
    primary key (id)
 );
-create unique index uk_app_default_grant on aid.app_default_grant(name, recipient);
+create unique index uk_sys_default_grant on aid.sys_default_grant(name, recipient);
 -- Пример:
 -- - Alice (identity_id = 10) создал postgres connection с именем pg (id = 1).
 -- В этом случае предполагается, что создателю объекта выдаются все права на этот объект.
--- Для того, что бы описать такие defaul права можно использовать следующую запись:
-insert into app_default_grants(name, recipient, target) values ("connection_create", "own", );
--- Предположим что создание connection это capability_id = 8
--- для выдачи прав будет использоваться полный набор:  [ "can_use", "can_edit", "can_read", "can_delete", "can_grant" ]
--- в поле recipient будет записано как: new
--- потому что это эти права мы выдает на вновь создаваемый объект
--- получается что в таблицу app_grant будет выполнен insert:
-insert into app_grant(identity_id, access, target, target_id, enable) values
-   (10, "can_use",      1, "connection", 1, true),
-   (10, "can_edit",     1, "connection", 1, true),
-   (10, "can_read",     1, "connection", 1, true),
-   (10, "can_delete",   1, "connection", 1, true),
-   (10, "can_grant",    1, "connection", 1, true)
-on conflict (identity_id, access, target, target_id)
-do update
-set enable = true,
-      updated_at = now()
-;
--- Другой пример:
--- - Bob (identity_id = 11) создал другую роль с именем n1 (identity_id = 90).
--- В этом случае предполагается, что права выдаются 
+-- Для того, что бы описать такие права можно использовать следующую запись в таблице default_grant:
+insert into sys_default_grant(name, recipient, grant, description) values 
+(
+   "connection_create",
+   "creaator",
+   [ "can_use", "can_edit", "can_read", "can_delete", "can_grant" ],
+   "Права для владельца конекшина"
+);
+-- здесь connection_create это именованое действие, которое храниться как в коде приложения, так и в базе данных.
+-- Приложение ничего не знает о том, какие права надо выдавать в случае connection_create.
+-- его задача спросить ролевую модель об этом и просто выдать эти права.
+-- поэтому приложение запрашивает действие "connection_create" для "creaator" (для того, кто создал объект) в ролевой модели и получает в ответ: [ "can_use", "can_edit", "can_read", "can_delete", "can_grant" ]
+-- если права не вернулись или пустой массив прав, то права не выдаются
 ```
 
 ### Действия и единая проверка grants
 
 **Возможные grants**
 
-Grant разрешает `recipient_id` (user, role, team, service) выполнить `action` (действие) над объектом `target_id`.
+Grant разрешает `identity_id` выполнить действие `access` над объектом, указанным в `target` и `target_id`.
 
-| `action`     | Что разрешает на объекте `target_id`                                                                                         |
-| ------------ | ---------------------------------------------------------------------------------------------------------------------------- |
-| `can_view`   | Прочитать данные объекта; пароли и токены остаются скрыты.                                                                   |
-| `can_use`    | Использовать ресурс: отправить запрос через connection, применив credentials; для capability — выполнить указанную операцию. |
-| `can_edit`   | Изменить объект; добавить участника в role/team, добавить или выбрать версию prompt/skill.                                   |
-| `can_delete` | Удалить объект, например prompt/skill, connection или сессию. Убрать участника из role/team — по этому праву на группу.      |
-| `can_grant`  | Выдать grant на объект. Нужно также иметь само выдаваемое право на этот объект.                                              |
-| `can_revoke` | Отозвать grant на объект. Нужно также иметь само отзываемое право на этот объект.                                            |
+| `access`     | Что разрешает                                                                                                               |
+| ------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| `can_create` | Создать новый объект соответствующего вида. Выдаётся на capability, поскольку ID нового объекта ещё нет.                     |
+| `can_read`   | Прочитать данные объекта; пароли и токены остаются скрыты.                                                                    |
+| `can_use`    | Использовать конкретный ресурс, например connection или credentials; на capability — воспользоваться указанной возможностью. |
+| `can_edit`   | Изменить объект; добавить участника в role/team, добавить или выбрать версию prompt/skill.                                    |
+| `can_delete` | Удалить объект, например prompt/skill, connection или сессию. Убрать участника из role/team — по этому праву на группу.       |
+| `can_grant`  | Выдать grant на объект, в том числе на capability. Нужно также иметь само выдаваемое право на этот объект.                    |
 
 **Возможные capabilities**
 
-Capability разрешает `recipient` выполнять `capability` (действие)
+Capability — именованная возможность приложения. Сама запись в `sys_capability`
+не даёт разрешения: grant связывает `identity_id` с этой записью и задаёт `access`.
+Так проверяются действия, для которых ещё нет конкретного объекта или он не нужен:
+создание нового connection, создание роли, вход в приложение, вызов инструментов.
 
-отличие от grants заключается в том, что нет явного объекта, с которым можно выполнить действие.
-К примеру как через grant:
-- выдать право на авторизацию?
-- создать connection?
-- создать роль?
-ну и так далее.
+Имя обозначает возможность, а `access` — действие:
+- `connection` + `can_create`
+- `skill` + `can_create`
+- `auth.login` + `can_use`
 
-У capability изначально нет объекта, на который мы можем выдать право. Однако система прав выстроена так, что бы можно было проверять права единным способом.
-А это значит, что даже у таких эфимерных прав должен быть объект в базе, с конкретным `ident_id` к которому можно обратиться и проверить право.
-Соответственно была придумана отдельная таблица таких эфимерных прав - `app_capability`, каждая строка которой теперь обладает конкретным сквозным `ident_id`.
-И это значит, что теперь можно выдавать grant на любую строку в этой таблице для любого пользователя.
+В таблице перечислены возможности целевой модели и права на их выполнение.
+Это каталог допустимых действий, а не права, автоматически выдаваемые пользователям.
 
-Каждая capability — строка `app_capability` это разрешение для `recipient` выполнить действие `action` (действие) указанное в `app_capability.name`.
-
-| `app_capability.name`        | Приложение     | Что разрешает `can_use` на эту capability                                                        |
-| ---------------------------- | -------------- | ------------------------------------------------------------------------------------------------ |
-| `auth.login`                 | AID, BOBA, MCP | Войти в приложение.                                                                              |
-| `auth.login.<name>` | AID, BOBA, MCP | Войти через указанный `sys_auth_provider.name`; также нужен `can_use` на `auth.login`.                |
-| `connection.create`          | AID, BOBA, MCP | Создать connection.                                                                              |
-| `auth.create`                | AID, BOBA, MCP | Добавить credentials в `app_auth`.                                                               |
-| `session.create`             | AID, BOBA, MCP | Создать исходящую `app_session`; также нужен `can_use` на connection и используемые credentials. |
-| `identity.user.create`       | AID, BOBA, MCP | Создать пользователя после проверки его credentials провайдером входа.                           |
-| `identity.role.create`       | AID, BOBA, MCP | Создать роль.                                                                                    |
-| `identity.team.create`       | AID, BOBA, MCP | Создать команду.                                                                                 |
-| `prompt.create`              | AID            | Создать обычный prompt, в том числе шаблон.                                                      |
-| `system_prompt.create`       | AID            | Создать system prompt, в том числе шаблон.                                                       |
-| `skill.create`               | AID            | Добавить skill в реестр.                                                                         |
-| `memory.create`              | AID            | Создать запись memory; изменение чужого контекста также требует `can_edit` на него.              |
-| `mcp.create`                 | AID            | Добавить MCP-сервер в реестр.                                                                    |
-| `thread.create`              | AID, BOBA      | Создать thread для диалога.                                                                      |
-| `llm_provider.create`        | BOBA           | Добавить провайдера инференса.                                                                   |
-| `llm_model.create`           | BOBA           | Добавить модель; также нужен `can_edit` на её провайдер.                                         |
-| `tool.bash.execute`          | MCP            | Выполнять shell-инструменты в workspace пользователя.                                            |
-| `tool.doc.execute`           | MCP            | Вызывать инструменты обработки документов.                                                       |
-| `tool.web.execute`           | MCP            | Вызывать web-инструменты.                                                                        |
-| `tool.kb.execute`            | MCP            | Искать в настроенной базе знаний.                                                                |
-| `tool.pg.execute`            | MCP            | Вызывать инструменты работы с БД.                                                                |
-| `tool.ingest.execute`        | MCP            | Загружать данные в базу знаний.                                                                  |
-
+| `sys_capability.name`       | `access`     | Приложение     | Что разрешает grant на capability                                                                                         |
+| --------------------------- | ------------ | -------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `auth.login`                | `can_use`    | AID, BOBA, MCP | Войти в приложение после проверки credentials провайдером входа.                                                          |
+| `connection`                | `can_create` | AID, BOBA, MCP | Создать новый connection в `app_connection`.                                                                              |
+| `auth`                      | `can_create` | AID, BOBA, MCP | Добавить новые credentials в `app_auth`.                                                                                  |
+| `session`                   | `can_create` | AID, BOBA, MCP | Создать исходящую `app_session`; дополнительно нужен `can_use` на connection и используемые credentials.                  |
+| `identity.user`             | `can_create` | AID, BOBA, MCP | Создать новую identity пользователя после проверки его credentials провайдером входа.                                     |
+| `identity.role`             | `can_create` | AID, BOBA, MCP | Создать новую identity, используемую как роль.                                                                            |
+| `identity.team`             | `can_create` | AID, BOBA, MCP | Создать новую identity, используемую как команда.                                                                         |
+| `prompt`                    | `can_create` | AID            | Создать новый обычный prompt, в том числе шаблон, вместе с первой версией.                                                |
+| `system_prompt`             | `can_create` | AID            | Создать новый system prompt, в том числе шаблон, вместе с первой версией.                                                 |
+| `skill`                     | `can_create` | AID            | Добавить новый skill в реестр вместе с первой версией.                                                                    |
+| `memory`                    | `can_create` | AID            | Создать новую запись memory; запись в memory дополнительно требует `can_edit` на него.                                    |
+| `mcp`                       | `can_create` | AID            | Добавить новый MCP-сервер в реестр.                                                                                       |
+| `thread`                    | `can_create` | AID, BOBA      | Создать новый thread для диалога.                                                                                         |
+| `llm_provider`              | `can_create` | BOBA           | Добавить нового провайдера инференса.                                                                                     |
+| `llm_model`                 | `can_create` | BOBA           | Добавить новую модель в `llm_provider_model`; дополнительно нужен `can_edit` на её провайдер.                             |
 
 Право создать объект не даёт прав на созданный объект. После создания объекта, если не будут назначены права на него (вообще никакие)
 то этот объект останется без прав доступа вообще и даже создатель этого объекта не сможет к нему обратиться. В ролейвой системе нет понятия owner'а объекта.
-Набор прав по умолчанию хранится в `app_capability.payload` операции создания.
+Набор прав по умолчанию хранится в `sys_default_grants` для конкретного именованного действия. Именованое действие используется в приложении и по нему производиться поиск прав которые нужно раздать на объект, после создания объекта.
 Например, `connection.create.payload` перечисляет права создателя на новый connection.
 Пустой массив `[]` означает, что первоначальные grants не выдаются.
-
-Сервис проверяет запрошенное действие на выбранном объекте через `app_has_permissions`.
-Учитываются личные grants и grants через членство; достаточно одного действующего разрешения.
-Отключение одного grant не отменяет другие. Создание объекта и имя роли `admin` сами по себе прав не дают.
-`created_by` хранит автора для учёта, в проверке прав это поле не участвует.
-`can_edit` не разрешает менять grants: для выдачи нужен `can_grant`, для отзыва — `can_revoke`.
-
-Запросы выполняются в `READ COMMITTED`; шаги транзакции — на одном соединении.
-При ошибке или отказе — `ROLLBACK`. Проверка видит grants на начало своего SQL-запроса:
-уже начавшееся действие может завершиться после параллельного отзыва права.
-Следующий запрос увидит сохранённый отзыв; результат проверки между действиями не кэшируется.
-
-В примерах identity указаны по именам: `alice`, `bob`, `boba`, `dev`, `read`, `other`, `auth-service`.
-Запись `alice → dev → read` означает: Alice состоит в команде dev, а команда входит в роль read.
-ID по имени получают через `app_identity_id` и `app_capability_id`.
-У выбранных ресурсов используется их `id`; у credentials — `auth_id` выбранной сессии.
-Примеры ниже независимы.
 
 #### Найти ID по имени и имя по ID
 
 ```sql
 -- Имя identity → ID.
-create or replace function aid.app_identity_id(identity_name varchar)
+create or replace function aid.sys_identity_id(identity_name varchar)
 returns bigint
 language sql stable
 as $$
    select
       i.id
    from
-      aid.app_identity as i
+      aid.sys_identity as i
    where
       i.name = identity_name;
 $$;
 
 -- ID identity → имя.
-create or replace function aid.app_identity_name(identity_id bigint)
+create or replace function aid.sys_identity_name(identity_id bigint)
 returns varchar
 language sql stable
 as $$
    select
       i.name
    from
-      aid.app_identity as i
+      aid.sys_identity as i
    where
       i.id = identity_id;
 $$;
 
 -- Имя capability → ID.
-create or replace function aid.app_capability_id(capability_name varchar)
+create or replace function aid.sys_capability_id(capability_name varchar)
 returns bigint
 language sql stable
 as $$
    select
       c.id
    from
-      aid.app_capability as c
+      aid.sys_capability as c
    where
       c.name = capability_name;
 $$;
 
 -- ID capability → имя.
-create or replace function aid.app_capability_name(capability_id bigint)
+create or replace function aid.sys_capability_name(capability_id bigint)
 returns varchar
 language sql stable
 as $$
    select
       c.name
    from
-      aid.app_capability as c
+      aid.sys_capability as c
    where
       c.id = capability_id;
 $$;
@@ -990,10 +954,10 @@ $$;
 
 #### `app_principals`: найти identity и все группы, от которых она получает права
 
-`identity_id` — ID строки `app_identity`: пользователя, службы, роли или команды.
+`identity_id` — ID строки `sys_identity`: пользователя, службы, роли или команды.
 Функция возвращает этот ID и ID всех identity, в которые она входит напрямую
 или через другие группы.
-Членство берётся из `app_identity_member`.
+Членство берётся из `sys_identity_member`.
 Например, для пользователя вернутся он сам, его команда и роль этой команды.
 
 ```sql
@@ -1005,7 +969,7 @@ as $$
       select
          i.id
       from
-         aid.app_identity as i
+         aid.sys_identity as i
       where
          i.id = identity_id
       union
@@ -1013,7 +977,7 @@ as $$
          m.member_id
       from
          principals as p
-         join aid.app_identity_member as m on m.identity_id = p.id
+         join aid.sys_identity_member as m on m.identity_id = p.id
    )
    select
       id
@@ -1031,9 +995,9 @@ $$;
 
 ```sql
 select
-   aid.app_identity_name(p.id) as name
+   aid.sys_identity_name(p.id) as name
 from
-   aid.app_principals(aid.app_identity_id('alice')) as p;
+   aid.app_principals(aid.sys_identity_id('alice')) as p;
 ```
 
 Результат — имена `alice`, `dev`, `read`. Неизвестное имя даст пустой результат.
@@ -1044,7 +1008,7 @@ from
 
 | Аргумент      | Что передать                                                     |
 | ------------- | ---------------------------------------------------------------- |
-| `identity_id` | Чьи права проверяем, например `aid.app_identity_id('alice')`     |
+| `identity_id` | Чьи права проверяем, например `aid.sys_identity_id('alice')`     |
 | `targets`     | ID выбранных объектов, например connections `wiki` и `search`    |
 | `actions`     | Какие права нужны на эти объекты, например `{can_view,can_edit}` |
 
@@ -1077,12 +1041,12 @@ as $$
       from
          -- app_principals - возвращает всю иерархию наверх от identity_id
          aid.app_principals(identity_id) as p
-         join aid.app_grant as g on g.recipient_id = p.id
-         left join aid.app_capability as c on c.id = g.target_id
+         join aid.sys_grant as g on g.recipient_id = p.id
+         left join aid.sys_capability as c on c.id = g.target_id
       where 1=1
          and g.enable
          and g.target_id = any(targets)
-         -- У connection или промпта строки в app_capability нет — это допустимо.
+         -- У connection или промпта строки в sys_capability нет — это допустимо.
          -- can_use запрещён только при enable=false; NULL означает, что это не capability.
          and (g.action <> 'can_use' or c.enable is not false)
    )
@@ -1102,10 +1066,10 @@ $$;
 -- для поиска по имени можно использовать функции резолвинга по имени
 select
    aid.app_has_permissions(
-      aid.app_identity_id('boba'),
+      aid.sys_identity_id('boba'),
       array[
-         aid.app_capability_id('auth.login'),
-         aid.app_capability_id('auth.login.ldap')
+         aid.sys_capability_id('auth.login'),
+         aid.sys_capability_id('auth.login.ldap')
       ],
       array['can_use','can_use']::varchar[]
 ) as allowed;
@@ -1116,7 +1080,7 @@ select
 - у `read` есть `can_use` на connection `wiki`.
 - У `alice` есть `can_edit` на `wiki` и `can_use` на отключённую capability `auth.login.ldap`.
 
-| Проверка для `aid.app_identity_id('alice')` | Результат                        |
+| Проверка для `aid.sys_identity_id('alice')` | Результат                        |
 | ------------------------------------------- | -------------------------------- |
 | `can_use` на connection `wiki`              | `true`: право получено от `read` |
 | `can_use` и `can_edit` на connection `wiki` | `true`: разрешены оба действия   |
@@ -1133,8 +1097,8 @@ select
 
 | Аргумент       | Что передать                             |
 | -------------- | ---------------------------------------- |
-| `identity_id`  | Кто выдаёт право: его `app_identity.id`  |
-| `recipient_id` | Кому выдаём право: его `app_identity.id` |
+| `identity_id`  | Кто выдаёт право: его `sys_identity.id`  |
+| `recipient_id` | Кому выдаём право: его `sys_identity.id` |
 
 Результат: `true` — получатель допустим, `false` — нет.
 
@@ -1157,8 +1121,8 @@ $$;
 
 ```sql
 select aid.app_can_grant_to(
-   aid.app_identity_id('alice'),
-   aid.app_identity_id('dev')
+   aid.sys_identity_id('alice'),
+   aid.sys_identity_id('dev')
 ) as allowed;
 ```
 
@@ -1173,7 +1137,7 @@ select aid.app_can_grant_to(
 -- $2 — id выбранного connection с именем wiki.
 -- $3 — auth_id выбранной app_session для wiki.
 select aid.app_has_permissions(
-   aid.app_identity_id('alice'),
+   aid.sys_identity_id('alice'),
    array[$1, $2, $3]::bigint[],
    array['can_use', 'can_use', 'can_use']::varchar[]
 ) as allowed;
@@ -1206,7 +1170,7 @@ where 1=1
 ```
 
 Пример данных: connection `wiki` имеет `payload = {"host":"old.example"}`.
-В `$1` передаётся `aid.app_identity_id('alice')`, в `$2` — ID выбранного `wiki`.
+В `$1` передаётся `aid.sys_identity_id('alice')`, в `$2` — ID выбранного `wiki`.
 При наличии `can_view` возвращается эта строка; без права — пустой результат.
 
 ```sql
@@ -1228,7 +1192,7 @@ returning
 ```
 
 Пример данных: у `alice` есть `can_edit` на connection `wiki` с настройками `{"host":"old.example"}`.
-Параметры: `$1 = aid.app_identity_id('alice')`, `$2` — ID выбранного `wiki`, `$3 = {"host":"new.example"}`.
+Параметры: `$1 = aid.sys_identity_id('alice')`, `$2` — ID выбранного `wiki`, `$3 = {"host":"new.example"}`.
 Настройки обновляются; возвращается ID этого `wiki`. Без права строк в результате нет, настройки остаются прежними.
 
 #### Выдать одно право пользователю или группе
@@ -1238,7 +1202,7 @@ returning
 
 ```sql
 -- $1 — ID того, кто выдаёт право;
--- $2 — ID того, кому выдаём (app_identity.id).
+-- $2 — ID того, кому выдаём (sys_identity.id).
 -- $3 — ID объекта (app_ident.id);
 -- $4 — название права, например 'can_use'.
 with permitted as materialized (
@@ -1248,7 +1212,7 @@ with permitted as materialized (
          $1, array[$3, $3], array['can_grant', $4]::varchar[]
       ) and aid.app_can_grant_to($1, $2) as allowed
 ), saved as (
-   insert into aid.app_grant as g (id, recipient_id, target_id, action)
+   insert into aid.sys_grant as g (id, recipient_id, target_id, action)
    select
       nextval(pg_get_serial_sequence('aid.app_ident', 'id')),
       $2,
@@ -1256,7 +1220,7 @@ with permitted as materialized (
       $4
    from
       permitted as p
-      left join aid.app_grant as current_grant
+      left join aid.sys_grant as current_grant
          on current_grant.recipient_id = $2
          and current_grant.target_id = $3
          and current_grant.action = $4
@@ -1276,7 +1240,7 @@ with permitted as materialized (
    -- В app_ident записываем ID сохранённого grant: лишних строк после конфликта нет.
    -- Обе таблицы записываются одним SQL; ссылки проверяются в конце этого SQL.
    insert into aid.app_ident (id, kind)
-   select id, 'app_grant' from saved
+   select id, 'sys_grant' from saved
    on conflict (id) do nothing
 )
 select
@@ -1287,8 +1251,8 @@ from
 ```
 
 Пример данных: `alice → dev`; у `alice` есть `can_grant` и `can_use` на connection `wiki`.
-У `dev` этого grant ещё нет. Параметры: `$1 = aid.app_identity_id('alice')`,
-`$2 = aid.app_identity_id('dev')`, `$3` — ID выбранного `wiki`, `$4 = 'can_use'`.
+У `dev` этого grant ещё нет. Параметры: `$1 = aid.sys_identity_id('alice')`,
+`$2 = aid.sys_identity_id('dev')`, `$3` — ID выбранного `wiki`, `$4 = 'can_use'`.
 
 | Ситуация                                                             | Результат                      | Данные после запроса                                               |
 | -------------------------------------------------------------------- | ------------------------------ | ------------------------------------------------------------------ |
@@ -1301,11 +1265,11 @@ from
 #### Отключить одно выданное право
 
 ```sql
--- $1 — ID того, кто отзывает право; $2 — ID того, у кого отзываем (app_identity.id).
+-- $1 — ID того, кто отзывает право; $2 — ID того, у кого отзываем (sys_identity.id).
 -- $3 — ID объекта (app_ident.id); $4 — название отзываемого права.
 -- Для отзыва can_use нужны can_revoke и can_use на этом же объекте.
 update
-   aid.app_grant
+   aid.sys_grant
 set
    enable = false,
    updated_at = now()
@@ -1323,7 +1287,7 @@ returning
 ```
 
 Пример данных: у `alice` есть `can_revoke` и `can_use` на connection `wiki`.
-Параметры: `$1 = aid.app_identity_id('alice')`, `$2 = aid.app_identity_id('bob')`,
+Параметры: `$1 = aid.sys_identity_id('alice')`, `$2 = aid.sys_identity_id('bob')`,
 `$3` — ID выбранного `wiki`, `$4 = 'can_use'`.
 Grant, разрешавший `bob` использовать `wiki`, получает `enable=false`; возвращается ID этого grant.
 Без `can_revoke` или самого отзываемого права строка не меняется; `can_grant` их не заменяет.
@@ -1375,7 +1339,7 @@ with requested as materialized (
          (select bool_and(aid.app_can_grant_to($1, recipient_id)) from requested), false
       ) as allowed
 ), saved as (
-   insert into aid.app_grant as g (id, recipient_id, target_id, action)
+   insert into aid.sys_grant as g (id, recipient_id, target_id, action)
    select
       nextval(pg_get_serial_sequence('aid.app_ident', 'id')),
       r.recipient_id,
@@ -1384,7 +1348,7 @@ with requested as materialized (
    from
       requested as r
       cross join permitted as p
-      left join aid.app_grant as old
+      left join aid.sys_grant as old
          on old.recipient_id = r.recipient_id
          and old.target_id = r.target_id
          and old.action = r.action
@@ -1400,7 +1364,7 @@ with requested as materialized (
    returning id
 ), registered as (
    insert into aid.app_ident (id, kind)
-   select id, 'app_grant' from saved order by id
+   select id, 'sys_grant' from saved order by id
    on conflict (id) do nothing
 )
 select
@@ -1419,16 +1383,16 @@ commit;
 ```sql
 -- Только для этого SELECT: $1 — ID выбранного wiki, $2 — ID выбранного search.
 select jsonb_build_array(
-   jsonb_build_object('recipient_id', aid.app_identity_id('dev'),
+   jsonb_build_object('recipient_id', aid.sys_identity_id('dev'),
                      'target_id', $1::bigint, 'action', 'can_use'),
-   jsonb_build_object('recipient_id', aid.app_identity_id('read'),
+   jsonb_build_object('recipient_id', aid.sys_identity_id('read'),
                      'target_id', $2::bigint, 'action', 'can_use'),
-   jsonb_build_object('recipient_id', aid.app_identity_id('dev'),
+   jsonb_build_object('recipient_id', aid.sys_identity_id('dev'),
                      'target_id', $1::bigint, 'action', 'can_use')
 ) as grants;
 ```
 
-Выдачу выполняет `aid.app_identity_id('alice')`. Результат — `allowed=true, changed=2`:
+Выдачу выполняет `aid.sys_identity_id('alice')`. Результат — `allowed=true, changed=2`:
 `dev` получает `can_use` на `wiki`, `read` — на `search`; повтор первой записи не создаёт третью строку.
 Если не хватает права или `app_can_grant_to` вернула `false` хотя бы для одного получателя —
 `allowed=false, changed=0`: весь набор остаётся без изменений.
@@ -1442,7 +1406,7 @@ select jsonb_build_array(
 
 ```sql
 -- $1 — ID того, кто добавляет участника.
--- $2 — кого добавляем; $3 — куда добавляем (оба — app_identity.id).
+-- $2 — кого добавляем; $3 — куда добавляем (оба — sys_identity.id).
 -- $4 — список ID из первого SELECT (bigint[]); его заполняет само приложение.
 begin;
 
@@ -1451,10 +1415,10 @@ select id from aid.app_principals($3)
 union
 select $2;
 
--- 2. Все запросы изменения членства сначала блокируют эти строки app_identity.
+-- 2. Все запросы изменения членства сначала блокируют эти строки sys_identity.
 -- Берём их в порядке ID. Если какая-то строка уже удалена — ROLLBACK.
 select id
-from aid.app_identity
+from aid.sys_identity
 where id = any($4)
 order by id
 for no key update;
@@ -1475,15 +1439,15 @@ with permitted as materialized (
    ) as allowed
 ), allocated as (
    insert into aid.app_ident (kind)
-   select 'app_identity_member'
+   select 'sys_identity_member'
    where
       (select allowed from permitted)
       -- Участник $2 заблокирован: другой такой запрос подождёт. Повторную связь не создаём.
-      and (select count(*) from aid.app_identity_member
+      and (select count(*) from aid.sys_identity_member
            where identity_id = $2 and member_id = $3) = 0
    returning id
 ), inserted as (
-   insert into aid.app_identity_member (id, identity_id, member_id)
+   insert into aid.sys_identity_member (id, identity_id, member_id)
    select id, $2, $3 from allocated
    returning id
 )
@@ -1497,8 +1461,8 @@ commit;
 ```
 
 Пример данных: `dev → read`. У `auth-service` есть `can_edit` на `dev`.
-Для добавления Bob: `$1 = aid.app_identity_id('auth-service')`, `$2 = aid.app_identity_id('bob')`,
-`$3 = aid.app_identity_id('dev')`. В таблице заблокированные строки указаны по именам.
+Для добавления Bob: `$1 = aid.sys_identity_id('auth-service')`, `$2 = aid.sys_identity_id('bob')`,
+`$3 = aid.sys_identity_id('dev')`. В таблице заблокированные строки указаны по именам.
 
 | Добавление                                    | Заблокированные identity           | Результат                                                                    |
 | --------------------------------------------- | ---------------------------------- | ---------------------------------------------------------------------------- |
@@ -1514,15 +1478,15 @@ commit;
 
 ```sql
 -- $1 — ID того, кто убирает участника.
--- $2 — кого убираем; $3 — из какой группы (оба — app_identity.id).
+-- $2 — кого убираем; $3 — из какой группы (оба — sys_identity.id).
 -- Нужен can_delete на группу $3; сама группа и участник остаются.
 begin;
 
 -- Берём ту же блокировку участника, что и при добавлении
-select id from aid.app_identity where id = $2 for no key update;
+select id from aid.sys_identity where id = $2 for no key update;
 
 with removed as (
-   delete from aid.app_identity_member
+   delete from aid.sys_identity_member
    where
       identity_id = $2
       and member_id = $3
@@ -1542,9 +1506,9 @@ commit;
 ```
 
 Пример данных: связь `bob → dev`; у `auth-service` есть `can_delete` на `dev`.
-Параметры: `$1 = aid.app_identity_id('auth-service')`, `$2 = aid.app_identity_id('bob')`,
-`$3 = aid.app_identity_id('dev')`.
-Удаляются эта строка `app_identity_member` и её `app_ident`. После сохранения удаления
+Параметры: `$1 = aid.sys_identity_id('auth-service')`, `$2 = aid.sys_identity_id('bob')`,
+`$3 = aid.sys_identity_id('dev')`.
+Удаляются эта строка `sys_identity_member` и её `app_ident`. После сохранения удаления
 следующая проверка прав `bob` не учитывает связь с `dev`. Повтор ничего не меняет.
 
 #### Сохранить новую версию промпта и выбрать её для использования
@@ -1582,7 +1546,7 @@ commit;
 ```
 
 Пример данных: у промпта `summary` есть версии `{1,2,3}`, но `prompt.revision=1`.
-В `$1` передаётся `aid.app_identity_id('alice')`, в `$2` — ID выбранного `summary`.
+В `$1` передаётся `aid.sys_identity_id('alice')`, в `$2` — ID выбранного `summary`.
 Новая версия получит номер `4`, но приложение пока будет использовать `1`. Второй
 одновременный запрос дождётся первого и создаст версию `5`, а не вторую `4`. Для `skill_revision` действует тот же порядок.
 
@@ -1601,7 +1565,7 @@ returning id, revision;
 ```
 
 Пример данных: у промпта `summary` выбрана версия `1`, версия `4` существует;
-у `alice` есть `can_edit` на этот промпт. Параметры: `$1 = aid.app_identity_id('alice')`,
+у `alice` есть `can_edit` на этот промпт. Параметры: `$1 = aid.sys_identity_id('alice')`,
 `$2` — ID выбранного `summary`, `$3 = 4`. После запроса возвращаются ID `summary` и номер версии `4`.
 Без `can_edit` ничего не меняется. Если версии нет, БД вернёт ошибку ссылки;
 в общей транзакции отменится и добавление новой версии.
@@ -1623,7 +1587,7 @@ with removed_object as (
       and aid.app_has_permissions($1, array[$2], array['can_delete']::varchar[])
    returning id
 ), removed_grants as (
-   delete from aid.app_grant as g
+   delete from aid.sys_grant as g
    using removed_object as o
    where g.target_id = o.id
    returning g.id
@@ -1643,7 +1607,7 @@ commit;
 ```
 
 Пример данных: у connection `wiki` есть два grants — `can_delete` для `alice` и `can_use` для `dev`.
-Другие записи на этот connection не ссылаются. Параметры: `$1 = aid.app_identity_id('alice')`,
+Другие записи на этот connection не ссылаются. Параметры: `$1 = aid.sys_identity_id('alice')`,
 `$2` — ID выбранного `wiki`. Удаляются connection, оба grants и три строки `app_ident`;
 возвращается ID удалённого `wiki`.
 Если на `wiki` ссылается `app_session.connection_id`, БД отменяет всё удаление: connection ещё используется сессией.
@@ -1669,13 +1633,13 @@ commit;
 #### Выдать создателю начальные права на новый объект
 
 `app_apply_initial_grants` вызывается обработчиком сразу после создания объекта,
-в той же транзакции. Она вставляет обычные grants из `app_capability.payload`,
+в той же транзакции. Она вставляет обычные grants из `sys_capability.payload`,
 без сохранения их связи с capability. На существующий объект повторно набор не применяется.
 
 | Аргумент            | Что передать                                                                                     |
 | ------------------- | ------------------------------------------------------------------------------------------------ |
 | `capability_id`     | ID capability, по которой разрешено создание; запрос создания возвращает его вместе с ID объекта |
-| `recipient_id`      | ID создавшей объект identity, например `aid.app_identity_id('alice')`                            |
+| `recipient_id`      | ID создавшей объект identity, например `aid.sys_identity_id('alice')`                            |
 | `created_object_id` | ID только что созданного объекта из `RETURNING`                                                  |
 
 Результат — число добавленных или включённых grants; при `payload = []` — `0`.
@@ -1691,13 +1655,13 @@ returns integer
 language plpgsql
 as $$
 declare
-   capability aid.app_capability%rowtype;
+   capability aid.sys_capability%rowtype;
    changed_count integer;
 begin
    -- Читаем capability по тому же ID, который использовался при создании.
    -- До конца транзакции изменение её payload или enable подождёт.
    select * into capability
-   from aid.app_capability
+   from aid.sys_capability
    where id = capability_id
    for share;
 
@@ -1715,7 +1679,7 @@ begin
       select distinct r.action
       from jsonb_array_elements_text(capability.payload) as r(action)
    ), saved as (
-      insert into aid.app_grant as g (id, recipient_id, target_id, action)
+      insert into aid.sys_grant as g (id, recipient_id, target_id, action)
       select
          nextval(pg_get_serial_sequence('aid.app_ident', 'id')),
          app_apply_initial_grants.recipient_id,
@@ -1723,23 +1687,23 @@ begin
          a.action
       from
          actions as a
-         left join aid.app_grant as old
+         left join aid.sys_grant as old
             on old.recipient_id = app_apply_initial_grants.recipient_id
             and old.target_id = created_object_id
             and old.action = a.action
       where
          old.id is null or not old.enable
       order by a.action
-      -- CHECK/NOT NULL в app_grant отвергнут неверное действие и откатят создание.
+      -- CHECK/NOT NULL в sys_grant отвергнут неверное действие и откатят создание.
       -- При повторной вставке сохраняем прежний ID grant.
-      on conflict on constraint uk_app_grant_recipient_target_action do update
+      on conflict on constraint uk_sys_grant_recipient_target_action do update
          set enable = true, updated_at = now()
          where not g.enable
       returning id
    ), registered as (
       -- Регистрируем только ID сохранённых grants, без лишних строк после конфликта.
       insert into aid.app_ident (id, kind)
-      select id, 'app_grant' from saved order by id
+      select id, 'sys_grant' from saved order by id
       on conflict (id) do nothing
    )
    select count(*) into changed_count from saved;
@@ -1760,10 +1724,10 @@ $$;
 Изменение начальных прав требует `can_edit` на соответствующую capability:
 
 ```sql
--- $1 — ID того, кто меняет набор; $2 — app_capability.id, например app_capability_id('connection.create').
+-- $1 — ID того, кто меняет набор; $2 — sys_capability.id, например sys_capability_id('connection.create').
 -- $3 — JSON-массив названий action, например ["can_view", "can_use"].
 -- Перед UPDATE обработчик проверяет элементы; CHECK таблицы проверяет только тип массива.
-update aid.app_capability
+update aid.sys_capability
 set payload = $3, updated_at = now()
 where
    id = $2
@@ -1790,14 +1754,14 @@ with allocated as (
    where aid.app_has_permissions(
       $1,
       -- Неизвестное имя даёт NULL: проверка откажет, объект не появится.
-      array[aid.app_capability_id('connection.create')],
+      array[aid.sys_capability_id('connection.create')],
       array['can_use']::varchar[]
    )
    returning id
 )
 insert into aid.app_connection (id, created_by, name, kind, payload)
 select id, $1, $2, $3, $4 from allocated
-returning id, aid.app_capability_id('connection.create') as capability_id;
+returning id, aid.sys_capability_id('connection.create') as capability_id;
 
 -- Пустой RETURNING: ROLLBACK. Иначе id сохранить в $5, capability_id — в $6.
 -- Выдать автору права из payload этой capability; это часть разрешённого создания.
@@ -1809,8 +1773,8 @@ commit;
 
 Пример данных: у `alice` есть `can_use` на capability `connection.create`;
 `payload` этой capability содержит шесть прав из таблицы первоначального наполнения ниже.
-Вход: `$1 = aid.app_identity_id('alice')`, `name='wiki'`, `kind='web'`, `payload={"host":"wiki.example"}`.
-Создаётся connection `wiki`, его `created_by` равен `aid.app_identity_id('alice')`.
+Вход: `$1 = aid.sys_identity_id('alice')`, `name='wiki'`, `kind='web'`, `payload={"host":"wiki.example"}`.
+Создаётся connection `wiki`, его `created_by` равен `aid.sys_identity_id('alice')`.
 Автор получает шесть grants на новый connection. Оба ID из `RETURNING` передаются в `app_apply_initial_grants`.
 При `payload = []` connection сохраняется без grants; без действующей capability создание запрещено.
 Ошибка в наборе откатывает создание connection и всех выделенных строк `app_ident`.
@@ -1827,7 +1791,7 @@ with allocated as (
    select 'prompt'
    where aid.app_has_permissions(
       $1,
-      array[aid.app_capability_id('prompt.create')],
+      array[aid.sys_capability_id('prompt.create')],
       array['can_use']::varchar[]
    )
    returning id
@@ -1841,7 +1805,7 @@ with allocated as (
 -- Вставляем обе строки одним SQL, чтобы к проверке ссылок они уже существовали.
 insert into aid.prompt_revision (prompt_id, revision, description, content, created_by)
 select id, 1, $3, $4, $1 from created
-returning prompt_id, aid.app_capability_id('prompt.create') as capability_id;
+returning prompt_id, aid.sys_capability_id('prompt.create') as capability_id;
 
 -- Пустой RETURNING: ROLLBACK; иначе prompt_id сохранить в $5, capability_id — в $6.
 select aid.app_apply_initial_grants($6, $1, $5);
@@ -1849,9 +1813,9 @@ commit;
 ```
 
 Пример данных: у `alice` есть `can_use` на capability `prompt.create`.
-Вход: `$1 = aid.app_identity_id('alice')`, `name='summary'`,
+Вход: `$1 = aid.sys_identity_id('alice')`, `name='summary'`,
 `description='Краткое резюме'`, `content='Составь резюме документа.'`.
-Создаются промпт `summary` с `created_by = aid.app_identity_id('alice')`, `revision=1`
+Создаются промпт `summary` с `created_by = aid.sys_identity_id('alice')`, `revision=1`
 и первая `prompt_revision`. Grants автору выдаются из `prompt.create.payload`; при `[]` grants нет.
 Для системного промпта обработчик выбирает capability `system_prompt.create` и `kind='system_prompt'`.
 
@@ -1862,7 +1826,7 @@ commit;
 При повторном входе это членство автоматически не восстанавливается, начальные grants не выдаются.
 
 ```sql
--- $1 — app_identity.id службы входа, которая создаёт пользователя.
+-- $1 — sys_identity.id службы входа, которая создаёт пользователя.
 -- $2 — подтверждённое имя пользователя, например 'bob'.
 -- $3 — ID созданного или найденного пользователя; приложение заполнит его после SELECT.
 -- $4 — имя capability выбранного провайдера, например 'auth.login.ldap'.
@@ -1870,29 +1834,29 @@ commit;
 begin;
 
 with created as (
-   insert into aid.app_identity (id, name, kind)
+   insert into aid.sys_identity (id, name, kind)
    select
       nextval(pg_get_serial_sequence('aid.app_ident', 'id')),
       $2,
       'user'
    where aid.app_has_permissions(
       $1,
-      array[aid.app_capability_id('identity.user.create')],
+      array[aid.sys_capability_id('identity.user.create')],
       array['can_use']::varchar[]
    )
    -- Имя уникально для всех identity: два одновременных входа не создадут две записи.
    on conflict (name) do nothing
-   returning id, aid.app_capability_id('identity.user.create') as capability_id
+   returning id, aid.sys_capability_id('identity.user.create') as capability_id
 ), registered as (
    insert into aid.app_ident (id, kind)
-   select id, 'app_identity' from created
+   select id, 'sys_identity' from created
 )
 select id, capability_id from created;
 
 -- Если вернулась строка: created=true; id сохранить в $3, capability_id — в $5; следующий SELECT пропустить.
 -- Иначе: created=false; новый SELECT увидит запись после параллельного создания.
 select id
-from aid.app_identity
+from aid.sys_identity
 -- Это граница входа: совпадение имени с ролью не позволяет войти от её имени.
 where name = $2 and kind = 'user';
 -- Если строк нет — ROLLBACK.
@@ -1903,7 +1867,7 @@ select aid.app_apply_initial_grants($5, $1, $3);
 
 -- Только при created=true: добавить $3 в read запросами раздела «Добавить участника».
 -- Применяем их здесь, без вложенных BEGIN/COMMIT: исполнитель $1, участник $3,
--- родитель aid.app_identity_id('read'). Нужно can_edit службы на read.
+-- родитель aid.sys_identity_id('read'). Нужно can_edit службы на read.
 -- Роли из role_sources добавляет тот же обработчик проверки членства.
 -- Если ролей несколько, сначала блокируем общий список identity по возрастанию ID.
 -- Ошибка или отказ при назначении обязательной роли — ROLLBACK всей транзакции.
@@ -1911,7 +1875,7 @@ select aid.app_apply_initial_grants($5, $1, $3);
 -- Права на вход могут прийти от read или от других явных grants.
 select aid.app_has_permissions(
    $3,
-   array[aid.app_capability_id('auth.login'), aid.app_capability_id($4)],
+   array[aid.sys_capability_id('auth.login'), aid.sys_capability_id($4)],
    array['can_use', 'can_use']::varchar[]
 ) as allowed;
 
@@ -1922,7 +1886,7 @@ commit;
 
 Пример: `auth-service` имеет `can_use` на `identity.user.create` и `can_edit` на `read`.
 У `read` есть `can_use` на включённые `auth.login` и `auth.login.ldap`.
-Параметры: `$1 = aid.app_identity_id('auth-service')`, `$2 = 'bob'`, `$4 = 'auth.login.ldap'`.
+Параметры: `$1 = aid.sys_identity_id('auth-service')`, `$2 = 'bob'`, `$4 = 'auth.login.ldap'`.
 
 | Ситуация для `bob`                                       | Результат                                                                           |
 | -------------------------------------------------------- | ----------------------------------------------------------------------------------- |
@@ -1954,7 +1918,7 @@ commit;
 
 Общие capabilities для AID, BOBA и MCP. В таблице — grants `can_use` сверх grants `admin` выше:
 
-| `app_capability.name`                          | Получатель     | Разрешённая операция                                                |
+| `sys_capability.name`                          | Получатель     | Разрешённая операция                                                |
 | ---------------------------------------------- | -------------- | ------------------------------------------------------------------- |
 | `auth.login`                                   | `read`         | Вход в приложение                                                   |
 | `auth.login.<name>`                   | `read`         | Вход через конкретный первоначально настроенный `sys_auth_provider.name` |
@@ -1970,9 +1934,9 @@ commit;
 `auth.login.<name>` по имени провайдера. Новый провайдер требует новой capability
 и явных grants. Наличие capability не включает провайдер и не заменяет проверку credentials.
 
-Начальный `app_capability.payload` в каждой БД; каждое имя — отдельная строка:
+Начальный `sys_capability.payload` в каждой БД; каждое имя — отдельная строка:
 
-| `app_capability.name`                                              | `payload`: права создателя на новый объект                                     |
+| `sys_capability.name`                                              | `payload`: права создателя на новый объект                                     |
 | ------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
 | `connection.create`, `auth.create`                                 | `["can_view", "can_use", "can_edit", "can_delete", "can_grant", "can_revoke"]` |
 | `identity.role.create`, `identity.team.create`                     | `["can_view", "can_edit", "can_delete", "can_grant", "can_revoke"]`            |
@@ -1996,7 +1960,7 @@ commit;
 -- параметры connection к источнику
 create table aid.app_connection (
    id          bigint      not null references aid.app_ident (id),
-   created_by  bigint      not null references aid.app_identity (id), -- создавший пользователь
+   created_by  bigint      not null references aid.sys_identity (id), -- создавший пользователь
    name        varchar     not null check (length(name) > 0),
    kind        varchar     not null check (length(kind) > 0),
    payload     jsonb       not null check (jsonb_typeof(payload) = 'object'),
@@ -2029,7 +1993,7 @@ create index idx_app_connection_kind_name on aid.app_connection(kind, name);
 -- payload - все необходимое для совершения авторизации
 create table aid.app_auth (
    id          bigint      not null references aid.app_ident (id),
-   created_by  bigint      not null references aid.app_identity (id), -- создавший пользователь
+   created_by  bigint      not null references aid.sys_identity (id), -- создавший пользователь
    kind        varchar     not null check (length(kind) > 0),
    payload     jsonb       not null check (jsonb_typeof(payload) = 'object'),
    created_at  timestamptz not null default now(),
@@ -2054,7 +2018,7 @@ create table aid.app_session (
    id             bigint      not null references aid.app_ident (id),
    connection_id  bigint      not null references aid.app_connection (id),
    auth_id        bigint      null references aid.app_auth (id),
-   identity_id    bigint      null references aid.app_identity (id), -- identity, от имени которой установлена сессия; не даёт прав на неё
+   identity_id    bigint      null references aid.sys_identity (id), -- identity, от имени которой установлена сессия; не даёт прав на неё
    kind           varchar     not null check (length(kind) > 0),
    payload        jsonb       not null check (jsonb_typeof(payload) = 'object'),
    created_at     timestamptz not null default now(),
@@ -2116,7 +2080,7 @@ create table aid.app_session (
 | `mcp.create`           | Добавить MCP-сервер в реестр                                          | `can_use`         |
 | `thread.create`        | Создать thread                                                        | `can_use`         |
 
-| `app_capability.name`                                   | `payload`: права создателя на новый объект                                     |
+| `sys_capability.name`                                   | `payload`: права создателя на новый объект                                     |
 | ------------------------------------------------------- | ------------------------------------------------------------------------------ |
 | `prompt.create`, `system_prompt.create`, `skill.create` | `["can_view", "can_use", "can_edit", "can_delete", "can_grant", "can_revoke"]` |
 | `memory.create`, `mcp.create`, `thread.create`          | `["can_view", "can_use", "can_edit", "can_delete", "can_grant", "can_revoke"]` |
@@ -2135,7 +2099,7 @@ create table aid.app_session (
 -- это просто список доступных mcp с которыми взаимодействует пользователь.
 create table aid.mcp (
    id          bigint      not null references aid.app_ident (id),
-   created_by  bigint      not null references aid.app_identity (id), -- создавший пользователь
+   created_by  bigint      not null references aid.sys_identity (id), -- создавший пользователь
    name        varchar     not null check (length(name) > 0),
    description varchar     not null check (length(description) > 0),
    -- здесь храниться остальная информация о connection к mcp
@@ -2157,7 +2121,7 @@ grants выдаются на постоянные `id` из `prompt`, `skill`, `
 -- обычные и системные промпты; любой из них может быть шаблоном
 create table aid.prompt (
    id          bigint      not null references aid.app_ident (id),
-   created_by  bigint      not null references aid.app_identity (id),
+   created_by  bigint      not null references aid.sys_identity (id),
    -- prompt, system_prompt
    kind        varchar     not null check (length(kind) > 0),
    name        varchar     not null check (length(name) > 0),
@@ -2182,7 +2146,7 @@ create table aid.prompt_revision (
    template_engine varchar     null check (length(template_engine) > 0),
    -- JSON Schema входных параметров шаблона
    input_schema    jsonb       null check (jsonb_typeof(input_schema) = 'object'),
-   created_by      bigint      not null references aid.app_identity (id),
+   created_by      bigint      not null references aid.sys_identity (id),
    created_at      timestamptz not null default now(),
 
    primary key (prompt_id, revision),
@@ -2214,7 +2178,7 @@ alter table aid.prompt add constraint fk_prompt_revision
 -- скилы в общем реестре; одинаковые имена допустимы у разных авторов
 create table aid.skill (
    id          bigint      not null references aid.app_ident (id),
-   created_by  bigint      not null references aid.app_identity (id),
+   created_by  bigint      not null references aid.sys_identity (id),
    -- постоянное имя из SKILL.md, совпадает с именем папки скила
    name        varchar     not null check (length(name) between 1 and 64),
    -- выбранная версия; null, пока версия не выбрана
@@ -2242,7 +2206,7 @@ create table aid.skill_revision (
    -- остальные атрибуты frontmatter SKILL.md, извлечённые из архива
    payload        jsonb       not null default '{}'::jsonb
                               check (jsonb_typeof(payload) = 'object'),
-   created_by     bigint      not null references aid.app_identity (id),
+   created_by     bigint      not null references aid.sys_identity (id),
    created_at     timestamptz not null default now(),
 
    primary key (skill_id, revision)
@@ -2277,7 +2241,7 @@ alter table aid.skill add constraint fk_skill_revision
 -- отдельная изменяемая запись памяти: текст или структурированные данные
 create table aid.memory (
    id         bigint      not null references aid.app_ident (id),
-   created_by bigint      not null references aid.app_identity (id),
+   created_by bigint      not null references aid.sys_identity (id),
    -- область применения: пользователь, команда, thread, проект
    scope_id   bigint      not null references aid.app_ident (id),
    -- источник, если он зарегистрирован как объект приложения
@@ -2319,7 +2283,7 @@ create index idx_memory_created_by on aid.memory (created_by);
 При изменении памяти проверяется ожидаемая `revision`, счётчик увеличивается,
 `updated_at` обновляется. В обычную выдачу входят записи с `enable = true`
 и `expires_at is null or expires_at > now()`. `created_by` и `scope_id`
-не заменяют проверку доступа через `app_grant`.
+не заменяют проверку доступа через `sys_grant`.
 
 Чаты пользователей в chainlit
 к конкретному чату многое привязывается, 
@@ -2327,7 +2291,7 @@ create index idx_memory_created_by on aid.memory (created_by);
 ```sql
 create table aid.thread (
    id          bigint      not null references aid.app_ident (id),
-   created_by  bigint      not null references aid.app_identity (id), -- создавший пользователь
+   created_by  bigint      not null references aid.sys_identity (id), -- создавший пользователь
    name        varchar     not null check (length(name) > 0),
    created_at  timestamptz not null default now(),
    updated_at  timestamptz not null default now(),
@@ -2352,7 +2316,7 @@ create table aid.thread_
 | `llm_provider.create` | Добавить провайдера инференса                        | Не выдаётся       |
 | `llm_model.create`    | Добавить модель; также нужен `can_edit` на провайдер | Не выдаётся       |
 
-| `app_capability.name`                                      | `payload`: права создателя на новый объект                                     |
+| `sys_capability.name`                                      | `payload`: права создателя на новый объект                                     |
 | ---------------------------------------------------------- | ------------------------------------------------------------------------------ |
 | `thread.create`, `llm_provider.create`, `llm_model.create` | `["can_view", "can_use", "can_edit", "can_delete", "can_grant", "can_revoke"]` |
 
@@ -2365,8 +2329,8 @@ create table aid.thread_
 на строки journal отдельные grants не выдаются.
 
 ```sql
--- общие таблицы app_ident, app_identity, app_identity_member, app_capability,
--- app_grant, app_connection, app_auth, app_session
+-- общие таблицы app_ident, sys_identity, sys_identity_member, sys_capability,
+-- sys_grant, app_connection, app_auth, app_session
 -- и таблицы провайдеров входа создаются по описанию выше
 
 
@@ -2374,7 +2338,7 @@ create table aid.thread_
 -- created_by хранит автора; доступ любой identity задаётся только grants
 create table boba.thread (
    id          bigint      not null references boba.app_ident (id),
-   created_by  bigint      not null references boba.app_identity (id), -- создавший пользователь
+   created_by  bigint      not null references boba.sys_identity (id), -- создавший пользователь
    -- сюда можно записать любое имя для сессии
    -- acp протокол генерирует любое название и заполняет его
    name        varchar     not null check (length(name) > 0),
@@ -2424,7 +2388,7 @@ create index idx_journal_thread_updated_at on boba.journal(thread_id, updated_at
 -- а здесь информация о конкретном llm провайдере
 create table boba.llm_provider (
    id             bigint      not null references boba.app_ident (id),
-   created_by     bigint      not null references boba.app_identity (id), -- создавший пользователь
+   created_by     bigint      not null references boba.sys_identity (id), -- создавший пользователь
    name           varchar     not null check(length(name) > 0),
    payload        jsonb       not null check (jsonb_typeof(data) = 'object'),
    -- объект который используется как транспорт connection к llm провайдеру (например http транспорт)
@@ -2448,7 +2412,7 @@ create table boba.llm_provider (
 -- такие как temperature, top_k, context_size и прочие.
 create table boba.llm_provider_model (
    id                bigint      not null references boba.app_ident (id),
-   created_by        bigint      not null references boba.app_identity (id), -- создавший пользователь
+   created_by        bigint      not null references boba.sys_identity (id), -- создавший пользователь
    llm_provider_id   bigint      not null references llm_provider (id),
    name              varchar     not null check(length(name) > 0),
    -- здесь храняться все параметры, которые можно отправлять в инференс
