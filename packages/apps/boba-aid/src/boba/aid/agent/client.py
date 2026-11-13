@@ -858,7 +858,7 @@ class AgentLink:
 
         declared = None
         if cut is not None:
-            declared = cut.get(MetaKey.UP_TO_MESSAGE_ID.value)
+            declared = MetaKey.UP_TO_MESSAGE_ID.read(cut)
 
         return declared is True
 
@@ -874,10 +874,10 @@ class AgentLink:
         if meta is None:
             return False
 
-        if meta.get(BobaExtension.SESSION_RECORD.value) is not True:
+        if not BobaExtension.SESSION_RECORD.declared(meta):
             return False
 
-        return meta.get(BobaExtension.COMMANDS.value) is True
+        return BobaExtension.COMMANDS.declared(meta)
 
     def records_commands(self) -> bool:
         """Агент ведёт команды сессии в истории: пишет команды, которые чат
@@ -973,9 +973,10 @@ class AgentLink:
         capabilities = schema.ClientCapabilities(
             elicitation=elicitation,
             field_meta={
-                BobaExtension.TOOL_SOURCE.value: True,
-                BobaExtension.COMMANDS.value: True,
-                BobaExtension.HISTORY.value: True,
+                BobaExtension.TOOL_SOURCE.capability: True,
+                BobaExtension.COMMANDS.capability: True,
+                BobaExtension.HISTORY.capability: True,
+                BobaExtension.COMMAND_OUTCOME.capability: True,
             },
         )
 

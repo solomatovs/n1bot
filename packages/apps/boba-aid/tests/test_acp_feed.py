@@ -85,6 +85,7 @@ from boba.toolkit.result import (
     VisualResult,
 )
 from boba.toolkit.wire import JournalFeature, McpContent, ResultWire
+from boba.transport.acp.content import ContentBlocks
 from boba.transport.acp.protocol import (
     CommandApp,
     CommandFailure,
@@ -268,12 +269,10 @@ def _asked_call(call_id: str, args: dict[str, Any]) -> SessionUpdate:
 
 
 def _done(call_id: str, text: str, raw_output: Any) -> SessionUpdate:
-    content = schema.ContentToolCallContent(content=schema.TextContentBlock(text=text))
-
     return schema.SessionToolCallUpdate(
         tool_call_id=call_id,
         status="completed",
-        content=[content],
+        content=list(ContentBlocks.tool_result(raw_output, text)),
         raw_output=raw_output,
     )
 
@@ -2295,13 +2294,132 @@ class TestBlockDrawings:
         storage: LocalStorageClient,
         raw: Any,
         name: str = "mcp__boba__probe",
+        standard: bool = True,
     ) -> None:
         view = ChatView(THREAD, LiveSink(), "u-1", storage, TEXTS)
         updates = UpdateView(view, THREAD, RemoteJournals(), ToolMedia(SANDBOX_URL))
         await updates.apply(_question())
         await updates.apply(_call(CALL, name, {}))
-        await updates.apply(_done(CALL, "text for the model", raw))
+        if standard:
+            await updates.apply(_done(CALL, "text for the model", raw))
+        else:
+            await updates.apply(
+                schema.SessionToolCallUpdate(
+                    tool_call_id=CALL, status="completed", raw_output=raw
+                )
+            )
         await updates.finish_turn()
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("streamed", [False, True])
+    async def test_standard_media_without_raw_output_or_boba_extensions(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+        streamed: bool,
+    ) -> None:
+        body = b"standard ACP attachment"
+        data = base64.b64encode(body).decode("ascii")
+        blocks = [
+            {"type": "image", "data": data, "mimeType": "image/png"},
+            {"type": "audio", "data": data, "mimeType": "audio/wav"},
+            {
+                "type": "resource",
+                "resource": {
+                    "uri": "file:///report.pdf",
+                    "blob": data,
+                    "mimeType": "application/pdf",
+                },
+            },
+        ]
+        content = [
+            schema.ContentToolCallContent.model_validate(
+                {"type": "content", "content": b}
+            )
+            for b in blocks
+        ]
+        view = ChatView(THREAD, LiveSink(), "u-1", storage, TEXTS)
+        updates = UpdateView(view, THREAD, RemoteJournals(), ToolMedia(SANDBOX_URL))
+        await updates.apply(_question())
+        await updates.apply(
+            schema.SessionToolCallUpdate(tool_call_id=CALL, name="probe")
+        )
+        if streamed:
+            for item in content:
+                await updates.apply(
+                    schema.ToolCallContentChunkUpdate(tool_call_id=CALL, content=item)
+                )
+        else:
+            await updates.apply(
+                schema.SessionToolCallUpdate(tool_call_id=CALL, content=content)
+            )
+
+        await updates.apply(
+            schema.SessionToolCallUpdate(tool_call_id=CALL, status="completed")
+        )
+        await updates.finish_turn()
+
+        assert self._output(recorded) == ""
+        assert len(recorded.elements) == len(blocks)
+        for element, mime in zip(
+            recorded.elements,
+            ("image/png", "audio/wav", "application/pdf"),
+            strict=True,
+        ):
+            name = PurePosixPath(urlsplit(str(element["url"])).path).name
+            stored = ObjectKey(user_id="u-1", scope_id=THREAD, name=name)
+            assert element["url"] == CanvasFileUrl.path(stored, mime)
+            assert await get_bytes(storage, stored.render()) == body
+
+    @pytest.mark.anyio
+    async def test_content_replaces_chunks_and_overrides_raw_output(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        view = ChatView(THREAD, LiveSink(), "u-1", storage, TEXTS)
+        updates = UpdateView(view, THREAD, RemoteJournals(), ToolMedia(SANDBOX_URL))
+        await updates.apply(_question())
+        obsolete = schema.ContentToolCallContent(
+            content=schema.TextContentBlock(text="obsolete")
+        )
+        await updates.apply(
+            schema.ToolCallContentChunkUpdate(tool_call_id=CALL, content=obsolete)
+        )
+        await updates.apply(
+            schema.SessionToolCallUpdate(tool_call_id=CALL, content=None)
+        )
+        content = [
+            schema.ContentToolCallContent(
+                content=schema.TextContentBlock(text="standard result")
+            ),
+            schema.ContentToolCallContent(
+                content=schema.TextContentBlock(
+                    text="for the model only",
+                    annotations=schema.Annotations(audience=["assistant"]),
+                )
+            ),
+        ]
+        for item in content:
+            await updates.apply(
+                schema.ToolCallContentChunkUpdate(tool_call_id=CALL, content=item)
+            )
+
+        await updates.apply(
+            schema.SessionToolCallUpdate(
+                tool_call_id=CALL,
+                status="completed",
+                raw_output={"content": [{"type": "text", "text": "raw fallback"}]},
+            )
+        )
+        assert self._output(recorded) == "standard result"
+        # A later upsert replaces the completed result without opening another call.
+        await updates.apply(schema.SessionToolCallUpdate(tool_call_id=CALL, content=[]))
+        assert self._output(recorded) == ""
+        await updates.finish_turn()
+        assert "for the model only" not in json.dumps(recorded.frames)
 
     def _reply(self, *blocks: mt.ContentBlock) -> dict[str, Any]:
         reply = mt.CallToolResult(content=list(blocks))
@@ -2540,12 +2658,16 @@ class TestBlockDrawings:
 
         output = self._output(recorded)
         assert blob not in output
-        assert '"mimeType": "application/zip"' in output
         assert '"uri": "javascript:alert(1)"' in output
         assert '"mimeType": "image/png"' in output
         assert "not base64!" not in output
         assert output.startswith("```json\n")
-        assert not recorded.elements
+        assert len(recorded.elements) == 1
+        attached = recorded.elements[0]
+        name = PurePosixPath(urlsplit(str(attached["url"])).path).name
+        stored = ObjectKey(user_id="u-1", scope_id=THREAD, name=name)
+        assert name.endswith(".zip")
+        assert await get_bytes(storage, stored.render()) == b"zip-bytes-of-the-file"
 
     @pytest.mark.anyio
     async def test_http_link_is_an_attachment(
@@ -2597,7 +2719,7 @@ class TestBlockDrawings:
         пути чтения нет, она показывается неизвестным — своим JSON."""
         old = {"kind": "markdown", "text": "rows", "ok": True}
 
-        await self._drawn(runtime_stand, storage, old)
+        await self._drawn(runtime_stand, storage, old, standard=False)
 
         step = recorded.last()[_id(CALL, StepRole.TOOL)]
         assert json.loads(str(step.get(StepField.OUTPUT))) == old

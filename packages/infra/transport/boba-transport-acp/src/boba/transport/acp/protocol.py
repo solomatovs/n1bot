@@ -1,4 +1,4 @@
-"""Провод ACP v2 (alpha.8) агента и клиента поверх SDK acp.experimental.v2.
+"""Провод ACP v2 агента и клиента поверх SDK acp.experimental.v2.
 
 Расширение команд сессии (BobaExtension): клиент пишет в историю сессии
 команду, которую исполнил сам, и объявление своих команд запросом
@@ -41,7 +41,7 @@ from pydantic import BaseModel as StrictModel
 from pydantic import ConfigDict, Field, TypeAdapter, ValidationError
 
 from acp._transport import Transport
-from acp.connection import Connection, JsonValue
+from acp.connection import Connection, JsonValue, StreamObserver
 from acp.exceptions import RequestError
 from acp.experimental import v2
 from acp.experimental.v2 import (
@@ -234,13 +234,19 @@ class MetaKey(StrEnum):
     вопросов вызова — в `_meta` результата tools/call.
     """
 
-    UP_TO_MESSAGE_ID = "boba/upToMessageId"
-    QUESTION = "boba/question"
-    OTHER = "boba/other"
-    PREVIEW = "boba/preview"
-    SERVER = "boba/server"
-    TOOL = "boba/tool"
-    ELICITATIONS = "boba/elicitations"
+    UP_TO_MESSAGE_ID = "com.boba/upToMessageId"
+    QUESTION = "com.boba/question"
+    OTHER = "com.boba/other"
+    PREVIEW = "com.boba/preview"
+    SERVER = "com.boba/server"
+    TOOL = "com.boba/tool"
+    ELICITATIONS = "com.boba/elicitations"
+
+    def read(self, meta: dict[str, Any] | None) -> Any:
+        """Старые записи истории и клиенты использовали префикс `boba/`."""
+        if meta is None:
+            return None
+        return meta.get(self.value, meta.get(self.value.removeprefix("com.")))
 
 
 class ElicitationRound(BaseModel):
@@ -262,7 +268,8 @@ class ElicitationRound(BaseModel):
 
 class BobaExtension(StrEnum):
     """Расширения ACP boba: имена методов, виды уведомления `session/update` и
-    вид содержимого вызова.
+    вид содержимого вызова. Ключи capabilities._meta берутся из capability
+    и имеют reverse-DNS-префикс com.boba/, а не префикс имени метода.
 
     Команды сессии: агент объявляет их ключами SESSION_RECORD и COMMANDS
     (true) в `capabilities._meta` ответа initialize; клиент объявляет приём
@@ -283,6 +290,17 @@ class BobaExtension(StrEnum):
     COMMANDS = "_boba/commands"
     TOOL_SOURCE = "_boba/tool_source"
     HISTORY = "_boba/history"
+
+    @property
+    def capability(self) -> str:
+        """Ключ _meta с reverse-DNS; имя метода/вида остаётся с `_`."""
+        return self.value.replace("_boba/", "com.boba/", 1)
+
+    def declared(self, meta: dict[str, Any] | None) -> bool:
+        """Читаем также прежние объявления клиентов, пишем только новые."""
+        if meta is None:
+            return False
+        return meta.get(self.capability, meta.get(self.value)) is True
 
 
 class HistoryTurnEnd(BaseModel):
@@ -749,6 +767,10 @@ class AgentSide:
             return agent_factory(self, connection)
 
         self._sdk, self._router = AgentSideConnection.attach(attach, self._connection)
+
+    def observe(self, observer: StreamObserver) -> None:
+        """Наблюдение SDK: исходящие ответы уже отправлены транспортом."""
+        self._connection.add_observer(observer)
 
     async def __call__(
         self, method: str, params: JsonValue | None, is_notification: bool

@@ -7,8 +7,10 @@
 теми же правилами ChatView.derive_id, что и у сохранённой истории:
 вопрос и его ответы — id вопроса (`"{id}#{n}"` у n-го ответа хода),
 рассуждения — id сообщения ассистента, вызов и элемент — id вызова.
-Итог вызова — ответ сервера MCP в `rawOutput`: его блоки рисует лента по
-виду и MIME, ссылки на каналы журнала (по шаблону расширения журнала
+Итог вызова — стандартные блоки ACP в `content`: лента рисует их по
+виду и MIME без расширений boba. `rawOutput` дополняет их данными приложений
+и служит совместимостью со старыми уведомлениями без content.
+Ссылки на каналы журнала (по шаблону расширения журнала
 сервера) дают адрес журнала вызова. Журнал идущего вызова лента узнаёт
 сообщением шины JournalOpened: его шлёт ретранслятор чата, узнав журнал
 уведомлением сервера в потоке вызова. Что лента знает об инструменте
@@ -85,6 +87,7 @@ from boba.toolkit.dag import (
     NodeStatus,
 )
 from boba.toolkit.wire import ResultWire
+from boba.transport.acp.content import ContentBlocks
 from boba.transport.acp.protocol import (
     BobaExtension,
     CommandApp,
@@ -400,10 +403,13 @@ class CallParts:
         await self.view.tool_journaled(step, tool, key)
 
     def reply(self, update: schema.SessionToolCallUpdate) -> mt.CallToolResult | None:
-        """Ответ сервера MCP в `rawOutput` конечного уведомления; None —
-        там не результат tools/call."""
+        """Стандартный content определяет показ; rawOutput добавляет только
+        structuredContent и метаданные MCP Apps, журналов и вопросов.
+        Без content поддерживается прежний формат уведомлений boba.
+        """
+        reply = None
         try:
-            return mt.CallToolResult.model_validate(update.raw_output)
+            reply = mt.CallToolResult.model_validate(update.raw_output)
         except ValidationError as exc:
             logger.debug(
                 "thread %s: rawOutput of call %s is not a tools/call result: %s",
@@ -411,7 +417,38 @@ class CallParts:
                 update.tool_call_id,
                 exc,
             )
-            return None
+
+        source_only = bool(update.content) and all(
+            isinstance(item, schema.OtherToolCallContent)
+            and item.type == BobaExtension.TOOL_SOURCE.value
+            for item in update.content or ()
+        )
+        if "content" not in update.model_fields_set or source_only:
+            return reply
+
+        blocks: list[mt.ContentBlock] = []
+        for item in update.content or ():
+            if isinstance(item, schema.ContentToolCallContent):
+                blocks.append(ContentBlocks.to_mcp(item.content))
+            elif isinstance(item, schema.DiffToolCallContent):
+                if item.patch is not None:
+                    blocks.append(mt.TextContent(text=item.patch.text))
+                else:
+                    blocks.append(mt.TextContent(text="[File changes]"))
+            elif isinstance(item, schema.TerminalToolCallContent):
+                blocks.append(mt.TextContent(text=f"[Terminal: {item.terminal_id}]"))
+            elif item.type != BobaExtension.TOOL_SOURCE.value:
+                blocks.append(
+                    mt.TextContent(text=f"[Unsupported content: {item.type}]")
+                )
+
+        failed = update.status == ToolStatus.FAILED
+        if reply is None:
+            return mt.CallToolResult(content=blocks, is_error=failed)
+
+        return reply.model_copy(
+            update={"content": blocks, "is_error": reply.is_error or failed}
+        )
 
     async def result(
         self,
@@ -421,11 +458,14 @@ class CallParts:
         name: str,
         source: ToolSource | None,
     ) -> None:
-        """Итог вызова инструмента name шагу step: ответ сервера MCP из
-        `rawOutput`; без него отменённый вызов — остановка, сорванный —
-        отказ, прочий — текст уведомления; rawOutput другого вида — как
-        есть."""
+        """Стандартное содержимое и необязательные дополнения MCP — в шаг
+        вызова. Без содержимого остаётся причина остановки или сырой ответ.
+        """
         call_id = update.tool_call_id
+        if status is ToolStatus.CANCELLED:
+            await self.view.tool_stopped(step)
+            return
+
         reply = self.reply(update)
         if reply is not None:
             shown, journals = self.journaled(reply, source)
@@ -439,10 +479,6 @@ class CallParts:
             if cards := self._rounds(reply, call_id):
                 await self.view.questions_answered(cards, call_id)
 
-            return
-
-        if status is ToolStatus.CANCELLED:
-            await self.view.tool_stopped(step)
             return
 
         if status is not ToolStatus.COMPLETED:
@@ -512,7 +548,7 @@ class CallParts:
         if meta is None:
             return []
 
-        rounds = meta.get(MetaKey.ELICITATIONS.value)
+        rounds = MetaKey.ELICITATIONS.read(meta)
         if rounds is None:
             return []
 
@@ -568,6 +604,10 @@ class CallParts:
 
             block = item.content
             if isinstance(block, schema.TextContentBlock):
+                annotations = block.annotations
+                if annotations is not None and annotations.audience is not None:
+                    if "user" not in annotations.audience:
+                        continue
                 parts.append(block.text)
 
         return "\n".join(parts)
@@ -822,6 +862,46 @@ class QuestionCall(CallPainter):
         return (self._step,)
 
 
+class ToolCallUpdates:
+    """Состояние вызова ACP: пропуск сохраняет поле, null очищает, content
+    заменяется целиком, а _meta патчится по ключам верхнего уровня.
+    """
+
+    def __init__(self) -> None:
+        self._calls: dict[str, schema.SessionToolCallUpdate] = {}
+
+    def apply(
+        self, update: schema.SessionToolCallUpdate
+    ) -> schema.SessionToolCallUpdate:
+        previous = self._calls.get(update.tool_call_id)
+        if previous is None:
+            previous = schema.SessionToolCallUpdate(tool_call_id=update.tool_call_id)
+
+        fields = {name: getattr(update, name) for name in update.model_fields_set}
+        if update.field_meta is not None:
+            meta = dict(previous.field_meta or {})
+            for key, value in update.field_meta.items():
+                if value is None:
+                    meta.pop(key, None)
+                else:
+                    meta[key] = value
+            fields["field_meta"] = meta
+
+        merged = previous.model_copy(update=fields)
+        self._calls[update.tool_call_id] = merged
+        return merged
+
+    def append(
+        self, update: schema.ToolCallContentChunkUpdate
+    ) -> schema.SessionToolCallUpdate:
+        previous = self._calls.get(update.tool_call_id)
+        content = list(previous.content or ()) if previous is not None else []
+        content.append(update.content)
+        return schema.SessionToolCallUpdate(
+            tool_call_id=update.tool_call_id, content=content
+        )
+
+
 class UpdateView:
     """Перевод уведомлений одной сессии в шаги ленты через ChatView.
 
@@ -852,7 +932,6 @@ class UpdateView:
     IGNORED: ClassVar[frozenset[type[Any]]] = frozenset(
         {
             schema.UserMessageChunk,
-            schema.ToolCallContentChunkUpdate,
             schema.SessionTerminalUpdate,
             schema.SessionTerminalOutputChunk,
             schema.SessionPlanUpdate,
@@ -888,6 +967,8 @@ class UpdateView:
         self._answer_id: str | None = None
         self._calls: dict[str, CallPainter] = {}
         """Идущий вызов → его отрисовщик."""
+        self._finished_calls: dict[str, CallPainter] = {}
+        self._tool_updates = ToolCallUpdates()
         self._compactions: dict[str, Step] = {}
         """Идущее сжатие → его шаг: в истории остаётся только состоявшееся."""
         self._painters: dict[type[Any], Callable[[Any], Awaitable[None]]] = {
@@ -897,6 +978,7 @@ class UpdateView:
             schema.AgentMessageChunk: self._message_chunk,
             schema.AgentMessageUpdate: self._message_chunk,
             schema.SessionToolCallUpdate: self._tool_update,
+            schema.ToolCallContentChunkUpdate: self._tool_content_chunk,
             schema.IdleSessionStateUpdate: self._ended,
             schema.SessionNotice: self._notice,
             schema.SessionCompactionUpdate: self._compaction,
@@ -1147,6 +1229,7 @@ class UpdateView:
         for compaction in list(self._compactions.values()):
             await self._view.compaction_stopped(compaction)
 
+        self._finished_calls.update(self._calls)
         self._calls.clear()
         self._compactions.clear()
         await self._view.finish_turn()
@@ -1267,24 +1350,38 @@ class UpdateView:
 
         return update.content == []
 
+    async def _tool_content_chunk(
+        self, update: schema.ToolCallContentChunkUpdate
+    ) -> None:
+        await self._tool_update(self._tool_updates.append(update))
+
     async def _tool_update(self, update: schema.SessionToolCallUpdate) -> None:
         """Вызов: первое уведомление выбирает отрисовщик вызова и создаёт
         шаги, дальше ход работы и конечный статус идут в него."""
+        update = self._tool_updates.apply(update)
         call_id = update.tool_call_id
         painter = self._calls.get(call_id)
+        if painter is None:
+            painter = self._finished_calls.get(call_id)
         if painter is None:
             painter = await self._opened(update)
             self._calls[call_id] = painter
 
         status = ToolStatus.PENDING
         if update.status is not None:
-            status = ToolStatus(update.status)
+            try:
+                status = ToolStatus(update.status)
+            except ValueError:
+                status = ToolStatus.IN_PROGRESS
 
         if not status.terminal:
+            self._calls[call_id] = painter
+            self._finished_calls.pop(call_id, None)
             await painter.progressed(update)
             return
 
-        del self._calls[call_id]
+        self._calls.pop(call_id, None)
+        self._finished_calls[call_id] = painter
         await painter.finished(update, status)
 
     async def _opened(self, update: schema.SessionToolCallUpdate) -> CallPainter:
@@ -1356,7 +1453,7 @@ class UpdateView:
         if update.field_meta is None:
             return False
 
-        return update.field_meta.get(MetaKey.QUESTION.value) is True
+        return MetaKey.QUESTION.read(update.field_meta) is True
 
     @staticmethod
     def _args(raw_input: Any) -> Mapping[str, Any]:

@@ -194,6 +194,38 @@ class Pair:
 class TestTwoProcesses:
     PROMPT = call({"name": "mcp__stand__add", "arguments": {"a": 4, "b": 5}})[0].text
 
+    async def test_postgres_replays_standard_media_to_another_client(
+        self, stand: PostgresStand, model: FakeModel, tmp_path: Path
+    ) -> None:
+        pair = Pair(stand, model, tmp_path, (None, None))
+        await pair.start()
+        try:
+            await handshake(pair.holder_conn, history=False)
+            await handshake(pair.observer_conn, history=False)
+            session = await pair.holder_conn.new_session(
+                cwd=str(tmp_path), mcp_servers=[StandRegistration.STAND]
+            )
+            await pair.holder.turn(
+                pair.holder_client,
+                session.session_id,
+                call({"name": "mcp__stand__blocks"}),
+            )
+            live = pair.holder_client.of(acp_schema.SessionToolCallUpdate)[-1]
+            await pair.holder_conn.close_session(session_id=session.session_id)
+            await pair.observer_conn.resume_session(
+                cwd=str(tmp_path),
+                session_id=session.session_id,
+                mcp_servers=[StandRegistration.STAND],
+                replay_from=acp_schema.ReplayFromStartVariant(),
+            )
+            replay = pair.observer_client.of(acp_schema.SessionToolCallUpdate)[-1]
+            assert live.content is not None
+            assert len(live.content) == 7
+            assert replay.content == live.content
+            assert not pair.observer_client.of(acp_schema.OtherSessionUpdate)
+        finally:
+            await pair.stop()
+
     async def test_observer_replays_and_takes_over_after_the_holder_leaves(
         self,
         stand: PostgresStand,

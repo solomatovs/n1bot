@@ -106,13 +106,22 @@ from pathlib import Path
 from typing import Any, ClassVar, Generic, Protocol, TypeAlias, TypeVar
 
 import mcp_types as mt
+from acp.connection import StreamDirection
+from acp.connection import StreamEvent as WireEvent
 from acp.exceptions import RequestError
 from acp.experimental.v2 import Agent as AcpAgentProtocol
 from acp.experimental.v2 import AgentSideConnection, schema
 from acp.experimental.v2.meta import AGENT_METHODS
 from fastmcp.apps.config import AppConfig
 from mcp_types.methods import parse_server_notification, parse_server_result
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationError,
+)
 
 from boba.agent.agent import Agent
 from boba.agent.attachments import ConnectedServer
@@ -211,6 +220,8 @@ from boba.core.errors import PublicError
 from boba.core.mcp_names import McpToolNameError, McpToolNames
 from boba.core.validation import ValidationText
 from boba.llm.chat import LlmErrorDetails, LlmTrouble
+from boba.transport.acp import session as session_schema
+from boba.transport.acp.content import ContentBlocks
 from boba.transport.acp.protocol import (
     AcpErrorCode,
     AcpTransportError,
@@ -362,6 +373,8 @@ class SessionFeatures:
     elicits: bool = False
     commands: bool = False
     history: bool = False
+    sources: bool = False
+    outcomes: bool = False
 
 
 class SessionRefusedError(Exception):
@@ -504,7 +517,12 @@ class ForkMeta(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     up_to_message_id: str | None = Field(
-        default=None, alias=MetaKey.UP_TO_MESSAGE_ID.value, min_length=1
+        default=None,
+        alias=MetaKey.UP_TO_MESSAGE_ID.value,
+        validation_alias=AliasChoices(
+            MetaKey.UP_TO_MESSAGE_ID.value, "boba/upToMessageId"
+        ),
+        min_length=1,
     )
 
 
@@ -664,11 +682,16 @@ class FeedPainter(FeedSink):
     отрисовщик на проход с пустыми кусками."""
 
     def __init__(
-        self, mapping: AcpMapping, hints: ToolHintSource, stream: StreamedReplies
+        self,
+        mapping: AcpMapping,
+        hints: ToolHintSource,
+        stream: StreamedReplies,
+        features: SessionFeatures | None = None,
     ) -> None:
         self._mapping = mapping
         self._hints = hints
         self._stream = stream
+        self._features = features or SessionFeatures()
         self._compactions = OpenCompactions()
         self._out: list[Update] = []
 
@@ -715,6 +738,8 @@ class FeedPainter(FeedSink):
     ) -> None:
         self._stream.confirm(message_id)
         hints = self._hints.tool_hints(call.name)
+        if not self._features.sources:
+            source = None
         self._out.append(self._mapping.tool_call(call, hints, source))
 
     def tool_result(self, result: ToolResultBlock, record: ToolResultRecord) -> None:
@@ -747,7 +772,10 @@ class FeedPainter(FeedSink):
     def harness_command(self, record: HarnessCommandRecord) -> None:
         """Команда клиента: набранный текст вопросом, затем её итог."""
         self._out.append(self._mapping.question(record.uuid, record.text, ()))
-        self._out.append(self._mapping.command_outcome(record))
+        if self._features.outcomes:
+            self._out.append(self._mapping.command_outcome(record))
+        else:
+            self._out.append(self._mapping.command_content(record))
 
     def _withdraw(self) -> None:
         for message_id in self._stream.unrecorded():
@@ -842,7 +870,7 @@ class CommandForms:
 
             hint = schema.TextAvailableCommandInput(hint=self._lines.hint(declared))
             commands.append(
-                schema.AvailableCommand(
+                session_schema.AvailableCommand(
                     name=entry.name, description=entry.description, input=hint
                 )
             )
@@ -1247,20 +1275,19 @@ class AcpMapping:
     def tool_result(
         self, block: ToolResultBlock, record: ToolResultRecord
     ) -> schema.SessionToolCallUpdate:
-        """Итог вызова: текст модели содержимым (у ошибки — без обёртки
-        tool_use_error, которую видит только модель), исход вызова записи —
-        статусом, ответ tools/call как он записан в `toolUseResult` —
-        `rawOutput`."""
+        """Итог вызова: блоки MCP стандартным content ACP, включая MIME,
+        данные и annotations. rawOutput сохраняет полный исходный ответ
+        для необязательных интерфейсов boba. Локальные и старые результаты
+        без формы MCP — текстом без модельной обёртки ошибки.
+        """
         shown = block.text()
         if block.is_error:
             shown = AgentTag.TOOL_USE_ERROR.unwrap(shown)
 
-        text = schema.TextContentBlock(text=shown)
-
         return schema.SessionToolCallUpdate(
             tool_call_id=block.tool_use_id,
             status=self.CALL_STATUSES[record.status],
-            content=[schema.ContentToolCallContent(content=text)],
+            content=list(ContentBlocks.tool_result(record.tool_use_result, shown)),
             raw_output=record.tool_use_result,
         )
 
@@ -1367,6 +1394,32 @@ class AcpMapping:
             compaction_id=record.uuid,
             status=CompactionUpdateStatus.COMPLETED.value,
             summary=[schema.TextContentBlock(text=content)],
+        )
+
+    def command_content(
+        self, record: HarnessCommandRecord
+    ) -> schema.AgentMessageUpdate:
+        """Результат команды для клиента без расширения интерфейса boba.
+        Известные итоги сохраняют текст и стандартные блоки MCP; неизвестный
+        интерфейс получает подпись, не исполняемый payload клиента.
+        """
+        outcome = record.outcome
+        text = f"[Client command /{record.name}: result requires a client extension]"
+        content: list[ContentBlock] = []
+        kind = outcome.get("kind")
+        if kind == "app":
+            content = [
+                item.content
+                for item in ContentBlocks.tool_result(outcome.get("result"), text)
+            ]
+        else:
+            value = outcome.get("error" if kind == "failed" else "text")
+            if isinstance(value, str):
+                text = value
+            content = [schema.TextContentBlock(text=text)]
+
+        return schema.AgentMessageUpdate(
+            message_id=f"{record.uuid}/result", content=content
         )
 
     def command_outcome(
@@ -1756,7 +1809,7 @@ class ClientLink:
         if meta is None:
             return
 
-        self._sources = meta.get(BobaExtension.TOOL_SOURCE.value) is True
+        self._sources = BobaExtension.TOOL_SOURCE.declared(meta)
 
     async def tool_source(self, request: ToolSourceRequest) -> dict[str, Any] | None:
         """Источник вызова у клиента; None — клиент расширения не объявил.
@@ -3608,7 +3661,7 @@ class SessionRelay(EventSink, ToolHintSource):
         self._inserting: dict[str, asyncio.Future[None]] = {}
         """Вопрос `session/prompt` в очереди → ожидание его записи `user`."""
         self._stream = StreamedReplies()
-        self._painter = FeedPainter(mapping, self, self._stream)
+        self._painter = FeedPainter(mapping, self, self._stream, features)
 
     def attach(self, agent: Agent) -> None:
         self._agent = agent
@@ -3680,6 +3733,11 @@ class SessionRelay(EventSink, ToolHintSource):
 
     async def snapshot(self) -> None:
         """Текущее состояние перед ответом на resume, в цикле сессии."""
+        info = schema.SessionInfoUpdate()
+        if self._agent is not None:
+            first = self._first_prompt(self._agent.session.conversation())
+            info = schema.SessionInfoUpdate(title=self._titles.title(first))
+        await self._send(info)
         state = self._state
         if isinstance(state, schema.IdleSessionStateUpdate):
             state = schema.IdleSessionStateUpdate()
@@ -3729,10 +3787,20 @@ class SessionRelay(EventSink, ToolHintSource):
 
         return updates
 
+    def initial_commands(self) -> list[session_schema.AvailableCommand]:
+        if self._agent is None:
+            return []
+        available = self._forms.available(self._agent.commands.history().entries())
+        return [
+            session_schema.AvailableCommand.model_validate(command.model_dump())
+            for command in available.available_commands
+        ]
+
     async def announce_loaded(self) -> None:
-        """После воспроизведения сессии: заголовок и заполненность
-        контекста, как после хода."""
-        await self._send_all(self._turn_summary())
+        """Заполненность после replay; сведения сессии отправляет snapshot."""
+        usage = self._usage()
+        if usage is not None:
+            await self._send(usage)
 
     async def failed(self) -> None:
         """Обслуживание сессии сорвалось: пометка и `idle` отказом; причину
@@ -4397,7 +4465,6 @@ class AcpSession:
         book = self.agent.commands
         await book.synced(SessionCommands.CARDS, CommandSource.AGENT)
         await self._mcp.synced()
-        self._relay.announce_later()
 
     async def declare(self, request: SessionCommandsRequest) -> None:
         """Объявление команд клиента — разницей с историей; ответ — когда она
@@ -4611,6 +4678,8 @@ class AcpAgent(AcpAgentProtocol):
         self._link: ClientLink | None = None
         self._features = SessionFeatures()
         self._sessions: dict[str, HostedSession] = {}
+        self._command_responses: dict[str | int, str | None] = {}
+        self._cursors: set[tuple[str, Path | None]] = set()
         self._mapping = AcpMapping()
         self._session_errors = SessionErrors()
         self._options = SessionOptions()
@@ -4627,6 +4696,7 @@ class AcpAgent(AcpAgentProtocol):
         процесса и сам агент."""
         home = LoopCall(asyncio.get_running_loop())
         self._link = ClientLink(side, connection, home)
+        side.observe(self._response_sent)
 
         return self
 
@@ -4636,6 +4706,40 @@ class AcpAgent(AcpAgentProtocol):
             raise RuntimeError(msg)
 
         return self._link
+
+    def _response_sent(self, event: WireEvent) -> Awaitable[None] | None:
+        """Списки команд можно уведомлять только после ответа открытия.
+        Наблюдатель SDK вызывается после transport.send, во всех транспортах.
+        """
+        message = event.message
+        request_id = message.get("id")
+        if not isinstance(request_id, str | int):
+            return None
+        if event.direction is StreamDirection.INCOMING:
+            if message.get("method") in {
+                "session/new",
+                "session/resume",
+                "session/fork",
+            }:
+                params = message.get("params") or {}
+                if isinstance(params, dict):
+                    self._command_responses[request_id] = params.get("sessionId")
+            return None
+
+        if request_id not in self._command_responses or "method" in message:
+            return None
+        previous = self._command_responses.pop(request_id)
+        result = message.get("result")
+        if not isinstance(result, dict):
+            return None
+        session_id = result.get("sessionId", previous)
+        hosted = self._sessions.get(session_id)
+        if hosted is None:
+            return None
+        return hosted.thread.run(self._announce_commands(hosted))
+
+    async def _announce_commands(self, hosted: HostedSession) -> None:
+        hosted.held.relay.announce_later()
 
     async def initialize(
         self,
@@ -4662,6 +4766,8 @@ class AcpAgent(AcpAgentProtocol):
             elicits=elicits,
             commands=self._receives(capabilities, BobaExtension.COMMANDS),
             history=self._receives(capabilities, BobaExtension.HISTORY),
+            sources=self._receives(capabilities, BobaExtension.TOOL_SOURCE),
+            outcomes=self._receives(capabilities, BobaExtension.COMMAND_OUTCOME),
         )
         session = schema.SessionCapabilities(
             prompt=schema.PromptCapabilities(),
@@ -4677,9 +4783,10 @@ class AcpAgent(AcpAgentProtocol):
         offered = schema.AgentCapabilities(
             session=session,
             field_meta={
-                BobaExtension.SESSION_RECORD.value: True,
-                BobaExtension.COMMANDS.value: True,
-                BobaExtension.HISTORY.value: True,
+                BobaExtension.SESSION_RECORD.capability: True,
+                BobaExtension.COMMANDS.capability: True,
+                BobaExtension.HISTORY.capability: True,
+                BobaExtension.COMMAND_OUTCOME.capability: True,
             },
         )
 
@@ -4706,7 +4813,7 @@ class AcpAgent(AcpAgentProtocol):
         if meta is None:
             return False
 
-        return meta.get(extension.value) is True
+        return extension.declared(meta)
 
     async def login(self, method_id: str, **kwargs: Any) -> schema.LoginAuthResponse:
         """Вход объявленным способом: подключение уже вошло токеном, который
@@ -4776,9 +4883,10 @@ class AcpAgent(AcpAgentProtocol):
             thread.name,
         )
 
-        return schema.NewSessionResponse(
+        return session_schema.NewSessionResponse(
             session_id=session_id,
             config_options=self._options.config_options(self._settings(session)),
+            available_commands=session.relay.initial_commands(),
         )
 
     async def _new(
@@ -5125,15 +5233,16 @@ class AcpAgent(AcpAgentProtocol):
         logger.info("session %s: resumed", session_id)
         if isinstance(held, ObserverSession):
             await hosted.thread.run(held.relay.snapshot())
-            return schema.ResumeSessionResponse()
+            return session_schema.ResumeSessionResponse()
 
         if replay:
             await hosted.thread.run(held.relay.announce_loaded())
 
         await hosted.thread.run(held.relay.snapshot())
 
-        return schema.ResumeSessionResponse(
-            config_options=self._options.config_options(self._settings(held))
+        return session_schema.ResumeSessionResponse(
+            config_options=self._options.config_options(self._settings(held)),
+            available_commands=held.relay.initial_commands(),
         )
 
     async def _replayed(self, session_id: str, held: HeldSession) -> None:
@@ -5146,7 +5255,9 @@ class AcpAgent(AcpAgentProtocol):
         RequestError — хранилище отказало (-32603).
         """
         stored = SessionId(value=session_id)
-        painter = FeedPainter(self._mapping, held.hints, StreamedReplies())
+        painter = FeedPainter(
+            self._mapping, held.hints, StreamedReplies(), self._features
+        )
         replayed = 0
         last = 0
         try:
@@ -5301,6 +5412,11 @@ class AcpAgent(AcpAgentProtocol):
         if cwd is not None:
             wanted = self._directory(cwd)
 
+        if cursor is not None and (cursor, wanted) not in self._cursors:
+            raise RequestError.invalid_params(
+                {ErrorDataKey.DETAILS.value: "unknown session/list cursor"}
+            )
+
         try:
             page = await self._listed(wanted, cursor)
         except HistoryError as exc:
@@ -5319,6 +5435,9 @@ class AcpAgent(AcpAgentProtocol):
                     updated_at=updated_at,
                 )
             )
+
+        if page.next_cursor is not None:
+            self._cursors.add((page.next_cursor, wanted))
 
         return schema.ListSessionsResponse(
             sessions=sessions, next_cursor=page.next_cursor
@@ -5543,9 +5662,10 @@ class AcpAgent(AcpAgentProtocol):
             up_to,
         )
 
-        return schema.ForkSessionResponse(
+        return session_schema.ForkSessionResponse(
             session_id=target.value,
             config_options=self._options.config_options(self._settings(session)),
+            available_commands=session.relay.initial_commands(),
         )
 
     @staticmethod
@@ -5673,13 +5793,10 @@ class AcpAgent(AcpAgentProtocol):
     async def close_session(
         self, session_id: str, **kwargs: Any
     ) -> schema.CloseSessionResponse:
-        """Гасит ход сессии, отпускает замок и останавливает её поток.
-
-        Ошибки:
-        RequestError — сессия неизвестна (-32002).
-        """
-        hosted = self._session(session_id)
-        await self._closed(session_id, hosted)
-        logger.info("session %s: closed", session_id)
+        """Идемпотентно гасит ход, отпускает замок и останавливает поток."""
+        hosted = self._sessions.get(session_id)
+        if hosted is not None:
+            await self._closed(session_id, hosted)
+            logger.info("session %s: closed", session_id)
 
         return schema.CloseSessionResponse()

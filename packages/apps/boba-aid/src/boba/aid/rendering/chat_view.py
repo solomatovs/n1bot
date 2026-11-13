@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import binascii
 import csv
+import hashlib
 import io
 import json
 import logging
@@ -1721,11 +1721,14 @@ class ChatView:
     async def _embedded(
         self, block: mt.ContentBlock, step: Step, key: str | None, number: int
     ) -> str:
-        """Встроенный ресурс по MIME; двоичный и неизвестного вида — JSON."""
+        """Встроенный ресурс по MIME; двоичный — скачиваемый файл треда."""
         if not isinstance(block, mt.EmbeddedResource):
             return await self._unknown(block, step, key, number)
 
         resource = block.resource
+        if isinstance(resource, mt.BlobResourceContents):
+            return await self._media(block, step, key, number)
+
         if not isinstance(resource, mt.TextResourceContents):
             return await self._unknown(block, step, key, number)
 
@@ -1802,18 +1805,25 @@ class ChatView:
     async def _media(
         self, block: mt.ContentBlock, step: Step, key: str | None, number: int
     ) -> str:
-        """Картинка и звук — файл в хранилище треда под именем от шага вызова
+        """Картинка, звук и двоичный ресурс — файл треда под именем от шага
         и номера блока: вживую, при воспроизведении и во второй вкладке это
         один файл, записанный один раз. Дальше он рисуется как файл
         workspace (_mounted). Не base64 — JSON блока без байтов."""
-        if not isinstance(block, mt.ImageContent | mt.AudioContent):
+        if isinstance(block, mt.ImageContent | mt.AudioContent):
+            data, mime = block.data, block.mime_type
+        elif isinstance(block, mt.EmbeddedResource) and isinstance(
+            block.resource, mt.BlobResourceContents
+        ):
+            data = block.resource.blob
+            mime = block.resource.mime_type or "application/octet-stream"
+        else:
             return await self._unknown(block, step, key, number)
 
         try:
             # проверка срезами до записи: битый блок не оставит в хранилище обрывка
-            async for _ in self._decoded(block.data):
+            async for _ in self._decoded(data):
                 pass
-        except binascii.Error as exc:
+        except ValueError as exc:
             logger.info(
                 "thread %s: %s of call %s is not base64, shown as JSON: %s",
                 self._thread_id,
@@ -1826,9 +1836,10 @@ class ChatView:
         if not self._sink.emits_elements:
             return ""
 
-        suffix = ContentMime.suffix_of(block.mime_type)
+        suffix = ContentMime.suffix_of(mime)
 
-        stem = uuid5(self.NAMESPACE, f"{step.id}:{number}")
+        digest = hashlib.sha256(data.encode("ascii")).hexdigest()
+        stem = uuid5(self.NAMESPACE, f"{step.id}:{number}:{mime}:{digest}")
         try:
             scope = await self._scope()
         except StorageError as exc:
@@ -1836,17 +1847,15 @@ class ChatView:
 
         file_key = scope.file(f"{stem}{suffix}")
         try:
-            await self._kept(file_key.render(), block)
+            await self._kept(file_key.render(), data, mime)
         except StorageError as exc:
             return f"{file_key.in_workspace()} is not shown: {exc}"
 
-        mounted = WorkspaceFile(path=file_key.in_workspace(), mime=block.mime_type)
+        mounted = WorkspaceFile(path=file_key.in_workspace(), mime=mime)
 
         return await self._mounted(mounted, file_key.name, key, number)
 
-    async def _kept(
-        self, target: str, block: mt.ImageContent | mt.AudioContent
-    ) -> None:
+    async def _kept(self, target: str, data: str, mime: str) -> None:
         """Байты блока — в хранилище под ключом target, если их там ещё нет.
 
         Ошибки:
@@ -1855,8 +1864,8 @@ class ChatView:
         try:
             await self._storage.stat(target)
         except StorageNotFoundError:
-            chunks = self._decoded(block.data)
-            await self._storage.upload_stream(target, chunks, block.mime_type)
+            chunks = self._decoded(data)
+            await self._storage.upload_stream(target, chunks, mime)
 
     async def _decoded(self, data: str) -> AsyncIterator[bytes]:
         """Байты base64 срезами BASE64_SLICE: в памяти — один срез.

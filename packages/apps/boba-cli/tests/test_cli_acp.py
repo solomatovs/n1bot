@@ -29,6 +29,7 @@ FeedView), до ответа; без `replayFrom` — без воспроизв�
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import signal
@@ -92,6 +93,7 @@ from boba.transport.acp.protocol import (
     McpResultOutcome,
     McpVersion,
     MetaKey,
+    SessionFailureKind,
     SessionRecordRequest,
     StopReason,
     ToolSourceReply,
@@ -429,6 +431,30 @@ class StandRegistration:
                             name="report.csv",
                             uri="file:///report.csv",
                             mime_type="text/csv",
+                        ),
+                        mt.ImageContent(
+                            data=base64.b64encode(b"image bytes").decode("ascii"),
+                            mime_type="image/png",
+                            annotations=mt.Annotations(audience=["user"]),
+                            _meta={"test/image": "kept"},
+                        ),
+                        mt.AudioContent(
+                            data=base64.b64encode(b"audio bytes").decode("ascii"),
+                            mime_type="audio/wav",
+                        ),
+                        mt.EmbeddedResource(
+                            resource=mt.TextResourceContents(
+                                uri="file:///query.sql",
+                                mime_type="application/sql",
+                                text="select 1",
+                            )
+                        ),
+                        mt.EmbeddedResource(
+                            resource=mt.BlobResourceContents(
+                                uri="file:///archive.zip",
+                                mime_type="application/zip",
+                                blob=base64.b64encode(b"zip bytes").decode("ascii"),
+                            )
                         ),
                     ]
                 )
@@ -1276,6 +1302,7 @@ async def handshake(
     forms: bool = False,
     sources: bool = False,
     history: bool = True,
+    outcomes: bool = False,
 ) -> schema.InitializeResponse:
     """Рукопожатие; forms — клиент объявляет формы `elicitation.form`,
     sources — расширение источника вызова `_boba/tool_source`."""
@@ -1287,10 +1314,13 @@ async def handshake(
 
     meta: dict[str, Any] = {}
     if sources:
-        meta[BobaExtension.TOOL_SOURCE.value] = True
+        meta[BobaExtension.TOOL_SOURCE.capability] = True
 
     if history:
-        meta[BobaExtension.HISTORY.value] = True
+        meta[BobaExtension.HISTORY.capability] = True
+
+    if outcomes:
+        meta[BobaExtension.COMMAND_OUTCOME.capability] = True
 
     capabilities = schema.ClientCapabilities(elicitation=elicitation, field_meta=meta)
 
@@ -2087,7 +2117,14 @@ class TestMcpOverAcp:
             done = client.of(schema.SessionToolCallUpdate)[-1]
             assert done.status == ToolStatus.COMPLETED
             assert isinstance(done.raw_output, dict)
-            assert len(done.raw_output["content"]) == 3
+            assert len(done.raw_output["content"]) == 7
+            assert done.content is not None
+            shown = [
+                item.content.model_dump(mode="json", by_alias=True, exclude_none=True)
+                for item in done.content
+                if isinstance(item, schema.ContentToolCallContent)
+            ]
+            assert shown == done.raw_output["content"]
         finally:
             await conn.close()
             await boba.close_stdin()
@@ -2147,6 +2184,56 @@ class TestMcpOverAcp:
 
         assert len(calls) == 2
         assert len(set(calls)) == 2
+
+    async def test_standard_content_survives_restart_without_extensions(
+        self,
+        boba: AcpProcess,
+        registration: StandRegistration,
+        model: FakeModel,
+        tmp_path: Path,
+    ) -> None:
+        client = AcpClient()
+        conn = await boba.start(client, registration)
+        try:
+            await handshake(conn, history=False)
+            session = await conn.new_session(
+                cwd=str(tmp_path), mcp_servers=[StandRegistration.STAND]
+            )
+            await boba.turn(
+                client, session.session_id, call({"name": "mcp__stand__blocks"})
+            )
+            live = client.of(schema.SessionToolCallUpdate)[-1]
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+
+        assert await boba.wait() == 0
+        assert live.content is not None
+        assert len(live.content) == 7
+        assert all(
+            isinstance(item, schema.ContentToolCallContent) for item in live.content
+        )
+        assert not client.of(schema.OtherSessionUpdate)
+
+        second = AcpProcess(tmp_path, model)
+        replay = AcpClient()
+        conn = await second.start(replay, registration)
+        try:
+            await handshake(conn, history=False)
+            await conn.resume_session(
+                cwd=str(tmp_path),
+                session_id=session.session_id,
+                mcp_servers=[StandRegistration.STAND],
+                replay_from=schema.ReplayFromStartVariant(),
+            )
+            restored = replay.of(schema.SessionToolCallUpdate)[-1]
+            assert restored.content == live.content
+            assert not replay.of(schema.OtherSessionUpdate)
+            assert registration.sourced == []
+        finally:
+            await conn.close()
+            await second.close_stdin()
+            await second.kill()
 
 
 class TestQueueAndCancel:
@@ -2760,7 +2847,7 @@ class TestQuestions:
                             "const": "Single column",
                             "title": "Single column",
                             "description": "Filters above the table.",
-                            "_meta": {"boba/preview": "| Filters |\n| Table |"},
+                            "_meta": {"com.boba/preview": "| Filters |\n| Table |"},
                         },
                         {
                             "const": "Two columns",
@@ -2768,7 +2855,7 @@ class TestQuestions:
                             "description": "Filters on the side.",
                         },
                     ],
-                    "_meta": {"boba/other": "q1.other"},
+                    "_meta": {"com.boba/other": "q1.other"},
                 },
                 "q1.other": {"type": "string", "title": "Other"},
                 "q2": {
@@ -2789,7 +2876,7 @@ class TestQuestions:
                             },
                         ]
                     },
-                    "_meta": {"boba/other": "q2.other"},
+                    "_meta": {"com.boba/other": "q2.other"},
                 },
                 "q2.other": {"type": "string", "title": "Other"},
             },
@@ -2945,7 +3032,7 @@ class TestQuestions:
         (form,) = client.forms
         assert form.tool_call_id == done.tool_call_id
         assert form.message == "choosing needs the target table before it can start"
-        assert form.meta == {"boba/server": "stand", "boba/tool": "choosing"}
+        assert form.meta == {"com.boba/server": "stand", "com.boba/tool": "choosing"}
         requested = form.requested.model_dump(
             mode="json", by_alias=True, exclude_none=True
         )
@@ -2979,7 +3066,7 @@ class TestQuestions:
         assert done.status == ToolStatus.COMPLETED
         assert result_text(done) == "rows go to sales.orders_stage"
         assert isinstance(done.raw_output, dict)
-        rounds = done.raw_output["_meta"]["boba/elicitations"]
+        rounds = done.raw_output["_meta"]["com.boba/elicitations"]
         assert rounds == [
             {
                 "server": "stand",
@@ -3009,7 +3096,7 @@ class TestQuestions:
         assert done.status == ToolStatus.FAILED
         assert result_text(done) == "the user answered decline"
         assert isinstance(done.raw_output, dict)
-        (asked,) = done.raw_output["_meta"]["boba/elicitations"]
+        (asked,) = done.raw_output["_meta"]["com.boba/elicitations"]
         assert asked["action"] == "decline"
         assert "content" not in asked or asked["content"] == {}
 
@@ -3446,7 +3533,8 @@ class TestHistory:
             "The model's answer broke off before it was finished. Trying again "
             "in 1 second (attempt 1 of 1)."
         ), notices
-        assert notices[0].description == "the stream stopped early", notices
+        # Public notices omit the model transport's internal diagnostic.
+        assert notices[0].description is None, notices
         assert notices[1].severity == "error", notices
         assert notices[1].title.startswith("The model's answer kept breaking off")
 
@@ -3579,7 +3667,6 @@ class TestHistory:
                 conn.resume_session(
                     cwd=str(tmp_path), session_id="no-such", mcp_servers=[]
                 ),
-                conn.close_session(session_id="no-such"),
                 conn.resume_session(
                     cwd=str(tmp_path), session_id="bad/id", mcp_servers=[]
                 ),
@@ -3634,10 +3721,10 @@ class TestHistory:
                 )
 
             assert gone.value.code == AcpErrorCode.RESOURCE_NOT_FOUND
-            with pytest.raises(RequestError) as twice:
+            assert (
                 await conn.close_session(session_id=session_id)
-
-            assert twice.value.code == AcpErrorCode.RESOURCE_NOT_FOUND
+                == schema.CloseSessionResponse()
+            )
 
             seen = len(client.updates_of(session_id))
             await conn.resume_session(
@@ -4220,7 +4307,8 @@ class TestSessionSettings:
             )
             self.check_state(resumed, "default", "fake")
             assert client.unannounced() == [
-                (session_id, schema.IdleSessionStateUpdate())
+                (session_id, schema.SessionInfoUpdate(title=ScenarioName.ANSWER.value)),
+                (session_id, schema.IdleSessionStateUpdate()),
             ]
         finally:
             await conn.close()
@@ -4424,7 +4512,8 @@ class TestSessionSettings:
 
             assert busy.value.code == AcpErrorCode.INTERNAL_ERROR
             assert isinstance(busy.value.data, dict)
-            assert "busy" in busy.value.data["details"]
+            # The ACP boundary exposes the public failure kind, not diagnostics.
+            assert busy.value.data == {"kind": SessionFailureKind.UNAVAILABLE.value}
 
             await conn.set_config_option(
                 session_id=session_id,
@@ -4914,6 +5003,7 @@ class TestFork:
             assert FeedView().render(client.unannounced_of(branch_id)) == []
             assert [type(u) for u in client.unannounced_of(branch_id)] == [
                 schema.UsageUpdate,
+                schema.SessionInfoUpdate,
                 schema.IdleSessionStateUpdate,
             ]
 
@@ -5096,12 +5186,14 @@ class TestToolSource:
 
         return found
 
+    @pytest.mark.parametrize("sources", [False, True])
     async def test_source_is_kept_with_the_call_and_replayed(
         self,
         boba: AcpProcess,
         registration: StandRegistration,
         model: FakeModel,
         tmp_path: Path,
+        sources: bool,
     ) -> None:
         client = AcpClient()
         document = boba.settings_document(mode="bypassPermissions", allow_bypass=True)
@@ -5138,7 +5230,7 @@ class TestToolSource:
         document = second.settings_document(mode="bypassPermissions", allow_bypass=True)
         conn = await second.start(replay, registration, document)
         try:
-            await handshake(conn)
+            await handshake(conn, sources=sources)
             await conn.resume_session(
                 cwd=str(tmp_path),
                 session_id=session_id,
@@ -5150,7 +5242,9 @@ class TestToolSource:
             await second.close_stdin()
             await second.kill()
 
-        assert self.sources(replay.updates_of(session_id)) == [source]
+        assert self.sources(replay.updates_of(session_id)) == [
+            source if sources else None
+        ]
         assert len(registration.sourced) == 1
 
     async def test_client_without_the_extension_is_not_asked(
@@ -5182,6 +5276,38 @@ class TestClientCommands:
         text="**Your connections**\n\n_none yet_"
     )
     APP_HTML: ClassVar[str] = "<!doctype html><p id='result'>orders</p>"
+
+    async def test_plain_client_gets_command_content_in_live_feed_and_replay(
+        self, boba: AcpProcess, registration: StandRegistration, tmp_path: Path
+    ) -> None:
+        client = AcpClient()
+        conn = await boba.start(client, registration)
+        try:
+            await handshake(conn, history=False)
+            session = await conn.new_session(cwd=str(tmp_path), mcp_servers=[])
+            await self.record(
+                conn, session.session_id, "/connections", self.CONNECTIONS
+            )
+            await self.record(conn, session.session_id, "/console", self.app())
+            live = client.of(schema.AgentMessageUpdate)
+            assert len(live) == 2
+            assert live[0].content == [
+                schema.TextContentBlock(text=self.CONNECTIONS.text)
+            ]
+            assert live[1].content == [schema.TextContentBlock(text="console open")]
+            assert not client.of(schema.OtherSessionUpdate)
+            await conn.resume_session(
+                cwd=str(tmp_path),
+                session_id=session.session_id,
+                mcp_servers=[],
+                replay_from=schema.ReplayFromStartVariant(),
+            )
+            assert client.of(schema.AgentMessageUpdate)[2:] == live
+            assert not client.of(schema.OtherSessionUpdate)
+        finally:
+            await conn.close()
+            await boba.close_stdin()
+            await boba.kill()
 
     def app(self) -> CommandApp:
         """Приложение команды целиком: карточка, итог и ресурс с _meta."""
@@ -5281,13 +5407,14 @@ class TestClientCommands:
         client = AcpClient()
         conn = await boba.start(client, registration)
         try:
-            response = await handshake(conn)
+            response = await handshake(conn, outcomes=True)
             assert response.capabilities is not None
             meta = response.capabilities.field_meta
             assert meta == {
-                BobaExtension.SESSION_RECORD.value: True,
-                BobaExtension.COMMANDS.value: True,
-                BobaExtension.HISTORY.value: True,
+                BobaExtension.SESSION_RECORD.capability: True,
+                BobaExtension.COMMANDS.capability: True,
+                BobaExtension.HISTORY.capability: True,
+                BobaExtension.COMMAND_OUTCOME.capability: True,
             }, meta
 
             session = await conn.new_session(
@@ -5346,7 +5473,7 @@ class TestClientCommands:
         replaying = AcpClient()
         conn = await again.start(replaying, registration)
         try:
-            await handshake(conn)
+            await handshake(conn, outcomes=True)
             await conn.resume_session(
                 cwd=str(tmp_path),
                 session_id=session_id,
@@ -5374,7 +5501,7 @@ class TestClientCommands:
         document = boba.settings_document(mode="bypassPermissions", allow_bypass=True)
         conn = await boba.start(client, registration, document)
         try:
-            await handshake(conn)
+            await handshake(conn, outcomes=True)
             session = await conn.new_session(
                 cwd=str(tmp_path), mcp_servers=[StandRegistration.STAND]
             )
@@ -5417,7 +5544,7 @@ class TestClientCommands:
         client = AcpClient()
         conn = await boba.start(client, registration)
         try:
-            await handshake(conn)
+            await handshake(conn, outcomes=True)
             session = await conn.new_session(
                 cwd=str(tmp_path), mcp_servers=[StandRegistration.STAND]
             )
@@ -5453,7 +5580,7 @@ class TestClientCommands:
         client = AcpClient()
         conn = await boba.start(client, registration)
         try:
-            await handshake(conn)
+            await handshake(conn, outcomes=True)
             session = await conn.new_session(
                 cwd=str(tmp_path), mcp_servers=[StandRegistration.STAND]
             )

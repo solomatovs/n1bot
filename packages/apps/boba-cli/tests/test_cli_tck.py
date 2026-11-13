@@ -450,7 +450,9 @@ class TckSuite:
 
 
 class TestTck:
-    WITHOUT_AUTH: ClassVar[frozenset[str]] = frozenset({"ACP-AUTH-206", "ACP-AUTH-207"})
+    WITHOUT_AUTH: ClassVar[frozenset[str]] = frozenset(
+        {"ACP-AUTH-001", "ACP-AUTH-006", "ACP-AUTH-206", "ACP-AUTH-207"}
+    )
     """Обязательные требования входа, которые агент без authMethods пропускает
     по праву. Форма ответа v1 проверяется только у агента, выбирающего v1."""
 
@@ -485,7 +487,16 @@ class TestTck:
                 )
                 continue
 
+            if requirement.id == "ACP-JSONRPC-202":
+                # The text-only fixture produces no agent requests to observe.
+                assert all(
+                    "no request" in test.message
+                    or "never had two requests pending" in test.message
+                    for test in requirement.tests
+                )
+                continue
+
             assert requirement.id in self.WITHOUT_AUTH, requirement
 
-        for exercised in ("ACP-CANCEL-201", "ACP-CANCEL-202", "ACP-CLOSE-202"):
+        for exercised in ("ACP-CANCEL-001", "ACP-CANCEL-002", "ACP-CLOSE-002"):
             assert report.by_id(exercised).status is TckStatus.PASS, exercised

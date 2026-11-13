@@ -208,7 +208,7 @@ class QuestionCards:
             meta = request.field_meta
 
         source: CardSource | None = None
-        server = meta.get(MetaKey.SERVER.value)
+        server = MetaKey.SERVER.read(meta)
         if isinstance(server, str):
             source = CardSource(server=server, message=request.message)
 
@@ -428,7 +428,7 @@ class QuestionCards:
 
             preview = ""
             if option.field_meta is not None:
-                shown = option.field_meta.get(MetaKey.PREVIEW.value)
+                shown = MetaKey.PREVIEW.read(option.field_meta)
                 if isinstance(shown, str):
                     preview = shown
 
@@ -453,7 +453,7 @@ class QuestionCards:
         if field.field_meta is None:
             return ""
 
-        other = field.field_meta.get(MetaKey.OTHER.value)
+        other = MetaKey.OTHER.read(field.field_meta)
         if not isinstance(other, str):
             return ""
 
