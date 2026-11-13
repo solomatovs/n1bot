@@ -14,6 +14,7 @@ from typing import Any, ClassVar
 
 from boba.aid.canvas.panel import FileViewer, StorageHashSource
 from boba.aid.data.data_layer import AttachmentDataLayer
+from boba.aid.rendering.content import mimes_for
 from boba.canvas.canvas import (
     CanvasContent,
     CanvasElement,
@@ -101,7 +102,7 @@ class MermaidViewer(FileViewer):
     """
 
     kind: ClassVar[CanvasKind] = CanvasKind.MERMAID
-    mimes: ClassVar[frozenset[str]] = frozenset({ContentMime.MERMAID})
+    mimes: ClassVar[frozenset[str]] = mimes_for(CanvasKind.MERMAID)
 
     VERDICT_TIMEOUT_SEC: ClassVar[float] = 10.0
 

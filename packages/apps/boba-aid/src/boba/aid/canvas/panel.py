@@ -38,6 +38,8 @@ from chainlit.data import get_data_layer
 from boba.aid.canvas.remote import RemoteStreams
 from boba.aid.data.data_layer import AttachmentDataLayer
 from boba.aid.domain.keys import CanvasFileUrl, StreamUrl
+from boba.aid.rendering.content import mimes_for
+from boba.aid.rendering.mime import Mime
 from boba.canvas.canvas import (
     CanvasContent,
     CanvasElement,
@@ -290,9 +292,8 @@ class FileViewer(CanvasViewer):
     mimes: ClassVar[frozenset[str]] = frozenset()
 
     def handles(self, mime: str) -> bool:
-        known = tuple(self.mimes)
-
-        return mime.lower().startswith(known)
+        supported = Mime.parse(mime).supported
+        return supported is not None and supported.value in self.mimes
 
     def describe(self, key: WorkspaceKey, mime: str, **extra: Any) -> CanvasContent:
         """Описание файла key вида mime: путь, подпись, ссылка на файл и
@@ -350,42 +351,42 @@ class ImageViewer(FileViewer):
     """Картинки: главный формат графиков, которые рисуют bash/python-тулы."""
 
     kind: ClassVar[CanvasKind] = CanvasKind.IMAGE
-    mimes: ClassVar[frozenset[str]] = frozenset({"image/"})
+    mimes: ClassVar[frozenset[str]] = mimes_for(CanvasKind.IMAGE)
 
 
 class PdfViewer(FileViewer):
     """PDF: pdf.js из сборки chainlit на странице чата, без скриптов документа."""
 
     kind: ClassVar[CanvasKind] = CanvasKind.PDF
-    mimes: ClassVar[frozenset[str]] = frozenset({ContentMime.PDF.value})
+    mimes: ClassVar[frozenset[str]] = mimes_for(CanvasKind.PDF)
 
 
 class VideoViewer(FileViewer):
     """Видео: плеер браузера."""
 
     kind: ClassVar[CanvasKind] = CanvasKind.VIDEO
-    mimes: ClassVar[frozenset[str]] = frozenset({"video/"})
+    mimes: ClassVar[frozenset[str]] = mimes_for(CanvasKind.VIDEO)
 
 
 class AudioViewer(FileViewer):
     """Аудио: плеер браузера."""
 
     kind: ClassVar[CanvasKind] = CanvasKind.AUDIO
-    mimes: ClassVar[frozenset[str]] = frozenset({"audio/"})
+    mimes: ClassVar[frozenset[str]] = mimes_for(CanvasKind.AUDIO)
 
 
 class MarkdownViewer(FileViewer):
     """Markdown: формат требует документ целиком, фронт читает его по ссылке."""
 
     kind: ClassVar[CanvasKind] = CanvasKind.TEXT
-    mimes: ClassVar[frozenset[str]] = frozenset({ContentMime.MARKDOWN.value})
+    mimes: ClassVar[frozenset[str]] = mimes_for(CanvasKind.TEXT)
 
 
 class LogViewer(FileViewer):
     """Логи и плоский текст: окна по смещению, файл целиком не читается."""
 
     kind: ClassVar[CanvasKind] = CanvasKind.STREAM
-    mimes: ClassVar[frozenset[str]] = frozenset({ContentMime.PLAIN})
+    mimes: ClassVar[frozenset[str]] = mimes_for(CanvasKind.STREAM)
 
     async def content(self, key: WorkspaceKey, mime: str) -> CanvasContent:
         windows = StorageWindows(PanelStorage.client(), key.render())

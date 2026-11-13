@@ -87,7 +87,7 @@ from boba.toolkit.dag import (
     NodeStatus,
 )
 from boba.toolkit.wire import ResultWire
-from boba.transport.acp.content import ContentBlocks
+from boba.transport.acp.content import ContentBlock, ContentBlocks
 from boba.transport.acp.protocol import (
     BobaExtension,
     CommandApp,
@@ -931,7 +931,6 @@ class UpdateView:
 
     IGNORED: ClassVar[frozenset[type[Any]]] = frozenset(
         {
-            schema.UserMessageChunk,
             schema.SessionTerminalUpdate,
             schema.SessionTerminalOutputChunk,
             schema.SessionPlanUpdate,
@@ -965,6 +964,7 @@ class UpdateView:
         self._turn_key: str | None = None
         self._thought_id: str | None = None
         self._answer_id: str | None = None
+        self._user_blocks: list[ContentBlock] = []
         self._calls: dict[str, CallPainter] = {}
         """Идущий вызов → его отрисовщик."""
         self._finished_calls: dict[str, CallPainter] = {}
@@ -973,6 +973,7 @@ class UpdateView:
         """Идущее сжатие → его шаг: в истории остаётся только состоявшееся."""
         self._painters: dict[type[Any], Callable[[Any], Awaitable[None]]] = {
             schema.UserMessageUpdate: self._user_message,
+            schema.UserMessageChunk: self._user_message,
             schema.AgentThoughtChunk: self._thought_chunk,
             schema.AgentThoughtUpdate: self._thought_chunk,
             schema.AgentMessageChunk: self._message_chunk,
@@ -1012,6 +1013,7 @@ class UpdateView:
         self._turn_key = key
         self._thought_id = None
         self._answer_id = None
+        self._user_blocks.clear()
         self._calls.clear()
         self._compactions.clear()
         self._view.begin_turn(key)
@@ -1025,6 +1027,7 @@ class UpdateView:
     ) -> None:
         """Вопрос пользователя: шаг с id, который вопросу дал агент, и его
         вложения."""
+        self._user_blocks = [schema.TextContentBlock(text=text), *links]
         await self._view.question(text, key, name=author, links=links)
 
     async def apply(self, update: SessionUpdate) -> None:
@@ -1245,34 +1248,24 @@ class UpdateView:
 
         await painter.journal_opened(opened)
 
-    async def _user_message(self, update: schema.UserMessageUpdate) -> None:
-        """Новый вопрос закрывает прежний ход и открывает свой: в
-        воспроизведении и вживую, когда агент вставил вопрос, заданный по
-        ходу, — посреди хода на границе шага или после его ответа; живой ход
-        продолжается под вопросом с кружком ожидания. Живое эхо вопроса
-        открытого хода уже нарисовано по TurnStarted."""
-        if update.message_id == self._turn_key:
-            return
-
+    async def _user_message(
+        self, update: schema.UserMessageUpdate | schema.UserMessageChunk
+    ) -> None:
+        """Полный вопрос заменяет содержимое, chunk дополняет его блоками."""
         live = self._view.turn_live
-        if self._turn_key is not None:
-            await self.finish_turn()
-
-        text = self._text(update)
-        if text is None:
-            text = ""
-
-        content = update.content
-        if content is None:
-            content = []
-
-        links: list[schema.ResourceContentBlock] = []
-        for block in content:
-            if isinstance(block, schema.ResourceContentBlock):
-                links.append(block)
-
-        self.begin_turn(update.message_id)
-        await self.question(text, update.message_id, links=links)
+        if update.message_id != self._turn_key:
+            if self._turn_key is not None:
+                await self.finish_turn()
+            self.begin_turn(update.message_id)
+        if isinstance(update, schema.UserMessageUpdate):
+            self._user_blocks = list(update.content or ())
+        else:
+            self._user_blocks.append(update.content)
+        await self._view.question(
+            "",
+            update.message_id,
+            blocks=[ContentBlocks.to_mcp(block) for block in self._user_blocks],
+        )
         if live:
             await self._view.await_model()
 
@@ -1288,10 +1281,6 @@ class UpdateView:
 
             return
 
-        text = self._text(update)
-        if text is None:
-            return
-
         if self._thought_id is not None and self._thought_id != update.message_id:
             await self._close_thinking()
 
@@ -1300,7 +1289,12 @@ class UpdateView:
             self._answer_id = None
 
         self._thought_id = update.message_id
-        await self._view.stream_thinking(text, update.message_id)
+        await self._view.message_blocks(
+            self._blocks(update.content),
+            update.message_id,
+            thought=True,
+            replace=isinstance(update, schema.AgentThoughtUpdate),
+        )
 
     async def _message_chunk(
         self, update: schema.AgentMessageChunk | schema.AgentMessageUpdate
@@ -1314,16 +1308,16 @@ class UpdateView:
 
             return
 
-        text = self._text(update)
-        if text is None:
-            return
-
         await self._close_thinking()
         if self._answer_id is not None and self._answer_id != update.message_id:
             await self._view.seal_answer()
 
         self._answer_id = update.message_id
-        await self._view.stream_answer(text, self._turn_key)
+        await self._view.message_blocks(
+            self._blocks(update.content),
+            update.message_id,
+            replace=isinstance(update, schema.AgentMessageUpdate),
+        )
 
     async def _notice(self, notice: schema.Notice) -> None:
         """Пометка агента — своим сообщением хода."""
@@ -1463,28 +1457,10 @@ class UpdateView:
         return {}
 
     @staticmethod
-    def _text(
-        update: schema.AgentThoughtChunk
-        | schema.AgentMessageChunk
-        | schema.AgentThoughtUpdate
-        | schema.AgentMessageUpdate
-        | schema.UserMessageUpdate,
-    ) -> str | None:
-        """Текст куска либо целого сообщения агента или вопроса; картинки и
-        ресурсы лента не показывает. None — текста нет."""
-        content = update.content
-        if isinstance(content, schema.TextContentBlock):
-            return content.text
-
-        if not isinstance(content, list):
-            return None
-
-        parts: list[str] = []
-        for block in content:
-            if isinstance(block, schema.TextContentBlock):
-                parts.append(block.text)
-
-        if not parts:
-            return None
-
-        return "".join(parts)
+    def _blocks(
+        content: ContentBlock | list[ContentBlock] | None,
+    ) -> list[mt.ContentBlock]:
+        if content is None:
+            return []
+        blocks = content if isinstance(content, list) else [content]
+        return [ContentBlocks.to_mcp(block) for block in blocks]

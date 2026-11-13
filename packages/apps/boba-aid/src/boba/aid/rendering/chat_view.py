@@ -3,10 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import csv
-import hashlib
-import io
 import json
 import logging
 import re
@@ -14,55 +10,44 @@ from abc import ABC, abstractmethod
 from collections import deque
 from collections.abc import (
     AsyncIterator,
-    Awaitable,
-    Callable,
     Iterator,
     Mapping,
     Sequence,
 )
 from dataclasses import dataclass
 from enum import StrEnum
-from pathlib import PurePosixPath
-from typing import Any, ClassVar, Protocol, TypeAlias, cast
-from urllib.parse import unquote, urlsplit, urlunsplit
+from typing import Any, ClassVar, Protocol, cast
+from urllib.parse import unquote, urlsplit
 from uuid import UUID, uuid4, uuid5
 
 import mcp_types as mt
 from acp.experimental.v2 import schema
 from chainlit.config import config as chainlit_config
 from chainlit.context import context
-from chainlit.element import CustomElement, Element, File, Image
+from chainlit.element import CustomElement, Element
 from chainlit.message import Message
 from chainlit.step import Step
 from chainlit.utils import utc_now
 from literalai.observability.step import TrueStepType
 
 from boba.aid.chat.ui_text import UiText
-from boba.aid.domain.keys import CanvasFileUrl
+from boba.aid.rendering.content import ContentRenderer
+from boba.aid.rendering.handlers.base import Target
 from boba.aid.rendering.question import QuestionCard
 from boba.aid.rendering.tool import AppProp, ChatElements, ToolAppView
 from boba.canvas.canvas import (
     CanvasAction,
     CanvasElement,
-    CanvasError,
-    CanvasKind,
-    CanvasRegistry,
     CanvasScope,
 )
-from boba.canvas.storage import StorageError, StorageNotFoundError
 from boba.core.mcp_names import McpToolNames
 from boba.storage.client import StorageClient
 from boba.toolkit.calls import CallViews, ToolCallBase, ToolCallModels, ToolIntent
 from boba.toolkit.result import (
     BlockAudience,
     ContentMime,
-    Fence,
-    JsonBlock,
-    NoteLine,
-    TableText,
-    VisualResult,
 )
-from boba.transport.http.connection import UrlScheme
+from boba.transport.acp.content import ContentBlocks
 
 __all__ = [
     "AppCancel",
@@ -769,18 +754,6 @@ class ProgressText:
         return self.BREAK.join(self._lines)
 
 
-BlockDrawing: TypeAlias = Callable[
-    [mt.ContentBlock, Step, str | None, int], Awaitable[str]
-]
-"""Отрисовщик блока ответа: блок, шаг вызова, ключ вызова и номер блока-не-
-текста; итог — markdown для выхода шага (пусто — блок стал элементом)."""
-
-ResourceDrawing: TypeAlias = Callable[[str, str, Step, str | None, int], Awaitable[str]]
-"""Отрисовщик текстового встроенного ресурса по его MIME: текст ресурса, его
-имя (последний сегмент uri), шаг вызова, ключ вызова и номер блока-не-текста;
-итог — markdown для выхода шага (пусто — ресурс стал элементом)."""
-
-
 @dataclass(frozen=True)
 class WorkspaceFile:
     """Файл workspace сервера, на который ведёт ссылка resource_link со
@@ -828,24 +801,13 @@ class ChatView:
     хода ставит итоговую. Воспроизведение истории хода не ведёт, и его
     контейнер сразу получает итоговую подпись.
 
-    Итог вызова — ответ сервера MCP: блоки для человека рисуются реестром по
-    виду блока и MIME ресурса (таблица, блок кода, вьювер канваса
-    или вложение); картинка и звук ложатся файлом в хранилище треда
-    (storage) и рисуются как файл workspace; неизвестное — JSON без байтов.
+    Содержимое сообщений и вызовов передаётся ContentRenderer: MIME выбирает
+    handler, ChatView задаёт только место текста и элементов в ленте.
     """
 
     NAMESPACE: ClassVar[UUID] = UUID("6f9b1f4e-2f1a-4c1a-9a2f-1d3b5c7e9a11")
     COMMANDS_AUTHOR: ClassVar[str] = "Chat"
     """Подпись итогов команд, которые исполнила вкладка."""
-    TEXT_FAMILY: ClassVar[str] = "text/"
-    """Начало MIME текстовых ресурсов: неизвестный текст рисуется блоком кода."""
-    TREE_BYTES: ClassVar[int] = 1 << 20
-    """Предел JSON для дерева: больший документ рисуется блоком кода."""
-    BASE64_SLICE: ClassVar[int] = 64 * 1024
-    """Срез base64 картинки и звука при записи в хранилище: кратен 4,
-    поэтому каждый срез декодируется сам по себе."""
-    BYTES: ClassVar[Mapping[str, Any]] = {"data": True, "resource": {"blob": True}}
-    """Поля байтов base64, которых JSON неизвестного блока не раскрывает."""
 
     def __init__(  # noqa: PLR0913 — лента треда собирается всеми своими входами
         self,
@@ -879,20 +841,10 @@ class ChatView:
         self._call_views = CallViews()
         self._names = McpToolNames()
         self._elements = ChatElements()
-        self._drawings: dict[type[mt.ContentBlock], BlockDrawing] = {
-            mt.TextContent: self._text,
-            mt.EmbeddedResource: self._embedded,
-            mt.ResourceLink: self._linked,
-            mt.ImageContent: self._media,
-            mt.AudioContent: self._media,
-        }
-        """Отрисовка блока ответа по его виду (type)."""
-        self._resources: dict[str, ResourceDrawing] = {
-            ContentMime.CSV: self._table,
-            ContentMime.SQL: self._fenced,
-            ContentMime.JSON: self._tree,
-        }
-        """Отрисовка встроенного ресурса по MIME; прочий text/* — блоком кода."""
+        self._content = ContentRenderer(storage, self._scope)
+        self._block_numbers: dict[str, int] = {}
+        self._rendered_elements: dict[str, list[Element]] = {}
+        self._user_message: Step | None = None
         self._pulse = self._new_pulse(None)
 
     @property
@@ -932,6 +884,9 @@ class ChatView:
 
     def begin_turn(self, key: str | None) -> None:
         """Открывает ход: его ключ адресует контейнер и ответ."""
+        self._block_numbers.clear()
+        self._rendered_elements.clear()
+        self._user_message = None
         self._turn = TurnDraft(key=key)
         self._pulse = self._new_pulse(key)
 
@@ -993,94 +948,124 @@ class ChatView:
         step_id: str | None = None,
         name: str | None = None,
         links: Sequence[schema.ResourceContentBlock] = (),
+        *,
+        blocks: Sequence[mt.ContentBlock] | None = None,
     ) -> Step:
-        """Шаг вопроса; name — автор, если он известен точнее имени ленты;
-        вложения — файлы шага (_attachment)."""
-        author = name
-        if not author:
-            author = self._user_name
-
-        step = self._step(
-            author,
-            StepKind.USER,
-            parent_id=None,
-            step_id=step_id,
-        )
-        step.output = text
-        if self._sink.emits_elements:
-            attached = self._attached(links, step_id)
-            step.elements = [element async for element in attached]
-
+        """Вопрос и его вложения проходят тот же renderer, что результаты."""
+        step = self._user_message
+        if step is None or step.id != step_id:
+            step = self._step(
+                name or self._user_name,
+                StepKind.USER,
+                parent_id=None,
+                step_id=step_id,
+            )
+            self._user_message = step
+        else:
+            await self._clear_elements(step)
+        content = blocks
+        if content is None:
+            content = [
+                mt.TextContent(text=text),
+                *(ContentBlocks.to_mcp(link) for link in links),
+            ]
+        self._block_numbers[step.id] = 0
+        step.output = await self._render_blocks(content, step, step_id, thumbnail=True)
         await self._sink.put(step)
         return step
 
-    async def _attached(
-        self, links: Sequence[schema.ResourceContentBlock], step_id: str | None
-    ) -> AsyncIterator[Element]:
-        for number, link in enumerate(links):
-            yield await self._attachment(link, step_id, number)
+    async def message_blocks(
+        self,
+        blocks: Sequence[mt.ContentBlock],
+        key: str,
+        *,
+        thought: bool = False,
+        replace: bool = False,
+    ) -> None:
+        """Кусок дополняет сообщение, полное ACP-сообщение заменяет его."""
+        if thought:
+            if self._turn.thinking is None:
+                self._turn.thinking = await self._open_thinking(key)
+            host: Step | Message = self._turn.thinking
+        else:
+            if self._turn.answer is None:
+                self._turn.answer = self._open_answer()
+            host = self._turn.answer
+            await self._pulse.hold()
+        if replace:
+            await self._batch.flush()
+            await self._clear_elements(host)
+            self._block_numbers[host.id] = 0
+            if isinstance(host, Step):
+                host.output = ""
+            else:
+                host.content = ""
+        text = await self._render_blocks(blocks, host, key)
+        if text:
+            await self._batch.push(host, text)
+        if replace or host.elements:
+            await self._batch.flush()
+            if isinstance(host, Step):
+                await self._sink.put(host)
+            else:
+                await host.send()
 
-    async def _attachment(
-        self, link: schema.ResourceContentBlock, step_id: str | None, number: int
-    ) -> Element:
-        """Файл вопроса по его ссылке: картинка — миниатюрой, файл, который
-        показывает панель, — кнопкой открытия в панели, как файлы итогов
-        вызовов, прочее — вложением для скачивания. Адрес — путь и запрос
-        ссылки агента без хоста, который браузеру может быть не виден."""
-        address = urlsplit(str(link.uri))
-        url = urlunsplit(("", "", address.path, address.query, ""))
-        mime = ContentMime.named(link.mime_type, link.name)
-        viewer = CanvasRegistry.viewer_for(mime)
-        if viewer is None:
-            return self._file(link.name, url, mime, step_id, number)
+    async def _clear_elements(self, host: Step | Message) -> None:
+        removed = self._rendered_elements.pop(host.id, [])
+        ids = {element.id for element in removed}
+        for element in removed:
+            await element.remove()
+        elements = self._host_elements(host)
+        elements[:] = [element for element in elements if element.id not in ids]
 
-        if viewer.kind is CanvasKind.IMAGE:
-            image = Image(name=link.name, url=url, mime=mime, display="inline")
-            self._numbered(image, step_id, number)
-            return image
+    @staticmethod
+    def _host_elements(host: Step | Message) -> list[Element]:
+        return cast("list[Element]", host.elements)
 
-        try:
-            scope = await self._scope()
-        except StorageError as exc:
-            logger.info(
-                "thread %s: attachment %s of question %s stays a download, the "
-                "workspace of the thread is unknown: %s",
-                self._thread_id,
-                link.uri,
-                step_id,
-                exc,
+    async def _render_blocks(  # noqa: PLR0913 — содержимое и его место в ленте
+        self,
+        blocks: Sequence[mt.ContentBlock],
+        host: Step | Message,
+        key: str | None,
+        *,
+        attachments_id: str | None = None,
+        thumbnail: bool = False,
+        separator: str = "",
+    ) -> str:
+        parts: list[str] = []
+        for block in blocks:
+            if block.annotations is not None and not BlockAudience.USER.reads(
+                block.annotations.audience
+            ):
+                continue
+            number = self._block_numbers.get(host.id, 0)
+
+            async def attach(
+                element: Element, inline: bool, number: int = number
+            ) -> None:
+                self._numbered(element, key, number)
+                if attachments_id is not None and not inline:
+                    await element.send(for_id=attachments_id)
+                else:
+                    self._host_elements(host).append(element)
+                self._rendered_elements.setdefault(host.id, []).append(element)
+
+            target = Target(
+                id=host.id,
+                number=number,
+                emits_elements=self._sink.emits_elements,
+                attach=attach,
+                no_rows=self.label(StepText.NO_ROWS),
+                thumbnail=thumbnail,
             )
-            return self._file(link.name, url, mime, step_id, number)
-
-        try:
-            file_key = CanvasFileUrl.key(scope, address.path)
-        except ValueError as exc:
-            logger.info(
-                "thread %s: attachment %s of question %s is not a file of the "
-                "thread, it stays a download: %s",
-                self._thread_id,
-                link.uri,
-                step_id,
-                exc,
-            )
-            return self._file(link.name, url, mime, step_id, number)
-
-        try:
-            card = await viewer.link(file_key, mime)
-        except CanvasError as exc:
-            logger.info(
-                "thread %s: the panel refused attachment %s of question %s, it "
-                "stays a download: %s",
-                self._thread_id,
-                file_key.in_workspace(),
-                step_id,
-                exc,
-            )
-            return self._file(link.name, url, mime, step_id, number)
-
-        element = self._elements.of_result(card)
-        self._numbered(element, step_id, number)
-        return element
+            piece = await self._content.render(block, target)
+            if piece:
+                if not separator and not isinstance(block, mt.TextContent):
+                    piece = f"\n\n{piece}\n\n"
+                parts.append(piece)
+            if not isinstance(block, mt.TextContent):
+                self._block_numbers[host.id] = number + 1
+        return separator.join(parts)
 
     async def answer(self, text: str, key: str | None = None) -> Step:
         step = self._step(
@@ -1211,6 +1196,7 @@ class ChatView:
 
         self._turn.answer = None
         await self._batch.flush()
+        await self._clear_elements(message)
         await message.remove()
 
     async def withdraw_thinking(self) -> None:
@@ -1221,6 +1207,7 @@ class ChatView:
 
         self._turn.steps -= 1
         await self._batch.flush()
+        await self._clear_elements(step)
         await self._sink.drop(step)
 
     async def stream_answer(self, token: str, key: str | None = None) -> None:
@@ -1301,6 +1288,7 @@ class ChatView:
             step_id=self.derive_id(self._thread_id, message.id, StepRole.INTERIM),
         )
         step.output = message.content
+        step.elements = list(message.elements or ())
         step.metadata = {StepMeta.INTERIM.value: True}
         await self._sink.put(step)
 
@@ -1689,230 +1677,16 @@ class ChatView:
     async def _pieces(
         self, reply: mt.CallToolResult, step: Step, key: str | None
     ) -> AsyncIterator[str]:
-        """Непустой markdown блоков ответа для человека по порядку: блок
-        только для модели не показывается; номер — порядковый номер
-        блока-не-текста, из него id элемента."""
-        number = 0
-        for block in reply.content:
-            annotations = block.annotations
-            if annotations is not None:
-                if not BlockAudience.USER.reads(annotations.audience):
-                    continue
-
-            drawing = self._drawings.get(type(block), self._unknown)
-            piece = await drawing(block, step, key, number)
-
-            if not isinstance(block, mt.TextContent):
-                number += 1
-
-            if not piece:
-                continue
-
-            yield piece
-
-    async def _text(
-        self, block: mt.ContentBlock, step: Step, key: str | None, number: int
-    ) -> str:
-        if not isinstance(block, mt.TextContent):
-            return await self._unknown(block, step, key, number)
-
-        return block.text
-
-    async def _embedded(
-        self, block: mt.ContentBlock, step: Step, key: str | None, number: int
-    ) -> str:
-        """Встроенный ресурс по MIME; двоичный — скачиваемый файл треда."""
-        if not isinstance(block, mt.EmbeddedResource):
-            return await self._unknown(block, step, key, number)
-
-        resource = block.resource
-        if isinstance(resource, mt.BlobResourceContents):
-            return await self._media(block, step, key, number)
-
-        if not isinstance(resource, mt.TextResourceContents):
-            return await self._unknown(block, step, key, number)
-
-        mime = resource.mime_type
-        if mime is None:
-            mime = ContentMime.PLAIN.value
-
-        drawing = self._resources.get(mime)
-        if drawing is None and mime.startswith(self.TEXT_FAMILY):
-            drawing = self._fenced
-
-        if drawing is None:
-            return await self._unknown(block, step, key, number)
-
-        segment = PurePosixPath(urlsplit(str(resource.uri)).path).name
-        name = unquote(segment)
-
-        return await drawing(resource.text, name, step, key, number)
-
-    async def _table(
-        self, text: str, name: str, step: Step, key: str | None, number: int
-    ) -> str:
-        """text/csv — таблица markdown, как у таблиц семейства."""
-        rows = list(csv.DictReader(io.StringIO(text)))
-        if not rows:
-            return NoteLine.render(self.label(StepText.NO_ROWS))
-
-        return TableText.render(rows)
-
-    async def _fenced(
-        self, text: str, name: str, step: Step, key: str | None, number: int
-    ) -> str:
-        """Текст блоком кода; подпись ограды — имя ресурса."""
-        return Fence.around(text, name)
-
-    async def _tree(
-        self, text: str, name: str, step: Step, key: str | None, number: int
-    ) -> str:
-        """application/json — дерево JSON элементом шага вызова под его
-        выходом; больше TREE_BYTES или не JSON — блоком кода."""
-        if len(text.encode()) > self.TREE_BYTES:
-            return await self._fenced(text, name, step, key, number)
-
-        try:
-            value = json.loads(text)
-        except ValueError as exc:
-            logger.info(
-                "thread %s: JSON resource %r of call %s is not JSON, shown as text: %s",
-                self._thread_id,
-                name,
-                key,
-                exc,
-            )
-            return await self._fenced(text, name, step, key, number)
-
-        if not self._sink.emits_elements:
-            return ""
-
-        tree = VisualResult(
-            element=CanvasElement.JSON_TREE, props={"value": value}, title=name
-        )
-        element = self._elements.of_result(tree)
-        self._numbered(element, key, number)
-
-        elements: list[Element] = []
-        if step.elements:
-            elements = list(step.elements)
-
-        elements.append(element)
-        step.elements = elements
-
-        return ""
-
-    async def _media(
-        self, block: mt.ContentBlock, step: Step, key: str | None, number: int
-    ) -> str:
-        """Картинка, звук и двоичный ресурс — файл треда под именем от шага
-        и номера блока: вживую, при воспроизведении и во второй вкладке это
-        один файл, записанный один раз. Дальше он рисуется как файл
-        workspace (_mounted). Не base64 — JSON блока без байтов."""
-        if isinstance(block, mt.ImageContent | mt.AudioContent):
-            data, mime = block.data, block.mime_type
-        elif isinstance(block, mt.EmbeddedResource) and isinstance(
-            block.resource, mt.BlobResourceContents
-        ):
-            data = block.resource.blob
-            mime = block.resource.mime_type or "application/octet-stream"
-        else:
-            return await self._unknown(block, step, key, number)
-
-        try:
-            # проверка срезами до записи: битый блок не оставит в хранилище обрывка
-            async for _ in self._decoded(data):
-                pass
-        except ValueError as exc:
-            logger.info(
-                "thread %s: %s of call %s is not base64, shown as JSON: %s",
-                self._thread_id,
-                block.type,
-                key,
-                exc,
-            )
-            return await self._unknown(block, step, key, number)
-
-        if not self._sink.emits_elements:
-            return ""
-
-        suffix = ContentMime.suffix_of(mime)
-
-        digest = hashlib.sha256(data.encode("ascii")).hexdigest()
-        stem = uuid5(self.NAMESPACE, f"{step.id}:{number}:{mime}:{digest}")
-        try:
-            scope = await self._scope()
-        except StorageError as exc:
-            return f"{stem}{suffix} is not shown: {exc}"
-
-        file_key = scope.file(f"{stem}{suffix}")
-        try:
-            await self._kept(file_key.render(), data, mime)
-        except StorageError as exc:
-            return f"{file_key.in_workspace()} is not shown: {exc}"
-
-        mounted = WorkspaceFile(path=file_key.in_workspace(), mime=mime)
-
-        return await self._mounted(mounted, file_key.name, key, number)
-
-    async def _kept(self, target: str, data: str, mime: str) -> None:
-        """Байты блока — в хранилище под ключом target, если их там ещё нет.
-
-        Ошибки:
-        StorageError — хранилище не прочитало или не записало файл.
-        """
-        try:
-            await self._storage.stat(target)
-        except StorageNotFoundError:
-            chunks = self._decoded(data)
-            await self._storage.upload_stream(target, chunks, mime)
-
-    async def _decoded(self, data: str) -> AsyncIterator[bytes]:
-        """Байты base64 срезами BASE64_SLICE: в памяти — один срез.
-
-        Ошибки:
-        binascii.Error — срез не base64.
-        """
-        for start in range(0, len(data), self.BASE64_SLICE):
-            piece = data[start : start + self.BASE64_SLICE]
-            yield base64.b64decode(piece, validate=True)
-
-    async def _linked(
-        self, block: mt.ContentBlock, step: Step, key: str | None, number: int
-    ) -> str:
-        """Ссылка: файл workspace (file://) — вьювер канваса либо вложение у
-        ответа хода; http(s) — вложение по адресу; другая схема — JSON."""
-        if not isinstance(block, mt.ResourceLink):
-            return await self._unknown(block, step, key, number)
-
-        if mounted := self._links.file_of(block):
-            return await self._mounted(mounted, block.name, key, number)
-
-        address = urlsplit(str(block.uri))
-        if address.scheme not in set(UrlScheme):
-            return await self._unknown(block, step, key, number)
-
+        self._block_numbers[step.id] = 0
+        await self._clear_elements(step)
         answer_id = self.derive_id(self._thread_id, self._turn.key, StepRole.ANSWER)
-        if answer_id is None:
-            return ""
-
-        if not self._sink.emits_elements:
-            return ""
-
-        attached = self._file(block.name, str(block.uri), block.mime_type, key, number)
-        await attached.send(for_id=answer_id)
-
-        return ""
-
-    async def _unknown(
-        self, block: mt.ContentBlock, step: Step, key: str | None, number: int
-    ) -> str:
-        """Неизвестный блок — его JSON; байты blob и data не раскрываются."""
-        shown = block.model_dump(
-            mode="json", by_alias=True, exclude_none=True, exclude=self.BYTES
+        yield await self._render_blocks(
+            reply.content,
+            step,
+            key,
+            attachments_id=answer_id,
+            separator="\n\n",
         )
-
-        return Fence.around(JsonBlock.pretty(shown), StepLanguage.JSON.value)
 
     async def _scope(self) -> CanvasScope:
         """Файлы треда — в workspace сервера файлов треда: каталог даёт
@@ -1926,58 +1700,6 @@ class ChatView:
         return CanvasScope(
             user_id=self._user_key, scope_id=self._thread_id, workspace=workspace
         )
-
-    async def _mounted(
-        self, mounted: WorkspaceFile, name: str, key: str | None, number: int
-    ) -> str:
-        """Файл workspace по ссылке — элемент у ответа хода, одинаково вживую
-        и при воспроизведении: файл с вьювером канваса — его карточкой,
-        остальное — вложением. Итог — пояснение для выхода шага вызова,
-        когда элемента нет (путь вне треда, вьювер отказал)."""
-        answer_id = self.derive_id(self._thread_id, self._turn.key, StepRole.ANSWER)
-        if answer_id is None:
-            return ""
-
-        if not self._sink.emits_elements:
-            return ""
-
-        try:
-            scope = await self._scope()
-        except StorageError as exc:
-            return f"{mounted.path} is not shown: {exc}"
-
-        try:
-            file_key = scope.key(mounted.path)
-        except CanvasError as exc:
-            return f"{mounted.path} is not shown: {exc}"
-
-        mime = mounted.mime
-        element: Element
-        viewer = CanvasRegistry.viewer_for(mime)
-        if viewer is None:
-            url = CanvasFileUrl.path(file_key, mime)
-            element = self._file(name, url, mime, key, number)
-        else:
-            try:
-                card = await viewer.link(file_key, mime)
-            except CanvasError as exc:
-                return f"{file_key.in_workspace()} is not shown: {exc}"
-
-            element = self._elements.of_result(card)
-            self._numbered(element, key, number)
-
-        await element.send(for_id=answer_id)
-
-        return ""
-
-    def _file(
-        self, name: str, url: str, mime: str | None, key: str | None, number: int
-    ) -> File:
-        """Файл в ленте — вложение вопроса или файл итога вызова."""
-        attached = File(name=name, url=url, mime=mime, display="inline")
-        self._numbered(attached, key, number)
-
-        return attached
 
     def _numbered(self, element: Element, key: str | None, number: int) -> None:
         """Id элемента из ключа вопроса или вызова и номера элемента у него —

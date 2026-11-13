@@ -45,6 +45,8 @@ from boba.aid.rendering.chat_view import (
     StepRole,
     StepText,
 )
+from boba.aid.rendering.handlers.files import ResourceFiles
+from boba.aid.rendering.handlers.text import JsonHandler
 from boba.aid.rendering.renderer import ChatRenderer, NoSurface
 from boba.aid.rendering.tool import AppResource, AppSource
 from boba.canvas.canvas import CanvasAction, CanvasElement, CanvasRegistry
@@ -174,6 +176,10 @@ class FakeEmitter:
         is_input: bool = False,
     ) -> None:
         self.tokens[id] = self.tokens.get(id, "") + token
+
+    async def emit(self, event: str, payload: Any) -> None:
+        if event == "remove_element":
+            self.elements[:] = [el for el in self.elements if el["id"] != payload["id"]]
 
     async def send_element(self, element_dict: Any) -> None:
         self.elements.append(dict(element_dict))
@@ -2352,7 +2358,7 @@ class TestBlockDrawings:
                 )
         else:
             await updates.apply(
-                schema.SessionToolCallUpdate(tool_call_id=CALL, content=content)
+                schema.SessionToolCallUpdate(tool_call_id=CALL, content=[*content])
             )
 
         await updates.apply(
@@ -2486,7 +2492,7 @@ class TestBlockDrawings:
         assert self._output(recorded) == "| a  | b  |\n|----|----|\n| 1  |    |"
 
     @pytest.mark.anyio
-    async def test_code_and_unknown_text_are_fenced_with_the_resource_name(
+    async def test_known_code_is_fenced_and_unknown_text_is_a_file(
         self,
         runtime_stand: StandRefs,
         storage: LocalStorageClient,
@@ -2506,9 +2512,15 @@ class TestBlockDrawings:
             "```sql\nselect 1\n```\n\n"
             '```json\n{"a": 1\n```\n\n'
             "```stdout\nline\n```\n\n"
-            "```notes\n<b>raw</b>\n```\n\n"
             "```page\n<script>x()</script>\n```"
         )
+        assert len(recorded.elements) == 1
+        attached = recorded.elements[0]
+        assert attached["name"] == "notes"
+        name = PurePosixPath(urlsplit(str(attached["url"])).path).name
+        stored = ObjectKey(user_id="u-1", scope_id=THREAD, name=name)
+        assert attached["url"] == CanvasFileUrl.path(stored, "text/x-unknown")
+        assert await get_bytes(storage, stored.render()) == b"<b>raw</b>"
 
     @pytest.mark.anyio
     async def test_json_is_a_tree_under_the_step_output(
@@ -2547,7 +2559,7 @@ class TestBlockDrawings:
         storage: LocalStorageClient,
         recorded: FakeEmitter,
     ) -> None:
-        text = json.dumps({"blob": "x" * ChatView.TREE_BYTES})
+        text = json.dumps({"blob": "x" * JsonHandler.TREE_BYTES})
         reply = self._reply(self._resource("application/json", text, "big"))
 
         await self._drawn(runtime_stand, storage, reply)
@@ -2557,14 +2569,13 @@ class TestBlockDrawings:
             assert element.get("name") != CanvasElement.JSON_TREE, element
 
     @pytest.mark.anyio
-    async def test_stored_plotly_figure_is_an_ordinary_block(
+    async def test_stored_plotly_figure_is_a_downloadable_file(
         self,
         runtime_stand: StandRefs,
         storage: LocalStorageClient,
         recorded: FakeEmitter,
     ) -> None:
-        """Тред из истории до удаления графиков plotly: ресурс фигуры лента
-        показывает обычным блоком, а не падает и не рисует график."""
+        """Неизвестный JSON-формат сохраняется целиком как вложенный файл."""
         figure = {"data": [{"type": "bar", "y": [1, 2]}]}
         chart = self._resource(
             "application/vnd.plotly.v1+json", json.dumps(figure), "orders"
@@ -2572,11 +2583,16 @@ class TestBlockDrawings:
 
         await self._drawn(runtime_stand, storage, self._reply(chart))
 
-        output = self._output(recorded)
-        assert output.startswith("```json"), output
-        assert "vnd.plotly" in output, output
-        for element in recorded.elements:
-            assert element.get("type") != "plotly", element
+        assert self._output(recorded) == ""
+        assert len(recorded.elements) == 1
+        attached = recorded.elements[0]
+        assert attached["type"] == "file"
+        name = PurePosixPath(urlsplit(str(attached["url"])).path).name
+        stored = ObjectKey(user_id="u-1", scope_id=THREAD, name=name)
+        assert attached["url"] == CanvasFileUrl.path(
+            stored, "application/vnd.plotly.v1+json"
+        )
+        assert json.loads(await get_bytes(storage, stored.render())) == figure
 
     @pytest.mark.anyio
     async def test_image_and_audio_are_thread_files_of_the_answer(
@@ -2591,7 +2607,7 @@ class TestBlockDrawings:
         показ (воспроизведение, другая вкладка) ведёт к тому же файлу."""
         body = bytes(range(256)) * 400
         data = base64.b64encode(body).decode("ascii")
-        assert len(data) > ChatView.BASE64_SLICE, "the block spans several slices"
+        assert len(data) > ResourceFiles.BASE64_SLICE, "the block spans several slices"
         reply = self._reply(
             mt.ImageContent(data=data, mime_type="image/png"),
             mt.AudioContent(data=data, mime_type="audio/mpeg"),
@@ -2724,3 +2740,179 @@ class TestBlockDrawings:
         step = recorded.last()[_id(CALL, StepRole.TOOL)]
         assert json.loads(str(step.get(StepField.OUTPUT))) == old
         assert step.get("language") == "json"
+
+
+class TestMessageContent:
+    """Обычные сообщения используют те же MIME-handlers, что результаты tools."""
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("role", ["agent", "thought", "user"])
+    async def test_rich_content_is_the_same_streamed_and_replayed(
+        self, runtime_stand: StandRefs, storage: LocalStorageClient, role: str
+    ) -> None:
+        document = {"rows": [1, 2]}
+        body = "неизвестный формат".encode()
+        blocks = [
+            schema.TextContentBlock(text="hello"),
+            schema.EmbeddedResourceContentBlock.model_validate(
+                {
+                    "type": "resource",
+                    "resource": {
+                        "uri": "file:///result.json",
+                        "text": json.dumps(document),
+                        "mimeType": "Application/JSON; charset=utf-8",
+                    },
+                }
+            ),
+            schema.ImageContentBlock(
+                data=base64.b64encode(body).decode(), mime_type="image/x-unknown"
+            ),
+            schema.AudioContentBlock(
+                data=base64.b64encode(b"audio").decode(), mime_type="audio/wav"
+            ),
+        ]
+        kinds = {
+            "agent": (schema.AgentMessageChunk, schema.AgentMessageUpdate),
+            "thought": (schema.AgentThoughtChunk, schema.AgentThoughtUpdate),
+            "user": (schema.UserMessageChunk, schema.UserMessageUpdate),
+        }
+        chunk, whole = kinds[role]
+        message_id = QUESTION if role == "user" else "rich-message"
+        shown = []
+        for streamed in (True, False):
+            fake = FakeContext(THREAD)
+            token = context_var.set(cast("ChainlitContext", fake))
+            try:
+                view = _view(runtime_stand, storage, RemoteJournals())
+                if role != "user":
+                    await view.apply(_question())
+                if streamed:
+                    for block in blocks:
+                        await view.apply(chunk(message_id=message_id, content=block))
+                else:
+                    await view.apply(whole(message_id=message_id, content=blocks))
+                await view.finish_turn()
+            finally:
+                context_var.reset(token)
+            elements = {str(item["id"]): item for item in fake.emitter.elements}
+            assert len(elements) == 3
+            expected_host = {
+                "agent": _id(QUESTION, StepRole.ANSWER),
+                "thought": _id(message_id, StepRole.THINKING),
+                "user": QUESTION,
+            }[role]
+            assert {item["forId"] for item in elements.values()} == {expected_host}
+            tree = next(item for item in elements.values() if item["type"] == "custom")
+            assert tree["props"] == {"value": document}
+            files = [item for item in elements.values() if item["type"] == "file"]
+            for item, expected in zip(files, (body, b"audio"), strict=True):
+                name = PurePosixPath(urlsplit(str(item["url"])).path).name
+                key = ObjectKey(user_id="u-1", scope_id=THREAD, name=name)
+                assert await get_bytes(storage, key.render()) == expected
+            shown.append(
+                [
+                    (item["id"], item["forId"], item.get("url"), item.get("props"))
+                    for item in elements.values()
+                ]
+            )
+        assert shown[0] == shown[1]
+
+    @pytest.mark.anyio
+    async def test_complete_message_replaces_text_and_removes_old_attachment(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        view = _view(runtime_stand, storage, RemoteJournals())
+        await view.apply(_question())
+        await view.apply(_chunk("draft", "answer"))
+        await view.apply(
+            schema.AgentMessageChunk(
+                message_id="answer",
+                content=schema.ImageContentBlock(
+                    data="eA==", mime_type="image/x-unknown"
+                ),
+            )
+        )
+        assert recorded.elements
+        await view.apply(
+            schema.AgentMessageUpdate(
+                message_id="answer",
+                content=[schema.TextContentBlock(text="final")],
+            )
+        )
+        await view.finish_turn()
+        assert not recorded.elements
+        answer = recorded.last()[_id(QUESTION, StepRole.ANSWER)]
+        assert answer.get("output") == "final"
+
+    @pytest.mark.anyio
+    async def test_external_user_attachment_keeps_its_host(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        view = _view(runtime_stand, storage, RemoteJournals())
+        await view.apply(
+            schema.UserMessageUpdate(
+                message_id=QUESTION,
+                content=[
+                    schema.ResourceContentBlock(
+                        name="notes",
+                        uri=AnyUrl("https://example.org/notes"),
+                        mime_type="text/x-unknown",
+                    )
+                ],
+            )
+        )
+        assert recorded.elements[0]["url"] == "https://example.org/notes"
+
+    @pytest.mark.anyio
+    async def test_interim_answer_keeps_attachments_when_moved_under_tool_group(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        view = _view(runtime_stand, storage, RemoteJournals())
+        await view.apply(_question())
+        await view.apply(
+            schema.AgentMessageChunk(
+                message_id="before-tool",
+                content=schema.ImageContentBlock(
+                    data="eA==", mime_type="image/x-unknown"
+                ),
+            )
+        )
+        attached_id = recorded.elements[-1]["id"]
+        await view.apply(_call(CALL, "probe", {}))
+        interim = _id(_id(QUESTION, StepRole.ANSWER), StepRole.INTERIM)
+        attached = next(
+            el for el in reversed(recorded.elements) if el["id"] == attached_id
+        )
+        assert attached["forId"] == interim
+        await view.finish_turn()
+
+    @pytest.mark.anyio
+    async def test_withdrawn_answer_removes_attachments(
+        self,
+        runtime_stand: StandRefs,
+        storage: LocalStorageClient,
+        recorded: FakeEmitter,
+    ) -> None:
+        view = _view(runtime_stand, storage, RemoteJournals())
+        await view.apply(_question())
+        await view.apply(
+            schema.AgentMessageChunk(
+                message_id="withdrawn",
+                content=schema.ImageContentBlock(
+                    data="eA==", mime_type="image/x-unknown"
+                ),
+            )
+        )
+        assert recorded.elements
+        await view.apply(schema.AgentMessageUpdate(message_id="withdrawn", content=[]))
+        assert not recorded.elements
+        await view.finish_turn()
