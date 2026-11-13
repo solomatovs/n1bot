@@ -22,6 +22,7 @@ __pycache__
 !/docs/extensibility-audit.md
 !/docs/knowledge-schema.sql
 !/docs/configuration-regrouping.md
+!/docs/agent-history-and-request-assembly.md
 !/docs/psql-queries/
 !/docs/migrations/
 /docs/psql-queries/*.log
