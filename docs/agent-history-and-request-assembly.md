@@ -3,6 +3,7 @@
 Каждая модель сообщения соответствует одной строке `records`; рядом показан её JSON.
 `Payload` описывает JSON-столбец. Общие модели значений показаны как вложенные фрагменты.
 Примеры независимы; `session_id` и `seq` в них уже назначены хранилищем.
+ACP-проекция описана отдельно: [модели и SQL](agent-history-to-acp.md).
 
 ## 1 Общие значения
 
@@ -412,6 +413,8 @@ class RecordBase(DataModel):
     session_id: NonEmptyStr | None = None
     seq: PositiveInt | None = None
     record_id: NonEmptyStr
+    # Предыдущая запись той же сессии, скопированная при компактизации.
+    copied_from_id: NonEmptyStr | None = None
     created_at: AwareDatetime
     version: NonEmptyStr  # Версия boba-cli, создавшего сообщение.
     kind: NonEmptyStr
@@ -435,6 +438,7 @@ JSON базового класса; самостоятельной запись�
   "session_id": "session-1",
   "seq": 1,
   "record_id": "record-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "record_example",
@@ -476,6 +480,7 @@ class SystemPromptAddedRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "prompt-add-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "system_prompt_added",
@@ -516,6 +521,7 @@ class SystemPromptRemovedRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "prompt-remove-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "system_prompt_removed",
@@ -554,6 +560,7 @@ class SkillAddedRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "skill-add-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "skill_added",
@@ -599,6 +606,7 @@ class SkillRemovedRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "skill-remove-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "skill_removed",
@@ -634,6 +642,7 @@ class SkillActivatedRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "skill-activate-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "skill_activated",
@@ -682,6 +691,7 @@ class MemoryAddedRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "memory-add-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "memory_added",
@@ -721,6 +731,7 @@ class MemoryRemovedRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "memory-remove-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "memory_removed",
@@ -762,6 +773,7 @@ class AgentAddedRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "agent-add-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "agent_added",
@@ -806,6 +818,7 @@ class AgentRemovedRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "agent-remove-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "agent_removed",
@@ -857,6 +870,7 @@ class EnvironmentRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "environment-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "environment",
@@ -913,6 +927,7 @@ class DateRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "date-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "date",
@@ -956,6 +971,7 @@ class ToolAddedRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "tool-add-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "tool_added",
@@ -987,6 +1003,7 @@ class ToolRemovedRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "tool-remove-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "tool_removed",
@@ -1022,6 +1039,7 @@ class ToolSchemaRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "tool-schema-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "tool_schema",
@@ -1073,6 +1091,7 @@ JSON базового класса; самостоятельной запись�
   "session_id": "session-1",
   "seq": 1,
   "record_id": "parameters-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "parameter_example",
@@ -1111,6 +1130,7 @@ JSON базового класса; самостоятельной запись�
   "session_id": "session-1",
   "seq": 1,
   "record_id": "parameter_removed_example-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "parameter_removed_example",
@@ -1141,6 +1161,7 @@ class ModelRecord(ParameterRecord):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "model-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "model",
@@ -1171,6 +1192,7 @@ class SamplingRecord(ParameterRecord):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "sampling-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "sampling",
@@ -1201,6 +1223,7 @@ class SamplingRemovedRecord(ParameterRemovedRecord):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "sampling_removed-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "sampling_removed",
@@ -1227,6 +1250,7 @@ class InferenceRecord(ParameterRecord):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "inference-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "inference",
@@ -1257,6 +1281,7 @@ class InferenceRemovedRecord(ParameterRemovedRecord):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "inference_removed-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "inference_removed",
@@ -1283,6 +1308,7 @@ class ProviderParametersRecord(ParameterRecord):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "provider_parameters-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "provider_parameters",
@@ -1312,6 +1338,7 @@ class ProviderParametersRemovedRecord(ParameterRemovedRecord):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "provider_parameters_removed-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "provider_parameters_removed",
@@ -1339,6 +1366,7 @@ class ResponseFormatRecord(ParameterRecord):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "response_format-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "response_format",
@@ -1387,6 +1415,7 @@ class ResponseFormatRemovedRecord(ParameterRemovedRecord):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "response_format_removed-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "response_format_removed",
@@ -1414,6 +1443,7 @@ class ToolChoiceRecord(ParameterRecord):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "tool_choice-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "tool_choice",
@@ -1444,6 +1474,7 @@ class ToolChoiceRemovedRecord(ParameterRemovedRecord):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "tool_choice_removed-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "tool_choice_removed",
@@ -1471,6 +1502,7 @@ class StreamingRecord(ParameterRecord):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "streaming-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "streaming",
@@ -1501,6 +1533,7 @@ class StreamingRemovedRecord(ParameterRemovedRecord):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "streaming_removed-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "streaming_removed",
@@ -1514,17 +1547,29 @@ class StreamingRemovedRecord(ParameterRemovedRecord):
 }
 ```
 
-Для разовых настроек и их удаления `request_id` обязателен. Remove постоянного набора
-снимает его до следующего set; remove с `request_id` исключает набор только из этого запроса.
-`ModelRecord.payload.provider` выбирает подключение и адаптер, в тело запроса не попадает.
-При смене инференса производитель обновляет затронутые параметры до границы запроса.
+В записях настроек `request_id=null` означает: применять настройку к следующим запросам.
+`request_id="request-1"` означает: применить её только при сборке запроса request-1.
+Некоторые настройки, например response_format, допускают только второй вариант.
+
+Remove с `request_id=null` отменяет всю категорию настроек с данным key до следующего set.
+Remove с `request_id="request-1"` убирает её только из запроса request-1. Например,
+sampling_removed для request-1 исключает sampling из этого запроса; следующий запрос
+снова использует постоянный sampling, если он сохранён.
+
+`ModelRecord.payload.provider` определяет, через какое подключение и адаптер отправлять
+запрос. В его тело переносятся поля payload.value. При смене провайдера агент сначала
+сохраняет новую модель и совместимые с ней настройки, затем фиксирует запрос описанной ниже записью.
+
+`LlmRequestBoundaryRecord` — служебная запись истории: **«собрать запрос с этим ID
+по данным, сохранённым до этой записи»**. Её добавляет агент перед вызовом сборщика.
+Она нужна, чтобы последующие сообщения не меняли состав уже подготовленного запроса.
 
 ```python
 class LlmRequestBoundaryRecord(RecordBase):
-    """Граница входной истории одного логического LLM-запроса.
+    """Фиксирует, на какой момент истории собрать один запрос в LLM.
 
-    record_id связывает параметры, попытки и ответ; вход — записи перед границей.
-    Фиксация границы предшествует сборке и отправке. Повтор использует тот же вход.
+    record_id — ID запроса; читать входы с seq меньше seq этой записи.
+    Агент сохраняет её после входов и перед сборкой. При повторе используется тот же ID.
     """
 
     kind: Literal["llm_request_boundary"] = "llm_request_boundary"
@@ -1535,8 +1580,9 @@ class LlmRequestBoundaryRecord(RecordBase):
 ```json
 {
   "session_id": "session-1",
-  "seq": 1,
+  "seq": 4,
   "record_id": "request-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "llm_request_boundary",
@@ -1550,8 +1596,42 @@ class LlmRequestBoundaryRecord(RecordBase):
 }
 ```
 
-`record_id` границы — идентификатор запроса. Все его входные записи сохраняются раньше;
-начало диапазона — последняя `CompactMessageRecord`, конец — `seq` границы исключительно.
+В примере record_id=request-1 — имя подготовленного запроса, а seq=4 означает:
+при его сборке читать записи с seq меньше 4. Сама служебная запись в LLM не отправляется.
+Её payload не содержит сообщения или параметров: они уже находятся в предыдущих записях.
+Поле request_id у неё равно null, потому что она сама задаёт ID запроса; остальные
+записи ссылаются на неё через request_id=request-1.
+
+Пример последовательности; показаны только поля, важные для сборки:
+
+```text
+seq  kind                  record_id   request_id   содержимое
+1    model                 model-1     null         model="agent-model"
+2    user_message          user-1      null         "Ответь в JSON"
+3    response_format       format-1    request-1    response_format={"type":"json_object"}
+4    llm_request_boundary  request-1   null
+5    assistant_message     answer-1    request-1    "{\"ok\": true}"
+6    user_message          user-2      null         "Продолжай"
+7    llm_request_boundary  request-2   null
+```
+
+Агент заранее создаёт ID request-1, поэтому может указать его в настройке на seq=3,
+а саму фиксирующую запись сохранить последней, на seq=4.
+
+- Сборка request-1 использует модель на seq=1, ввод на seq=2 и формат на seq=3.
+  Ответ на seq=5 и новый ввод на seq=6 в него не попадут даже при повторной сборке позже.
+- Сборка request-2 использует прежнюю модель и диалог на seq=2, 5, 6.
+  Формат с request_id=request-1 в request-2 не применяется.
+
+Таким образом, request_id у настройки ограничивает её одним запросом, а у ответа
+ассистента показывает, какой запрос породил ответ. Диалог не фильтруется по совпадению request_id.
+Повтор HTTP-попытки request-1 использует ту же служебную запись; следующее обращение
+к модели для продолжения диалога получает новую, как request-2 в примере.
+
+Если до выбранной записи была компактизация, сборка начинается с последнего
+CompactMessageRecord перед ней, включая пересказ и последующие записи. Если компактизации
+не было, сборка начинается с начала чата. Затем применяются правила LAST/SUM категорий.
+Сборщик читает этот срез из хранилища и сам записей не добавляет.
 
 ```python
 class UserMessageRecord(RecordBase):
@@ -1572,6 +1652,7 @@ class UserMessageRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "user-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "user_message",
@@ -1625,6 +1706,7 @@ class ResourceMessageRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "resource-message-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "resource_message",
@@ -1689,6 +1771,7 @@ class CompactMessageRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "compact-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "compact_message",
@@ -1716,6 +1799,8 @@ class CompactMessageRecord(RecordBase):
 Копии получают новые `record_id`, время и версию создавшего их агента; содержимое сохраняется
 буквально. Ссылки схем на каталог и ссылки на копируемые сообщения переводятся на копии;
 остальные ссылки и исходный `request_id` ответов сохраняются. Старые записи остаются в журнале.
+`copied_from_id` указывает на непосредственно скопированную запись того же kind/category
+в этой сессии. ACP показывает оригиналы, LLM-сборщик использует копии в новом контексте.
 
 `expected_seq` защищает снимок от конкурентной записи. Незакрытые пары tools и разовые
 настройки без границы запроса — ошибка подготовки. Команда `/compact` и ошибка сжатия
@@ -1754,6 +1839,7 @@ class AssistantMessageRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "assistant-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "assistant_message",
@@ -1808,6 +1894,7 @@ class ToolResultRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "tool-result-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "tool_result",
@@ -1870,6 +1957,7 @@ class ElicitationRequestRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "elicit-form-1",
+  "copied_from_id": null,
   "created_at": "2026-11-14T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "elicitation_request",
@@ -1915,6 +2003,7 @@ class ElicitationRequestRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "elicit-url-1",
+  "copied_from_id": null,
   "created_at": "2026-11-14T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "elicitation_request",
@@ -1961,6 +2050,7 @@ class ElicitationResponseRecord(RecordBase):
   "session_id": "session-1",
   "seq": 2,
   "record_id": "elicit-response-1",
+  "copied_from_id": null,
   "created_at": "2026-11-14T09:01:00Z",
   "version": "0.0.33.dev4",
   "kind": "elicitation_response",
@@ -2008,6 +2098,7 @@ class ElicitationCompletedRecord(RecordBase):
   "session_id": "session-1",
   "seq": 3,
   "record_id": "elicit-completed-1",
+  "copied_from_id": null,
   "created_at": "2026-11-14T09:02:00Z",
   "version": "0.0.33.dev4",
   "kind": "elicitation_completed",
@@ -2113,6 +2204,7 @@ class SlashCommandRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "command-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "slash_command",
@@ -2162,6 +2254,7 @@ class SlashCommandResultRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "command-result-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "slash_command_result",
@@ -2226,6 +2319,7 @@ class PermissionStateRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "permission-state-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "permission_state",
@@ -2266,6 +2360,7 @@ class PermissionDecisionRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "permission-decision-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "permission_decision",
@@ -2307,6 +2402,7 @@ JSON базового класса; самостоятельной запись�
   "session_id": "session-1",
   "seq": 1,
   "record_id": "notice-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "notice",
@@ -2341,6 +2437,7 @@ class TextNoticeRecord(NoticeRecord):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "notice-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "notice",
@@ -2392,6 +2489,7 @@ class LlmRequestAttemptRecord(NoticeRecord):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "request-attempt-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "llm_request_attempt",
@@ -2447,6 +2545,7 @@ class TaskStateRecord(NoticeRecord):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "task-state-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "task_state",
@@ -2509,6 +2608,7 @@ class TaskContextRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "task-context-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "task_context",
@@ -2560,6 +2660,7 @@ class TaskNotificationRecord(NoticeRecord):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "task-notification-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "task_notification",
@@ -2607,6 +2708,7 @@ class TaskAcknowledgedRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "task-ack-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "task_acknowledged",
@@ -2644,6 +2746,7 @@ class SubagentSessionRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "child-origin-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "subagent_session",
@@ -2720,6 +2823,7 @@ class TokenUsageRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "token-usage-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "token_usage",
@@ -2761,6 +2865,7 @@ class TurnEndRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "turn-end-1",
+  "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "kind": "turn_end",
@@ -2860,6 +2965,7 @@ class History(DataModel):
       "session_id": "session-1",
       "seq": 1,
       "record_id": "user-1",
+      "copied_from_id": null,
       "created_at": "2026-11-13T09:00:00Z",
       "version": "0.0.33.dev4",
       "kind": "user_message",
@@ -2955,7 +3061,7 @@ class HistoryCompactor(Protocol):
     ) -> NonEmptyTuple[HistoryRecord]:
         """Подготовить полный снимок; несовместимый хвост или ссылки — CompactionError.
 
-        Копии получают version из summary.
+        Копии получают version из summary и copied_from_id исходной записи.
         keep_from_seq=None исключает старый диалог; иначе сохраняется его полный суффикс.
         keep_schema_names=None сохраняет все загруженные схемы; пустое множество — ни одной.
         """
@@ -3057,8 +3163,9 @@ class ElicitationCoordinator(Protocol):
 доступные `session_id` и `request_id` перечислены в начале файла.
 
 [`openai.sql`](../experiments/history-sql/openai.sql) принимает параметры только в CTE `params`:
-`session_id` и `request_id` (null — последняя сохранённая граница). Отсутствие границы — ошибка.
-После неё история не читается; все категории собираются от последней компактизации.
+`session_id` и `request_id` — record_id выбранной LlmRequestBoundaryRecord.
+При request_id=null выбирается последняя такая запись; если её нет, возвращается ошибка.
+Входы читаются до её seq, начиная с последней компактизации перед ней или с начала чата.
 `active_records` читает метаданные диапазона без `operational` через индекс `records_llm_seq`.
 LAST/SUM работают с метаданными; `selected_records` один раз получает payload выбранных сообщений.
 `top_parts` раскрывает content только выбранных сообщений; `parts` добавляет содержимое ресурсов.

@@ -2,7 +2,7 @@
 with
 entries as (
     select
-        seq, record_id, request_id, payload
+        seq, record_id, copied_from_id, kind, category, request_id, payload
     from
         history_sql.records
     where 1=1
@@ -34,6 +34,13 @@ links as (
         entries
     where 1=1
         and payload ->> 'elicitation_id' is not null
+    union all
+    select
+        seq, record_id, copied_from_id, category, kind, 'invalid_copy_reference'
+    from
+        entries
+    where 1=1
+        and copied_from_id is not null
 ),
 issues as (
     select

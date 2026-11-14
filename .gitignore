@@ -23,6 +23,7 @@ __pycache__
 !/docs/knowledge-schema.sql
 !/docs/configuration-regrouping.md
 !/docs/agent-history-and-request-assembly.md
+!/docs/agent-history-to-acp.md
 !/docs/psql-queries/
 !/docs/migrations/
 /docs/psql-queries/*.log
