@@ -46,6 +46,12 @@ class MessageChunk(DataModel):
     content: ContentBlock
 
 
+class TextMessageChunk(MessageChunk):
+    """Несохранённая текстовая дельта LLM для отправки через ACP."""
+
+    content: schema.TextContentBlock
+
+
 class ToolCallUpdate(DataModel):
     """The result patches the original call using the same toolCallId."""
 

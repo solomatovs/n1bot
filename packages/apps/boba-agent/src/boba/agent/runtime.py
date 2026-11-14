@@ -6,13 +6,16 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
 from contextlib import suppress
 from datetime import UTC, datetime
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 from uuid import uuid4
 
+from acp.experimental.v2 import schema
+
 from boba.agent import models as m
+from boba.agent.acp_validator import TextMessageChunk
 from boba.agent.history import HistoryStore
 from boba.agent.llm import Generation
 from boba.agent.queries import Query
@@ -49,18 +52,27 @@ class Subscription:
         self.failed = False
         self.disconnect = disconnect
         self.disconnect_task = None
+        self.ready: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         self.task = asyncio.create_task(self._send(send, initial))
 
     async def _send(self, send: Send, initial: list[tuple[str, dict]]) -> None:
         try:
             for method, params in initial:
                 await send(method, params)
+
+            self.ready.set_result(None)
+
             while True:
                 method, params = await self.pending.get()
                 await send(method, params)
         except asyncio.CancelledError:
+            self.ready.cancel()
             raise
-        except Exception:
+
+        except Exception as exc:
+            if not self.ready.done():
+                self.ready.set_exception(exc)
+
             logger.exception("ACP subscriber disconnected")
         finally:
             self.failed = True
@@ -114,7 +126,7 @@ class Agent:
         self.idle.set()
         self.lock = asyncio.Lock()
         self.subscribers: set[Subscription] = set()
-        self.partial: dict[int, dict] = {}
+        self.partial: dict[int, TextMessageChunk] = {}
         self.worker: asyncio.Task | None = None
         self.operation: asyncio.Task | None = None
         self.closed = False
@@ -158,37 +170,67 @@ class Agent:
                 self.subscribers.discard(subscriber)
 
     async def subscribe(
-        self, send: Send, *, after_seq: int = 0, disconnect=None
+        self,
+        send: Send,
+        *,
+        replay_history: bool = True,
+        after_seq: int = 0,
+        disconnect=None,
     ) -> Subscription:
         async with self.lock:
             head = await self.store.head(self.session_id)
-            history = await self.store.acp(
-                Query.ACP_HISTORY, self.session_id, after_seq, head
-            )
             state = await self.store.acp(Query.ACP_STATE, self.session_id, head)
             commands = await self.store.acp(Query.ACP_COMMANDS, self.session_id, head)
             options = await self.store.acp(Query.ACP_OPTIONS, self.session_id, head)
-            initial = [
-                (row["notification"]["method"], row["notification"]["params"])
-                for row in history["notifications"]
-            ]
-            for update in (
+            initial: list[tuple[str, dict]] = []
+            if replay_history:
+                history = await self.store.acp(
+                    Query.ACP_HISTORY, self.session_id, after_seq, head
+                )
+                initial.extend(self._history_notifications(history))
+                end = (state["replay_complete"],)
+                initial.extend(self._session_updates(end))
+
+            foreground = "running"
+            if self.idle.is_set():
+                foreground = "idle"
+
+            updates = (
                 state["update"],
                 commands["update"],
                 options["update"],
-                state["replay_complete"],
                 {
                     "sessionUpdate": "state_update",
-                    "state": "idle" if self.idle.is_set() else "running",
+                    "state": foreground,
                 },
-                *self.partial.values(),
-            ):
-                initial.append(
-                    ("session/update", {"sessionId": self.session_id, "update": update})
-                )
+            )
+            initial.extend(self._session_updates(updates))
+            initial.extend(self._session_updates(self._partial_updates()))
             subscriber = Subscription(send, initial, self.subscriber_buffer, disconnect)
             self.subscribers.add(subscriber)
-            return subscriber
+
+        try:
+            await asyncio.shield(subscriber.ready)
+
+        except BaseException:
+            self.subscribers.discard(subscriber)
+            await subscriber.close()
+            raise
+
+        return subscriber
+
+    def _history_notifications(self, history: dict) -> Iterator[tuple[str, dict]]:
+        for row in history["notifications"]:
+            notification = row["notification"]
+            yield notification["method"], notification["params"]
+
+    def _session_updates(self, updates: Iterable[dict]) -> Iterator[tuple[str, dict]]:
+        for update in updates:
+            yield "session/update", {"sessionId": self.session_id, "update": update}
+
+    def _partial_updates(self) -> Iterator[dict]:
+        for chunk in self.partial.values():
+            yield chunk.model_dump(mode="json", by_alias=True, exclude_none=True)
 
     async def submit(
         self, content: Sequence[m.UserPart], *, record_id: str | None = None
@@ -384,26 +426,31 @@ class Agent:
         async def emit(position: int, kind: str, text: str) -> None:
             if service:
                 return
+
+            channel: Literal["agent_message_chunk", "agent_thought_chunk"] = (
+                "agent_message_chunk"
+            )
+            if kind == "reasoning":
+                channel = "agent_thought_chunk"
+
+            chunk = TextMessageChunk(
+                sessionUpdate=channel,
+                messageId=json.dumps([output_id, [position]], ensure_ascii=False),
+                content=schema.TextContentBlock(text=text),
+            )
             async with self.lock:
-                update = {
-                    "sessionUpdate": "agent_thought_chunk"
-                    if kind == "reasoning"
-                    else "agent_message_chunk",
-                    "messageId": json.dumps(
-                        [output_id, [position]], ensure_ascii=False
-                    ),
-                    "content": {"type": "text", "text": text},
-                }
-                self.update(update)
-                previous = self.partial.get(position)
-                self.partial[position] = {
-                    **update,
-                    "content": {
-                        "type": "text",
-                        "text": (previous["content"]["text"] if previous else "")
-                        + text,
-                    },
-                }
+                self.update(
+                    chunk.model_dump(mode="json", by_alias=True, exclude_none=True)
+                )
+                accumulated = text
+                if previous := self.partial.get(position):
+                    accumulated = previous.content.text + text
+
+                self.partial[position] = TextMessageChunk(
+                    sessionUpdate=channel,
+                    messageId=chunk.message_id,
+                    content=schema.TextContentBlock(text=accumulated),
+                )
 
         started = time.monotonic()
         error = None

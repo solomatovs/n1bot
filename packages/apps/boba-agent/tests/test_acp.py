@@ -92,7 +92,6 @@ async def test_two_acp_clients_share_stream_and_replay_from_postgres(  # noqa: P
         assert isinstance(response, dict)
         schema.NewSessionResponse.model_validate(response)
         sid = response["sessionId"]
-        await first.subscribe(sid)
         accepted = await first(
             "session/prompt",
             {"sessionId": sid, "prompt": [{"type": "text", "text": "Hello"}]},
@@ -107,7 +106,6 @@ async def test_two_acp_clients_share_stream_and_replay_from_postgres(  # noqa: P
             False,
         )
         schema.ResumeSessionResponse.model_validate(response)
-        await second.subscribe(sid)
         await first("session/close", {"sessionId": sid}, False)
         assert not hub.agents[sid].idle.is_set()
         llm.finish.set()

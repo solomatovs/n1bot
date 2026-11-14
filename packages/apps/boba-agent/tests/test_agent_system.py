@@ -4,17 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Iterator, Mapping
 from typing import Any
 from uuid import uuid4
 
+import psycopg
 import pytest
 from acp import RequestError
 from acp._transport import memory_transport_pair
-from acp.connection import Connection
+from acp.connection import Connection, StreamDirection, StreamEvent
 from acp.experimental.v2 import schema
 from conftest import InferenceServer
-from starlette.responses import Response, StreamingResponse
+from starlette.responses import JSONResponse, Response, StreamingResponse
 
 from boba.agent import models as m
 from boba.agent.acp_server import AcpAgent, AgentProfiles, SessionHub
@@ -22,6 +23,8 @@ from boba.agent.acp_validator import MessageChunk, MessageUpdate, NotificationPa
 from boba.agent.history import HistoryStore
 from boba.agent.llm import OpenAiTransport
 from boba.agent.settings import AgentProfile, McpSettings, ModelSettings, SettingsLayer
+from boba.agent.tools import McpBinding
+from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
 
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]
@@ -35,8 +38,17 @@ class AgentClient:
     ) -> None:
         self.timeout = timeout
         self.updates: list[NotificationParams] = []
+        self.wire: list[dict[str, Any]] = []
         self.permissions: list[dict[str, Any]] = []
         self.tool_calls: list[dict[str, Any]] = []
+        self.mcp_binding = McpBinding.REQUEST
+        self.mcp_methods: list[str] = []
+        self.mcp_initialized = False
+        self.mcp_connect_error = -32601
+        self.mcp_versions = ["2026-07-28"]
+        self.mcp_protocol_version = "2025-11-25"
+        self.mcp_connect_ready = asyncio.Event()
+        self.mcp_connect_ready.set()
         self.permission = "allow"
         self.tool_started = asyncio.Event()
         self.release_tool = asyncio.Event()
@@ -47,6 +59,20 @@ class AgentClient:
         self.server = Connection(self.adapter, agent_end)
         self.adapter.attach(self.server)
         self.connection = Connection(self.receive, client_end)
+        self.connection.add_observer(self.observe)
+
+    def observe(self, event: StreamEvent) -> None:
+        if event.direction is StreamDirection.INCOMING:
+            self.wire.append(event.message)
+
+    def received_kinds(self) -> Iterator[str]:
+        for frame in self.wire:
+            if "result" in frame:
+                yield "response"
+                continue
+
+            if frame.get("method") == "session/update":
+                yield frame["params"]["update"]["sessionUpdate"]
 
     async def initialize(self) -> None:
         result = await self.connection.send_request(
@@ -71,8 +97,74 @@ class AgentClient:
 
             return {"outcome": {"outcome": "selected", "optionId": self.permission}}
 
+        if method == "mcp/connect":
+            self.mcp_methods.append(method)
+            await self.mcp_connect_ready.wait()
+            if self.mcp_binding is McpBinding.REQUEST:
+                raise RequestError(self.mcp_connect_error, "MCP connect rejected")
+
+            return {"connectionId": "workspace-connection"}
+
+        if method == "mcp/disconnect":
+            self.mcp_methods.append(method)
+            assert params["connectionId"] == "workspace-connection"
+            return {}
+
         assert method == "mcp/message", f"Unexpected client operation: {method}"
+        self.mcp_methods.append(params["method"])
+        if self.mcp_binding is McpBinding.CONNECTION:
+            assert params["connectionId"] == "workspace-connection"
+            assert "serverId" not in params
+            if params["method"] == "server/discover":
+                assert self.mcp_protocol_version == "2026-07-28"
+                self.mcp_initialized = True
+                return {
+                    "supportedVersions": self.mcp_versions,
+                    "capabilities": {"tools": {}},
+                }
+
+            if params["method"] == "initialize":
+                assert params["params"]["capabilities"] == {}
+                if self.mcp_protocol_version == "2026-07-28":
+                    raise RequestError(
+                        -32022,
+                        "Use MCP 2026-07-28",
+                        {"requested": "2025-11-25", "supported": self.mcp_versions},
+                    )
+
+                return {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "test", "version": "1"},
+                }
+
+            if params["method"] == "notifications/initialized":
+                assert is_notification
+                self.mcp_initialized = True
+                return None
+
+            assert self.mcp_initialized
+            result = await self.mcp_call(params)
+            return result["result"]
+
         assert not is_notification
+        assert params["serverId"] == "workspace"
+        assert params["requestId"]
+        assert (
+            params["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"]
+            == "2026-07-28"
+        )
+        if params["method"] == "server/discover":
+            return {
+                "result": {
+                    "supportedVersions": self.mcp_versions,
+                    "capabilities": {"tools": {}},
+                }
+            }
+
+        return await self.mcp_call(params)
+
+    async def mcp_call(self, params: dict) -> dict:
         if params["method"] == "tools/list":
             return {
                 "result": {
@@ -108,7 +200,7 @@ class AgentClient:
             },
         )
         parsed = schema.NewSessionResponse.model_validate(result)
-        await self.until("replay_complete")
+        await self.until("state_update")
 
         return parsed.session_id
 
@@ -172,6 +264,7 @@ class AgentClient:
 
     async def close(self) -> None:
         self.release_tool.set()
+        self.mcp_connect_ready.set()
         await self.adapter.close_all()
         await self.connection.close()
         await self.server.close()
@@ -327,6 +420,279 @@ async def system(
         await stand.close()
 
 
+async def test_failed_session_creation_releases_execution_ownership(
+    system: AgentSystem,
+) -> None:
+    async def read_only(connection: psycopg.AsyncConnection) -> None:
+        await connection.execute("set default_transaction_read_only = on")
+
+    pool = AsyncPostgresPool(system.postgres, configure=read_only)
+    await pool.open()
+    history = HistoryStore(pool)
+    hub = SessionHub(history, system.llm, system.profiles, system.settings, "test")
+    await hub.start(system.postgres)
+    try:
+        assert hub.owner_connection is not None
+        pid = hub.owner_connection.info.backend_pid
+        with pytest.raises(m.HistoryWriteError) as failure:
+            await hub.create(system.owner, frozenset({"test"}), "/workspace")
+
+        assert isinstance(
+            failure.value.__cause__, psycopg.errors.ReadOnlySqlTransaction
+        )
+        assert not hub.agents
+        async with system.history.pool.connection() as connection:
+            cursor = await connection.execute(
+                "select count(*) from pg_locks "
+                "where pid = %s and locktype = 'advisory'",
+                (pid,),
+            )
+            assert await cursor.fetchone() == (0,)
+
+    finally:
+        await hub.close()
+        await pool.close()
+
+
+async def test_v2_resume_replays_only_when_requested_and_before_response(
+    system: AgentSystem,
+) -> None:
+    first = await system.client()
+    first.wire.clear()
+    sid = await first.new_session()
+    initial = tuple(first.received_kinds())
+    assert "replay_complete" not in initial
+    assert initial.index("state_update") < initial.index("response")
+
+    system.inference.response = system.answer("Saved answer")
+    await first.prompt(sid, "Saved question")
+    await system.idle(sid)
+
+    resumed = await system.client()
+    resumed.wire.clear()
+    response = await resumed.connection.send_request(
+        "session/resume", {"sessionId": sid, "cwd": "/workspace"}
+    )
+    assert response["availableCommands"]
+    assert response["configOptions"]
+    kinds = tuple(resumed.received_kinds())
+    assert "replay_complete" not in kinds
+    assert "user_message" not in kinds
+    snapshots = resumed.messages("agent_message")
+    assert len(snapshots) == 1
+    resource = snapshots[0].content[0]
+    assert isinstance(resource, schema.EmbeddedResourceContentBlock)
+    assert str(resource.resource.uri) == "urn:boba:session-state"
+    assert kinds.index("state_update") < kinds.index("response")
+
+    replayed = await system.client()
+    replayed.wire.clear()
+    await replayed.resume(sid)
+    kinds = tuple(replayed.received_kinds())
+    assert kinds.index("user_message") < kinds.index("replay_complete")
+    assert kinds.index("agent_message") < kinds.index("replay_complete")
+    assert kinds.index("replay_complete") < kinds.index("state_update")
+    assert kinds.index("state_update") < kinds.index("response")
+    assert len(system.inference.requests) == 1
+
+    head = await system.history.head(sid)
+    with pytest.raises(RequestError) as failure:
+        await replayed.connection.send_request(
+            "session/resume",
+            {"sessionId": sid, "cwd": "/workspace", "replayFrom": {"type": "_unknown"}},
+        )
+
+    assert failure.value.code == -32602
+    assert await system.history.head(sid) == head
+
+
+async def test_v2_client_system_prompt_is_saved_updated_and_replayed(
+    system: AgentSystem,
+) -> None:
+    client = await system.client()
+    text = "Client instructions  世界\r\n"
+    prompt = {"mode": "append", "content": [{"type": "text", "text": text}]}
+    response = await client.connection.send_request(
+        "session/new", {"cwd": "/workspace", "systemPrompt": prompt}
+    )
+    sid = schema.NewSessionResponse.model_validate(response).session_id
+    stored = await system.history.latest(sid, category="prompt", key="client")
+    instructions = m.SystemPromptAddedRecord.model_validate(stored[0])
+    assert instructions.payload.content == (m.TextPart(text=text),)
+
+    system.inference.response = system.answer("First")
+    await client.prompt(sid, "Hello")
+    await system.idle(sid)
+    first = json.loads(system.inference.requests[0])
+    assert first["messages"][1] == {
+        "role": "system",
+        "content": [{"type": "text", "text": text}],
+    }
+    head = await system.history.head(sid)
+    await client.connection.send_request(
+        "session/resume",
+        {"sessionId": sid, "cwd": "/workspace", "systemPrompt": prompt},
+    )
+    assert await system.history.head(sid) == head
+
+    updated = {"mode": "append", "content": [{"type": "text", "text": "Updated"}]}
+    await client.connection.send_request(
+        "session/resume",
+        {"sessionId": sid, "cwd": "/workspace", "systemPrompt": updated},
+    )
+    changes = await system.history.read(sid, after_seq=head)
+    assert len(changes.rows) == 2
+    assert isinstance(changes.rows[0], m.SystemPromptRemovedRecord)
+    assert isinstance(changes.rows[1], m.SystemPromptAddedRecord)
+
+    system.inference.response = system.answer("Second")
+    await client.prompt(sid, "Continue")
+    await system.idle(sid)
+    latest = json.loads(system.inference.requests[-1])
+    assert latest["messages"][1]["content"][0]["text"] == "Updated"
+    await system.assert_replay(sid)
+
+    await system.restart()
+    restored = await system.client()
+    await restored.resume(sid)
+    stored = await system.history.latest(sid, category="prompt", key="client")
+    instructions = m.SystemPromptAddedRecord.model_validate(stored[0])
+    assert instructions.payload.content == (m.TextPart(text="Updated"),)
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        {"mode": "override", "content": [{"type": "text", "text": "Replace"}]},
+        {"mode": "append", "content": []},
+        {"mode": "append", "content": [{"type": "unknown", "text": "Wrong type"}]},
+    ],
+)
+async def test_v2_invalid_system_prompt_does_not_create_session(
+    system: AgentSystem, prompt: dict
+) -> None:
+    client = await system.client()
+    with pytest.raises(RequestError) as failure:
+        await client.connection.send_request(
+            "session/new", {"cwd": "/workspace", "systemPrompt": prompt}
+        )
+
+    assert failure.value.code == -32602
+    assert not system.hub.agents
+
+
+@pytest.mark.parametrize("binding", [McpBinding.REQUEST, McpBinding.CONNECTION])
+async def test_mcp_binding_is_negotiated_before_tool_execution(
+    system: AgentSystem, binding: McpBinding
+) -> None:
+    client = await system.client()
+    client.mcp_binding = binding
+    system.inference.responses = (
+        system.call("select", "tool_search", {"select": ["mcp__workspace__echo"]}),
+        system.call("call", "mcp__workspace__echo", {"text": "Test"}),
+        system.answer("Done"),
+    )
+    sid = await client.new_session()
+    peer = system.hub.tools.clients[sid]["workspace"]
+    assert peer.state().binding is binding
+    assert peer.state().capabilities.tools is not None
+    if binding is McpBinding.CONNECTION:
+        assert client.mcp_methods[:4] == [
+            "mcp/connect",
+            "initialize",
+            "notifications/initialized",
+            "tools/list",
+        ]
+        assert peer.state().protocol_version == "2025-11-25"
+
+    else:
+        assert client.mcp_methods[:2] == ["mcp/connect", "server/discover"]
+        assert peer.state().protocol_version == "2026-07-28"
+        assert "initialize" not in client.mcp_methods
+
+    await client.prompt(sid, "Run the tool")
+    await system.idle(sid)
+    assert len(client.tool_calls) == 1
+    await system.assert_replay(sid)
+    await client.connection.send_request(
+        "session/resume",
+        {
+            "sessionId": sid,
+            "cwd": "/workspace",
+            "mcpServers": [
+                {"type": "acp", "name": "workspace", "serverId": "workspace"}
+            ],
+        },
+    )
+    assert client.mcp_methods.count("mcp/connect") == 1
+    assert system.hub.tools.clients[sid]["workspace"] is peer
+    await client.close()
+    if binding is McpBinding.CONNECTION:
+        assert client.mcp_methods[-1] == "mcp/disconnect"
+
+
+@pytest.mark.parametrize("code", [-32000, -32602, -32603])
+async def test_mcp_negotiation_does_not_fallback_after_client_error(
+    system: AgentSystem, code: int
+) -> None:
+    client = await system.client()
+    client.mcp_connect_error = code
+    with pytest.raises(RequestError) as failure:
+        await client.new_session()
+
+    assert failure.value.code == code
+    assert client.mcp_methods == ["mcp/connect"]
+    assert not system.hub.tools.clients
+    assert not system.inference.requests
+
+
+async def test_mcp_negotiation_rejects_unsupported_version(system: AgentSystem) -> None:
+    client = await system.client()
+    client.mcp_versions = ["2099-01-01"]
+    with pytest.raises(RequestError) as failure:
+        await client.new_session()
+
+    assert failure.value.code == -32004
+    assert "2099-01-01" in str(failure.value)
+    assert client.mcp_methods == ["mcp/connect", "server/discover"]
+    assert not system.hub.tools.clients
+
+
+async def test_modern_mcp_can_use_negotiated_connection_binding(
+    system: AgentSystem,
+) -> None:
+    client = await system.client()
+    client.mcp_binding = McpBinding.CONNECTION
+    client.mcp_protocol_version = "2026-07-28"
+    sid = await client.new_session()
+    peer = system.hub.tools.clients[sid]["workspace"]
+    assert peer.state().binding is McpBinding.CONNECTION
+    assert peer.state().protocol_version == "2026-07-28"
+    assert client.mcp_methods == [
+        "mcp/connect",
+        "initialize",
+        "server/discover",
+        "tools/list",
+    ]
+
+
+async def test_mcp_timeout_does_not_select_another_binding(system: AgentSystem) -> None:
+    client = await system.client()
+    client.mcp_connect_ready.clear()
+    system.hub.tools.list_timeout = 0.02
+    try:
+        with pytest.raises(RequestError) as failure:
+            await client.new_session()
+
+        assert failure.value.code == -32004
+        assert "negotiation exceeded" in str(failure.value)
+        assert client.mcp_methods == ["mcp/connect"]
+        assert not system.hub.tools.clients
+
+    finally:
+        client.mcp_connect_ready.set()
+
+
 async def test_acp_tools_accept_all_pending_inputs_and_resume_after_restart(  # noqa: PLR0915
     system: AgentSystem,
 ) -> None:
@@ -470,6 +836,75 @@ async def test_permission_selection_controls_execution_and_survives_resume(
             rule.tool == "mcp__workspace__echo" and rule.decision == "allow"
             for rule in permissions.payload.rules
         )
+
+
+@pytest.mark.parametrize(
+    ("answer", "decision", "failed"),
+    [
+        ('{"decision":"allow"}', "allow", False),
+        ('{"decision":"deny"}', "deny", False),
+        ('{"decision":"allow","unexpected":true}', "deny", True),
+        ("not json", "deny", True),
+        ("http_error", "deny", True),
+        ("truncated", "deny", True),
+    ],
+)
+async def test_permission_classifier_saves_failure_and_denies_execution(
+    system: AgentSystem, answer: str, decision: str, failed: bool
+) -> None:
+    finish = "stop"
+    content = answer
+    if answer == "truncated":
+        finish = "length"
+        content = '{"decision":"allow"}'
+
+    classification: Response = JSONResponse(
+        {"choices": [{"message": {"content": content}, "finish_reason": finish}]}
+    )
+    if answer == "http_error":
+        classification = JSONResponse(
+            {"error": {"message": "Classifier unavailable"}}, status_code=400
+        )
+
+    system.inference.responses = (
+        system.call("select", "tool_search", {"select": ["mcp__workspace__echo"]}),
+        system.call("execute", "mcp__workspace__echo", {"text": "Hello"}),
+        classification,
+        system.answer("Finished"),
+    )
+    client = await system.client()
+    sid = await client.new_session()
+    agent = system.hub.agents[sid]
+    state = agent.make(m.PermissionStateRecord, payload={"mode": "auto", "rules": []})
+    await agent.append([state])
+    await client.prompt(sid, "Use echo")
+    await system.idle(sid)
+    decisions = await system.history.latest(sid, kind="permission_decision")
+    verdict = m.PermissionDecisionRecord.model_validate(decisions[0])
+    assert verdict.payload.call_id == "execute"
+    assert verdict.payload.decision == decision
+    assert bool(client.tool_calls) == (decision == "allow")
+    assert not client.permissions
+    notices = await system.history.latest(sid, kind="notice")
+    if failed:
+        assert len(notices) == 1
+        notice = m.TextNoticeRecord.model_validate(notices[0])
+        assert notice.payload.level == "error"
+        assert notice.payload.content[0].text == verdict.payload.reason
+        assert "execution denied" in verdict.payload.reason
+        assert "mcp__workspace__echo" in verdict.payload.reason
+        assert notice.request_id is not None
+        assert notice.request_id in verdict.payload.reason
+        await client.until("notice")
+
+    else:
+        assert not notices
+
+    request = json.loads(system.inference.requests[2])
+    assert "response_format" in request
+    assert "tools" not in request
+    assert "response_format" not in json.loads(system.inference.requests[3])
+    await system.assert_replay(sid)
 
 
 async def test_acp_cancel_saves_partial_reply_and_next_prompt_recovers(

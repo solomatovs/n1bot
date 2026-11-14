@@ -47,6 +47,32 @@ active as (
     where 1=1
         and operation = 'set'
 ),
+catalog as (
+    select
+        r.record_id,
+        min(r.seq) filter (where r.operation = 'remove') over (
+            partition by r.key order by r.seq rows between current row and unbounded following
+        ) as removed_at
+    from
+        params p
+        cross join boundary b
+        join boba.records r on r.session_id = p.session_id
+    where 1=1
+        and r.category = 'tool_catalog'
+        and r.seq >= b.seq
+        and r.seq <= p.through_seq
+),
+schemas as (
+    select
+        s.record_id,
+        s.payload ->> 'catalog_revision' as catalog_revision
+    from
+        active s
+        join catalog c on c.record_id = s.payload ->> 'catalog_revision'
+    where 1=1
+        and s.category = 'tool_schema'
+        and c.removed_at is null
+),
 selected as (
     select
         a.record_id
@@ -56,22 +82,14 @@ selected as (
         and a.category <> 'tool_schema'
     union
     select
-        s.record_id
+        record_id
     from
-        active s
-        join active t on t.category = 'tool_catalog' and t.key = s.key
-    where 1=1
-        and s.category = 'tool_schema'
-        and s.seq >= t.seq
+        schemas
     union
     select
-        s.payload ->> 'catalog_revision'
+        catalog_revision
     from
-        active s
-        join active t on t.category = 'tool_catalog' and t.key = s.key
-    where 1=1
-        and s.category = 'tool_schema'
-        and s.seq >= t.seq
+        schemas
 )
 select
     r.session_id,
