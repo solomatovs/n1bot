@@ -206,6 +206,47 @@ Live-таблиц PostgreSQL для токенов нет. Resume согласу
 
 ## 5. Инфраструктурные замены
 
+### SQL-файлы сервиса
+
+Единственный рабочий набор запросов находится в пакете PostgreSQL-адаптеров агента:
+
+```text
+packages/infra/history/boba-history-postgres/src/boba/history/postgres/
+    sql/
+        lock.sql
+        append.sql
+        read.sql
+        pending_inputs.sql
+        history_integrity.sql
+        openai.sql
+        acp_history.sql
+        acp_state.sql
+        acp_commands.sql
+        acp_options.sql
+        acp_notice.sql
+        acp_permission.sql
+        acp_elicitation.sql
+    schema/
+        ...sql
+```
+
+При переносе добавить `lock.sql` для короткой блокировки записи сессии и `read.sql`
+для чтения исходных записей. Остальные рабочие запросы перенести из experiments;
+там оставить тестовые данные и нагрузочные сценарии. Проверки выполняют SQL из пакета.
+
+`PostgresHistoryStore`, `OpenAiHistoryAdapter` и `AcpHistoryAdapter` читают свои файлы
+через `importlib.resources` при запуске и выполняют сохранённый текст. Параметры
+передаются отдельно через `psycopg.AsyncRawCursor`: `$1`, `$2`, `$3` остаются в SQL,
+входные значения объявляются в начальном CTE `params`. Шаблонизации и сборки SQL
+из Python-строк нет. Схема применяется механизмом миграций отдельно от рабочих запросов.
+
+`sql/*.sql` включается в package-data вместе с `schema/*.sql`. Wheel и сборка Nuitka
+сохраняют запросы отдельными UTF-8-файлами. В образе сервиса каталог запросов:
+`/app/boba/bin/boba.dist/boba/history/postgres/sql/`. Администратор может открыть
+и выполнить тот же файл, который читает сервис; для ручного запуска задаётся CTE params
+либо параметры prepared statement. Наличие файлов проверяется `boba self-check`.
+Обновлённый набор загружается при перезапуске; SQL и валидаторы поставляются одной версией.
+
 ### PostgreSQL
 
 В [store.py](../packages/infra/history/boba-history-postgres/src/boba/history/postgres/store.py)
@@ -258,8 +299,9 @@ ACP-подписчику. Использовать общий ограничен
 1. Закончить и проверить схему, SQL и валидаторы, включая конкуренцию записи/чтения,
    несколько ожидающих сообщений, служебные запросы и native ACP. Определить версии
    SQL-наборов: повтор старого запроса использует совместимый набор SQL и валидатора.
-2. Перенести целевые Pydantic-модели в код и подключить порты SQL. Удалить прежнюю сборку
-   и её модели; не создавать временный адаптер между двумя форматами истории.
+2. Перенести SQL в файлы пакета, включить их в wheel, Nuitka и self-check. Перенести
+   целевые Pydantic-модели в код и подключить порты SQL. Удалить прежнюю сборку и её
+   модели; не создавать временный адаптер между двумя форматами истории.
 3. Заменить хранение и всех производителей записей. Привести compaction, tool search,
    permissions, задачи и служебные вызовы LLM к одному журналу.
 4. Подключить готовый OpenAI JSON к HTTP и готовый ACP JSON к транспорту. Реализовать
