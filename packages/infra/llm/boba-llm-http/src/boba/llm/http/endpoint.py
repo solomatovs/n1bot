@@ -19,7 +19,8 @@ from __future__ import annotations
 
 import logging
 from abc import abstractmethod
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
+from contextlib import asynccontextmanager
 from enum import StrEnum
 from http import HTTPStatus
 from typing import Any, ClassVar, Generic, Protocol, TypeVar
@@ -45,6 +46,7 @@ from boba.llm.providers import LlmProvider
 from boba.toolkit.timing import Elapsed
 from boba.transport.http import (
     HttpRequest,
+    HttpResponse,
     HttpStatusError,
     HttpTransport,
     HttpTransportConfig,
@@ -142,29 +144,33 @@ class LlmEndpoint:
 
     async def post(self, payload: Mapping[str, Any]) -> bytes:
         """Один запрос-ответ: тело ответа целиком, разбор — у провайдера."""
-        with self._errors.boundary(f"{self.where}: reading the response", report=False):
-            try:
-                async with self._transport.fetch(self._request(payload)) as response:
-                    return await response.stream.read()
-            except HttpStatusError as exc:
-                raise self._status_error(exc, f"{self._label}: {exc}") from exc
-            except TransportError as exc:
-                raise self._unreachable(exc, f"{self._label}: {exc}") from exc
+        async with self.exchange(payload) as response:
+            return await response.stream.read()
 
     async def stream(self, payload: Mapping[str, Any]) -> AsyncIterator[str]:
         """Строки потокового ответа; обрыв посреди потока — ошибка, не повтор."""
+        async with self.exchange(payload) as response:
+            async for line in response.stream.lines():
+                yield line
+
+    @asynccontextmanager
+    async def exchange(
+        self, payload: Mapping[str, Any]
+    ) -> AsyncGenerator[HttpResponse, None]:
+        """Отправляет готовое тело без изменений; ответ открыт до выхода из блока."""
         with self._errors.boundary(
-            f"{self.where}: streaming the response", report=False
+            f"{self.where}: exchanging the response", report=False
         ):
             try:
                 async with self._transport.fetch(self._request(payload)) as response:
-                    async for line in response.stream.lines():
-                        yield line
+                    yield response
+
             except HttpStatusError as exc:
-                message = f"{self._label}: stream failed: {exc}"
+                message = f"{self._label}: request failed: {exc}"
                 raise self._status_error(exc, message) from exc
+
             except TransportError as exc:
-                message = f"{self._label}: stream failed: {exc}"
+                message = f"{self._label}: request failed: {exc}"
                 raise self._unreachable(exc, message) from exc
 
     def _status_error(self, exc: HttpStatusError, message: str) -> LlmError:

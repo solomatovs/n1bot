@@ -1,1 +1,0 @@
-Output truncated: {shown} of {total} characters shown. The rest does not fit the context window of the model; if you need it, ask the tool for a narrower part (a filter, a range or a smaller limit).

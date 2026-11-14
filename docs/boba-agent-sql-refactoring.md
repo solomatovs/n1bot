@@ -5,9 +5,9 @@
 не входит в этот этап. Промежуточная неработоспособность приложения допустима.
 
 Модели: [история](agent-history-and-request-assembly.md), [ACP](agent-history-to-acp.md).
-SQL и чистые валидаторы: [experiments/history-sql](../experiments/history-sql).
-**Изменение кода агента начинается после проверки этих контрактов.** Этот документ
-определяет последующую замену компонентов; производственный агент пока не изменён.
+SQL: [boba.agent/sql](../packages/apps/boba-agent/src/boba/agent/sql).
+Изменение схемы выполняется командой `boba migrate` из
+[boba.agent/migrations](../packages/apps/boba-agent/src/boba/agent/migrations).
 
 ## 1. Границы исполнения
 
@@ -131,9 +131,12 @@ TaskCoordinator, ElicitationCoordinator и HistoryCompactor остаются п�
 
 ### `OpenAiTransport`, `AcpServer`, `SessionStream`
 
-OpenAiTransport отправляет готовое тело, разбирает HTTP/SSE, ошибки, usage и ответ.
-Обработка входящего ответа провайдера остаётся необходимой. Один завершённый ответ
-становится одной AssistantMessageRecord либо RequestOutputRecord.
+OpenAiTransport передаёт готовый JSON в `OpenAiBackend.completion().generate` из
+`boba-llm-http`. Общий `OpenAiCompletion` отправляет тело без изменений и выдаёт
+дельты; `StreamAssembly` сохраняет порядок частей ответа, usage и HTTP-статус.
+`Generation` переводит части ответа в модели истории; Agent сохраняет
+AssistantMessageRecord либо RequestOutputRecord.
+SSE и фрагменты аргументов tools разбираются только в общем LLM-компоненте.
 
 AcpServer принимает RPC, проверяет capabilities и права, связывает ответы с ожидающими
 permission/elicitation и управляет подписками. SessionStream хранит только текущий

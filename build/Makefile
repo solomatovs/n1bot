@@ -131,14 +131,12 @@ mcp_BIN         := boba-mcp
 mcp_PORT        := 8650
 mcp_FLAGS       :=
 mcp_DEST        := $(OUT_MCP)/bin/boba-mcp.dist
-boba_PACKAGES   := boba-cli boba-llm-onnx[generation]
-boba_ENTRY      := boba/cli/app.py
+boba_PACKAGES   := boba-agent
+boba_ENTRY      := boba/agent/app.py
 boba_BIN        := boba
 boba_PORT       := 8660
-# onnxruntime_genai находит onnxruntime через find_spec, не импортом: пакет — явно
 boba_FLAGS      := --user-package-configuration-file=/conf/nuitka/boba.yml \
-                   --include-distribution-metadata=boba-cli --include-package=onnxruntime_genai \
-                   --include-package-data=onnxruntime_genai --include-package=onnxruntime
+                   --include-distribution-metadata=boba-agent
 boba_DEST       := $(OUT_BOBA)/bin/boba.dist
 aid_PACKAGES    := boba-aid boba-llm-http
 aid_ENTRY       := boba/aid/main.py

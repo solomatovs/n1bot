@@ -1,1 +1,0 @@
-{what} Trying again in {wait} (attempt {attempt} of {retries}).

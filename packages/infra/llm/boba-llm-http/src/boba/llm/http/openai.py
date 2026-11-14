@@ -22,7 +22,9 @@ from __future__ import annotations
 import base64
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Iterator, Mapping, Sequence
+from contextlib import aclosing
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, ClassVar, Literal
 
@@ -35,6 +37,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from boba.llm.chat import (
     ChatDelta,
+    ChatEvent,
     ChatImage,
     ChatModel,
     ChatReply,
@@ -77,8 +80,11 @@ __all__ = [
     "MANIFEST",
     "OpenAiBackend",
     "OpenAiChatModel",
+    "OpenAiCompletion",
     "OpenAiEmbeddingModel",
     "OpenAiProvider",
+    "ResponseText",
+    "StreamAssembly",
 ]
 
 
@@ -136,10 +142,6 @@ class FinishReason(StrEnum):
     LENGTH = "length"
     CONTENT_FILTER = "content_filter"
 
-    @classmethod
-    def is_complete(cls, reason: str) -> bool:
-        return reason in (cls.STOP, cls.TOOL_CALLS, cls.FUNCTION_CALL)
-
 
 class WireFunctionDelta(BaseModel):
     """function внутри дельты вызова."""
@@ -176,9 +178,12 @@ class WireDelta(BaseModel):
     content: str = ""
     reasoning_content: str = ""
     reasoning: str = ""
+    refusal: str = ""
     tool_calls: Sequence[WireCallDelta] = ()
 
-    @field_validator("content", "reasoning_content", "reasoning", mode="before")
+    @field_validator(
+        "content", "reasoning_content", "reasoning", "refusal", mode="before"
+    )
     @classmethod
     def _null_text_as_empty(cls, value: object) -> object:
         if value is None:
@@ -206,6 +211,7 @@ class WireChoice(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
+    index: int = 0
     delta: WireDelta = WireDelta()
     message: WireDelta | None = None
     # null в каждом промежуточном чанке — норма провода, поэтому не str
@@ -220,6 +226,14 @@ class WireOutputDetails(BaseModel):
     reasoning_tokens: int = 0
 
 
+class WireInputDetails(BaseModel):
+    """Разбивка входных токенов из ответа провайдера."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    cached_tokens: int = 0
+
+
 class WireUsage(BaseModel):
     """usage чанка: провайдер шлёт его в финале потока."""
 
@@ -228,6 +242,25 @@ class WireUsage(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     completion_tokens_details: WireOutputDetails = WireOutputDetails()
+    prompt_tokens_details: WireInputDetails = WireInputDetails()
+
+    @field_validator(
+        "completion_tokens_details", "prompt_tokens_details", mode="before"
+    )
+    @classmethod
+    def _null_details_as_empty(cls, value: object) -> object:
+        if value is None:
+            return {}
+
+        return value
+
+
+class WireError(BaseModel):
+    """Ошибка, переданная провайдером внутри успешного HTTP-ответа."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    message: str
 
 
 class WireChunk(BaseModel):
@@ -237,6 +270,7 @@ class WireChunk(BaseModel):
 
     choices: Sequence[WireChoice] = ()
     usage: WireUsage | None = None
+    error: WireError | str | None = None
 
 
 class GrowingCall(BaseModel):
@@ -247,26 +281,82 @@ class GrowingCall(BaseModel):
     arguments: str = ""
 
 
+@dataclass(frozen=True)
+class ResponseText:
+    """Текстовая часть ответа или её дельта; position сохраняет порядок частей."""
+
+    position: int
+    kind: Literal["text", "reasoning"]
+    text: str
+
+
+@dataclass
+class GrowingText:
+    """Фрагменты одной части ответа; StreamAssembly объединяет их при чтении."""
+
+    kind: Literal["text", "reasoning"]
+    fragments: list[str] = field(default_factory=list)
+
+
 class StreamAssembly(ChunkAssembly[WireChunk]):
-    """Склейка потока дельт в финальное сообщение."""
+    """Принимает чанки OpenAiCompletion, выдаёт дельты и сохраняет части ответа.
+
+    Один экземпляр принадлежит одному запросу; parts доступен и при обрыве.
+    """
 
     def __init__(self, where: str) -> None:
         self._where = where
-        self._content: list[str] = []
-        self._reasoning: list[str] = []
+        self._parts: list[GrowingText | GrowingCall] = []
         self._calls: dict[int, GrowingCall] = {}
-        self._usage = WireUsage()
+        self.usage: WireUsage | None = None
+        self.status: int | None = None
         self._finish_reason = ""
 
-    def take(self, chunk: WireChunk) -> ChatDelta | None:
-        """Учитывает чанк; наружу — прирост текста или рассуждений."""
-        if chunk.usage is not None:
-            self._usage = chunk.usage
+    @property
+    def finish_reason(self) -> str:
+        return self._finish_reason
 
-        if not chunk.choices:
+    @property
+    def has_content(self) -> bool:
+        return bool(self._parts)
+
+    def take(self, chunk: WireChunk) -> ChatDelta | None:
+        """Контракт ChunkAssembly для потребителей ChatDelta."""
+        parts = tuple(self.deltas(chunk))
+        if not parts:
             return None
 
+        content = (part.text for part in parts if part.kind == "text")
+        reasoning = (part.text for part in parts if part.kind == "reasoning")
+
+        return ChatDelta(content="".join(content), reasoning="".join(reasoning))
+
+    def deltas(self, chunk: WireChunk) -> Iterator[ResponseText]:
+        """Отдаёт текст текущего чанка сразу, сохраняя позиции итогового ответа."""
+        if chunk.error is not None:
+            message = chunk.error
+            if isinstance(chunk.error, WireError):
+                message = chunk.error.message
+
+            raise LlmError(f"{self._where}: provider returned an error: {message}")
+
+        if chunk.usage is not None:
+            self.usage = chunk.usage
+
+        if not chunk.choices:
+            return
+
+        if len(chunk.choices) != 1:
+            raise LlmError(
+                f"{self._where}: expected one completion, got {len(chunk.choices)}"
+            )
+
         choice = chunk.choices[0]
+        if choice.index != 0:
+            raise LlmError(
+                f"{self._where}: expected completion index 0, got {choice.index}"
+            )
+
         if choice.finish_reason:
             self._finish_reason = choice.finish_reason
 
@@ -274,56 +364,105 @@ class StreamAssembly(ChunkAssembly[WireChunk]):
         if choice.message is not None:
             delta = choice.message
 
-        reasoning = delta.reasoning_text()
-        if reasoning:
-            self._reasoning.append(reasoning)
+        yield from self._text("reasoning", delta.reasoning_text())
+        yield from self._text("text", delta.content)
+        yield from self._text("text", delta.refusal)
 
-        if delta.content:
-            self._content.append(delta.content)
+        self._grow_calls(delta.tool_calls, indexed=choice.message is None)
 
-        self._grow_calls(delta.tool_calls)
+    def _text(
+        self, kind: Literal["text", "reasoning"], text: str
+    ) -> Iterator[ResponseText]:
+        if not text:
+            return
 
-        if not delta.content and not reasoning:
-            return None
+        if not self._parts:
+            self._parts.append(GrowingText(kind))
 
-        return ChatDelta(content=delta.content, reasoning=reasoning)
+        part = self._parts[-1]
+        if not isinstance(part, GrowingText):
+            part = GrowingText(kind)
+            self._parts.append(part)
 
-    def _grow_calls(self, calls: Sequence[WireCallDelta]) -> None:
-        for call in calls:
-            growing = self._calls.setdefault(call.index, GrowingCall())
+        if part.kind != kind:
+            part = GrowingText(kind)
+            self._parts.append(part)
+
+        part.fragments.append(text)
+
+        yield ResponseText(len(self._parts), kind, text)
+
+    def _grow_calls(self, calls: Sequence[WireCallDelta], *, indexed: bool) -> None:
+        for position, call in enumerate(calls):
+            index = position
+            if indexed:
+                index = call.index
+
+            growing = self._calls.get(index)
+            if growing is None:
+                growing = GrowingCall()
+                self._calls[index] = growing
+                self._parts.append(growing)
+
             if call.id:
+                if growing.id:
+                    if growing.id != call.id:
+                        raise LlmError(
+                            f"{self._where}: tool index {index} changed ID "
+                            f"from {growing.id!r} to {call.id!r}"
+                        )
+
                 growing.id = call.id
+
             if call.function.name:
                 growing.name += call.function.name
+
             if call.function.arguments:
                 growing.arguments += call.function.arguments
 
-    def reply(self, streamed: bool) -> ChatReply:
-        self._check_complete(streamed)
+    def parts(self, *, partial: bool = False) -> Iterator[ResponseText | ToolCall]:
+        """Части в исходном порядке; частичный ответ не включает вызовы tools."""
+        for position, part in enumerate(self._parts, 1):
+            if isinstance(part, GrowingText):
+                yield ResponseText(position, part.kind, "".join(part.fragments))
+                continue
 
-        calls: list[ToolCall] = []
-        for index in sorted(self._calls):
-            growing = self._calls[index]
-            calls.append(
-                ToolCall(
-                    id=growing.id,
-                    name=growing.name,
-                    arguments=self._arguments(growing),
-                )
-            )
+            if partial:
+                continue
+
+            yield ToolCall(id=part.id, name=part.name, arguments=self._arguments(part))
+
+    def reply(self, streamed: bool) -> ChatReply:
+        self.check_complete(streamed)
+
+        parts = tuple(self.parts())
+        content = (
+            part.text
+            for part in parts
+            if isinstance(part, ResponseText) and part.kind == "text"
+        )
+        reasoning = (
+            part.text
+            for part in parts
+            if isinstance(part, ResponseText) and part.kind == "reasoning"
+        )
+        calls = (part for part in parts if isinstance(part, ToolCall))
+        usage = self.usage
+        if usage is None:
+            usage = WireUsage()
 
         return ChatReply(
-            content="".join(self._content),
-            reasoning="".join(self._reasoning),
-            tool_calls=calls,
+            content="".join(content),
+            reasoning="".join(reasoning),
+            tool_calls=tuple(calls),
             usage=ChatUsage(
-                input_tokens=self._usage.prompt_tokens,
-                output_tokens=self._usage.completion_tokens,
-                reasoning_tokens=self._usage.completion_tokens_details.reasoning_tokens,
+                input_tokens=usage.prompt_tokens,
+                output_tokens=usage.completion_tokens,
+                reasoning_tokens=usage.completion_tokens_details.reasoning_tokens,
             ),
         )
 
-    def _check_complete(self, streamed: bool) -> None:
+    def check_complete(self, streamed: bool) -> None:
         """Обрыв генерации провайдером — честная ошибка, а не тихо неполный
         ответ или битый JSON недописанного вызова инструмента."""
         if not self._finish_reason:
@@ -336,7 +475,11 @@ class StreamAssembly(ChunkAssembly[WireChunk]):
             )
             raise LlmServiceError(msg, LlmTrouble.CUT)
 
-        if FinishReason.is_complete(self._finish_reason):
+        if self._finish_reason in (
+            FinishReason.STOP,
+            FinishReason.TOOL_CALLS,
+            FinishReason.FUNCTION_CALL,
+        ):
             return
 
         if self._finish_reason == FinishReason.LENGTH:
@@ -357,8 +500,12 @@ class StreamAssembly(ChunkAssembly[WireChunk]):
 
     def _ceiling_error(self) -> LlmOutputLimitError:
         """Ошибка обрыва по потолку токенов: расход, недописанный вызов, совет."""
-        spent = self._usage.completion_tokens
-        reasoning = self._usage.completion_tokens_details.reasoning_tokens
+        usage = self.usage
+        if usage is None:
+            usage = WireUsage()
+
+        spent = usage.completion_tokens
+        reasoning = usage.completion_tokens_details.reasoning_tokens
         msg = (
             f"{self._where}: reply hit the token ceiling: finish_reason=length, "
             f"{spent} completion tokens spent ({reasoning} reasoning)"
@@ -415,6 +562,25 @@ class SseStream(WireDecoder[WireChunk]):
     def __init__(self, where: str) -> None:
         self._where = where
         self._decoder = SSEDecoder()
+        self._done = False
+
+    async def chunks(self, lines: AsyncIterator[str]) -> AsyncIterator[WireChunk]:
+        """Выдаёт готовое SSE-событие без ожидания завершения HTTP-ответа."""
+        async for line in lines:
+            chunk = self.feed(line)
+            if self._done:
+                return
+
+            if chunk is None:
+                continue
+
+            yield chunk
+
+        trailing = self.finish()
+        if trailing is None:
+            return
+
+        yield trailing
 
     def feed(self, line: str) -> WireChunk | None:
         event = self._decoder.decode(line)
@@ -438,6 +604,7 @@ class SseStream(WireDecoder[WireChunk]):
             return None
 
         if body == "[DONE]":
+            self._done = True
             return None
 
         try:
@@ -447,11 +614,76 @@ class SseStream(WireDecoder[WireChunk]):
             raise LlmError(msg) from exc
 
 
+class OpenAiCompletion:
+    """Отправляет готовый JSON через LlmEndpoint и выдаёт текстовые дельты.
+
+    Вызывающий владеет StreamAssembly с итоговыми частями, usage и HTTP-статусом.
+    """
+
+    def __init__(self, endpoint: LlmEndpoint) -> None:
+        self._endpoint = endpoint
+        self._errors = LlmErrors()
+
+    async def generate(
+        self, payload: Mapping[str, Any], response: StreamAssembly
+    ) -> AsyncGenerator[ResponseText, None]:
+        """Отправляет тело без добавления параметров и сериализации ChatRequest."""
+        streaming = payload.get(WireField.STREAM, False)
+        if not isinstance(streaming, bool):
+            raise LlmError(
+                f"{self._endpoint.where}: expected boolean stream, got {streaming!r}"
+            )
+
+        with self._errors.boundary(self._endpoint.where, report=False):
+            async with self._endpoint.exchange(payload) as http_response:
+                response.status = http_response.status
+                if streaming:
+                    decoder = SseStream(self._endpoint.where)
+                    async for chunk in decoder.chunks(http_response.stream.lines()):
+                        for delta in response.deltas(chunk):
+                            yield delta
+
+                else:
+                    body = await http_response.stream.read()
+                    chunk = WireChunk.model_validate_json(body)
+                    for delta in response.deltas(chunk):
+                        yield delta
+
+            response.check_complete(streamed=streaming)
+            if not response.has_content:
+                raise LlmServiceError(
+                    f"{self._endpoint.where}: expected text or tool calls, "
+                    "got an empty reply",
+                    LlmTrouble.EMPTY,
+                )
+
+
 class OpenAiChatModel(HttpChatModel[WireChunk]):
     """Реализация ChatModel поверх openai-совместимого /chat/completions:
     сообщения, инструменты и форма ответа в wire-формате, SSE-дельты в сборку."""
 
     IMAGE_URL_TEMPLATE: ClassVar[str] = "data:{media_type};base64,{payload}"
+
+    def __init__(self, endpoint: LlmEndpoint, model: str) -> None:
+        super().__init__(endpoint, model)
+        self._completion = OpenAiCompletion(endpoint)
+
+    async def chat(self, request: ChatRequest) -> AsyncIterator[ChatEvent]:
+        with self._errors.boundary(f"{self.where}: generating a chat response"):
+            payload = self._payload(request)
+            response = StreamAssembly(self.where)
+            async with aclosing(self._completion.generate(payload, response)) as deltas:
+                async for delta in deltas:
+                    if not request.stream:
+                        continue
+
+                    if delta.kind == "reasoning":
+                        yield ChatDelta(reasoning=delta.text)
+                        continue
+
+                    yield ChatDelta(content=delta.text)
+
+            yield response.reply(streamed=request.stream)
 
     def _decoder(self) -> WireDecoder[WireChunk]:
         return SseStream(self.where)
@@ -710,6 +942,13 @@ class OpenAiBackend(LlmBackend):
         self._errors = LlmErrors()
         with self._errors.boundary("Creating the HTTP model transport"):
             self._transport = HttpTransport(provider.connection, provider.transport)
+
+    def completion(self) -> OpenAiCompletion:
+        """Обмен готовыми chat/completions JSON без сборки тела через ChatRequest."""
+        with self._errors.boundary("OpenAi: completion"):
+            endpoint = self._endpoint(LlmRoute.CHAT_COMPLETIONS, self.CHAT_LABEL)
+
+            return OpenAiCompletion(endpoint)
 
     def chat(self, cfg: ChatModelConfig) -> ChatModel:
         with self._errors.boundary("OpenAi: chat"):

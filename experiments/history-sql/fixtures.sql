@@ -1,4 +1,4 @@
--- test data for history_sql.records; run schema.sql once in an empty experiment database.
+-- Test data for boba.records; initialize the test database with boba migrate.
 -- this file replaces only the named sql-* example sessions below.
 -- sql-admission-batch-demo: three inputs arrive while two tools run.
 -- openai.sql(session_id, 'before-admission', null): user, assistant, tool, tool.
@@ -11,14 +11,14 @@
 -- sql-elicitation-demo: r0, r1; r0 and r1 produce the same llm request
 -- sql-parameters-demo: r0, r1, r2
 -- sql-subagent-demo: child-r0
--- sql-tool-reference-demo: r0, r1; r1 intentionally yields unsupported_content
+-- sql-tool-reference-demo: r0, r1; tool references become text names in OpenAI content
 -- sql-tool-search-demo: r0, r1, r2
 
 begin;
 
 delete
 from
-    history_sql.records
+    boba.records
 where 1=1
     and session_id in (
         'sql-options-demo',
@@ -371,7 +371,7 @@ expanded as (
     where 1=1
         and category = 'input'
 )
-insert into history_sql.records (
+insert into boba.records (
     session_id, seq, record_id, kind, category, role, key, operation, request_id, copied_from_id, created_at, version, payload
 )
 select
@@ -385,7 +385,7 @@ order by
     session_id, seq, step;
 
 -- Input received during a tool call: ACP sees seq=6 immediately; LLM admits it at seq=9.
-insert into history_sql.records (
+insert into boba.records (
     session_id, seq, record_id, kind, category, role, key, operation, request_id, copied_from_id, created_at, version, payload
 )
 values
@@ -401,7 +401,7 @@ values
     ('sql-admission-demo', 10, 'r2', 'llm_request_boundary', 'request', null, null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{}'::jsonb);
 
 -- Native permission request: pending, selected and cancelled outcomes.
-insert into history_sql.records (
+insert into boba.records (
     session_id, seq, record_id, kind, category, role, key, operation, request_id, copied_from_id, created_at, version, payload
 )
 values
@@ -417,7 +417,7 @@ values
     ('sql-permission-demo', 10, 'cancelled-response', 'permission_response', 'operational', null, null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"permission_request_id": "cancelled", "action": "cancelled", "option_id": null}'::jsonb);
 
 -- Available commands: add, remove, replacement and empty catalogue.
-insert into history_sql.records (
+insert into boba.records (
     session_id, seq, record_id, kind, category, role, key, operation, request_id, copied_from_id, created_at, version, payload
 )
 values
@@ -428,7 +428,7 @@ values
     ('sql-commands-demo', 5, 'remove-mcp', 'command_removed', 'operational', null, 'mcp__database__report', 'remove', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{}'::jsonb);
 
 -- Normal dialogue, summarization and permission classification in ONE session.
-insert into history_sql.records (
+insert into boba.records (
     session_id, seq, record_id, kind, category, role, key, operation, request_id, copied_from_id, created_at, version, payload
 )
 values
@@ -455,7 +455,7 @@ values
     ('sql-services-demo', 21, 'r1', 'llm_request_boundary', 'request', null, null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{}'::jsonb);
 
 -- Native configuration choices read current values from saved settings.
-insert into history_sql.records (
+insert into boba.records (
     session_id, seq, record_id, kind, category, role, key, operation, request_id, copied_from_id, created_at, version, payload
 )
 values
@@ -472,7 +472,7 @@ values
     ('sql-options-demo', 11, 'model-options', 'parameter_option', 'operational', null, 'model', 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"name": "Модель", "description": null, "source_kinds": ["model"], "source_key": "model", "value_path": [], "choices": [{"value_id": "default", "name": "Основная", "value": {"provider": "openai", "value": {"model": "test-model"}}}, {"value_id": "other", "name": "Другая", "value": {"provider": "other", "value": {"model": "test-model"}}}]}'::jsonb);
 
 -- Three inputs arrive while two tools run; all three are admitted in arrival order.
-insert into history_sql.records (
+insert into boba.records (
     session_id, seq, record_id, kind, category, role, key, operation, request_id, copied_from_id, created_at, version, payload
 )
 values

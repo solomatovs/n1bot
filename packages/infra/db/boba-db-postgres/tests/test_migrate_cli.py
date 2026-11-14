@@ -24,7 +24,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.anyio]
     ("module", "table"),
     [
         ("boba.aid.main", "mcp_tokens"),
-        ("boba.cli.app", "session_records"),
+        ("boba.agent.app", "records"),
         ("boba.mcp_server.program", "connections"),
     ],
 )
@@ -43,7 +43,7 @@ async def test_migrate_uses_only_storage_config_and_reconciles_repeat(  # noqa: 
     connection = test_postgres.model_dump(mode="json", exclude_none=True)
     location = {"schema": name, "postgres": "${postgres}"}
     app: dict[str, object] = {"data": "${data}", **location}
-    if module == "boba.cli.app":
+    if module == "boba.agent.app":
         app["agent"] = {"history": location}
 
     document: dict[str, object] = {

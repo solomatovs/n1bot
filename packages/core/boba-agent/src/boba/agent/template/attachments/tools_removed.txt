@@ -1,2 +1,0 @@
-The following {kind}s are no longer available in this session. {advice}:
-{names}

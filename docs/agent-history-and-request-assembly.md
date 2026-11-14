@@ -258,6 +258,9 @@ class ToolReferencePart(DataModel):
 }
 ```
 
+OpenAI и ACP передают ссылку текстом имени инструмента. Полное определение
+попадает в OpenAI `tools` из сохранённой `ToolSchemaRecord`.
+
 ---
 
 ### `UserPart`, `AssistantPart`, `ToolResultPart`

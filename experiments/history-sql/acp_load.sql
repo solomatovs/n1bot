@@ -1,16 +1,16 @@
 -- Нагрузочные истории для ACP: четыре отдельных профиля и 512 клиентских сессий.
--- Запускать в экспериментальной БД после schema.sql; заменяет только перечисленные тестовые сессии.
+-- Запускать в экспериментальной БД после boba migrate; заменяет только перечисленные тестовые сессии.
 -- Цикл: user -> граница -> assistant/tool call -> result -> notice -> usage -> вопрос
 -- -> ответ -> sampling -> завершение. Весь текст и структуры сохраняются в records.
 begin;
 
 delete
 from
-    history_sql.records
+    boba.records
 where 1=1
     and session_id in ('sql-acp-load-1000', 'sql-acp-load-10000', 'sql-acp-load-50000', 'sql-acp-load-commands');
 
-insert into history_sql.records (
+insert into boba.records (
     session_id, seq, record_id, kind, category, role, key, operation, request_id,
     copied_from_id, created_at, version, payload
 )
@@ -103,7 +103,7 @@ order by
     session_id, seq;
 
 -- Отдельный профиль: много результатов slash-команд, включая пустые.
-insert into history_sql.records (
+insert into boba.records (
     session_id, seq, record_id, kind, category, role, operation, created_at, version, payload
 )
 select
@@ -129,13 +129,13 @@ order by
 -- Новые таблицы не нужны; для нагрузки используются строки той же records.
 delete
 from
-    history_sql.records r
+    boba.records r
 using
     generate_series(1, 512) n(number)
 where 1=1
     and r.session_id = 'sql-acp-stress-' || lpad(n.number::text, 4, '0');
 
-insert into history_sql.records (
+insert into boba.records (
     session_id, seq, record_id, kind, category, role, key, operation, request_id,
     copied_from_id, created_at, version, payload
 )
@@ -156,7 +156,7 @@ select
     r.request_id, r.copied_from_id, r.created_at, r.version, r.payload
 from
     sessions s
-    join history_sql.records r on r.session_id = s.source_session_id
+    join boba.records r on r.session_id = s.source_session_id
 order by
     s.session_id, r.seq;
 

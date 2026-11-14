@@ -191,6 +191,7 @@ class LlmServiceError(LlmError):
 
         PublicError.__init__(self, diagnostic, message)
         self.trouble = trouble
+        self.status = status
 
 
 class LlmOutputLimitError(LlmError):

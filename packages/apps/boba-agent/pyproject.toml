@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-agent"
+version = "0.0.33.dev4"
+description = "Boba agent: сервис ACP, исполнение агента и история в PostgreSQL."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "boba-llm-http==0.0.33.dev4",
+    "boba-llm==0.0.33.dev4",
+    "boba-krb[config]==0.0.33.dev4",
+    "boba-http-server==0.0.33.dev4",
+    "boba-identity-postgres==0.0.33.dev4",
+    "agent-client-protocol==1.0.0rc3",
+    "boba-cancellation==0.0.33.dev4",
+    "boba-config==0.0.33.dev4",
+    "boba-db-postgres[cli]==0.0.33.dev4",
+    "boba-transport-acp[http]==0.0.33.dev4",
+    "boba-transport-http==0.0.33.dev4",
+    "boba-access==0.0.33.dev4",
+    "boba-auth[kerberos]==0.0.33.dev4",
+    "boba-identity==0.0.33.dev4",
+    "boba-ldap==0.0.33.dev4",
+    "boba-oauth[server]==0.0.33.dev4",
+    "fastmcp-slim[server]>=4.1.4,<5",
+    "httpx>=0.28,<1",
+    "omegaconf>=2.3,<3",
+    "mcp>=2.3,<3",
+    "mcp-types>=2.3,<3",
+    "psycopg>=3.3,<4",
+    "pydantic>=2.12,<3",
+    "starlette>=1.0,<2",
+    "uvicorn>=0.35,<1",
+    "websockets>=15,<16",
+]
+
+[project.scripts]
+boba = "boba.agent.app:cli"
+
+[project.optional-dependencies]
+dev = ["pytest>=9.1,<10", "httpx>=0.28,<1"]
+
+[tool.boba.unimported]
+websockets = "WebSocket-транспорт uvicorn для ACP"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true
+
+[tool.setuptools.package-data]
+"boba.agent" = ["migrations/*/*.sql", "sql/*.sql"]

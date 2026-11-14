@@ -61,7 +61,6 @@ dev = [
     "boba-tool-io==0.0.33.dev4",
     "cryptography>=45.0.1",
     "boba-agent==0.0.33.dev4",
-    "boba-cli==0.0.33.dev4",
     "boba-llm-onnx==0.0.33.dev4",
     "boba-doc[readers]==0.0.33.dev4",
     "boba-krb[connections,seal]==0.0.33.dev4",

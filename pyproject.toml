@@ -49,6 +49,7 @@ pythonpath = [
     "packages/core/boba-indexing/src",
     "packages/infra/config/boba-config/src",
     "packages/core/boba-toolkit/src",
+    "packages/apps/boba-agent/src",
     "packages/apps/boba-aid/src",
     "packages/apps/boba-mcp/src",
     "packages/tools/boba-tool-shell/src",
@@ -72,10 +73,6 @@ pythonpath = [
     "packages/apps/ix/ch-meta-scraper/src",
     "packages/tools/boba-tool-describer/src",
     "packages/tools/boba-tool-mail/src",
-    "packages/core/boba-agent/src",
-    "packages/infra/history/boba-history-jsonl/src",
-    "packages/infra/history/boba-history-postgres/src",
-    "packages/apps/boba-cli/src",
     "packages/testing/boba-prompt-assembly/src",
 ]
 addopts = ["--strict-markers", "-m", "not integration and not ui and not look and not load and not run"]
@@ -149,6 +146,7 @@ extraPaths = [
     "packages/core/boba-indexing/src",
     "packages/infra/config/boba-config/src",
     "packages/core/boba-toolkit/src",
+    "packages/apps/boba-agent/src",
     "packages/apps/boba-aid/src",
     "packages/apps/boba-mcp/src",
     "packages/tools/boba-tool-shell/src",
@@ -172,10 +170,6 @@ extraPaths = [
     "packages/apps/ix/cfl-indexer/src",
     "packages/apps/ix/ch-meta-scraper/src",
     "packages/tools/boba-tool-describer/src",
-    "packages/core/boba-agent/src",
-    "packages/infra/history/boba-history-jsonl/src",
-    "packages/infra/history/boba-history-postgres/src",
-    "packages/apps/boba-cli/src",
     "packages/testing/boba-prompt-assembly/src",
 ]
 venvPath = "."
@@ -248,7 +242,7 @@ members = [
     "packages/core/*",
     "packages/apps/boba-aid",
     "packages/apps/boba-mcp",
-    "packages/apps/boba-cli",
+    "packages/apps/boba-agent",
     "packages/apps/ix/*",
     "packages/tools/*",
     "packages/infra/*/*",
@@ -326,9 +320,6 @@ boba-llm-onnx       = { workspace = true }
 boba-llm-fastembed  = { workspace = true }
 boba-aid            = { workspace = true }
 boba-agent          = { workspace = true }
-boba-history-jsonl  = { workspace = true }
-boba-history-postgres = { workspace = true }
-boba-cli            = { workspace = true }
 boba-prompt-assembly = { workspace = true }
 
 [dependency-groups]
