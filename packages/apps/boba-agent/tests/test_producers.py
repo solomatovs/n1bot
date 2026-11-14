@@ -1,5 +1,6 @@
 from uuid import uuid4
 
+import mcp.types as mt
 import pytest
 from acp import RequestError
 
@@ -94,6 +95,8 @@ async def test_catalog_changes_and_compaction_keep_replay_deterministic(history)
             [{"type": "acp", "name": "workspace", "serverId": "ws"}],
             request,
             notify,
+            set(),
+            mt.ClientCapabilities(),
         )
         await tools.search(agent, {"select": ["mcp__workspace__alpha"]})
         first_id, first = await build()

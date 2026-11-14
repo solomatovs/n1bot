@@ -6,10 +6,11 @@ import asyncio
 import base64
 import json
 import logging
-from collections.abc import Awaitable, Callable, Iterator, Sequence
-from contextlib import AsyncExitStack
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator, Sequence
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 from typing import Any, ClassVar, Literal
 from uuid import uuid4
 
@@ -49,6 +50,12 @@ class NegotiatedMcp:
     capabilities: mt.ServerCapabilities
 
 
+@dataclass(frozen=True)
+class McpInvocation:
+    reply: m.AssistantMessageRecord
+    call: m.ToolCallPart
+
+
 class McpPeer:
     """Согласует MCP-over-ACP штатными методами и держит одно подключение к серверу."""
 
@@ -59,12 +66,16 @@ class McpPeer:
         server: schema.McpServerAcp,
         request: McpRequest,
         notify: McpNotify,
-        version: str,
+        agent: Agent,
+        capabilities: mt.ClientCapabilities,
     ) -> None:
         self.server = server
         self.request = request
         self.notify = notify
-        self.client_info = mt.Implementation(name="boba", version=version)
+        self.agent = agent
+        self.client_info = mt.Implementation(name="boba", version=agent.version)
+        self.client_capabilities = capabilities
+        self.invocation: McpInvocation | None = None
         self.negotiated: NegotiatedMcp | None = None
         self.connection_id: str | None = None
 
@@ -140,7 +151,7 @@ class McpPeer:
     async def _initialize(self, connection_id: str) -> None:
         params = mt.InitializeRequestParams(
             protocol_version=LATEST_HANDSHAKE_VERSION,
-            capabilities=mt.ClientCapabilities(),
+            capabilities=self.client_capabilities,
             client_info=self.client_info,
         )
         raw = await self._message(
@@ -200,6 +211,22 @@ class McpPeer:
             params = self._modern_params(params)
 
         return await self._message(selected.binding, selected.route_id, method, params)
+
+    @asynccontextmanager
+    async def executing(
+        self, reply: m.AssistantMessageRecord, call: m.ToolCallPart
+    ) -> AsyncGenerator[None, None]:
+        if self.invocation is not None:
+            raise RuntimeError(
+                f"MCP server {self.server.name} already has an active tool call"
+            )
+
+        self.invocation = McpInvocation(reply, call)
+        try:
+            yield
+
+        finally:
+            self.invocation = None
 
     def _modern_params(self, params: dict[str, Any]) -> dict[str, Any]:
         metadata = params.get("_meta")
@@ -341,6 +368,8 @@ class ToolRunner:
         servers: Sequence[dict],
         request: McpRequest,
         notify: McpNotify,
+        peers: set[McpPeer],
+        capabilities: mt.ClientCapabilities,
     ) -> tuple[McpPeer, ...]:
         existing = self.clients.get(agent.session_id, {})
         bindings: dict[str, McpPeer] = {}
@@ -359,7 +388,7 @@ class ToolRunner:
                     continue
 
             bindings[declaration.name] = McpPeer(
-                declaration, request, notify, agent.version
+                declaration, request, notify, agent, capabilities
             )
 
         async with AsyncExitStack() as opening:
@@ -367,6 +396,8 @@ class ToolRunner:
                 if peer.negotiated is not None:
                     continue
 
+                peers.add(peer)
+                opening.callback(peers.discard, peer)
                 opening.push_async_callback(self.close_peer, peer)
                 try:
                     async with asyncio.timeout(self.list_timeout):
@@ -390,6 +421,86 @@ class ToolRunner:
             opening.pop_all()
 
         return tuple(bindings.values())
+
+    async def incoming(
+        self, peer: McpPeer, method: str, params: dict[str, Any] | None
+    ) -> dict[str, Any]:
+        """Обратные запросы MCP для конкретного подключения и активного tool call."""
+        match method:
+            case "ping":
+                mt.PingRequest.model_validate({"method": method, "params": params})
+                return {}
+
+            case "roots/list":
+                if peer.client_capabilities.roots is None:
+                    raise RequestError.method_not_found(method)
+
+                mt.ListRootsRequest.model_validate({"method": method, "params": params})
+                return await self.roots(peer.agent)
+
+            case "elicitation/create":
+                request = mt.ElicitRequest.model_validate(
+                    {"method": method, "params": params}
+                )
+                capabilities = peer.client_capabilities.elicitation
+                if capabilities is None:
+                    raise RequestError.method_not_found(method)
+
+                mode = request.params.mode
+                if getattr(capabilities, mode) is None:
+                    raise RequestError(
+                        -32602, f"MCP elicitation mode {mode!r} was not negotiated"
+                    )
+
+                invocation = peer.invocation
+                if invocation is None:
+                    raise RequestError(
+                        -32602, "MCP elicitation requires an active tool call"
+                    )
+
+                form = request.params
+                question = peer.agent.make(
+                    m.ElicitationRequestRecord,
+                    payload={
+                        "source": invocation.call.name,
+                        "related_message_id": invocation.reply.record_id,
+                        "call_id": invocation.call.call_id,
+                        "message": form.message,
+                        "mode": mode,
+                        "requested_schema": getattr(form, "requested_schema", None),
+                        "url": getattr(form, "url", None),
+                    },
+                )
+                answer = await self.elicit(peer.agent, question)
+                result = mt.ElicitResult.model_validate(
+                    {"action": answer.payload.action, "content": answer.payload.content}
+                )
+                return result.model_dump(mode="json", by_alias=True, exclude_none=True)
+
+            case _:
+                raise RequestError.method_not_found(method)
+
+    async def roots(self, agent: Agent) -> dict[str, Any]:
+        records = await agent.store.latest(agent.session_id, kind="environment")
+        paths: dict[str, None] = {}
+        for record in records:
+            environment = m.EnvironmentRecord.model_validate(record)
+            state = environment.payload.state
+            if state is None:
+                continue
+
+            if state.working_directory is not None:
+                paths[state.working_directory] = None
+
+            for root in state.workspace_roots:
+                paths[root] = None
+
+        roots = []
+        for path in paths:
+            roots.append(mt.Root.model_validate({"uri": Path(path).as_uri()}))
+
+        result = mt.ListRootsResult(roots=roots)
+        return result.model_dump(mode="json", by_alias=True, exclude_none=True)
 
     async def close_peer(self, peer: McpPeer) -> None:
         async with asyncio.timeout(self.list_timeout):
@@ -535,8 +646,18 @@ class ToolRunner:
             )
         definitions, records, parts = {}, [], []
         for name in dict.fromkeys(selected):
-            if name not in catalog or not name.startswith("mcp__"):
-                raise ValueError("Tool is not available in the current catalog")
+            if name not in catalog:
+                raise ValueError(
+                    f"Tool {name!r} is not available in the current catalog. "
+                    "Search with tool_search first, then select the full tool name "
+                    "from the search results."
+                )
+
+            if not name.startswith("mcp__"):
+                raise ValueError(
+                    f"Tool {name!r} is built in; its definition is already loaded."
+                )
+
             server = name.split("__", 2)[1]
             if server not in definitions:
                 definitions[server] = await self._definitions(agent, server)
@@ -579,9 +700,11 @@ class ToolRunner:
         _, server, name = call.name.split("__", 2)
         params = {"name": name, "arguments": call.arguments}
         for _ in range(self.input_rounds + 1):
-            result = await self._mcp(
-                agent, server, "tools/call", params, timeout=self.call_timeout
-            )
+            peer = self.clients[agent.session_id][server]
+            async with peer.executing(reply, call):
+                result = await self._mcp(
+                    agent, server, "tools/call", params, timeout=self.call_timeout
+                )
             if result.get("resultType") != "input_required":
                 break
             responses = {}
@@ -669,10 +792,7 @@ class ToolRunner:
             try:
                 responder = self.ask.get(agent.session_id)
                 if responder is not None:
-                    draft = await agent.store.acp(
-                        Query.ACP_PERMISSION, agent.session_id, question.record_id
-                    )
-                    answer = await responder(draft["method"], draft["params"])
+                    answer = await responder(agent.session_id, question)
                     outcome = answer["outcome"]
                     if outcome["outcome"] == "selected":
                         selected = next(
@@ -834,12 +954,9 @@ class ToolRunner:
 
     async def elicit(self, agent: Agent, question: m.ElicitationRequestRecord):
         await agent.append([question])
-        draft = await agent.store.acp(
-            Query.ACP_ELICITATION, agent.session_id, question.record_id
-        )
         answer = {"action": "cancel"}
         try:
-            answer = await self.ask[agent.session_id](draft["method"], draft["params"])
+            answer = await self.ask[agent.session_id](agent.session_id, question)
         finally:
             saved = agent.make(
                 m.ElicitationResponseRecord,

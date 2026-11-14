@@ -6,18 +6,13 @@ import argparse
 import asyncio
 import json
 import sys
-from importlib.metadata import version
 from importlib.resources import files
 from pathlib import Path
 
+from boba.agent import Installed
 from boba.agent.queries import Query
 from boba.agent.settings import ServeConfig
 from boba.db.postgres.migration_options import MigrationArguments
-
-
-class Installed:
-    def version(self) -> str:
-        return version("boba-agent")
 
 
 async def main(argv=None) -> None:

@@ -1,13 +1,14 @@
 import asyncio
-from typing import cast
 from uuid import uuid4
 
 import pytest
 from acp import RequestError
+from acp._transport import memory_transport_pair
 from acp.connection import Connection
 from acp.experimental.v2 import schema
 
-from boba.agent.acp_server import AcpAgent, AgentProfiles, SessionHub
+from boba.agent.acp_connection import AcpAgent
+from boba.agent.acp_server import AgentProfiles, SessionHub
 from boba.agent.settings import (
     AgentProfile,
     ModelSettings,
@@ -44,17 +45,23 @@ class StreamingLlm:
 
 
 class Client:
-    def __init__(self):
+    def __init__(self, adapter: AcpAgent):
         self.events = []
+        agent_end, client_end = memory_transport_pair()
+        self.server = adapter.connect(agent_end)
+        self.connection = Connection(self.receive, client_end)
 
-    def add_observer(self, observer):
-        self.observer = observer
-
-    async def send_notification(self, method, params):
+    async def receive(self, method, params, is_notification):
+        assert is_notification
         self.events.append((method, params))
 
-    async def send_request(self, method, params):
-        raise AssertionError(f"Unexpected client request: {method}")
+    async def request(self, method, params, is_notification=False):
+        assert not is_notification
+        return await self.connection.send_request(method, params)
+
+    async def close(self):
+        await self.connection.close()
+        await self.server.close()
 
 
 @pytest.mark.anyio
@@ -81,18 +88,21 @@ async def test_two_acp_clients_share_stream_and_replay_from_postgres(  # noqa: P
         AcpAgent(hub, owner, frozenset({"test"}), "test"),
         AcpAgent(hub, owner, frozenset({"test"}), "test"),
     )
-    clients = [Client(), Client()]
+    clients = [Client(first), Client(second)]
     sid = None
     try:
-        for adapter, client in zip((first, second), clients, strict=True):
-            adapter.attach(cast(Connection, client))
-            response = await adapter("initialize", {"protocolVersion": 2}, False)
+        for client in clients:
+            response = await client.request(
+                "initialize",
+                {"protocolVersion": 2, "info": {"name": "agent-test", "version": "1"}},
+                False,
+            )
             schema.InitializeResponse.model_validate(response)
-        response = await first("session/new", {"cwd": "/workspace"}, False)
+        response = await clients[0].request("session/new", {"cwd": "/workspace"}, False)
         assert isinstance(response, dict)
         schema.NewSessionResponse.model_validate(response)
         sid = response["sessionId"]
-        accepted = await first(
+        accepted = await clients[0].request(
             "session/prompt",
             {"sessionId": sid, "prompt": [{"type": "text", "text": "Hello"}]},
             False,
@@ -100,13 +110,13 @@ async def test_two_acp_clients_share_stream_and_replay_from_postgres(  # noqa: P
         schema.PromptResponse.model_validate(accepted)
         async with asyncio.timeout(agent_timeout):
             await llm.started.wait()
-        response = await second(
+        response = await clients[1].request(
             "session/resume",
             {"sessionId": sid, "cwd": "/workspace", "replayFrom": {"type": "start"}},
             False,
         )
         schema.ResumeSessionResponse.model_validate(response)
-        await first("session/close", {"sessionId": sid}, False)
+        await clients[0].request("session/close", {"sessionId": sid}, False)
         assert not hub.agents[sid].idle.is_set()
         llm.finish.set()
         async with asyncio.timeout(agent_timeout):
@@ -128,14 +138,21 @@ async def test_two_acp_clients_share_stream_and_replay_from_postgres(  # noqa: P
         assert len(final) == 1
         assert final[0]["content"] == [{"type": "text", "text": "Начало конец"}]
         stranger = AcpAgent(hub, uuid4().hex, frozenset({"test"}), "test")
-        stranger.attach(cast(Connection, Client()))
-        await stranger("initialize", {"protocolVersion": 2}, False)
+        other = Client(stranger)
+        clients.append(other)
+        await other.request(
+            "initialize",
+            {"protocolVersion": 2, "info": {"name": "agent-test", "version": "1"}},
+            False,
+        )
         with pytest.raises(RequestError):
-            await stranger(
+            await other.request(
                 "session/resume", {"sessionId": sid, "cwd": "/workspace"}, False
             )
         assert len(llm.requests) == 1
     finally:
+        for client in clients:
+            await client.close()
         await first.close_all()
         await second.close_all()
         await hub.close()

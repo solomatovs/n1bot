@@ -11,6 +11,7 @@ from uuid import uuid4
 import psycopg
 import pytest
 from acp import RequestError
+from acp import schema as v1
 from acp._transport import memory_transport_pair
 from acp.connection import Connection, StreamDirection, StreamEvent
 from acp.experimental.v2 import schema
@@ -18,8 +19,14 @@ from conftest import InferenceServer
 from starlette.responses import JSONResponse, Response, StreamingResponse
 
 from boba.agent import models as m
-from boba.agent.acp_server import AcpAgent, AgentProfiles, SessionHub
-from boba.agent.acp_validator import MessageChunk, MessageUpdate, NotificationParams
+from boba.agent.acp_connection import AcpAgent
+from boba.agent.acp_server import AgentProfiles, SessionHub
+from boba.agent.acp_validator import (
+    AcpVersion,
+    MessageChunk,
+    MessageUpdate,
+    NotificationParams,
+)
 from boba.agent.history import HistoryStore
 from boba.agent.llm import OpenAiTransport
 from boba.agent.settings import AgentProfile, McpSettings, ModelSettings, SettingsLayer
@@ -34,9 +41,16 @@ class AgentClient:
     """Клиент и агент связаны реальным ACP Connection; клиент также обслуживает MCP."""
 
     def __init__(
-        self, hub: SessionHub, owner: str, timeout: float, granted: frozenset[str]
+        self,
+        hub: SessionHub,
+        owner: str,
+        timeout: float,
+        granted: frozenset[str],
+        protocol_version: AcpVersion = AcpVersion.V2,
+        maximum_protocol_version: AcpVersion = AcpVersion.V2,
     ) -> None:
         self.timeout = timeout
+        self.protocol_version = protocol_version
         self.updates: list[NotificationParams] = []
         self.wire: list[dict[str, Any]] = []
         self.permissions: list[dict[str, Any]] = []
@@ -54,10 +68,15 @@ class AgentClient:
         self.release_tool = asyncio.Event()
         self.release_tool.set()
         self.changed = asyncio.Condition()
-        self.adapter = AcpAgent(hub, owner, granted, "test")
+        self.adapter = AcpAgent(
+            hub,
+            owner,
+            granted,
+            "test",
+            maximum_protocol_version=maximum_protocol_version,
+        )
         agent_end, client_end = memory_transport_pair()
-        self.server = Connection(self.adapter, agent_end)
-        self.adapter.attach(self.server)
+        self.server = self.adapter.connect(agent_end)
         self.connection = Connection(self.receive, client_end)
         self.connection.add_observer(self.observe)
 
@@ -76,8 +95,17 @@ class AgentClient:
 
     async def initialize(self) -> None:
         result = await self.connection.send_request(
-            "initialize", {"protocolVersion": 2}
+            "initialize",
+            {
+                "protocolVersion": self.protocol_version.value,
+                "info": {"name": "agent-test", "version": "1"},
+            },
         )
+        self.protocol_version = AcpVersion(result["protocolVersion"])
+        if self.protocol_version is AcpVersion.V1:
+            v1.InitializeResponse.model_validate(result)
+            return
+
         schema.InitializeResponse.model_validate(result)
 
     async def receive(self, method: str, params: Any, is_notification: bool) -> Any:
@@ -92,7 +120,10 @@ class AgentClient:
 
         if method == "session/request_permission":
             assert not is_notification
-            schema.RequestPermissionRequest.model_validate(params)
+            if self.protocol_version is AcpVersion.V1:
+                v1.RequestPermissionRequest.model_validate(params)
+            else:
+                schema.RequestPermissionRequest.model_validate(params)
             self.permissions.append(params)
 
             return {"outcome": {"outcome": "selected", "optionId": self.permission}}
@@ -200,7 +231,8 @@ class AgentClient:
             },
         )
         parsed = schema.NewSessionResponse.model_validate(result)
-        await self.until("state_update")
+        if self.protocol_version is AcpVersion.V2:
+            await self.until("state_update")
 
         return parsed.session_id
 
@@ -320,12 +352,24 @@ class AgentSystem:
         self.clients: list[AgentClient] = []
 
     async def client(
-        self, *, owner: str | None = None, granted: frozenset[str] = frozenset({"test"})
+        self,
+        *,
+        owner: str | None = None,
+        granted: frozenset[str] = frozenset({"test"}),
+        protocol_version: AcpVersion = AcpVersion.V2,
+        maximum_protocol_version: AcpVersion = AcpVersion.V2,
     ) -> AgentClient:
         if owner is None:
             owner = self.owner
 
-        client = AgentClient(self.hub, owner, self.timeout, granted)
+        client = AgentClient(
+            self.hub,
+            owner,
+            self.timeout,
+            granted,
+            protocol_version,
+            maximum_protocol_version,
+        )
         self.clients.append(client)
         await client.initialize()
 
@@ -420,6 +464,193 @@ async def system(
         await stand.close()
 
 
+@pytest.mark.parametrize("offered", [AcpVersion.V1, AcpVersion.V2])
+async def test_v1_negotiation_on_legacy_endpoint(
+    system: AgentSystem, offered: AcpVersion
+) -> None:
+    client = await system.client(
+        protocol_version=offered, maximum_protocol_version=AcpVersion.V1
+    )
+    assert client.protocol_version is AcpVersion.V1
+    assert client.adapter.protocol_version is AcpVersion.V1
+
+
+async def test_v1_streams_before_prompt_response_and_replays_after_restart(
+    system: AgentSystem,
+) -> None:
+    client = await system.client(protocol_version=AcpVersion.V1)
+    sid = await client.new_session()
+    release = asyncio.Event()
+
+    async def body() -> AsyncIterator[bytes]:
+        yield b'data: {"choices":[{"delta":{"reasoning_content":"Think"}}]}\n\n'
+        yield b'data: {"choices":[{"delta":{"content":"First "}}]}\n\n'
+        await release.wait()
+        yield b'data: {"choices":[{"delta":{"content":"answer"},"finish_reason":"stop"}]}\n\n'
+        yield b"data: [DONE]\n\n"
+
+    system.inference.response = StreamingResponse(
+        body(), media_type="text/event-stream"
+    )
+    prompt = asyncio.create_task(
+        client.connection.send_request(
+            "session/prompt",
+            {"sessionId": sid, "prompt": [{"type": "text", "text": "First question"}]},
+        )
+    )
+    try:
+        await client.until("agent_message_chunk")
+        assert not prompt.done()
+        release.set()
+        async with asyncio.timeout(system.timeout):
+            result = await prompt
+
+        assert v1.PromptResponse.model_validate(result).stop_reason == "end_turn"
+        text = ""
+        for item in client.updates:
+            v1.SessionNotification.model_validate(item.model_dump(by_alias=True))
+            if item.update["sessionUpdate"] == "agent_message_chunk":
+                chunk = v1.AgentMessageChunk.model_validate(item.update)
+                assert isinstance(chunk.content, v1.TextContentBlock)
+                text += chunk.content.text
+
+        assert text == "First answer"
+        assert "agent_message" not in tuple(client.received_kinds())
+        assert "state_update" not in tuple(client.received_kinds())
+        system.inference.response = system.answer("Second answer")
+        result = await client.connection.send_request(
+            "session/prompt",
+            {"sessionId": sid, "prompt": [{"type": "text", "text": "Second question"}]},
+        )
+        assert v1.PromptResponse.model_validate(result).stop_reason == "end_turn"
+        await system.assert_replay(sid)
+        await system.restart()
+        restored = await system.client(protocol_version=AcpVersion.V1)
+        response = await restored.connection.send_request(
+            "session/load", {"sessionId": sid, "cwd": "/workspace", "mcpServers": []}
+        )
+        v1.LoadSessionResponse.model_validate(response)
+        messages = []
+        for item in restored.updates:
+            v1.SessionNotification.model_validate(item.model_dump(by_alias=True))
+            if item.update["sessionUpdate"] == "agent_message_chunk":
+                chunk = v1.AgentMessageChunk.model_validate(item.update)
+                assert isinstance(chunk.content, v1.TextContentBlock)
+                messages.append(chunk.content.text)
+
+        assert messages == ["First answer", "Second answer"]
+    finally:
+        release.set()
+        if not prompt.done():
+            prompt.cancel()
+
+
+async def test_v1_tool_search_execution_and_v2_observer_share_history(
+    system: AgentSystem,
+) -> None:
+    client = await system.client(protocol_version=AcpVersion.V1)
+    system.inference.responses = (
+        system.call("select", "tool_search", {"select": ["mcp__workspace__echo"]}),
+        system.call("execute", "mcp__workspace__echo", {"text": "Hello"}),
+        system.answer("Tool finished"),
+    )
+    sid = await client.new_session()
+    observer = await system.client()
+    await observer.resume(sid)
+    result = await client.connection.send_request(
+        "session/prompt",
+        {"sessionId": sid, "prompt": [{"type": "text", "text": "Run the tool"}]},
+    )
+    assert v1.PromptResponse.model_validate(result).stop_reason == "end_turn"
+    assert len(client.tool_calls) == 1
+    kinds = tuple(client.received_kinds())
+    assert kinds.count("tool_call") == 2
+    assert kinds.count("tool_call_update") == 2
+    assert "agent_message" not in kinds
+    await observer.until("agent_message")
+    assert observer.messages("agent_message")[-1].content[0].text == "Tool finished"
+    for item in client.updates:
+        v1.SessionNotification.model_validate(item.model_dump(by_alias=True))
+
+    await system.assert_replay(sid)
+
+
+async def test_v1_permission_uses_legacy_tool_call_and_persists_session_choice(
+    system: AgentSystem,
+) -> None:
+    client = await system.client(protocol_version=AcpVersion.V1)
+    client.permission = "session"
+    system.inference.responses = (
+        system.call("select", "tool_search", {"select": ["mcp__workspace__echo"]}),
+        system.call("first", "mcp__workspace__echo", {"text": "one"}),
+        system.call("second", "mcp__workspace__echo", {"text": "two"}),
+        system.answer("Finished"),
+    )
+    sid = await client.new_session()
+    result = await client.connection.send_request(
+        "session/prompt",
+        {"sessionId": sid, "prompt": [{"type": "text", "text": "Use echo twice"}]},
+    )
+    assert v1.PromptResponse.model_validate(result).stop_reason == "end_turn"
+    assert len(client.permissions) == 1
+    assert "toolCall" in client.permissions[0]
+    assert "subject" not in client.permissions[0]
+    assert len(client.tool_calls) == 2
+    messages = []
+    for item in client.updates:
+        if item.update["sessionUpdate"] != "agent_message_chunk":
+            continue
+
+        chunk = v1.AgentMessageChunk.model_validate(item.update)
+        assert isinstance(chunk.content, v1.TextContentBlock)
+        messages.append(chunk.content.text)
+
+    assert messages == ["Finished"]
+    await system.assert_replay(sid)
+
+
+async def test_v1_cancel_returns_cancelled_and_keeps_partial_text_once(
+    system: AgentSystem,
+) -> None:
+    client = await system.client(protocol_version=AcpVersion.V1)
+    sid = await client.new_session()
+    release = asyncio.Event()
+
+    async def body() -> AsyncIterator[bytes]:
+        yield b'data: {"choices":[{"delta":{"content":"Partial"}}]}\n\n'
+        await release.wait()
+        yield b"data: [DONE]\n\n"
+
+    system.inference.response = StreamingResponse(
+        body(), media_type="text/event-stream"
+    )
+    prompt = asyncio.create_task(
+        client.connection.send_request(
+            "session/prompt",
+            {"sessionId": sid, "prompt": [{"type": "text", "text": "Start"}]},
+        )
+    )
+    try:
+        await client.until("agent_message_chunk")
+        await client.connection.send_notification("session/cancel", {"sessionId": sid})
+        async with asyncio.timeout(system.timeout):
+            result = await prompt
+
+        assert v1.PromptResponse.model_validate(result).stop_reason == "cancelled"
+        texts = []
+        for item in client.updates:
+            if item.update["sessionUpdate"] == "agent_message_chunk":
+                chunk = v1.AgentMessageChunk.model_validate(item.update)
+                assert isinstance(chunk.content, v1.TextContentBlock)
+                texts.append(chunk.content.text)
+
+        assert texts == ["Partial"]
+    finally:
+        release.set()
+        if not prompt.done():
+            prompt.cancel()
+
+
 async def test_failed_session_creation_releases_execution_ownership(
     system: AgentSystem,
 ) -> None:
@@ -473,16 +704,12 @@ async def test_v2_resume_replays_only_when_requested_and_before_response(
     response = await resumed.connection.send_request(
         "session/resume", {"sessionId": sid, "cwd": "/workspace"}
     )
-    assert response["availableCommands"]
+    assert "availableCommands" not in response
     assert response["configOptions"]
     kinds = tuple(resumed.received_kinds())
     assert "replay_complete" not in kinds
     assert "user_message" not in kinds
-    snapshots = resumed.messages("agent_message")
-    assert len(snapshots) == 1
-    resource = snapshots[0].content[0]
-    assert isinstance(resource, schema.EmbeddedResourceContentBlock)
-    assert str(resource.resource.uri) == "urn:boba:session-state"
+    assert resumed.messages("agent_message") == ()
     assert kinds.index("state_update") < kinds.index("response")
 
     replayed = await system.client()
@@ -493,6 +720,8 @@ async def test_v2_resume_replays_only_when_requested_and_before_response(
     assert kinds.index("agent_message") < kinds.index("replay_complete")
     assert kinds.index("replay_complete") < kinds.index("state_update")
     assert kinds.index("state_update") < kinds.index("response")
+    assert len(replayed.messages("agent_message")) == 1
+    assert "notice" not in kinds
     assert len(system.inference.requests) == 1
 
     head = await system.history.head(sid)
@@ -506,79 +735,42 @@ async def test_v2_resume_replays_only_when_requested_and_before_response(
     assert await system.history.head(sid) == head
 
 
-async def test_v2_client_system_prompt_is_saved_updated_and_replayed(
+async def test_standard_client_context_keeps_user_role_and_profile_system_prompt(
     system: AgentSystem,
 ) -> None:
     client = await system.client()
-    text = "Client instructions  世界\r\n"
-    prompt = {"mode": "append", "content": [{"type": "text", "text": text}]}
-    response = await client.connection.send_request(
-        "session/new", {"cwd": "/workspace", "systemPrompt": prompt}
+    sid = await client.new_session()
+    system.inference.response = system.answer("Context received")
+    await client.connection.send_request(
+        "session/prompt",
+        {
+            "sessionId": sid,
+            "prompt": [
+                {"type": "text", "text": "Review this context"},
+                {
+                    "type": "resource",
+                    "resource": {
+                        "uri": "file:///workspace/AGENTS.md",
+                        "mimeType": "text/plain",
+                        "text": "Client instructions 世界\r\n",
+                    },
+                },
+            ],
+        },
     )
-    sid = schema.NewSessionResponse.model_validate(response).session_id
-    stored = await system.history.latest(sid, category="prompt", key="client")
-    instructions = m.SystemPromptAddedRecord.model_validate(stored[0])
-    assert instructions.payload.content == (m.TextPart(text=text),)
-
-    system.inference.response = system.answer("First")
-    await client.prompt(sid, "Hello")
     await system.idle(sid)
-    first = json.loads(system.inference.requests[0])
-    assert first["messages"][1] == {
+    request = json.loads(system.inference.requests[0])
+    assert request["messages"][0] == {
         "role": "system",
-        "content": [{"type": "text", "text": text}],
+        "content": [{"type": "text", "text": "You are a test assistant."}],
     }
-    head = await system.history.head(sid)
-    await client.connection.send_request(
-        "session/resume",
-        {"sessionId": sid, "cwd": "/workspace", "systemPrompt": prompt},
+    assert request["messages"][-1]["role"] == "user"
+    assert (
+        request["messages"][-1]["content"][-1]["text"] == "Client instructions 世界\r\n"
     )
-    assert await system.history.head(sid) == head
-
-    updated = {"mode": "append", "content": [{"type": "text", "text": "Updated"}]}
-    await client.connection.send_request(
-        "session/resume",
-        {"sessionId": sid, "cwd": "/workspace", "systemPrompt": updated},
-    )
-    changes = await system.history.read(sid, after_seq=head)
-    assert len(changes.rows) == 2
-    assert isinstance(changes.rows[0], m.SystemPromptRemovedRecord)
-    assert isinstance(changes.rows[1], m.SystemPromptAddedRecord)
-
-    system.inference.response = system.answer("Second")
-    await client.prompt(sid, "Continue")
-    await system.idle(sid)
-    latest = json.loads(system.inference.requests[-1])
-    assert latest["messages"][1]["content"][0]["text"] == "Updated"
+    instructions = await system.history.latest(sid, category="prompt", key="client")
+    assert instructions == ()
     await system.assert_replay(sid)
-
-    await system.restart()
-    restored = await system.client()
-    await restored.resume(sid)
-    stored = await system.history.latest(sid, category="prompt", key="client")
-    instructions = m.SystemPromptAddedRecord.model_validate(stored[0])
-    assert instructions.payload.content == (m.TextPart(text="Updated"),)
-
-
-@pytest.mark.parametrize(
-    "prompt",
-    [
-        {"mode": "override", "content": [{"type": "text", "text": "Replace"}]},
-        {"mode": "append", "content": []},
-        {"mode": "append", "content": [{"type": "unknown", "text": "Wrong type"}]},
-    ],
-)
-async def test_v2_invalid_system_prompt_does_not_create_session(
-    system: AgentSystem, prompt: dict
-) -> None:
-    client = await system.client()
-    with pytest.raises(RequestError) as failure:
-        await client.connection.send_request(
-            "session/new", {"cwd": "/workspace", "systemPrompt": prompt}
-        )
-
-    assert failure.value.code == -32602
-    assert not system.hub.agents
 
 
 @pytest.mark.parametrize("binding", [McpBinding.REQUEST, McpBinding.CONNECTION])
@@ -823,11 +1015,15 @@ async def test_permission_selection_controls_execution_and_survives_resume(
         assert all(row.payload.is_error for row in results)
 
     assert any(isinstance(row, m.PermissionResponseRecord) for row in rows)
+    assert len(client.messages("agent_message")) == 1
+    assert client.messages("agent_message")[0].content[0].text == "Finished"
     await system.assert_replay(sid)
     await system.restart()
     resumed = await system.client()
     await resumed.resume(sid)
     assert not resumed.permissions
+    assert len(resumed.messages("agent_message")) == 1
+    assert resumed.messages("agent_message")[0].content[0].text == "Finished"
     assert len(system.inference.requests) == 4
     state = await system.history.latest(sid, kind="permission_state")
     if choice == "session":
@@ -836,6 +1032,64 @@ async def test_permission_selection_controls_execution_and_survives_resume(
             rule.tool == "mcp__workspace__echo" and rule.decision == "allow"
             for rule in permissions.payload.rules
         )
+
+
+@pytest.mark.parametrize("protocol_version", [AcpVersion.V1, AcpVersion.V2])
+async def test_missing_attachment_reader_preserves_tool_failure_without_chat_noise(
+    system: AgentSystem, protocol_version: AcpVersion
+) -> None:
+    client = await system.client(protocol_version=protocol_version)
+    sid = await client.new_session()
+    system.inference.responses = (
+        system.call("select-reader", "tool_search", {"select": ["read_pdf"]}),
+        system.answer("The attachment reader is unavailable."),
+    )
+    prompt = '[Attached file "school.pdf" is saved at: /client/attachments/school.pdf]'
+    await client.connection.send_request(
+        "session/prompt",
+        {"sessionId": sid, "prompt": [{"type": "text", "text": prompt}]},
+    )
+    await system.idle(sid)
+    if protocol_version is AcpVersion.V2:
+        await client.until("agent_message")
+
+    records = (await system.history.read(sid)).rows
+    results = []
+    decisions = []
+    for record in records:
+        if isinstance(record, m.ToolResultRecord):
+            results.append(record)
+
+        if isinstance(record, m.PermissionDecisionRecord):
+            decisions.append(record)
+
+    assert len(results) == 1
+    assert results[0].payload.is_error
+    error = results[0].payload.content[0]
+    assert isinstance(error, m.TextPart)
+    assert "Tool tool_search, call select-reader failed:" in error.text
+    assert "Tool 'read_pdf' is not available in the current catalog" in error.text
+    assert len(decisions) == 1
+    assert decisions[0].payload.decision == "allow"
+    assert not client.tool_calls
+
+    request = json.loads(system.inference.requests[-1])
+    assert request["messages"][-1]["role"] == "tool"
+    assert request["messages"][-1]["content"] == [{"type": "text", "text": error.text}]
+    first_request = json.loads(system.inference.requests[0])
+    assert first_request["messages"][-1]["content"] == [
+        {"type": "text", "text": prompt}
+    ]
+    for item in client.updates:
+        if item.update["sessionUpdate"] == "tool_call_update":
+            continue
+
+        assert "permission_decision" not in json.dumps(item.update)
+        assert "Tool tool_search, call select-reader failed:" not in json.dumps(
+            item.update
+        )
+
+    await system.assert_replay(sid)
 
 
 @pytest.mark.parametrize(
@@ -1129,3 +1383,44 @@ async def test_unknown_or_missing_profile_grants_reject_new_session(
 
     assert not system.hub.agents
     assert not system.inference.requests
+
+
+async def test_reasoning_survives_next_request_and_agent_restart(
+    system: AgentSystem,
+) -> None:
+    client = await system.client()
+    sid = await client.new_session()
+    reasoning = "Saved reasoning  世界\r\n"
+    system.inference.response = system.response(
+        {"reasoning_content": reasoning, "content": "First answer"}, "stop"
+    )
+    await client.prompt(sid, "First question")
+    await system.idle(sid)
+
+    system.inference.response = system.answer("Second answer")
+    await client.prompt(sid, "Second question")
+    await system.idle(sid)
+    request = json.loads(system.inference.requests[1])
+    assistants = []
+    for message in request["messages"]:
+        if message["role"] != "assistant":
+            continue
+
+        assistants.append(message)
+
+    assert assistants == [
+        {
+            "role": "assistant",
+            "reasoning_content": reasoning,
+            "content": [{"type": "text", "text": "First answer"}],
+        }
+    ]
+
+    await system.restart()
+    client = await system.client()
+    await client.resume(sid)
+    system.inference.response = system.answer("Third answer")
+    await client.prompt(sid, "Third question")
+    await system.idle(sid)
+    assert len(system.inference.requests) == 3
+    await system.assert_replay(sid)

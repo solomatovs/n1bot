@@ -148,12 +148,18 @@ class HistoryStore:
         validator = AcpHistoryValidator()
         contracts = {
             Query.ACP_HISTORY: (AcpHistoryDraft, validator.require_valid),
+            Query.ACP_V1_HISTORY: (AcpHistoryDraft, validator.require_v1),
             Query.ACP_STATE: (AcpStateDraft, validator.require_state),
             Query.ACP_COMMANDS: (AcpCommandsDraft, validator.require_commands),
+            Query.ACP_V1_COMMANDS: (AcpCommandsDraft, validator.require_v1_commands),
             Query.ACP_OPTIONS: (AcpOptionsDraft, validator.require_options),
+            Query.ACP_V1_OPTIONS: (AcpOptionsDraft, validator.require_v1_options),
             Query.ACP_NOTICE: (AcpNoticeDraft, AcpNoticeDraft.require_valid),
+            Query.ACP_V1_NOTICE: (AcpNoticeDraft, AcpNoticeDraft.require_v1),
             Query.ACP_PERMISSION: (AcpPermissionDraft, validator.require_permission),
+            Query.ACP_V1_PERMISSION: (AcpPermissionDraft, validator.require_v1_permission),
             Query.ACP_ELICITATION: (AcpElicitationDraft, validator.require_elicitation),
+            Query.ACP_V1_ELICITATION: (AcpElicitationDraft, validator.require_v1_elicitation),
         }
         model, validate = contracts[query]
         raw = (await self.rows(query, *params))[0]

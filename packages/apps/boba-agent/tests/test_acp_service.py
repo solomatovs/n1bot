@@ -10,6 +10,7 @@ from uuid import uuid4
 
 import pytest
 import uvicorn
+from acp import schema as v1
 from acp.connection import Connection
 from acp.ws.client import create_websocket_stream
 from conftest import InferenceServer
@@ -23,6 +24,7 @@ from starlette.routing import WebSocketRoute
 from websockets.exceptions import InvalidStatus
 
 from boba.agent.acp_server import AgentProfiles
+from boba.agent.acp_validator import AcpVersion
 from boba.agent.serve import AcpEndpoint, CallerTokens, ServeAgents, ServeRouter
 from boba.agent.settings import AgentProfile, ServeHistory, ServeSection
 from boba.db.postgres.connection import PostgresConfig
@@ -84,9 +86,15 @@ class AgentService:
         history = ServeHistory(schema="boba", postgres=postgres)
         self.agents = ServeAgents(section, history, AgentProfiles(profiles), "test", ())
         self.endpoint = AcpEndpoint(ServeRouter(self.agents), CallerTokens(), 30)
+        self.v1_endpoint = AcpEndpoint(
+            ServeRouter(self.agents, AcpVersion.V1), CallerTokens(), 30
+        )
         backend = BearerAuthBackend(self.tokens)
         app = Starlette(
-            routes=[WebSocketRoute("/acp", self.endpoint.websocket)],
+            routes=[
+                WebSocketRoute("/acp", self.endpoint.websocket),
+                WebSocketRoute("/acp/v1", self.v1_endpoint.websocket),
+            ],
             middleware=[Middleware(AuthenticationMiddleware, backend=backend)],
         )
         self.server = uvicorn.Server(
@@ -94,9 +102,13 @@ class AgentService:
         )
 
     @asynccontextmanager
-    async def connection(self) -> AsyncIterator[Connection]:
+    async def connection(self, *, legacy: bool = False) -> AsyncIterator[Connection]:
+        url = self.url
+        if legacy:
+            url += "/v1"
+
         stream = await create_websocket_stream(
-            self.url, headers={"Authorization": f"Bearer {self.tokens.token.token}"}
+            url, headers={"Authorization": f"Bearer {self.tokens.token.token}"}
         )
         connection = Connection(self.receive, stream)
         try:
@@ -133,6 +145,7 @@ async def service(
 
     finally:
         await instance.endpoint.close()
+        await instance.v1_endpoint.close()
         instance.server.should_exit = True
         async with asyncio.timeout(agent_timeout):
             await worker
@@ -164,13 +177,38 @@ async def test_websocket_negotiates_v2_and_creates_session(
 ) -> None:
     async with service.connection() as connection:
         initialized = await connection.send_request(
-            "initialize", {"protocolVersion": 2}
+            "initialize",
+            {"protocolVersion": 2, "info": {"name": "agent-test", "version": "1"}},
         )
         assert initialized["protocolVersion"] == 2
-        assert initialized["capabilities"]["session"]["systemPrompt"] == {}
+        assert "systemPrompt" not in initialized["capabilities"]["session"]
         created = await connection.send_request("session/new", {"cwd": "/workspace"})
-        assert created["availableCommands"]
+        assert "availableCommands" not in created
         assert created["configOptions"]
         owner = str(service.tokens.user_id)
         session = await service.agents.hub.store.session(created["sessionId"], owner)
         assert session["owner_id"] == owner
+
+
+@pytest.mark.parametrize("legacy,offered", [(False, 1), (True, 2)])
+async def test_websocket_negotiates_v1_with_standard_capabilities(
+    service: AgentService, legacy: bool, offered: int
+) -> None:
+    async with service.connection(legacy=legacy) as connection:
+        initialized = await connection.send_request(
+            "initialize",
+            {
+                "protocolVersion": offered,
+                "clientCapabilities": {},
+                "info": {"name": "agent-test", "version": "1"},
+            },
+        )
+        response = v1.InitializeResponse.model_validate(initialized)
+        assert response.protocol_version == 1
+        assert response.agent_capabilities is not None
+        assert response.agent_capabilities.load_session
+        result = await connection.send_request(
+            "session/new", {"cwd": "/workspace", "mcpServers": []}
+        )
+        created = v1.NewSessionResponse.model_validate(result)
+        assert created.config_options

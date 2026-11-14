@@ -1,7 +1,7 @@
-# SQL-адаптер истории в ACP v2
+# SQL-адаптер истории в ACP v1 и v2
 
-Источник — `history_sql.records`. Модели хранения: [история агента](agent-history-and-request-assembly.md).
-Исполняемые модели и проверки: [acp_validator.py](../experiments/history-sql/acp_validator.py).
+Источник — `boba.records`. Модели хранения: [история агента](agent-history-and-request-assembly.md).
+Исполняемые модели и проверки: [acp_validator.py](../packages/apps/boba-agent/src/boba/agent/acp_validator.py).
 SQL создаёт данные протокола; отправка, capabilities и координация исполнения принадлежат транспорту.
 
 Контракт закреплён на [ACP v2, revision f49d27a9](https://github.com/agentclientprotocol/agent-client-protocol/blob/f49d27a9eab068cd9a48901237f256da34fe0183/schema/v2/schema.json).
@@ -9,27 +9,40 @@ SQL создаёт данные протокола; отправка, capabiliti
 `replay_complete` и `subagent_update`: их используемые поля описаны локальными моделями.
 Подключение SQL к серверу требует согласовать эту ревизию с SDK и клиентом.
 
+Версия согласуется через `initialize` для каждого подключения. `/acp` поддерживает
+v1 и v2; `/acp/v1` ограничивает выбор версией 1 для проверки клиентов с автоматическим
+согласованием. История и исполнитель сессии общие для обеих версий.
+В v1 сохранённый текст передаётся через `*_message_chunk`, вызов tool начинается
+с `tool_call`, а `session/prompt` завершается ответом `stopReason` после обработки ввода.
+В v2 используются итоговые сообщения с ID и `state_update`.
+Текст, уже отправленный живыми чанками, SQL повторно в v1 не публикует.
+
+`AcpV1` и `AcpV2` реализуют API соответствующей версии SDK; `AgentProtocolRouter`
+согласует версию один раз на подключении. SQL независимы: `sql/acp/v1/` и `sql/acp/v2/`.
+Далее описаны запросы v2. В `v1/history.sql` пятый параметр `streamed_record_ids` —
+массив ID ответов, уже переданных чанками; для replay передаётся пустой массив.
+`v1/options.sql` возвращает `id`; `v2/options.sql` — `configId`.
+
 ## Как использовать запросы
 
-Это семь операций адаптера с разными поводами для запуска. При восстановлении чата
-используются `acp_history.sql` и `acp_state.sql`. Когда агенту нужно сейчас показать
-предупреждение или задать вопрос, используются соответственно `acp_notice.sql` и
-`acp_elicitation.sql`. `acp_permission.sql` запрашивает разрешение выполнить tool.
+При восстановлении чата
+используются `v2/history.sql` и `v2/state.sql`. Когда агенту нужно сейчас показать
+предупреждение или задать вопрос, используются соответственно `v2/notice.sql` и
+`v2/elicitation.sql`. `v2/permission.sql` запрашивает разрешение выполнить tool.
 Эти три запроса действий при восстановлении переписки не запускаются.
-`acp_commands.sql` собирает доступные команды для ответа session/new/resume
+`v2/commands.sql` собирает доступные команды для ответа session/new/resume
 и для обновления каталога во время работы.
-`acp_options.sql` собирает редактируемые параметры configOptions из сохранённых
+`v2/options.sql` собирает редактируемые параметры configOptions из сохранённых
 описаний вариантов и текущих настроек.
 
 Все запросы только читают уже сохранённую историю и возвращают данные. Выполнение SQL
 в редакторе ничего не отправляет клиенту, не запускает tools и не вызывает LLM.
-Отправлять проверенный результат должен ACP-адаптер агента. Эти файлы пока являются
-прототипом, а не подключёнными обработчиками работающего сервера.
+Отправлять проверенный результат должен ACP-адаптер агента. SQL-файлы входят в пакет сервиса и используются обработчиками ACP.
 
 ### Где запускать и что означают параметры
 
 Подключение — настроенный PostgreSQL 17, база **`aid_ss_history_sql_boba`**,
-таблица **`history_sql.records`**. Данные для примеров сохранены в
+таблица **`boba.records`**. Данные для примеров сохранены в
 [fixtures.sql](../experiments/history-sql/fixtures.sql).
 
 - `session_id` — идентификатор чата из `records.session_id`. В примерах: `'sql-acp-demo'`.
@@ -38,13 +51,13 @@ SQL создаёт данные протокола; отправка, capabiliti
   Он выбирает конкретное предупреждение или вопрос; это не номер `seq`.
 - `request_id` — связь с LLM-запросом. **Ни один из ACP-запросов его не принимает.**
 
-`$1`, `$2`, `$3` — места для параметров при вызове из программы. Для ручного запуска
+`$1`, `$2` и последующие — места для параметров при вызове из программы. Для ручного запуска
 открой нужный SQL-файл и замени значения **только в первом CTE `params`**, как показано ниже.
 Затем выполни весь файл. SQL `null` пишется без кавычек.
 
-### `acp_history.sql` — восстановить содержимое чата
+### `v2/history.sql` — восстановить содержимое чата
 
-[Запрос](../experiments/history-sql/acp_history.sql) превращает записи истории в сообщения
+[Запрос](../packages/apps/boba-agent/src/boba/agent/sql/acp/v2/history.sql) превращает записи истории в сообщения
 ACP для показа переписки: ввод пользователя, ответы и рассуждения агента, вызовы tools,
 их результаты, компактизацию и сохранённые служебные сообщения. Читает историю с начала,
 включая диалог до компактизации; копии с `copied_from_id` повторно не показывает.
@@ -59,9 +72,14 @@ params as (
     select
         'sql-acp-demo'::text as session_id,
         null::bigint as after_seq,
-        null::bigint as through_seq
+        null::bigint as through_seq,
+        true::boolean as replay_notices
 ),
 ```
+
+`replay_notices=true` добавляет тексты сохранённых предупреждений. Для живой публикации
+используется `false`: новые уведомления приходят отдельно через `v2/notice.sql`.
+Успешные HTTP-попытки и `turn_end` в переписку не входят.
 
 `after_seq` исключает сам указанный номер и всё перед ним; `null` равнозначен 0.
 `through_seq` включает указанный номер; `null` выбирает последний seq на момент чтения.
@@ -84,7 +102,7 @@ params as (
 | Background и сабагент | `'sql-background-demo', null, null` | Вызовы и результаты tools, сообщения задач, subagent_update для дочерней сессии |
 | Slash-команды | `'sql-demo', null, null` | Команды как user_message, результаты как agent_message; повторного исполнения нет |
 
-Результат — **одна строка SQL** с тремя столбцами:
+Результат — **одна строка SQL**:
 
 - `bounds` — фактически использованный диапазон и последний seq в истории.
 - `notifications` — упорядоченный массив. В каждом элементе `notification` уже содержит
@@ -96,9 +114,17 @@ params as (
 даже если `notifications` пуст. Последний seq отображённого сообщения для этого не подходит.
 `after_seq` служит внутреннему чтению из БД и не объявляет новый вид ACP replay cursor.
 
-### `acp_state.sql` — показать сохранённые настройки и статистику
+### `v1/prompt.sql` — завершить запрос ACP v1
 
-[Запрос](../experiments/history-sql/acp_state.sql) собирает снимок на выбранный seq:
+[Запрос](../packages/apps/boba-agent/src/boba/agent/sql/acp/v1/prompt.sql) принимает
+`session_id` и `record_id` пользовательского ввода. После завершения обработки находит
+`message_accepted`, следующий `turn_end` и итоговое состояние ответа. Возвращает готовый
+`response` с `stopReason` либо причину `error`; при ошибке сервер отвечает ошибкой RPC.
+Запрос не собирает LLM-контекст и не запускает исполнение.
+
+### `v2/state.sql` — показать сохранённые настройки и статистику
+
+[Запрос](../packages/apps/boba-agent/src/boba/agent/sql/acp/v2/state.sql) собирает снимок на выбранный seq:
 действующие постоянные model/sampling/inference и другие setting, последний снимок
 разрешений, сумму сохранённых счётчиков токенов. Разовые настройки с `request_id`
 в этот снимок не включаются, снятые через remove категории тоже исключаются.
@@ -131,27 +157,25 @@ sampling для одного LLM-запроса его не заменяет. П
 | `'sql-acp-demo', 25` | model: разовый sampling с request_id=r1 не становится постоянным |
 | `'sql-acp-demo', null` | Тот же снимок settings, что на seq=27; permissions содержит правило ask; usage.input_tokens=12 |
 
-Результат — одна строка с `bounds`, `update` и `replay_complete`.
-`update` — стандартный `agent_message` с вложенным JSON-ресурсом настроек. Его содержимое
-находится в `update.content[0].resource.text`. После `require_state` адаптер помещает
-`update` в `params.update` уведомления `session/update`, указав `params.sessionId` этого чата.
-Это представление для чтения; редактируемые элементы `configOptions` запрос не создаёт.
+Результат — `bounds`, типизированный `snapshot` настроек и статистики, а также
+`replay_complete`. Снимок доступен для чтения состояния и не публикуется как реплика
+ассистента. Элементы управления клиент получает через `v2/options.sql`.
 
 `replay_complete` — отдельно подготовленный маркер окончания восстановления.
-Он возвращается рядом со снимком, но сам запуск `acp_state.sql` не завершает replay:
+Он возвращается рядом со снимком, но сам запуск `v2/state.sql` не завершает replay:
 адаптер отправляет маркер **один раз после всей истории**, а не после каждой порции.
 При отдельном просмотре настроек этот столбец не отправляется.
 
-### `acp_notice.sql` — показать новое предупреждение сейчас
+### `v2/notice.sql` — показать новое предупреждение сейчас
 
-[Запрос](../experiments/history-sql/acp_notice.sql) выбирает **одну конкретную запись**
+[Запрос](../packages/apps/boba-agent/src/boba/agent/sql/acp/v2/notice.sql) выбирает **одну конкретную запись**
 `notice`, `llm_request_attempt`, `task_state` или `task_notification` и готовит стандартный
 ACP `notice` с её уровнем и текстом.
 
 Повод для запуска: агент сохранил новое предупреждение, получил его `record_id`
 и должен уведомить подключённого клиента. Например, только что произошла ошибка LLM
 и агент сообщает о повторной попытке. Прочитанная при восстановлении старая ошибка
-уже будет отображена через `acp_history.sql` как историческое сообщение.
+уже будет отображена через `v2/history.sql` как историческое сообщение.
 
 Для ручного просмотра предупреждения из примера:
 
@@ -171,15 +195,16 @@ params as (
 | `'sql-acp-actions-demo', 'error'` | notice, severity=error |
 
 Результат — одна строка с `session_id`, `record_id`, `seq`, `update`.
-После `AcpNoticeDraft.require_valid()` адаптер отправляет `update` внутри `session/update`.
+После `AcpNoticeDraft.require_valid()` адаптер отправляет элементы `updates` внутри
+`session/update`. Для успешной HTTP-попытки `updates` пуст; warning/error сохраняют уведомления.
 Если подходящая запись не найдена, `seq=null` и валидатор возвращает ошибку.
 
 SQL не определяет, доставлялось ли предупреждение раньше, и не помечает его отправленным.
 Решение о показе нового уведомления принимает вызывающий код; при replay этот запрос не вызывается.
 
-### `acp_elicitation.sql` — задать пользователю конкретный вопрос
+### `v2/elicitation.sql` — задать пользователю конкретный вопрос
 
-[Запрос](../experiments/history-sql/acp_elicitation.sql) читает одну сохранённую
+[Запрос](../packages/apps/boba-agent/src/boba/agent/sql/acp/v2/elicitation.sql) читает одну сохранённую
 `elicitation_request` и готовит ACP-вызов `elicitation/create`: форму с вариантами ответа
 либо предложение открыть URL для внешнего действия, например подключения доступа.
 
@@ -221,11 +246,11 @@ params as (
 
 Отсутствие ответа в истории ещё не означает, что вопрос не отправлен и не ожидает ответа сейчас.
 Это проверяет координатор. Восстановление переписки показывает старые вопросы через
-`acp_history.sql` и само по себе не запускает elicitation повторно.
+`v2/history.sql` и само по себе не запускает elicitation повторно.
 
-### `acp_permission.sql` — запросить разрешение выполнить tool
+### `v2/permission.sql` — запросить разрешение выполнить tool
 
-[Запрос](../experiments/history-sql/acp_permission.sql) читает сохранённый
+[Запрос](../packages/apps/boba-agent/src/boba/agent/sql/acp/v2/permission.sql) читает сохранённый
 `PermissionRequestRecord`; имя и аргументы вызова получает из связанного
 `AssistantMessageRecord`. Возвращает готовые `method` и `params` для стандартного ACP
 `session/request_permission`. JSON-RPC id назначает транспорт.
@@ -290,9 +315,9 @@ class AcpPermissionDraft(DataModel):
 Один вопрос имеет один ответ, даже если сессия открыта несколькими клиентами.
 Повторная доставка незавершённого вопроса и выбор клиента относятся к координатору.
 
-### `acp_commands.sql` — доступные команды на выбранный seq
+### `v2/commands.sql` — доступные команды на выбранный seq
 
-[Запрос](../experiments/history-sql/acp_commands.sql) выбирает LAST add/remove по имени
+[Запрос](../packages/apps/boba-agent/src/boba/agent/sql/acp/v2/commands.sql) выбирает LAST add/remove по имени
 команды из `CommandAddedRecord` и `CommandRemovedRecord`. Возвращает стандартное
 `available_commands_update`; массив availableCommands используется также в ответе
 session/new/resume. Владелец команды остаётся в истории для маршрутизации исполнения.
@@ -322,9 +347,9 @@ class AcpCommandsDraft(DataModel):
 }
 ```
 
-### `acp_options.sql` — варианты изменения настроек и текущий выбор
+### `v2/options.sql` — варианты изменения настроек и текущий выбор
 
-[Запрос](../experiments/history-sql/acp_options.sql) читает ParameterOptionRecord,
+[Запрос](../packages/apps/boba-agent/src/boba/agent/sql/acp/v2/options.sql) читает ParameterOptionRecord,
 ParameterOptionRemovedRecord и последние постоянные настройки по source_kinds/source_key.
 value_path выбирает значение внутри payload. Имена параметров, пути и допустимые
 значения хранятся в записях; SQL не содержит перечня sampling/model-полей.
@@ -378,16 +403,16 @@ class AcpOptionsDraft(DataModel):
 Пустой список явно очищает controls клиента. В ответ session/new/resume передаётся
 готовый массив configOptions. Полученный от клиента value_id производитель проверяет
 по сохранённым choices и записывает новое значение настройки; сборщик ничего не меняет.
-Все остальные значения доступны через acp_state.sql как ресурс для чтения.
+Все остальные значения доступны через v2/state.sql в типизированном snapshot для чтения.
 
 ### Какие запросы вызываются при восстановлении чата
 
 Для тестового чата последовательность такая:
 
-1. Выполнить `acp_history.sql` с `('sql-acp-demo', null, null)`. Прочитать верхнюю границу
+1. Выполнить `v2/history.sql` с `('sql-acp-demo', null, null)`. Прочитать верхнюю границу
    из `bounds.through_seq`; в подготовленных данных это 27. Проверить и отправить `notifications`.
-2. Выполнить `acp_state.sql` с `('sql-acp-demo', 27)`. Проверить и отправить `update` настроек,
-   затем один `replay_complete`.
+2. Выполнить `v2/state.sql` с `('sql-acp-demo', 27)`. Проверить `snapshot`,
+   отправить один `replay_complete`. Настройки передаются через `v2/options.sql`.
 3. Транспорт сообщает текущее состояние исполнения и отвечает на `session/resume`.
    Текущее состояние берётся у работающего агента.
 
@@ -396,8 +421,8 @@ class AcpOptionsDraft(DataModel):
 последний seq через хранилище, а диапазон до него читается порциями. Например, при верхней границе 27: сначала
 `(null, 16)`, затем `(16, 27)`, после чего снимок настроек на 27 и один маркер завершения.
 Новые записи за зафиксированной границей обрабатываются после replay.
-`acp_notice.sql`, `acp_permission.sql` и `acp_elicitation.sql` в эту последовательность не входят.
-Каталоги acp_commands.sql и acp_options.sql читаются на том же верхнем seq;
+`v2/notice.sql`, `v2/permission.sql` и `v2/elicitation.sql` в эту последовательность не входят.
+Каталоги v2/commands.sql и v2/options.sql читаются на том же верхнем seq;
 готовые availableCommands и configOptions помещаются в ответ session/resume.
 
 В проверенном нагрузочном профиле каждый запрос истории ограничен 1000 записями —
@@ -411,7 +436,7 @@ class AcpOptionsDraft(DataModel):
 ## Дополнительные демо
 
 Для повторного заполнения используй [fixtures.sql](../experiments/history-sql/fixtures.sql).
-Большие истории создаёт [acp_load.sql](../experiments/history-sql/acp_load.sql).
+Большие истории создаёт [acp_load.sql](../packages/apps/boba-agent/src/boba/agent/sql/acp_load.sql).
 В текущей экспериментальной базе данные уже загружены.
 
 | Сессия | Число записей | Содержимое |
@@ -424,27 +449,27 @@ class AcpOptionsDraft(DataModel):
 
 | Запрос | Параметры | Что измерять |
 | --- | --- | --- |
-| acp_history.sql | `'sql-acp-load-1000', null, null` | Полная небольшая история |
-| acp_history.sql | `'sql-acp-load-10000', null, null` | Полная история, результат зависит от сохранённого content |
-| acp_history.sql | `'sql-acp-load-50000', null, null` | Полная большая история, результат зависит от сохранённого content |
-| acp_history.sql | `'sql-acp-load-50000', 0, 100` | Первые 100 записей |
-| acp_history.sql | `'sql-acp-load-50000', 54902, 55002` | Последние 100 записей с проверкой предшествующих вызовов |
-| acp_history.sql | `'sql-acp-load-commands', null, null` | Большое число результатов команд |
-| acp_state.sql | `'sql-acp-load-50000', null` | Снимок настроек и сумма 5 000 usage-записей |
-| acp_notice.sql | `'sql-acp-load-50000', 'notice-1'` | Поиск одной записи по идентификатору |
-| acp_elicitation.sql | `'sql-acp-load-50000', 'question-1'` | Поиск вопроса и уже сохранённого ответа |
+| v2/history.sql | `'sql-acp-load-1000', null, null` | Полная небольшая история |
+| v2/history.sql | `'sql-acp-load-10000', null, null` | Полная история, результат зависит от сохранённого content |
+| v2/history.sql | `'sql-acp-load-50000', null, null` | Полная большая история, результат зависит от сохранённого content |
+| v2/history.sql | `'sql-acp-load-50000', 0, 100` | Первые 100 записей |
+| v2/history.sql | `'sql-acp-load-50000', 54902, 55002` | Последние 100 записей с проверкой предшествующих вызовов |
+| v2/history.sql | `'sql-acp-load-commands', null, null` | Большое число результатов команд |
+| v2/state.sql | `'sql-acp-load-50000', null` | Снимок настроек и сумма 5 000 usage-записей |
+| v2/notice.sql | `'sql-acp-load-50000', 'notice-1'` | Поиск одной записи по идентификатору |
+| v2/elicitation.sql | `'sql-acp-load-50000', 'question-1'` | Поиск вопроса и уже сохранённого ответа |
 
 Намеренно ошибочные случаи: SQL возвращает проект результата, ошибку выдаёт
 Python-валидатор перед отправкой клиенту.
 
 | Запрос | Параметры | Ошибка валидатора |
 | --- | --- | --- |
-| acp_history.sql | `'sql-acp-orphan-demo', null, null` | orphan_tool_result: у результата tool нет предшествующего вызова |
-| acp_history.sql | `'sql-acp-duplicate-demo', null, null` | duplicate_tool_call: два вызова с одним call_id |
-| acp_history.sql | `'sql-acp-copy-demo', null, null` | invalid_copy_reference: copied_from_id ведёт на отсутствующую запись |
-| acp_history.sql | `'sql-acp-demo', 20, 15` | invalid_history_range: начало позже конца |
-| acp_history.sql | `'sql-acp-demo', null, 100` | invalid_history_range: верхняя граница за концом истории |
-| acp_notice.sql | `'sql-acp-demo', 'missing'` | notice_not_found |
+| v2/history.sql | `'sql-acp-orphan-demo', null, null` | orphan_tool_result: у результата tool нет предшествующего вызова |
+| v2/history.sql | `'sql-acp-duplicate-demo', null, null` | duplicate_tool_call: два вызова с одним call_id |
+| v2/history.sql | `'sql-acp-copy-demo', null, null` | invalid_copy_reference: copied_from_id ведёт на отсутствующую запись |
+| v2/history.sql | `'sql-acp-demo', 20, 15` | invalid_history_range: начало позже конца |
+| v2/history.sql | `'sql-acp-demo', null, 100` | invalid_history_range: верхняя граница за концом истории |
+| v2/notice.sql | `'sql-acp-demo', 'missing'` | notice_not_found |
 
 ## Содержимое и сообщения
 
@@ -518,7 +543,7 @@ class MessageChunk(DataModel):
 ```
 
 `record_id` ответа назначается до первого чанка. `messageId` части совпадает с ID,
-который `acp_history.sql` получает из пары `[record_id, position]`; нумерация частей
+который `v2/history.sql` получает из пары `[record_id, position]`; нумерация частей
 начинается с 1 и не меняется при сохранении итогового сообщения. Дельты одной текстовой
 части накапливаются в одной части `content`, не создавая отдельный элемент на каждый токен.
 После commit итоговое `agent_message` с тем же `messageId` заменяет накопленный текст.
@@ -670,11 +695,12 @@ class SubagentUpdate(DataModel):
 
 ## Уведомления и вопросы
 
-Исторические `notice`, `llm_request_attempt`, `task_state`, `task_notification` дают обычный
-`agent_message`: сохранённый текст с уровнем и вложенный JSON-ресурс со структурой события.
-`turn_end`, результаты разрешений и elicitation также отображаются как записи истории,
-без запуска действий. Это стандартные сообщения ACP; специальной типизированной карточки
-warning или формы обычному клиенту такой replay не обещает.
+Исторические `notice`, неуспешные `llm_request_attempt`, `task_state`, `task_notification`
+дают обычный `agent_message` с сохранённым текстом и уровнем. `turn_end` и записи
+`permission_request`, `permission_response`, `permission_decision` не создают реплик чата.
+Разрешение запрашивается через `session/request_permission`; результат исполнения tool
+отображается через `tool_call_update`. Записи elicitation показываются без повторного
+запуска действий. Replay не создаёт новых предупреждений или вопросов.
 
 ```json
 {
@@ -767,7 +793,7 @@ class AcpElicitationDraft(DataModel):
 
 ## Сохранённые настройки
 
-`acp_state.sql` берёт постоянные setting по LAST внутри текущего контекста; remove снимает
+`v2/state.sql` берёт постоянные setting по LAST внутри текущего контекста; remove снимает
 категорию целиком. Настройки с request_id исключаются. Разрешения — последний сохранённый
 снимок; token usage — последние счётчики каждого запроса, суммированные по именам.
 Это статистика журнала, не размер текущего контекстного окна ACP `usage_update`.
@@ -882,7 +908,7 @@ sampling или обработчики изменения. [Config options](http
 class AcpStateDraft(DataModel):
     bounds: StateBounds
     replay_complete: dict[str, JsonValue]
-    update: dict[str, JsonValue]
+    snapshot: SavedSessionState
 ```
 
 ```json
@@ -895,19 +921,11 @@ class AcpStateDraft(DataModel):
   "replay_complete": {
     "sessionUpdate": "replay_complete"
   },
-  "update": {
-    "sessionUpdate": "agent_message",
-    "messageId": "[\"session-state\", \"sql-acp-demo\", 25]",
-    "content": [
-      {
-        "type": "resource",
-        "resource": {
-          "uri": "urn:boba:session-state",
-          "mimeType": "application/json",
-          "text": "{\"throughSeq\":25,\"settings\":[],\"permissions\":[],\"usage\":{}}"
-        }
-      }
-    ]
+  "snapshot": {
+    "throughSeq": 25,
+    "settings": [],
+    "permissions": [],
+    "usage": {}
   }
 }
 ```
@@ -1005,7 +1023,7 @@ class ReplayCompleteUpdate(DataModel):
 ```
 
 При `session/resume` с replay транспорт фиксирует верхний seq и читает все порции до него,
-проверяет результат, отправляет историю и снимок сохранённых настроек, затем ровно один
+проверяет результат, отправляет историю, затем ровно один
 `replay_complete`. Маркер отправляется и для пустой истории; при ошибке replay — не отправляется.
 Для просмотра исторического среза маркер остаётся только данными результата запроса.
 

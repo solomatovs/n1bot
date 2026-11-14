@@ -18,7 +18,6 @@ from typing import Any, ClassVar
 from uuid import UUID
 
 import uvicorn
-from acp.connection import Connection
 from acp.experimental.negotiation import AgentProtocolConnection, AgentProtocolRouter
 from acp.experimental.v2 import schema
 from acp.http.protocol import CONNECTION_ID_HEADER, CONTENT_TYPE_SSE, SESSION_ID_HEADER
@@ -39,8 +38,10 @@ from starlette.routing import BaseRoute, Route, WebSocketRoute
 from starlette.types import Receive, Scope, Send
 from starlette.websockets import WebSocket
 
-from boba.agent.acp_server import AcpAgent, AgentProfiles, SessionHub
-from boba.agent.app import Installed
+from boba.agent import Installed
+from boba.agent.acp_connection import AcpAgent
+from boba.agent.acp_server import AgentProfiles, SessionHub
+from boba.agent.acp_validator import AcpVersion
 from boba.agent.history import HistoryStore
 from boba.agent.llm import OpenAiTransport
 from boba.agent.settings import (
@@ -166,8 +167,16 @@ class ServeAgents(UserRows, RoleCatalog):
     def opened_sessions(self) -> int:
         return len(self.hub.agents)
 
-    def agent(self, caller: Caller) -> AcpAgent:
-        return AcpAgent(self.hub, str(caller.user_id), caller.profiles, self._version)
+    def agent(
+        self, caller: Caller, maximum_protocol_version: AcpVersion = AcpVersion.V2
+    ) -> AcpAgent:
+        return AcpAgent(
+            self.hub,
+            str(caller.user_id),
+            caller.profiles,
+            self._version,
+            maximum_protocol_version=maximum_protocol_version,
+        )
 
     @property
     def info(self) -> schema.Implementation:
@@ -177,13 +186,16 @@ class ServeAgents(UserRows, RoleCatalog):
 class ServeConnection(AgentProtocolConnection):
     """Закрытие клиента снимает подписки, исполнение общей сессии продолжается."""
 
-    def __init__(self, connection: Connection, agent: AcpAgent) -> None:
-        super().__init__(connection)
+    def __init__(self, connection: AgentProtocolConnection, agent: AcpAgent) -> None:
+        self._delegate = connection
         self._agent = agent
         self._closed = False
 
     def busy(self) -> bool:
         return self._agent.busy()
+
+    async def _listen(self) -> None:
+        await self._delegate.listen()
 
     async def close(self) -> None:
         if not self._closed:
@@ -191,7 +203,7 @@ class ServeConnection(AgentProtocolConnection):
             try:
                 await self._agent.close_all()
             finally:
-                await super().close()
+                await self._delegate.close()
 
 
 @dataclass
@@ -223,8 +235,11 @@ class ServeRouter(AgentProtocolRouter):
     admitted() на время вызова SDK, который открывает подключение.
     """
 
-    def __init__(self, agents: ServeAgents) -> None:
+    def __init__(
+        self, agents: ServeAgents, maximum_protocol_version: AcpVersion = AcpVersion.V2
+    ) -> None:
         self._agents = agents
+        self._maximum_protocol_version = maximum_protocol_version
         self._admission: ContextVar[Admission] = ContextVar("serve_admission")
         self._connections: set[ServeConnection] = set()
 
@@ -243,10 +258,8 @@ class ServeRouter(AgentProtocolRouter):
         **connection_kwargs: Any,
     ) -> AgentProtocolConnection:
         admission = self._admission.get()
-        listening = bool(connection_kwargs.get("listening", True))
-        agent = self._agents.agent(admission.caller)
-        wire = Connection(agent, input_stream, listening=listening)
-        agent.attach(wire)
+        agent = self._agents.agent(admission.caller, self._maximum_protocol_version)
+        wire = agent.connect(input_stream, output_stream, **connection_kwargs)
         connection = ServeConnection(wire, agent)
         admission.connection = connection
         self._connections.add(connection)
@@ -550,25 +563,36 @@ class ServeHost:
         metadata = build_resource_metadata_url(AnyHttpUrl(self.endpoint()))
         router = ServeRouter(self._agents)
         endpoint = AcpEndpoint(router, CallerTokens(), section.idle_sec)
+        v1_router = ServeRouter(self._agents, AcpVersion.V1)
+        v1_endpoint = AcpEndpoint(v1_router, CallerTokens(), section.idle_sec)
         guarded = RequireAuthMiddleware(endpoint, [], metadata)
+        v1_guarded = RequireAuthMiddleware(v1_endpoint, [], metadata)
         served: list[BaseRoute] = [
             Route(ServeMark.HEALTH, self._health, methods=["GET"]),
             Route(section.path, guarded, methods=["POST", "GET", "DELETE"]),
             WebSocketRoute(section.path, endpoint.websocket),
+            Route(section.path + "/v1", v1_guarded, methods=["POST", "GET", "DELETE"]),
+            WebSocketRoute(section.path + "/v1", v1_endpoint.websocket),
         ]
         routes = auth.app_routes(provider.get_well_known_routes(section.path), served)
 
         @asynccontextmanager
         async def lifespan(app: Starlette) -> AsyncGenerator[None, None]:
             watch = asyncio.create_task(endpoint.watch())
+            v1_watch = asyncio.create_task(v1_endpoint.watch())
             try:
                 yield
             finally:
                 watch.cancel()
+                v1_watch.cancel()
                 with suppress(asyncio.CancelledError):
                     await watch
 
+                with suppress(asyncio.CancelledError):
+                    await v1_watch
+
                 await endpoint.close()
+                await v1_endpoint.close()
 
         return Starlette(
             routes=routes, middleware=provider.get_middleware(), lifespan=lifespan

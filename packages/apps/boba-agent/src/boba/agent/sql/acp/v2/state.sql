@@ -1,6 +1,6 @@
 -- Снимок сохранённых настроек, разрешений и счётчиков для показа при восстановлении.
 -- Ручной просмотр: в params подставить 'sql-acp-demo', 27 и выполнить весь файл.
--- Результат: bounds, update с JSON-ресурсом настроек, отдельный replay_complete.
+-- Результат: bounds, snapshot для чтения состояния, отдельный replay_complete.
 -- Маркер отправляет адаптер один раз после всей истории; SQL ничего не отправляет.
 -- Текущее состояние исполнения и редактируемые configOptions здесь не собираются.
 -- Подробнее: docs/agent-history-to-acp.md, раздел «Как использовать запросы».
@@ -119,49 +119,38 @@ select
     to_jsonb(b) as bounds,
     jsonb_build_object('sessionUpdate', 'replay_complete') as replay_complete,
     jsonb_build_object(
-        'sessionUpdate', 'agent_message',
-        'messageId', jsonb_build_array('session-state', b.session_id, b.through_seq)::text,
-        'content', jsonb_build_array(jsonb_build_object(
-            'type', 'resource',
-            'resource', jsonb_build_object(
-                'uri', 'urn:boba:session-state',
-                'mimeType', 'application/json',
-                'text', jsonb_build_object(
-                    'throughSeq', b.through_seq,
-                    'settings', (select coalesce(jsonb_agg(jsonb_build_object(
-                        'key', key,
-                        'recordId', record_id,
-                        'value', value,
-                        'provider', provider
-                    ) order by key), '[]'::jsonb)
-                        from
-                            settings
-                        where 1=1
-                            and operation = 'set'
-                    ),
-                    'permissions', (
-                        select
-                            coalesce(jsonb_agg(jsonb_build_object(
-                                'key', key,
-                                'recordId', record_id,
-                                'mode', payload -> 'mode',
-                                'rules', payload -> 'rules'
-                            ) order by key), '[]'::jsonb)
-                        from
-                            permissions
-                    ),
-                    'usage', (
-                        select
-                            coalesce(
-                                jsonb_object_agg(key, value order by key),
-                                '{}'::jsonb
-                            )
-                        from
-                            usage_totals
-                    )
-                )::text
-            )
-        ))
-    ) as update
+        'throughSeq', b.through_seq,
+        'settings', (select coalesce(jsonb_agg(jsonb_build_object(
+            'key', key,
+            'recordId', record_id,
+            'value', value,
+            'provider', provider
+        ) order by key), '[]'::jsonb)
+            from
+                settings
+            where 1=1
+                and operation = 'set'
+        ),
+        'permissions', (
+            select
+                coalesce(jsonb_agg(jsonb_build_object(
+                    'key', key,
+                    'recordId', record_id,
+                    'mode', payload -> 'mode',
+                    'rules', payload -> 'rules'
+                ) order by key), '[]'::jsonb)
+            from
+                permissions
+        ),
+        'usage', (
+            select
+                coalesce(
+                    jsonb_object_agg(key, value order by key),
+                    '{}'::jsonb
+                )
+            from
+                usage_totals
+        )
+    ) as snapshot
 from
     bounds b;

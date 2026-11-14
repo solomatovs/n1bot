@@ -461,6 +461,20 @@ message_fields as (
     select
         seq,
         null,
+        'reasoning_content',
+        to_jsonb(string_agg(payload ->> 'text', '' order by position)),
+        1
+    from
+        parts
+    where 1=1
+        and kind = 'reasoning'
+        and role = 'assistant'
+    group by
+        seq
+    union all
+    select
+        seq,
+        null,
         'tool_call_id',
         to_jsonb(call_id),
         1
@@ -543,7 +557,8 @@ content_sources as (
         kind,
         role,
         payload ->> 'call_id' as call_id,
-        jsonb_typeof(payload -> 'content') as content_type
+        jsonb_typeof(payload -> 'content') as content_type,
+        payload ->> 'format' as signature_format
     from
         parts
 ),

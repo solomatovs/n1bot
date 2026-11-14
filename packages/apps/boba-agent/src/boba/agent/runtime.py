@@ -6,16 +6,15 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
+from abc import abstractmethod
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Literal, TypeVar
+from typing import Any, Literal, Protocol, TypeVar
 from uuid import uuid4
 
-from acp.experimental.v2 import schema
-
 from boba.agent import models as m
-from boba.agent.acp_validator import TextMessageChunk
 from boba.agent.history import HistoryStore
 from boba.agent.llm import Generation
 from boba.agent.queries import Query
@@ -23,6 +22,59 @@ from boba.agent.queries import Query
 logger = logging.getLogger(__name__)
 Send = Callable[[str, dict[str, Any]], Awaitable[None]]
 R = TypeVar("R", bound=m.RecordBase)
+
+
+@dataclass(frozen=True)
+class TextDelta:
+    """Несохранённый текст ответа; протокольный адаптер выбирает формат чанка."""
+
+    record_id: str
+    position: int
+    kind: Literal["text", "reasoning"]
+    text: str
+
+
+@dataclass(frozen=True)
+class SavedBatch:
+    session_id: str
+    after_seq: int
+    through_seq: int
+    notices: tuple[str, ...]
+    partial: tuple[TextDelta, ...]
+
+
+@dataclass(frozen=True)
+class SessionSnapshot:
+    session_id: str
+    through_seq: int
+    after_seq: int
+    replay_history: bool
+    running: bool
+    partial: tuple[TextDelta, ...]
+
+
+class SessionProtocol(Protocol):
+    """Проекция истории и текущего исполнения в уведомления одного протокола."""
+
+    @abstractmethod
+    async def initial(self, snapshot: SessionSnapshot) -> list[tuple[str, dict]]: ...
+
+    @abstractmethod
+    async def saved(self, batch: SavedBatch) -> list[tuple[str, dict]]: ...
+
+    @abstractmethod
+    async def options(self, session_id: str) -> tuple[str, dict]: ...
+
+    @abstractmethod
+    def chunk(self, session_id: str, delta: TextDelta) -> tuple[str, dict]: ...
+
+    @abstractmethod
+    def state(self, session_id: str, running: bool) -> list[tuple[str, dict]]: ...
+
+    @abstractmethod
+    async def request_action(
+        self, session_id: str, record: m.HistoryRecord
+    ) -> dict: ...
 
 
 def record(model: type[R], version: str, *, payload: Any = None, **fields: Any) -> R:
@@ -46,8 +98,10 @@ class Subscription:
         send: Send,
         initial: list[tuple[str, dict]],
         capacity: int,
+        protocol: SessionProtocol,
         disconnect=None,
     ) -> None:
+        self.protocol = protocol
         self.pending: asyncio.Queue = asyncio.Queue(capacity)
         self.failed = False
         self.disconnect = disconnect
@@ -64,7 +118,10 @@ class Subscription:
 
             while True:
                 method, params = await self.pending.get()
-                await send(method, params)
+                try:
+                    await send(method, params)
+                finally:
+                    self.pending.task_done()
         except asyncio.CancelledError:
             self.ready.cancel()
             raise
@@ -94,6 +151,24 @@ class Subscription:
             await self.task
         if self.disconnect_task is not None:
             await self.disconnect_task
+
+    async def flush(self) -> None:
+        """Дождаться отправки уже опубликованных обновлений перед ответом на prompt v1."""
+        drained = asyncio.create_task(self.pending.join())
+        try:
+            done, _ = await asyncio.wait(
+                (drained, self.task), return_when=asyncio.FIRST_COMPLETED
+            )
+            if self.task in done:
+                raise ConnectionError(
+                    "ACP subscription closed before pending updates were sent"
+                )
+
+            await drained
+        finally:
+            drained.cancel()
+            with suppress(asyncio.CancelledError):
+                await drained
 
 
 class Agent:
@@ -126,7 +201,7 @@ class Agent:
         self.idle.set()
         self.lock = asyncio.Lock()
         self.subscribers: set[Subscription] = set()
-        self.partial: dict[int, TextMessageChunk] = {}
+        self.partial: dict[int, TextDelta] = {}
         self.worker: asyncio.Task | None = None
         self.operation: asyncio.Task | None = None
         self.closed = False
@@ -144,34 +219,58 @@ class Agent:
             await self._publish_saved(saved)
             return saved
 
+    def _protocols(self) -> dict[type, SessionProtocol]:
+        projections: dict[type, SessionProtocol] = {}
+        for subscriber in self.subscribers:
+            protocol = subscriber.protocol
+            projections[type(protocol)] = protocol
+
+        return projections
+
     async def _publish_saved(self, saved) -> None:
-        draft = await self.store.acp(
-            Query.ACP_HISTORY, self.session_id, saved[0].seq - 1, saved[-1].seq
-        )
-        for item in draft["notifications"]:
-            notification = item["notification"]
-            self._publish(notification["method"], notification["params"])
+        notices = []
         for item in saved:
             if isinstance(item, m.NoticeRecord):
-                notice = await self.store.acp(
-                    Query.ACP_NOTICE, self.session_id, item.record_id
-                )
-                self.update(notice["update"])
+                notices.append(item.record_id)
 
-    def update(self, update: dict) -> None:
-        self._publish(
-            "session/update", {"sessionId": self.session_id, "update": update}
+        batch = SavedBatch(
+            self.session_id,
+            saved[0].seq - 1,
+            saved[-1].seq,
+            tuple(notices),
+            tuple(self.partial.values()),
         )
+        for protocol in self._protocols().values():
+            frames = await protocol.saved(batch)
+            self._publish(frames, protocol)
 
-    def _publish(self, method: str, params: dict) -> None:
+    async def options_changed(self) -> None:
+        for protocol in self._protocols().values():
+            update = await protocol.options(self.session_id)
+            self._publish([update], protocol)
+
+    def _publish(
+        self, frames: Sequence[tuple[str, dict]], protocol: SessionProtocol
+    ) -> None:
         for subscriber in tuple(self.subscribers):
-            subscriber.publish(method, params)
+            if type(subscriber.protocol) is not type(protocol):
+                continue
+
+            for method, params in frames:
+                subscriber.publish(method, params)
+
             if subscriber.failed:
                 self.subscribers.discard(subscriber)
+
+    def _state(self, running: bool) -> None:
+        for protocol in self._protocols().values():
+            frames = protocol.state(self.session_id, running)
+            self._publish(frames, protocol)
 
     async def subscribe(
         self,
         send: Send,
+        protocol: SessionProtocol,
         *,
         replay_history: bool = True,
         after_seq: int = 0,
@@ -179,34 +278,18 @@ class Agent:
     ) -> Subscription:
         async with self.lock:
             head = await self.store.head(self.session_id)
-            state = await self.store.acp(Query.ACP_STATE, self.session_id, head)
-            commands = await self.store.acp(Query.ACP_COMMANDS, self.session_id, head)
-            options = await self.store.acp(Query.ACP_OPTIONS, self.session_id, head)
-            initial: list[tuple[str, dict]] = []
-            if replay_history:
-                history = await self.store.acp(
-                    Query.ACP_HISTORY, self.session_id, after_seq, head
-                )
-                initial.extend(self._history_notifications(history))
-                end = (state["replay_complete"],)
-                initial.extend(self._session_updates(end))
-
-            foreground = "running"
-            if self.idle.is_set():
-                foreground = "idle"
-
-            updates = (
-                state["update"],
-                commands["update"],
-                options["update"],
-                {
-                    "sessionUpdate": "state_update",
-                    "state": foreground,
-                },
+            snapshot = SessionSnapshot(
+                self.session_id,
+                head,
+                after_seq,
+                replay_history,
+                not self.idle.is_set(),
+                tuple(self.partial.values()),
             )
-            initial.extend(self._session_updates(updates))
-            initial.extend(self._session_updates(self._partial_updates()))
-            subscriber = Subscription(send, initial, self.subscriber_buffer, disconnect)
+            initial = await protocol.initial(snapshot)
+            subscriber = Subscription(
+                send, initial, self.subscriber_buffer, protocol, disconnect
+            )
             self.subscribers.add(subscriber)
 
         try:
@@ -218,19 +301,6 @@ class Agent:
             raise
 
         return subscriber
-
-    def _history_notifications(self, history: dict) -> Iterator[tuple[str, dict]]:
-        for row in history["notifications"]:
-            notification = row["notification"]
-            yield notification["method"], notification["params"]
-
-    def _session_updates(self, updates: Iterable[dict]) -> Iterator[tuple[str, dict]]:
-        for update in updates:
-            yield "session/update", {"sessionId": self.session_id, "update": update}
-
-    def _partial_updates(self) -> Iterator[dict]:
-        for chunk in self.partial.values():
-            yield chunk.model_dump(mode="json", by_alias=True, exclude_none=True)
 
     async def submit(
         self, content: Sequence[m.UserPart], *, record_id: str | None = None
@@ -325,7 +395,7 @@ class Agent:
             await self.changed.wait()
             self.changed.clear()
             self.last_error = None
-            self.update({"sessionUpdate": "state_update", "state": "running"})
+            self._state(True)
             self.operation = asyncio.create_task(self._turn())
             try:
                 await self.operation
@@ -339,7 +409,7 @@ class Agent:
                 self.operation = None
                 if not self.changed.is_set():
                     self.idle.set()
-                    self.update({"sessionUpdate": "state_update", "state": "idle"})
+                    self._state(False)
 
     async def _turn(self) -> None:
         started = time.monotonic()
@@ -392,7 +462,9 @@ class Agent:
                         payload={
                             "level": "error",
                             "content": [
-                                m.TextPart(text=f"Agent operation failed: {error}")
+                                m.TextPart(
+                                    text=f"Agent operation failed: {error}: {exc}"
+                                )
                             ],
                         },
                     )
@@ -427,29 +499,22 @@ class Agent:
             if service:
                 return
 
-            channel: Literal["agent_message_chunk", "agent_thought_chunk"] = (
-                "agent_message_chunk"
-            )
+            channel: Literal["text", "reasoning"] = "text"
             if kind == "reasoning":
-                channel = "agent_thought_chunk"
+                channel = "reasoning"
 
-            chunk = TextMessageChunk(
-                sessionUpdate=channel,
-                messageId=json.dumps([output_id, [position]], ensure_ascii=False),
-                content=schema.TextContentBlock(text=text),
-            )
+            delta = TextDelta(output_id, position, channel, text)
             async with self.lock:
-                self.update(
-                    chunk.model_dump(mode="json", by_alias=True, exclude_none=True)
-                )
+                for protocol in self._protocols().values():
+                    frame = protocol.chunk(self.session_id, delta)
+                    self._publish([frame], protocol)
+
                 accumulated = text
                 if previous := self.partial.get(position):
-                    accumulated = previous.content.text + text
+                    accumulated = previous.text + text
 
-                self.partial[position] = TextMessageChunk(
-                    sessionUpdate=channel,
-                    messageId=chunk.message_id,
-                    content=schema.TextContentBlock(text=accumulated),
+                self.partial[position] = TextDelta(
+                    output_id, position, channel, accumulated
                 )
 
         started = time.monotonic()
@@ -547,15 +612,20 @@ class Agent:
                         "is_error": False,
                     }
                 except Exception as exc:
+                    error_content = getattr(exc, "content", None)
+                    if error_content is None:
+                        error_content = (
+                            m.TextPart(
+                                text=f"Tool {call.name}, call {call.call_id} failed: {exc}"
+                            ),
+                        )
+
                     result = {
                         "call_id": call.call_id,
-                        "content": getattr(
-                            exc,
-                            "content",
-                            (m.TextPart(text=f"Tool failed: {type(exc).__name__}"),),
-                        ),
+                        "content": error_content,
                         "is_error": True,
                     }
+
                 await self.append([self.make(m.ToolResultRecord, payload=result)])
                 remaining.pop(0)
         finally:

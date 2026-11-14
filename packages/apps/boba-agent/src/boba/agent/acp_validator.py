@@ -1,7 +1,9 @@
 """Pure validation of ACP SQL results, without transport or execution."""
 
+from enum import IntEnum
 from typing import Annotated, Any, ClassVar, Literal
 
+from acp import schema as v1
 from acp.experimental.v2 import schema
 from pydantic import (
     BaseModel,
@@ -15,6 +17,11 @@ from pydantic import (
 
 class DataModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+
+
+class AcpVersion(IntEnum):
+    V1 = 1
+    V2 = 2
 
 
 ContentBlock = Annotated[
@@ -177,7 +184,7 @@ class SavedSessionState(DataModel):
 class AcpStateDraft(DataModel):
     bounds: StateBounds
     replay_complete: dict[str, JsonValue]
-    update: dict[str, JsonValue]
+    snapshot: SavedSessionState
 
 
 class AcpCommandsDraft(DataModel):
@@ -298,7 +305,7 @@ class AcpHistoryValidator:
                 raise AcpAssemblyError("duplicate_tool_result", call_id=result.call_id)
             results.add(result.call_id)
 
-    def require_valid(self, draft: AcpHistoryDraft) -> tuple[NotificationRow, ...]:
+    def _require_history(self, draft: AcpHistoryDraft) -> None:
         through_seq = self.bounds(draft.bounds)
         self._require_sources(draft.validation_data)
         self._require_calls(draft.validation_data)
@@ -312,6 +319,10 @@ class AcpHistoryValidator:
                 raise AcpAssemblyError("notification_outside_range")
             if row.notification.params.session_id != draft.bounds.session_id:
                 raise AcpAssemblyError("session_mismatch")
+
+    def require_valid(self, draft: AcpHistoryDraft) -> tuple[NotificationRow, ...]:
+        self._require_history(draft)
+        for row in draft.notifications:
             update = row.notification.params.update
             kind = update.get("sessionUpdate")
             model = self.UPDATES.get(kind) if isinstance(kind, str) else None
@@ -320,18 +331,19 @@ class AcpHistoryValidator:
             model.model_validate(update)
         return draft.notifications
 
+    def require_v1(self, draft: AcpHistoryDraft) -> tuple[NotificationRow, ...]:
+        self._require_history(draft)
+        for row in draft.notifications:
+            v1.SessionNotification.model_validate(
+                row.notification.params.model_dump(by_alias=True)
+            )
+
+        return draft.notifications
+
     def require_state(self, draft: AcpStateDraft) -> SavedSessionState:
         self.bounds(draft.bounds)
         ReplayCompleteUpdate.model_validate(draft.replay_complete)
-        message = schema.AgentMessageUpdate.model_validate(draft.update)
-        if not message.content or not isinstance(
-            message.content[0], schema.EmbeddedResourceContentBlock
-        ):
-            raise AcpAssemblyError("invalid_state_resource")
-        resource = message.content[0].resource
-        if not isinstance(resource, schema.TextResourceContents):
-            raise AcpAssemblyError("invalid_state_resource")
-        result = SavedSessionState.model_validate_json(resource.text)
+        result = draft.snapshot
         if result.through_seq != draft.bounds.through_seq:
             raise AcpAssemblyError("snapshot_mismatch")
         return result
@@ -347,6 +359,28 @@ class AcpHistoryValidator:
             raise AcpAssemblyError("invalid_command_names")
         return result
 
+    def require_v1_commands(self, draft: AcpCommandsDraft) -> BaseModel:
+        self.bounds(draft.bounds)
+        result = v1.AvailableCommandsUpdate.model_validate(draft.update)
+        names = []
+        for command in result.available_commands:
+            name = command.name
+            if not name:
+                raise AcpAssemblyError("invalid_command_name")
+
+            if name.startswith("/"):
+                raise AcpAssemblyError("invalid_command_name")
+
+            if len(name.split()) != 1:
+                raise AcpAssemblyError("invalid_command_name")
+
+            names.append(name)
+
+        if len(names) != len(set(names)):
+            raise AcpAssemblyError("duplicate_command_names")
+
+        return result
+
     def require_options(self, draft: AcpOptionsDraft) -> BaseModel:
         self.bounds(draft.bounds)
         for selection in draft.selections:
@@ -359,6 +393,35 @@ class AcpHistoryValidator:
             ids = [choice.value for choice in option.options]
             if len(ids) != len(set(ids)) or option.current_value not in ids:
                 raise AcpAssemblyError("invalid_parameter_choices")
+        return result
+
+    def require_v1_options(self, draft: AcpOptionsDraft) -> BaseModel:
+        self.bounds(draft.bounds)
+        for selection in draft.selections:
+            if selection.matches != 1:
+                raise AcpAssemblyError("invalid_parameter_selection", key=selection.key)
+
+        result = v1.ConfigOptionUpdate.model_validate(draft.update)
+        if len(result.config_options) != len(draft.selections):
+            raise AcpAssemblyError("parameter_count_mismatch")
+
+        for option in result.config_options:
+            if not isinstance(option, v1.SessionConfigOptionSelect):
+                raise AcpAssemblyError("unsupported_parameter_type")
+
+            ids = []
+            for choice in option.options:
+                if isinstance(choice, v1.SessionConfigSelectGroup):
+                    raise AcpAssemblyError("unsupported_parameter_group")
+
+                ids.append(choice.value)
+
+            if len(ids) != len(set(ids)):
+                raise AcpAssemblyError("duplicate_parameter_choices")
+
+            if option.current_value not in ids:
+                raise AcpAssemblyError("invalid_parameter_selection")
+
         return result
 
     def require_elicitation(self, draft: AcpElicitationDraft) -> BaseModel:
@@ -394,14 +457,80 @@ class AcpHistoryValidator:
             raise AcpAssemblyError("invalid_permission_options")
         return result
 
+    def require_v1_permission(self, draft: AcpPermissionDraft) -> BaseModel:
+        if draft.seq is None:
+            raise AcpAssemblyError("permission_not_found")
+
+        if draft.response_count:
+            raise AcpAssemblyError("permission_already_resolved")
+
+        if draft.result_count:
+            raise AcpAssemblyError("permission_already_resolved")
+
+        if draft.call_count != 1:
+            raise AcpAssemblyError("invalid_permission_call")
+
+        result = v1.RequestPermissionRequest.model_validate(draft.params)
+        if result.session_id != draft.session_id:
+            raise AcpAssemblyError("session_mismatch")
+
+        ids = []
+        for option in result.options:
+            ids.append(option.option_id)
+
+        if not ids:
+            raise AcpAssemblyError("missing_permission_options")
+
+        if len(ids) != len(set(ids)):
+            raise AcpAssemblyError("duplicate_permission_options")
+
+        return result
+
+    def require_v1_elicitation(self, draft: AcpElicitationDraft) -> BaseModel:
+        if draft.seq is None:
+            raise AcpAssemblyError("elicitation_not_found")
+
+        if draft.params is None:
+            raise AcpAssemblyError("elicitation_not_found")
+
+        if draft.response_count:
+            raise AcpAssemblyError("elicitation_already_resolved")
+
+        if draft.required_mode is None:
+            raise AcpAssemblyError("unsupported_elicitation_mode")
+
+        models = {
+            "form": v1.CreateFormSessionElicitationRequest,
+            "url": v1.CreateUrlSessionElicitationRequest,
+        }
+        model = models.get(draft.required_mode)
+        if model is None:
+            raise AcpAssemblyError("unsupported_elicitation_mode")
+
+        return model.model_validate(draft.params)
+
 
 class AcpNoticeDraft(DataModel):
     session_id: str
     record_id: str
     seq: PositiveInt | None
-    update: dict[str, JsonValue]
+    updates: tuple[dict[str, JsonValue], ...]
 
-    def require_valid(self) -> schema.SessionNotice:
+    def require_valid(self) -> tuple[schema.SessionNotice, ...]:
         if self.seq is None:
             raise AcpAssemblyError("notice_not_found")
-        return schema.SessionNotice.model_validate(self.update)
+        updates: list[schema.SessionNotice] = []
+        for update in self.updates:
+            updates.append(schema.SessionNotice.model_validate(update))
+
+        return tuple(updates)
+
+    def require_v1(self) -> tuple[v1.SessionUpdateNotice, ...]:
+        if self.seq is None:
+            raise AcpAssemblyError("notice_not_found")
+
+        updates = []
+        for update in self.updates:
+            updates.append(v1.SessionUpdateNotice.model_validate(update))
+
+        return tuple(updates)

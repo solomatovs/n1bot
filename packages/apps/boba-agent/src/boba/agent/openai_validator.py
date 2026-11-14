@@ -80,6 +80,7 @@ class ContentSource(RecordSource):
     content_type: (
         str | None
     )  # JSON type: "array", "null", or None for no content field.
+    signature_format: str | None
 
 
 class MessageSource(RecordSource):
@@ -168,6 +169,7 @@ class OpenAiRequestValidator:
             ("text", "system"),
             ("text", "user"),
             ("text", "assistant"),
+            ("reasoning", "assistant"),
             ("text", "tool"),
             ("image", "user"),
             ("tool_call", "assistant"),
@@ -361,6 +363,13 @@ class OpenAiRequestValidator:
             if source.kind == "tool_call":
                 calls[source.seq].append(source)
         for source in data.content_sources:
+            if source.signature_format is not None:
+                yield issue(
+                    "unsupported_reasoning_signature",
+                    source,
+                    format=source.signature_format,
+                )
+
             if (source.kind, source.role) not in self.SUPPORTED_PARTS or (
                 source.kind == "resource" and source.content_type == "null"
             ):

@@ -1,6 +1,6 @@
--- Восстановление переписки: сохранённые записи -> массив ACP session/update.
--- Ручной просмотр: в params подставить 'sql-acp-demo', null, null и выполнить весь файл.
--- Для seq=17..27: 'sql-acp-demo', 16, 27. Границы относятся к records.seq.
+-- ACP v1. Восстановление переписки: сохранённые записи -> массив ACP session/update.
+-- Ручной просмотр: в params подставить 'sql-acp-demo', null, null, true.
+-- Для seq=17..27: 'sql-acp-demo', 16, 27, true. Границы относятся к records.seq.
 -- Результат: bounds, notifications, validation_data. После проверки отправляется
 -- notification каждого элемента массива; SQL сам ничего не отправляет.
 -- Подробнее: docs/agent-history-to-acp.md, раздел «Как использовать запросы».
@@ -9,7 +9,9 @@ params as (
     select
         $1::text as session_id,       -- records.session_id: какой чат читать
         $2::bigint as after_seq,      -- читать строго после этого seq; null = с начала
-        $3::bigint as through_seq     -- читать по этот seq включительно; null = до конца
+        $3::bigint as through_seq,    -- читать по этот seq включительно; null = до конца
+        $4::boolean as replay_history,
+        $5::text[] as streamed_record_ids
 ),
 history as not materialized (
     select
@@ -68,14 +70,14 @@ routes(kind, route) as (
         ('notice',                      'notice'),
         ('llm_request_attempt',         'notice'),
         ('task_state',                  'notice'),
-        ('turn_end',                    'diagnostic'),
+        ('turn_end',                    'state'),
         ('elicitation_request',         'diagnostic'),
         ('elicitation_response',        'diagnostic'),
         ('elicitation_completed',       'diagnostic'),
         ('permission_state',            'state'),
-        ('permission_request',          'diagnostic'),
-        ('permission_response',         'diagnostic'),
-        ('permission_decision',         'diagnostic'),
+        ('permission_request',          'state'),
+        ('permission_response',         'state'),
+        ('permission_decision',         'state'),
         ('token_usage',                 'state'),
         ('subagent_session',            'state'),
         ('skill_activated',             'state'),
@@ -282,7 +284,7 @@ entries as not materialized (
                 union all
                 select
                     seq, position, route, 'call',
-                    jsonb_build_object('sessionUpdate', 'tool_call_update',
+                    jsonb_build_object('sessionUpdate', 'tool_call',
                         'toolCallId', payload -> 'call_id', 'name', payload -> 'name',
                         'title', payload -> 'name', 'kind', 'other', 'status', 'pending',
                         'rawInput', payload -> 'arguments')
@@ -361,33 +363,43 @@ entries as not materialized (
                         with ordinality p(value, number)
                 where 1=1
                     and r.route = 'notice'
+                    and (select replay_history from params)
+                    and (r.kind <> 'llm_request_attempt' or r.payload ->> 'level' <> 'info')
                 group by
                     r.seq, r.record_id, r.kind, r.payload
+            ),
+            message_blocks as (
+                select
+                    r.seq, r.record_id, r.route, r.channel,
+                    r.position || c.number::integer as position,
+                    c.value
+                from
+                    message_content r
+                    cross join lateral jsonb_array_elements(r.value)
+                        with ordinality c(value, number)
             ),
             updates as (
                 select
                     r.seq, r.record_id, r.position,
-                    jsonb_build_object('sessionUpdate', 'user_message',
-                        'messageId', r.record_id, 'content', r.value) as value
+                    jsonb_build_object('sessionUpdate', 'user_message_chunk', 'content', r.value) as value
                 from
-                    message_content r
+                    message_blocks r
                 where 1=1
                     and r.route = 'user'
+                    and (select replay_history from params)
                 union all
                 select
                     r.seq, r.record_id, r.position,
-                    jsonb_build_object('sessionUpdate', 'agent_' || r.channel,
-                        'messageId', jsonb_build_array(r.record_id, r.position)::text,
-                        'content', r.value)
+                    jsonb_build_object('sessionUpdate', 'agent_' || r.channel || '_chunk', 'content', r.value)
                 from
-                    message_content r
+                    message_blocks r
                 where 1=1
                     and r.route = 'assistant'
                     and r.channel in ('message', 'thought')
+                    and r.record_id <> all((select streamed_record_ids from params)::text[])
                 union all
                 select
-                    r.seq, r.record_id, r.position,
-                    r.value -> 0
+                    r.seq, r.record_id, r.position, r.value -> 0
                 from
                     message_content r
                 where 1=1
@@ -422,61 +434,50 @@ entries as not materialized (
                 union all
                 select
                     seq, record_id, array[0],
-                    jsonb_build_object('sessionUpdate', 'user_message', 'messageId', record_id,
-                        'content', jsonb_build_array(jsonb_build_object('type', 'text', 'text', payload -> 'text')))
+                    jsonb_build_object('sessionUpdate', 'user_message_chunk',
+                        'content', jsonb_build_object('type', 'text', 'text', payload -> 'text'))
                 from
                     records
                 where 1=1
                     and route = 'command'
+                    and (select replay_history from params)
                 union all
                 select
-                    r.seq, r.record_id, array[0],
-                    jsonb_build_object('sessionUpdate', 'agent_message',
-                        'messageId', jsonb_build_array(r.record_id, array[0])::text,
-                        'content', coalesce(c.value, '[]'::jsonb))
+                    r.seq, r.record_id, r.position,
+                    jsonb_build_object('sessionUpdate', 'agent_message_chunk', 'content', r.value)
                 from
-                    records r
-                    left join content c on c.seq = r.seq
+                    message_blocks r
                 where 1=1
                     and r.route = 'command_result'
                 union all
                 select
                     r.seq, r.record_id, array[1],
-                    jsonb_build_object('sessionUpdate', 'agent_message',
-                        'messageId', jsonb_build_array(r.record_id, array[1])::text,
-                        'content', jsonb_build_array(jsonb_build_object('type', 'text',
+                    jsonb_build_object('sessionUpdate', 'agent_message_chunk',
+                        'content', jsonb_build_object('type', 'text',
                             'text', '[' || (r.payload ->> 'level') || '] ' || coalesce(r.text, r.kind)))
-                            || jsonb_build_array(jsonb_build_object('type', 'resource', 'resource',
-                                jsonb_build_object('uri', 'urn:boba:history:' || encode(convert_to(r.record_id, 'utf8'), 'hex'),
-                                    'mimeType', 'application/json', 'text', (r.payload - 'content')::text))))
                 from
                     notice_text r
                 union all
                 select
                     seq, record_id, array[0],
-                    jsonb_build_object('sessionUpdate', 'agent_message',
-                        'messageId', jsonb_build_array(record_id, array[0])::text,
-                        'content', jsonb_build_array(
-                            jsonb_build_object('type', 'text', 'text', kind || ': ' ||
-                                coalesce(payload ->> 'message', payload ->> 'action', payload ->> 'outcome', '')),
-                            jsonb_build_object('type', 'resource', 'resource',
-                                jsonb_build_object('uri', 'urn:boba:history:' || encode(convert_to(record_id, 'utf8'), 'hex'),
-                                    'mimeType', 'application/json', 'text', payload::text))))
+                    jsonb_build_object('sessionUpdate', 'agent_message_chunk',
+                        'content', jsonb_build_object('type', 'text', 'text', kind || ': ' ||
+                            coalesce(payload ->> 'message', payload ->> 'action', payload ->> 'outcome', '')))
                 from
                     records
                 where 1=1
                     and route = 'diagnostic'
                 union all
                 select
-                    seq, record_id, array[0],
-                    jsonb_build_object('sessionUpdate', 'subagent_update',
-                        'sessionId', payload #> '{state,child_session_id}')
+                    seq, record_id, array[1],
+                    jsonb_build_object('sessionUpdate', 'agent_message_chunk',
+                        'content', jsonb_build_object('type', 'resource', 'resource',
+                            jsonb_build_object('uri', 'urn:boba:history:' || encode(convert_to(record_id, 'utf8'), 'hex'),
+                                'mimeType', 'application/json', 'text', payload::text)))
                 from
                     records
                 where 1=1
-                    and kind = 'task_state'
-                    and payload #>> '{state,child_session_id}' is not null
-            
+                    and route = 'diagnostic'
             )
             select
                 u.position, 'notification'::text as family,

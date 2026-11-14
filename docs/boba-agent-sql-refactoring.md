@@ -20,7 +20,7 @@ ACP / MCP / LLM / команды / фоновые задачи
     → records с назначенными seq
 
 records → openai.sql → OpenAiRequestValidator → готовый JSON → HTTP
-records → acp_*.sql → AcpHistoryValidator → готовый JSON → ACP
+records → sql/acp/v1/*.sql или sql/acp/v2/*.sql → AcpHistoryValidator → готовый JSON → ACP
 
 дельты текущего ответа → потоковый ACP-адаптер → подписчики сессии
 завершённый ответ → HistoryStore.append → records
@@ -228,13 +228,23 @@ packages/apps/boba-agent/src/boba/agent/
         pending_inputs.sql
         history_integrity.sql
         openai.sql
-        acp_history.sql
-        acp_state.sql
-        acp_commands.sql
-        acp_options.sql
-        acp_notice.sql
-        acp_permission.sql
-        acp_elicitation.sql
+        acp/
+            v1/
+                history.sql
+                options.sql
+                prompt.sql
+                commands.sql
+                notice.sql
+                permission.sql
+                elicitation.sql
+            v2/
+                history.sql
+                options.sql
+                state.sql
+                commands.sql
+                notice.sql
+                permission.sql
+                elicitation.sql
     migrations/
         <version>/
             ...sql
@@ -336,11 +346,9 @@ ACP-подписчику. Использовать общий ограничен
 
 - [x] Проверить передачу контекста и resume в реализациях Zed, T3 Code,
   Claude ACP и Codex ACP. Модели истории не требуют одноимённых методов ACP.
-- [x] Принимать стандартный `systemPrompt` в режиме `append` из `session/new`
-  и `session/resume`. Сохранять `SystemPromptAddedRecord` с ключом `client`;
-  при изменении сохранять remove/add. Объявлять `session.systemPrompt`;
-  неподдерживаемый `override` отклонять до изменения сессии. Проверены сохранение
-  текста, повтор без лишней записи, обновление и восстановление после перезапуска.
+- [x] Использовать стандартные API SDK без preview `systemPrompt` и собственных
+  обработчиков согласования. Системные инструкции сохраняются из профиля агента;
+  клиентский текст и ресурсы приходят через `session/prompt` и сохраняют роль user.
 - [ ] Принимать `text`, `resource` и `resource_link` через `session/prompt`;
   сохранять URI и переданное содержимое. Известный источник или действие определяет
   предметную модель; неизвестное вложение остаётся обычным ресурсом. Получение
@@ -488,10 +496,22 @@ ACP-подписчику. Использовать общий ограничен
 - [x] Зафиксировать порядок версий: сначала завершить и проверить ACP v2 с внешним
   клиентом, затем приступать к v1. Zed включает v2 через feature flag;
   для первой проверки используется клиентский модуль T3 Code.
+- [x] Добавить согласование ACP v1/v2 на подключении с общей историей и исполнителем.
+  `AgentProtocolRouter` SDK выбирает `AcpV1` либо `AcpV2` один раз при initialize.
+  Сборка подключения находится в `acp_connection.py`; общие операции не импортируют
+  реализации протоколов. SQL разнесены по `sql/acp/v1/` и `sql/acp/v2/`.
+  Python передаёт несохранённые чанки.
+  Для v1 проверить завершение prompt, отмену, tools, replay после перезапуска и
+  одновременное наблюдение клиентами двух версий. `/acp/v1` ограничивает согласование v1.
+- [x] Проверить в интерфейсе T3 отдельные подключения Boba ACP v1 и Boba ACP v2:
+  по два последовательных запроса, показ ответов и восстановление после обновления
+  страницы без дублирования. Авторизация — OAuth, подключение T3 — локальный мост
+  stdio ↔ WebSocket; прямой HTTP-клиент в этой проверке не используется.
 - [x] Подключить неизменённый `effect-acp` из T3 Code к штатному WebSocket-входу:
   initialize v2, новый чат, два подписчика на чанки одного ответа, сохранённый
   ресурс с URI и полный replay третьим подключением до ответа на RPC. Использованы
-  PostgreSQL и тестовый HTTP-инференс; GUI-клиент и production OAuth ещё не проверены.
+  PostgreSQL и тестовый HTTP-инференс. Дополнительно проверен браузерный T3
+  с OAuth и настроенным внешним инференсом.
 - [x] Поддержать две редакции MCP-over-ACP через `McpPeer`, без собственного `_meta`.
   Успешный `mcp/connect` подтверждает `connectionId`; далее версия и capabilities
   проверяются через `initialize`. Только ответ `Method not found` на `mcp/connect`

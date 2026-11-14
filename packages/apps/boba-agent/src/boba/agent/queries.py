@@ -25,13 +25,21 @@ class Query(StrEnum):
     TASK_ACKNOWLEDGEMENTS = "task_acknowledgements"
     HISTORY_INTEGRITY = "history_integrity"
     OPENAI = "openai"
-    ACP_HISTORY = "acp_history"
-    ACP_STATE = "acp_state"
-    ACP_COMMANDS = "acp_commands"
-    ACP_OPTIONS = "acp_options"
-    ACP_NOTICE = "acp_notice"
-    ACP_PERMISSION = "acp_permission"
-    ACP_ELICITATION = "acp_elicitation"
+    ACP_HISTORY = "acp/v2/history"
+    ACP_STATE = "acp/v2/state"
+    ACP_COMMANDS = "acp/v2/commands"
+    ACP_OPTIONS = "acp/v2/options"
+    ACP_NOTICE = "acp/v2/notice"
+    ACP_PERMISSION = "acp/v2/permission"
+    ACP_ELICITATION = "acp/v2/elicitation"
+    ACP_V1_PROMPT = "acp/v1/prompt"
+    ACP_V1_HISTORY = "acp/v1/history"
+    ACP_V1_OPTIONS = "acp/v1/options"
+    ACP_V1_COMMANDS = "acp/v1/commands"
+    ACP_V1_NOTICE = "acp/v1/notice"
+    ACP_V1_PERMISSION = "acp/v1/permission"
+    ACP_V1_ELICITATION = "acp/v1/elicitation"
+
 
     @cache
     def text(self) -> LiteralString:

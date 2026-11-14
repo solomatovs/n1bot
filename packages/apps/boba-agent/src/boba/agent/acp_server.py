@@ -4,20 +4,26 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncGenerator, Iterable, Iterator, Mapping, Sequence, Set
+from collections.abc import (
+    AsyncGenerator,
+    Callable,
+    Iterable,
+    Iterator,
+    Mapping,
+    Set,
+)
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
-from typing import Annotated, Literal
 from uuid import uuid4
 
+import mcp.types as mt
 from acp import RequestError
 from acp.connection import Connection
-from acp.experimental.v2 import schema
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import ValidationError
 
 from boba.agent import models as m
 from boba.agent.history import HistoryStore, _rows
 from boba.agent.queries import Query
-from boba.agent.runtime import Agent, record
+from boba.agent.runtime import Agent, SessionProtocol, Subscription, record
 from boba.agent.settings import (
     AgentProfile,
     ModelSettings,
@@ -25,22 +31,11 @@ from boba.agent.settings import (
     SettingsError,
     SettingsLayer,
 )
-from boba.agent.tools import McpNegotiationError, McpPeer, ToolRunner, content_parts
+from boba.agent.tools import McpNegotiationError, McpPeer, ToolRunner
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.signin import ProfileCatalog
 
 logger = logging.getLogger(__name__)
-
-
-class ClientSystemPrompt(BaseModel):
-    """Текстовый systemPrompt ACP для производителя записей истории."""
-
-    mode: Literal["append"]
-    content: Annotated[tuple[schema.TextContentBlock, ...], Field(min_length=1)]
-
-    def parts(self) -> Iterator[m.TextPart]:
-        for part in self.content:
-            yield m.TextPart(text=part.text)
 
 
 class AgentProfiles(ProfileCatalog):
@@ -285,7 +280,6 @@ class SessionHub:
         cwd: str,
         *,
         additional=(),
-        system_prompt: Sequence[m.TextPart] = (),
     ) -> Agent:
         profile = self.profiles.default(granted)
         choices = self.profiles.choices(granted)
@@ -295,14 +289,6 @@ class SessionHub:
             sid = uuid4().hex
             agent = self._agent(sid)
             values = self.profile_to_records(profile)
-            if system_prompt:
-                values.append(
-                    self.make(
-                        m.SystemPromptAddedRecord,
-                        key="client",
-                        payload={"content": system_prompt},
-                    )
-                )
 
             permissions = self.settings.permissions
             modes = {
@@ -374,39 +360,6 @@ class SessionHub:
                 self.owners[sid] = owner
 
             return agent
-
-    async def set_client_prompt(
-        self, agent: Agent, content: Sequence[m.TextPart]
-    ) -> None:
-        if not content:
-            return
-
-        async with agent.lock:
-            async with self.store.transaction(agent.session_id) as transaction:
-                rows = await transaction.rows(
-                    Query.LATEST, agent.session_id, "prompt", None, "client", None
-                )
-                records: list[m.HistoryRecord] = []
-                if rows:
-                    current = m.HISTORY_RECORD_ADAPTER.validate_python(rows[0])
-                    if isinstance(current, m.SystemPromptAddedRecord):
-                        if current.payload.content == tuple(content):
-                            return
-
-                        records.append(
-                            self.make(m.SystemPromptRemovedRecord, key="client")
-                        )
-
-                records.append(
-                    self.make(
-                        m.SystemPromptAddedRecord,
-                        key="client",
-                        payload={"content": content},
-                    )
-                )
-                saved = await transaction.append(records)
-
-            await agent._publish_saved(saved)
 
     def _agent(self, sid: str) -> Agent:
         return Agent(
@@ -550,7 +503,13 @@ class SessionHub:
             await self.owner_connection.close()
 
 
-class AcpAgent:
+class AcpOperations:
+    """Общие операции подключения: права, история, tools, команды и подписки.
+
+    AcpAgent создаёт объект; выбранная реализация протокола вызывает операции,
+    не преобразуя форматы другой версии ACP.
+    """
+
     def __init__(
         self, hub: SessionHub, owner: str, granted: frozenset[str], version: str
     ) -> None:
@@ -559,10 +518,31 @@ class AcpAgent:
         self.granted = granted
         self.version = version
         self._connection: Connection | None = None
-        self.initialized = False
         self.capabilities: dict = {}
-        self.subscriptions = {}
+        self.subscriptions: dict[str, Subscription] = {}
+        self.actions: dict[str, Callable] = {}
         self.mcp_peers: set[McpPeer] = set()
+
+    @asynccontextmanager
+    async def errors(self) -> AsyncGenerator[None, None]:
+        try:
+            yield
+        except (ValidationError, ValueError, KeyError) as exc:
+            raise RequestError(-32602, str(exc)) from exc
+        except (PermissionError, LookupError) as exc:
+            raise RequestError(-32002, str(exc)) from exc
+        except m.HistoryWriteError as exc:
+            raise RequestError(
+                -32003,
+                "History write failed",
+                {"code": exc.code, "recordIds": list(exc.record_ids)},
+            ) from exc
+        except McpNegotiationError as exc:
+            raise RequestError(-32004, str(exc)) from exc
+        except RequestError:
+            raise
+        except Exception as exc:
+            raise RequestError(-32603, f"Agent operation failed: {exc}") from exc
 
     def attach(self, connection: Connection) -> None:
         self._connection = connection
@@ -573,223 +553,80 @@ class AcpAgent:
             raise RuntimeError("ACP connection is not attached")
         return self._connection
 
-    async def subscribe(self, sid: str, *, replay_history: bool = False) -> None:
+    async def subscribe(
+        self, protocol: SessionProtocol, sid: str, *, replay_history: bool = False
+    ) -> None:
         agent = await self.hub.get(sid, self.owner, self.granted)
         old = self.subscriptions.pop(sid, None)
-        if old:
+        if old is not None:
             agent.subscribers.discard(old)
             await old.close()
+
         self.subscriptions[sid] = await agent.subscribe(
             self.connection.send_notification,
+            protocol,
             replay_history=replay_history,
             disconnect=getattr(self.connection, "close", None),
         )
 
-    async def __call__(self, method: str, params, is_notification: bool):
-        params = {} if params is None else params
-        try:
-            return await self.dispatch(method, params, is_notification)
-        except (ValidationError, ValueError, KeyError) as exc:
-            raise RequestError(-32602, "Invalid request parameters") from exc
-        except (PermissionError, LookupError) as exc:
-            raise RequestError(-32002, "Session or operation is not available") from exc
-        except m.HistoryWriteError as exc:
-            raise RequestError(
-                -32003,
-                "History write failed",
-                {"code": exc.code, "recordIds": list(exc.record_ids)},
-            ) from exc
-        except RequestError:
-            raise
-        except McpNegotiationError as exc:
-            raise RequestError(-32004, str(exc)) from exc
-        except Exception as exc:
-            logger.exception("ACP request failed: %s", method)
-            raise RequestError(
-                -32603, "Agent operation failed", {"code": type(exc).__name__}
-            ) from exc
-
-    async def dispatch(self, method: str, params: dict, is_notification: bool):
-        match method:
-            case "initialize":
-                if is_notification:
-                    raise ValueError("Unexpected initialize")
-
-                if self.initialized:
-                    raise ValueError("Unexpected initialize")
-
-                if params.get("protocolVersion", 0) < 2:
-                    raise RequestError(-32000, "ACP v2 is required")
-
-                capabilities = params.get("capabilities")
-                if not capabilities:
-                    capabilities = {}
-
-                self.capabilities = capabilities
-                self.initialized = True
-
-                return {
-                    "protocolVersion": 2,
-                    "info": {"name": "boba", "version": self.version},
-                    "capabilities": {
-                        "session": {
-                            "prompt": {"image": {}, "embeddedContext": {}},
-                            "mcp": {"acp": {}},
-                            "systemPrompt": {},
-                        }
-                    },
-                    "authMethods": [],
-                }
-
-            case _ if not self.initialized:
-                raise RequestError(-32000, "Initialize the ACP connection first")
-
-            case _ if is_notification and method not in {
-                "session/cancel",
-                "mcp/message",
-            }:
-                return None
-
-            case "session/new":
-                request = schema.NewSessionRequest.model_validate(params)
-                system_prompt = self._system_prompt(params)
-                additional = request.additional_directories
-                if not additional:
-                    additional = ()
-
-                agent = await self.hub.create(
-                    self.owner,
-                    self.granted,
-                    request.cwd,
-                    additional=additional,
-                    system_prompt=system_prompt,
-                )
-                await self._connect(agent, params)
-                await self.subscribe(agent.session_id)
-                response = await self._setup_response(agent.session_id)
-
-                return {
-                    "sessionId": agent.session_id,
-                    **response,
-                }
-
-            case "session/resume":
-                return await self.resume(params)
-
-            case "session/list":
-                rows = await self.hub.store.rows(Query.SESSION_LIST, self.owner)
-
-                return rows[0]["response"]
-
-            case "mcp/message" if is_notification:
-                match params.get("method"):
-                    case "notifications/tools/list_changed":
-                        for sid in self.subscriptions:
-                            agent = await self.hub.get(sid, self.owner, self.granted)
-                            await self.hub.tools.refresh(agent)
-
-                return None
-
-            case (
-                "session/prompt"
-                | "session/cancel"
-                | "session/close"
-                | "session/set_config_option"
-            ):
-                sid = params["sessionId"]
-                agent = await self.hub.get(sid, self.owner, self.granted)
-
-            case _:
-                raise RequestError(-32601, "Method not found")
-
-        match method:
-            case "session/prompt":
-                schema.PromptRequest.model_validate(params)
-                content = content_parts(params["prompt"])
-                match content:
-                    case [m.TextPart(text=text)] if text.startswith("/"):
-                        message_id = await self.command(agent, text)
-
-                    case _:
-                        message_id = await agent.submit(content)
-
-                return {"messageId": message_id}
-
-            case "session/cancel":
-                await agent.cancel()
-
-                return None
-
-            case "session/close":
-                await self.unsubscribe(sid)
-
-                return {}
-
-            case "session/set_config_option":
-                return await self.set_option(agent, params["configId"], params["value"])
-
-            case _:
-                raise RequestError(-32601, "Method not found")
-
-    def _system_prompt(self, params: dict) -> tuple[m.TextPart, ...]:
-        value = params.get("systemPrompt")
-        if value is None:
-            return ()
-
-        prompt = ClientSystemPrompt.model_validate(value)
-
-        return tuple(prompt.parts())
-
-    async def _setup_response(self, sid: str) -> dict:
-        options = await self.hub.store.acp(Query.ACP_OPTIONS, sid, None)
-        commands = await self.hub.store.acp(Query.ACP_COMMANDS, sid, None)
-
-        return {
-            "configOptions": options["update"]["configOptions"],
-            "availableCommands": commands["update"]["availableCommands"],
-        }
-
-    async def resume(self, params: dict) -> dict:
-        request = schema.ResumeSessionRequest.model_validate(params)
-        system_prompt = self._system_prompt(params)
-        replay = request.replay_from
-        if replay is not None:
-            if replay.type != "start":
-                raise ValueError(f"Unsupported replay cursor: {replay.type}")
-
-        sid = request.session_id
+    async def restore(self, sid: str, cwd: str) -> Agent:
         session = await self.hub.store.session(sid, self.owner)
-        if request.cwd != session["cwd"]:
+        if cwd != session["cwd"]:
             raise ValueError(f"Session {sid} requires cwd {session['cwd']}")
 
         agent = await self.hub.get(sid, self.owner, self.granted)
-        await self.hub.set_client_prompt(agent, system_prompt)
-        await self._connect(agent, params)
-        await self.subscribe(sid, replay_history=replay is not None)
-        if await self.hub.store.pending_inputs(sid):
+
+        return agent
+
+    async def open(
+        self,
+        agent: Agent,
+        params: dict,
+        protocol: SessionProtocol,
+        *,
+        replay_history: bool = False,
+    ) -> None:
+        await self._connect(agent, params, protocol)
+        await self.subscribe(protocol, agent.session_id, replay_history=replay_history)
+        if await self.hub.store.pending_inputs(agent.session_id):
             agent.wake()
 
-        return await self._setup_response(sid)
-
-    async def _connect(self, agent: Agent, params: dict) -> None:
+    async def _connect(
+        self, agent: Agent, params: dict, protocol: SessionProtocol
+    ) -> None:
         if params.get("mcpServers"):
+            capabilities = mt.ClientCapabilities(roots=mt.RootsCapability())
+            elicitation = self.capabilities.get("elicitation")
+            if elicitation is not None:
+                capabilities.elicitation = mt.ElicitationCapability.model_validate(
+                    elicitation
+                )
+
             peers = await self.hub.tools.connect(
                 agent,
                 params["mcpServers"],
                 self.connection.send_request,
                 self.connection.send_notification,
+                self.mcp_peers,
+                capabilities,
             )
             self.mcp_peers.update(peers)
-        self.hub.tools.ask[agent.session_id] = self.request_action
+        self.hub.tools.ask[agent.session_id] = protocol.request_action
+        self.actions[agent.session_id] = protocol.request_action
 
-    async def request_action(self, method: str, params: dict):
-        if method == "elicitation/create":
-            mode = params.get("mode", "form")
-            if mode not in self.capabilities.get("elicitation", {}):
-                raise ValueError("Client does not support this elicitation mode")
-        return await self.connection.send_request(method, params)
+    async def mcp_message(
+        self, connection_id: str, method: str, params: dict | None
+    ) -> dict:
+        async with self.errors():
+            for peer in self.mcp_peers:
+                if peer.connection_id != connection_id:
+                    continue
 
-    async def set_option(self, agent: Agent, key: str, selected: str) -> dict:
+                return await self.hub.tools.incoming(peer, method, params)
+
+            raise RequestError(-32602, f"Unknown MCP connection {connection_id!r}")
+
+    async def set_option(self, agent: Agent, key: str, selected: str) -> None:
         options = await self.hub.store.latest(
             agent.session_id,
             key=key,
@@ -826,9 +663,7 @@ class AcpAgent:
             value.update(record_id=uuid4().hex, session_id=None, seq=None)
             values = [m.HISTORY_RECORD_ADAPTER.validate_python(value)]
         await agent.append(values)
-        result = await self.hub.store.acp(Query.ACP_OPTIONS, agent.session_id, None)
-        agent.update(result["update"])
-        return {"configOptions": result["update"]["configOptions"]}
+        await agent.options_changed()
 
     async def command(self, agent: Agent, text: str) -> str:
         name, _, rest = text[1:].partition(" ")
@@ -879,7 +714,8 @@ class AcpAgent:
             self.hub.agents[sid].subscribers.discard(subscriber)
             await subscriber.close()
         # Closing one observer never cancels execution shared with the other clients.
-        if self.hub.tools.ask.get(sid) == self.request_action:
+        action = self.actions.pop(sid, None)
+        if self.hub.tools.ask.get(sid) == action:
             self.hub.tools.ask.pop(sid)
 
     def busy(self) -> bool:

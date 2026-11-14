@@ -4,6 +4,8 @@ from uuid import uuid4
 import pytest
 
 from boba.agent import models as m
+from boba.agent.acp_server import AcpOperations
+from boba.agent.acp_v2 import AcpV2
 from boba.agent.runtime import Agent
 from boba.llm.http.openai import WireChunk
 
@@ -57,7 +59,7 @@ class Llm:
 @pytest.mark.anyio
 @pytest.mark.integration
 async def test_inputs_persist_during_tool_and_enter_one_request_with_live_acp(
-    history, agent_timeout: float
+    history, inference, agent_timeout: float
 ):
     sid = "runtime-test-" + uuid4().hex
     llm, tool = Llm(), Tool()
@@ -76,7 +78,12 @@ async def test_inputs_persist_during_tool_and_enter_one_request_with_live_acp(
                 )
             ]
         )
-        await agent.subscribe(send)
+        from boba.agent.acp_server import SessionHub
+        from boba.agent.settings import SettingsLayer
+
+        hub = SessionHub(history, llm, inference.profiles, SettingsLayer(), "test")
+        operations = AcpOperations(hub, "runtime-test", frozenset({"test"}), "test")
+        await agent.subscribe(send, AcpV2(operations))
         await agent.submit([m.TextPart(text="Start")])
         async with asyncio.timeout(agent_timeout):
             await tool.started.wait()
