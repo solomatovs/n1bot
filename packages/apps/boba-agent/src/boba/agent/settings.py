@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar, Literal
 from urllib.parse import urlsplit
@@ -22,7 +23,7 @@ from boba.identity.service import ServiceAddress
 from boba.oauth.server.clients import TrustedClient
 from boba.oauth.server.config import TokenConfig
 from boba.transport.http import HttpTransportConfig
-from boba.transport.http.connection import HttpConnection, WebAuth, UrlScheme
+from boba.transport.http.connection import HttpConnection, UrlScheme, WebAuth
 
 
 class SettingsError(ValueError):
@@ -178,6 +179,21 @@ class AgentProfile(RoleVisibility):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     model: ModelSettings
+
+
+@dataclass(frozen=True)
+class NamedProfile:
+    """Имя и конфигурация профиля для SessionHub и OpenAiTransport.
+
+    AgentProfiles создаёт значения из проверенных секций конфига.
+    """
+
+    name: str
+    config: AgentProfile
+
+    @property
+    def settings(self) -> ModelSettings:
+        return self.config.model
 
 
 class ServeHistory(BaseModel):

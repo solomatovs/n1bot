@@ -1,4 +1,7 @@
-"""PostgreSQL-история и запуск SQL-адаптеров; преобразование содержимого выполняет SQL."""
+"""PostgreSQL-история и запуск SQL-адаптеров.
+
+Преобразование содержимого выполняет SQL.
+"""
 
 from __future__ import annotations
 
@@ -47,12 +50,11 @@ class HistoryStore:
         batch = None
         committing = False
         try:
-            async with self.pool.connection() as connection:
-                async with connection.transaction():
-                    batch = HistoryTransaction(connection, session_id)
-                    await batch.rows(Query.LOCK, session_id)
-                    yield batch
-                    committing = True
+            async with self.pool.connection() as connection, connection.transaction():
+                batch = HistoryTransaction(connection, session_id)
+                await batch.rows(Query.LOCK, session_id)
+                yield batch
+                committing = True
         except psycopg.Error as exc:
             code = "commit_unknown" if committing else "storage_unavailable"
             if isinstance(exc, psycopg.IntegrityError):
@@ -101,7 +103,12 @@ class HistoryStore:
         key: str | None = None,
         through_seq: int | None = None,
     ) -> tuple[HistoryRecord, ...]:
-        kinds = [kind] if isinstance(kind, str) else kind
+        kinds = None
+        if isinstance(kind, str):
+            kinds = [kind]
+        elif kind is not None:
+            kinds = list(kind)
+
         rows = await self.rows(
             Query.LATEST, session_id, category, kinds, key, through_seq
         )

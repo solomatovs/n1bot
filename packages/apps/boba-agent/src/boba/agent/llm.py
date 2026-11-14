@@ -7,14 +7,14 @@ SettingsError — некорректные настройки подключен
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Iterator, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
 from contextlib import aclosing
 from dataclasses import dataclass
 from http import HTTPStatus
 from typing import Any
 
 from boba.agent.models import ReasoningPart, TextPart, TokenUsage, ToolCallPart
-from boba.agent.settings import ProviderSettings
+from boba.agent.settings import NamedProfile, ProviderSettings
 from boba.llm.chat import LlmOutputLimitError, LlmServiceError, LlmTrouble, ToolCall
 from boba.llm.http.openai import (
     OpenAiBackend,
@@ -96,13 +96,15 @@ class ProviderClient:
 class OpenAiTransport:
     """Передаёт запросы в общие OpenAI-клиенты и отдаёт дельты callback агента."""
 
-    def __init__(self, providers: Mapping[str, ProviderSettings]) -> None:
-        self._clients = dict(self._connections(providers))
+    def __init__(self, profiles: Iterable[NamedProfile]) -> None:
+        clients = self._connections(profiles)
+        self._clients = dict(clients)
 
     def _connections(
-        self, providers: Mapping[str, ProviderSettings]
+        self, profiles: Iterable[NamedProfile]
     ) -> Iterator[tuple[str, ProviderClient]]:
-        for key, config in providers.items():
+        for profile in profiles:
+            config = profile.settings.provider
             connection = config.connection()
             backend = OpenAiBackend(
                 OpenAiProvider(
@@ -116,7 +118,7 @@ class OpenAiTransport:
                 str(connection.url_of("chat/completions")),
             )
 
-            yield key, client
+            yield profile.name, client
 
     def address(self, provider: str) -> str:
         return self._clients[provider].address

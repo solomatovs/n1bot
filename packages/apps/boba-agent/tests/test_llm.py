@@ -27,7 +27,7 @@ async def test_sql_body_is_unchanged_and_text_arrives_before_response_finishes( 
     emitted = asyncio.Event()
     deltas = []
     output = Generation()
-    transport = OpenAiTransport({"test": inference.settings})
+    transport = OpenAiTransport(inference.profiles)
     session_id = "http-stream-" + uuid4().hex
     request_id = uuid4().hex
     user = record(
@@ -165,7 +165,7 @@ async def test_non_stream_response_keeps_both_calls_and_refusal(
         }
     )
     output = Generation()
-    transport = OpenAiTransport({"test": inference.settings})
+    transport = OpenAiTransport(inference.profiles)
     deltas = []
 
     async def emit(position: int, kind: str, text: str) -> None:
@@ -202,7 +202,7 @@ async def test_broken_response_preserves_only_received_text(
     body = b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n' + tail
     inference.response = Response(body, media_type="text/event-stream")
     output = Generation()
-    transport = OpenAiTransport({"test": inference.settings})
+    transport = OpenAiTransport(inference.profiles)
     deltas = []
 
     async def emit(position: int, kind: str, text: str) -> None:
@@ -227,7 +227,7 @@ async def test_status_is_preserved_and_retry_belongs_to_agent(
 ) -> None:
     inference.response = Response("unavailable", status_code=503)
     output = Generation()
-    transport = OpenAiTransport({"test": inference.settings})
+    transport = OpenAiTransport(inference.profiles)
 
     async def emit(position: int, kind: str, text: str) -> None:
         pytest.fail("An HTTP error must not emit text")
@@ -255,7 +255,7 @@ async def test_cancellation_closes_http_while_callback_is_waiting(
     disconnected = asyncio.Event()
     blocked = asyncio.Event()
     output = Generation()
-    transport = OpenAiTransport({"test": inference.settings})
+    transport = OpenAiTransport(inference.profiles)
 
     async def body() -> AsyncIterator[bytes]:
         try:
@@ -305,7 +305,7 @@ async def test_output_limit_preserves_text_without_incomplete_tool_call(
         media_type="text/event-stream",
     )
     output = Generation()
-    transport = OpenAiTransport({"test": inference.settings})
+    transport = OpenAiTransport(inference.profiles)
     deltas = []
 
     async def emit(position: int, kind: str, text: str) -> None:

@@ -5,9 +5,10 @@ import pytest
 from test_runtime import Llm
 
 from boba.agent import models as m
-from boba.agent.acp_server import SessionHub
+from boba.agent.acp_server import AgentProfiles, SessionHub
 from boba.agent.runtime import Agent
 from boba.agent.settings import (
+    AgentProfile,
     ModelSettings,
     PermissionSettings,
     ProviderSettings,
@@ -119,7 +120,8 @@ async def test_subagent_has_own_history_and_parent_call_keeps_normal_pair(
             default_mode="bypassPermissions", allow_bypass=True
         )
     )
-    hub = SessionHub(history, llm, {"test": model}, settings, "test")
+    profiles = AgentProfiles({"test": AgentProfile(roles=["*"], model=model)})
+    hub = SessionHub(history, llm, profiles, settings, "test")
     ids = []
     try:
         parent = await hub.create(uuid4().hex, frozenset({"test"}), "/workspace")

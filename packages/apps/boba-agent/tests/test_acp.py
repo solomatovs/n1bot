@@ -7,8 +7,13 @@ from acp import RequestError
 from acp.connection import Connection
 from acp.experimental.v2 import schema
 
-from boba.agent.acp_server import AcpAgent, SessionHub
-from boba.agent.settings import ModelSettings, ProviderSettings, SettingsLayer
+from boba.agent.acp_server import AcpAgent, AgentProfiles, SessionHub
+from boba.agent.settings import (
+    AgentProfile,
+    ModelSettings,
+    ProviderSettings,
+    SettingsLayer,
+)
 from boba.llm.http.openai import WireChunk
 
 
@@ -69,7 +74,8 @@ async def test_two_acp_clients_share_stream_and_replay_from_postgres(  # noqa: P
         system_prompt="You are a test assistant.",
     )
     llm = StreamingLlm()
-    hub = SessionHub(history, llm, {"test": model}, SettingsLayer(), "test")
+    profiles = AgentProfiles({"test": AgentProfile(roles=["*"], model=model)})
+    hub = SessionHub(history, llm, profiles, SettingsLayer(), "test")
     owner = uuid4().hex
     first, second = (
         AcpAgent(hub, owner, frozenset({"test"}), "test"),

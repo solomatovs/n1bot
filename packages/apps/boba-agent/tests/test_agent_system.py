@@ -17,11 +17,11 @@ from conftest import InferenceServer
 from starlette.responses import Response, StreamingResponse
 
 from boba.agent import models as m
-from boba.agent.acp_server import AcpAgent, SessionHub
+from boba.agent.acp_server import AcpAgent, AgentProfiles, SessionHub
 from boba.agent.acp_validator import MessageChunk, MessageUpdate, NotificationParams
 from boba.agent.history import HistoryStore
 from boba.agent.llm import OpenAiTransport
-from boba.agent.settings import McpSettings, ModelSettings, SettingsLayer
+from boba.agent.settings import AgentProfile, McpSettings, ModelSettings, SettingsLayer
 from boba.db.postgres.connection import PostgresConfig
 
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]
@@ -30,7 +30,9 @@ pytestmark = [pytest.mark.anyio, pytest.mark.integration]
 class AgentClient:
     """Клиент и агент связаны реальным ACP Connection; клиент также обслуживает MCP."""
 
-    def __init__(self, hub: SessionHub, owner: str, timeout: float) -> None:
+    def __init__(
+        self, hub: SessionHub, owner: str, timeout: float, granted: frozenset[str]
+    ) -> None:
         self.timeout = timeout
         self.updates: list[NotificationParams] = []
         self.permissions: list[dict[str, Any]] = []
@@ -40,7 +42,7 @@ class AgentClient:
         self.release_tool = asyncio.Event()
         self.release_tool.set()
         self.changed = asyncio.Condition()
-        self.adapter = AcpAgent(hub, owner, frozenset({"test"}), "test")
+        self.adapter = AcpAgent(hub, owner, granted, "test")
         agent_end, client_end = memory_transport_pair()
         self.server = Connection(self.adapter, agent_end)
         self.adapter.attach(self.server)
@@ -190,26 +192,47 @@ class AgentSystem:
         self.postgres = postgres
         self.timeout = timeout
         self.owner = uuid4().hex
-        self.llm = OpenAiTransport({"test": inference.settings})
-        self.profiles = {
-            "test": ModelSettings(
-                provider=inference.settings,
-                model="system-test-model",
-                sampling={"temperature": 0.2},
-                system_prompt="You are a test assistant.",
-            )
-        }
+        self.profiles = AgentProfiles(
+            {
+                "hidden": AgentProfile(
+                    roles=["administrators"],
+                    model=ModelSettings(
+                        provider=inference.settings, model="hidden-model"
+                    ),
+                ),
+                "test": AgentProfile(
+                    roles=["users"],
+                    model=ModelSettings(
+                        provider=inference.settings,
+                        model="system-test-model",
+                        sampling={"temperature": 0.2},
+                        inference={"max_completion_tokens": 128},
+                        provider_parameters={"parallel_tool_calls": True},
+                        system_prompt="You are a test assistant.",
+                    ),
+                ),
+                "alternative": AgentProfile(
+                    roles=["operators"],
+                    model=ModelSettings(
+                        provider=inference.settings, model="alternative-model"
+                    ),
+                ),
+            }
+        )
+        self.llm = OpenAiTransport(self.profiles)
         self.settings = SettingsLayer(
             mcp=McpSettings(list_timeout_sec=timeout, call_timeout_sec=timeout)
         )
         self.hub = SessionHub(history, self.llm, self.profiles, self.settings, "test")
         self.clients: list[AgentClient] = []
 
-    async def client(self, *, owner: str | None = None) -> AgentClient:
+    async def client(
+        self, *, owner: str | None = None, granted: frozenset[str] = frozenset({"test"})
+    ) -> AgentClient:
         if owner is None:
             owner = self.owner
 
-        client = AgentClient(self.hub, owner, self.timeout)
+        client = AgentClient(self.hub, owner, self.timeout, granted)
         self.clients.append(client)
         await client.initialize()
 
@@ -576,3 +599,98 @@ async def test_two_sessions_stream_concurrently_and_keep_separate_histories(
 
     finally:
         release.set()
+
+
+async def test_profile_catalog_controls_choices_switching_and_resume(
+    system: AgentSystem,
+) -> None:
+    granted = frozenset({"test", "alternative"})
+    assert system.profiles.granted_by_roles(frozenset({"users"})) == frozenset({"test"})
+    assert system.profiles.granted_by_roles(frozenset({"operators"})) == frozenset(
+        {"alternative"}
+    )
+    assert not system.profiles.granted_by_roles(frozenset())
+    assert system.profiles.known("hidden")
+    assert not system.profiles.known("unknown")
+    assert system.profiles.default(granted) is system.profiles.require("test", granted)
+    with pytest.raises(LookupError, match="not configured"):
+        system.profiles.require("unknown", frozenset({"unknown"}))
+
+    client = await system.client(granted=granted)
+    sid = await client.new_session()
+    options = await system.history.latest(sid, kind="parameter_option", key="model")
+    definition = m.ParameterOptionRecord.model_validate(options[0])
+    assert tuple(choice.value_id for choice in definition.payload.choices) == (
+        "test",
+        "alternative",
+    )
+    system.inference.responses = (
+        system.answer("Original profile"),
+        system.answer("Alternative profile"),
+    )
+    await client.prompt(sid, "First request")
+    await system.idle(sid)
+    first_request = json.loads(system.inference.requests[0])
+    assert first_request["model"] == "system-test-model"
+    assert first_request["temperature"] == 0.2
+    assert first_request["max_completion_tokens"] == 128
+    assert first_request["parallel_tool_calls"] is True
+    head = await system.history.head(sid)
+    with pytest.raises(RequestError) as rejected:
+        await client.connection.send_request(
+            "session/set_config_option",
+            {
+                "sessionId": sid,
+                "configId": "model",
+                "value": "hidden",
+            },
+        )
+
+    assert rejected.value.code == -32602
+    assert await system.history.head(sid) == head
+    await client.connection.send_request(
+        "session/set_config_option",
+        {
+            "sessionId": sid,
+            "configId": "model",
+            "value": "alternative",
+        },
+    )
+    changes = (await system.history.read(sid, after_seq=head)).rows
+    assert tuple(row.kind for row in changes) == (
+        "model",
+        "sampling_removed",
+        "inference_removed",
+        "provider_parameters_removed",
+        "system_prompt_removed",
+    )
+    await client.prompt(sid, "Second request")
+    await system.idle(sid)
+    second_request = json.loads(system.inference.requests[1])
+    assert second_request["model"] == "alternative-model"
+    assert "temperature" not in second_request
+    assert "max_completion_tokens" not in second_request
+    assert "parallel_tool_calls" not in second_request
+    assert all(message["role"] != "system" for message in second_request["messages"])
+    await system.assert_replay(sid)
+    await system.restart()
+    resumed = await system.client(granted=granted)
+    await resumed.resume(sid)
+    state = await system.history.latest(sid, kind="model")
+    assert m.ModelRecord.model_validate(state[0]).payload.provider == "alternative"
+    assert len(system.inference.requests) == 2
+
+
+async def test_unknown_or_missing_profile_grants_reject_new_session(
+    system: AgentSystem,
+) -> None:
+    for granted in (frozenset(), frozenset({"unknown"})):
+        client = await system.client(granted=granted)
+        with pytest.raises(RequestError) as caught:
+            await client.new_session()
+
+        assert caught.value.code == -32002
+        assert not client.updates
+
+    assert not system.hub.agents
+    assert not system.inference.requests

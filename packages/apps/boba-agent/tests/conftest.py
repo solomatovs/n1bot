@@ -17,8 +17,9 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route
 
+from boba.agent.acp_server import AgentProfiles
 from boba.agent.history import HistoryStore
-from boba.agent.settings import ProviderSettings
+from boba.agent.settings import AgentProfile, ModelSettings, ProviderSettings
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.krb import KerberosWorkspace
@@ -137,6 +138,14 @@ class InferenceServer:
             retry_backoff_sec=0,
             timeout_sec=max(120, timeout),
             transport=HttpTransportConfig(stream_stall_sec=timeout),
+        )
+        self.profiles = AgentProfiles(
+            {
+                "test": AgentProfile(
+                    roles=["*"],
+                    model=ModelSettings(provider=self.settings, model="test"),
+                )
+            }
         )
         app = Starlette(
             routes=[Route("/v1/chat/completions", self.handle, methods=["POST"])]

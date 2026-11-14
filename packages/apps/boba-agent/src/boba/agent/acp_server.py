@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Iterable, Iterator, Mapping, Set
 from contextlib import suppress
 from uuid import uuid4
 
@@ -16,11 +17,106 @@ from boba.agent import models as m
 from boba.agent.history import HistoryStore, _rows
 from boba.agent.queries import Query
 from boba.agent.runtime import Agent, record
-from boba.agent.settings import ModelSettings, SettingsLayer
+from boba.agent.settings import (
+    AgentProfile,
+    ModelSettings,
+    NamedProfile,
+    SettingsError,
+    SettingsLayer,
+)
 from boba.agent.tools import ToolRunner, content_parts
 from boba.db.postgres import AsyncPostgresPool
+from boba.identity.signin import ProfileCatalog
 
 logger = logging.getLogger(__name__)
+
+
+class AgentProfiles(ProfileCatalog):
+    """Единый каталог профилей для входа, SessionHub и OpenAiTransport.
+
+    Сборка службы создаёт каталог из конфига; каталог выбирает профили
+    по выданным именам и предоставляет варианты выбора для истории.
+    """
+
+    def __init__(self, profiles: Mapping[str, AgentProfile]) -> None:
+        if not profiles:
+            raise SettingsError("Agent profile catalog requires at least one profile")
+
+        named = self._named(profiles)
+        self._profiles = dict(named)
+
+    def _named(
+        self, profiles: Mapping[str, AgentProfile]
+    ) -> Iterator[tuple[str, NamedProfile]]:
+        for name, config in profiles.items():
+            if not name:
+                raise SettingsError("Agent profile name must not be empty")
+
+            yield name, NamedProfile(name, config)
+
+    def __iter__(self) -> Iterator[NamedProfile]:
+        profiles = self._profiles.values()
+
+        return iter(profiles)
+
+    def available(self, granted: Set[str]) -> Iterator[NamedProfile]:
+        for profile in self._profiles.values():
+            if profile.name not in granted:
+                continue
+
+            yield profile
+
+    def default(self, granted: Set[str]) -> NamedProfile:
+        """Первый доступный профиль в порядке конфигурации."""
+        available = self.available(granted)
+        profile = next(available, None)
+        if profile is None:
+            raise PermissionError("No permitted model profile")
+
+        return profile
+
+    def require(self, name: str, granted: Set[str]) -> NamedProfile:
+        """Проверяет существование профиля и право вызывающего выбрать профиль."""
+        if name not in granted:
+            raise PermissionError(f"Agent profile {name!r} is not permitted")
+
+        profile = self._profiles.get(name)
+        if profile is None:
+            raise LookupError(f"Agent profile {name!r} is not configured")
+
+        return profile
+
+    def choices(self, granted: Set[str]) -> tuple[m.ParameterChoice, ...]:
+        """Варианты model для ParameterOptionRecord; только выданные профили."""
+        choices = self._choices(granted)
+
+        return tuple(choices)
+
+    def _choices(self, granted: Set[str]) -> Iterator[m.ParameterChoice]:
+        for profile in self.available(granted):
+            yield m.ParameterChoice(
+                value_id=profile.name,
+                name=profile.name,
+                value={
+                    "provider": profile.name,
+                    "value": {"model": profile.settings.model},
+                },
+            )
+
+    def granted_by_roles(self, user_roles: frozenset[str]) -> frozenset[str]:
+        names = self._visible_names(user_roles)
+
+        return frozenset(names)
+
+    def _visible_names(self, user_roles: frozenset[str]) -> Iterator[str]:
+        for profile in self._profiles.values():
+            if not profile.config.visible_for(user_roles):
+                continue
+
+            yield profile.name
+
+    def known(self, name: str) -> bool:
+        return name in self._profiles
 
 
 class SessionHub:
@@ -30,12 +126,15 @@ class SessionHub:
         self,
         store: HistoryStore,
         llm,
-        profiles: dict[str, ModelSettings],
+        profiles: AgentProfiles,
         settings: SettingsLayer,
         version: str,
     ) -> None:
-        self.store, self.llm, self.profiles = store, llm, profiles
-        self.settings, self.version = settings, version
+        self.store = store
+        self.llm = llm
+        self.profiles = profiles
+        self.settings = settings
+        self.version = version
         self.tools = ToolRunner(
             list_timeout=settings.mcp.list_timeout_sec,
             call_timeout=settings.mcp.call_timeout_sec,
@@ -89,38 +188,69 @@ class SessionHub:
     def make(self, model, **fields):
         return record(model, self.version, **fields)
 
-    def profile_records(self, name: str, previous=()) -> list:
-        profile = self.profiles[name]
-        active = {
-            (item.category, item.key) for item in previous if item.operation == "set"
-        }
+    def _active_record_keys(
+        self, records: Iterable[m.HistoryRecord]
+    ) -> Iterator[tuple[str, str | None]]:
+        for item in records:
+            if item.operation != "set":
+                continue
+
+            yield item.category, item.key
+
+    def _profile_settings(
+        self, profile: ModelSettings, active: Set[tuple[str, str | None]]
+    ) -> Iterator[m.HistoryRecord]:
+        if profile.sampling:
+            yield self.make(m.SamplingRecord, payload={"value": profile.sampling})
+        elif ("setting", "sampling") in active:
+            yield self.make(m.SamplingRemovedRecord)
+
+        if profile.inference:
+            yield self.make(m.InferenceRecord, payload={"value": profile.inference})
+        elif ("setting", "inference") in active:
+            yield self.make(m.InferenceRemovedRecord)
+
+        if profile.provider_parameters:
+            yield self.make(
+                m.ProviderParametersRecord,
+                payload={"value": profile.provider_parameters},
+            )
+        elif ("setting", "provider_parameters") in active:
+            yield self.make(m.ProviderParametersRemovedRecord)
+
+    def profile_to_records(
+        self,
+        profile: NamedProfile,
+        *,
+        previous: Iterable[m.HistoryRecord] = (),
+    ) -> list[m.HistoryRecord]:
+        record_keys = self._active_record_keys(previous)
+        active = set(record_keys)
+
         records: list[m.HistoryRecord] = [
             self.make(
                 m.ModelRecord,
-                payload={"provider": name, "value": {"model": profile.model}},
+                payload={
+                    "provider": profile.name,
+                    "value": {"model": profile.settings.model},
+                },
             )
         ]
-        for cls, remove, value in (
-            (m.SamplingRecord, m.SamplingRemovedRecord, profile.sampling),
-            (m.InferenceRecord, m.InferenceRemovedRecord, profile.inference),
-            (
-                m.ProviderParametersRecord,
-                m.ProviderParametersRemovedRecord,
-                profile.provider_parameters,
-            ),
-        ):
-            if value:
-                records.append(self.make(cls, payload={"value": value}))
-            elif ("setting", cls.model_fields["key"].default) in active:
-                records.append(self.make(remove))
+
+        settings = self._profile_settings(profile.settings, active)
+        records.extend(settings)
+
         if ("prompt", "profile") in active:
             records.append(self.make(m.SystemPromptRemovedRecord, key="profile"))
-        if profile.system_prompt is not None:
+
+        if profile.settings.system_prompt is not None:
             records.append(
                 self.make(
                     m.SystemPromptAddedRecord,
                     key="profile",
-                    payload={"content": [m.TextPart(text=profile.system_prompt)]},
+                    payload={
+                        "content": [m.TextPart(text=profile.settings.system_prompt)]
+                    },
                 )
             )
         return records
@@ -128,15 +258,15 @@ class SessionHub:
     async def create(
         self, owner: str, granted: frozenset[str], cwd: str, *, additional=()
     ) -> Agent:
-        profiles = {k: v for k, v in self.profiles.items() if k in granted}
-        if not profiles:
-            raise PermissionError("No permitted model profile")
+        profile = self.profiles.default(granted)
+        choices = self.profiles.choices(granted)
+
         async with self.lock:
             await self._vacancy()
             sid = uuid4().hex
             await self._claim(sid)
             agent = self._agent(sid)
-            values = self.profile_records(next(iter(profiles)))
+            values = self.profile_to_records(profile)
             permissions = self.settings.permissions
             modes = {
                 "bypassPermissions": "bypass_permissions",
@@ -188,17 +318,7 @@ class SessionHub:
                         "source_kinds": ["model"],
                         "source_key": "model",
                         "value_path": [],
-                        "choices": [
-                            {
-                                "value_id": name,
-                                "name": name,
-                                "value": {
-                                    "provider": name,
-                                    "value": {"model": profile.model},
-                                },
-                            }
-                            for name, profile in profiles.items()
-                        ],
+                        "choices": choices,
                     },
                 ),
                 self.make(
@@ -230,11 +350,12 @@ class SessionHub:
     async def get(self, sid: str, owner: str, granted: frozenset[str]) -> Agent:
         await self.store.session(sid, owner)
         selected = await self.store.latest(sid, kind="model")
-        if (
-            not selected
-            or m.ModelRecord.model_validate(selected[0]).payload.provider not in granted
-        ):
+        if not selected:
             raise PermissionError("Session model is not permitted for this user")
+
+        model = m.ModelRecord.model_validate(selected[0])
+        self.profiles.require(model.payload.provider, granted)
+
         async with self.lock:
             if sid not in self.agents:
                 await self._vacancy()
@@ -360,7 +481,10 @@ class AcpAgent:
     def __init__(
         self, hub: SessionHub, owner: str, granted: frozenset[str], version: str
     ) -> None:
-        self.hub, self.owner, self.granted, self.version = hub, owner, granted, version
+        self.hub = hub
+        self.owner = owner
+        self.granted = granted
+        self.version = version
         self._connection: Connection | None = None
         self.initialized = False
         self.capabilities: dict = {}
@@ -433,92 +557,133 @@ class AcpAgent:
             ) from exc
 
     async def dispatch(self, method: str, params: dict, is_notification: bool):
-        if method == "initialize":
-            if is_notification or self.initialized:
-                raise ValueError("Unexpected initialize")
-            if params.get("protocolVersion", 0) < 2:
-                raise RequestError(-32000, "ACP v2 is required")
-            self.capabilities = params.get("capabilities") or {}
-            self.initialized = True
-            return {
-                "protocolVersion": 2,
-                "info": {"name": "boba", "version": self.version},
-                "capabilities": {
-                    "session": {
-                        "prompt": {"image": {}, "embeddedContext": {}},
-                        "mcp": {"acp": {}},
-                    }
-                },
-                "authMethods": [],
-            }
-        if not self.initialized:
-            raise RequestError(-32000, "Initialize the ACP connection first")
-        if is_notification and method not in {"session/cancel", "mcp/message"}:
-            return None
-        if method == "session/new":
-            request = schema.NewSessionRequest.model_validate(params)
-            agent = await self.hub.create(
-                self.owner,
-                self.granted,
-                request.cwd,
-                additional=request.additional_directories or (),
-            )
-            await self._connect(agent, params)
-            options = await self.hub.store.acp(
-                Query.ACP_OPTIONS, agent.session_id, None
-            )
-            return {
-                "sessionId": agent.session_id,
-                "configOptions": options["update"]["configOptions"],
-            }
-        if method == "session/list":
-            return (await self.hub.store.rows(Query.SESSION_LIST, self.owner))[0][
-                "response"
-            ]
-        if method == "mcp/message" and is_notification:
-            if params.get("method") == "notifications/tools/list_changed":
-                for sid in self.subscriptions:
-                    await self.hub.tools.refresh(
-                        await self.hub.get(sid, self.owner, self.granted)
-                    )
-            return None
-        if method not in {
-            "session/resume",
-            "session/prompt",
-            "session/cancel",
-            "session/close",
-            "session/set_config_option",
-        }:
-            raise RequestError(-32601, "Method not found")
-        sid = params["sessionId"]
-        agent = await self.hub.get(sid, self.owner, self.granted)
-        if method == "session/resume":
-            schema.ResumeSessionRequest.model_validate(params)
-            replay = params.get("replayFrom")
-            if replay and replay.get("type") != "start":
-                raise ValueError("Only replay from start is supported")
-            await self._connect(agent, params)
-            options = await self.hub.store.acp(Query.ACP_OPTIONS, sid, None)
-            if await self.hub.store.pending_inputs(sid):
-                agent.wake()
-            return {"configOptions": options["update"]["configOptions"]}
-        if method == "session/prompt":
-            schema.PromptRequest.model_validate(params)
-            content = content_parts(params["prompt"])
-            if (
-                len(content) == 1
-                and isinstance(content[0], m.TextPart)
-                and content[0].text.startswith("/")
+        match method:
+            case "initialize":
+                if is_notification:
+                    raise ValueError("Unexpected initialize")
+
+                if self.initialized:
+                    raise ValueError("Unexpected initialize")
+
+                if params.get("protocolVersion", 0) < 2:
+                    raise RequestError(-32000, "ACP v2 is required")
+
+                capabilities = params.get("capabilities")
+                if not capabilities:
+                    capabilities = {}
+
+                self.capabilities = capabilities
+                self.initialized = True
+
+                return {
+                    "protocolVersion": 2,
+                    "info": {"name": "boba", "version": self.version},
+                    "capabilities": {
+                        "session": {
+                            "prompt": {"image": {}, "embeddedContext": {}},
+                            "mcp": {"acp": {}},
+                        }
+                    },
+                    "authMethods": [],
+                }
+
+            case _ if not self.initialized:
+                raise RequestError(-32000, "Initialize the ACP connection first")
+
+            case _ if is_notification and method not in {
+                "session/cancel",
+                "mcp/message",
+            }:
+                return None
+
+            case "session/new":
+                request = schema.NewSessionRequest.model_validate(params)
+                additional = request.additional_directories
+                if not additional:
+                    additional = ()
+
+                agent = await self.hub.create(
+                    self.owner, self.granted, request.cwd, additional=additional
+                )
+                await self._connect(agent, params)
+                options = await self.hub.store.acp(
+                    Query.ACP_OPTIONS, agent.session_id, None
+                )
+
+                return {
+                    "sessionId": agent.session_id,
+                    "configOptions": options["update"]["configOptions"],
+                }
+
+            case "session/list":
+                rows = await self.hub.store.rows(Query.SESSION_LIST, self.owner)
+
+                return rows[0]["response"]
+
+            case "mcp/message" if is_notification:
+                match params.get("method"):
+                    case "notifications/tools/list_changed":
+                        for sid in self.subscriptions:
+                            agent = await self.hub.get(sid, self.owner, self.granted)
+                            await self.hub.tools.refresh(agent)
+
+                return None
+
+            case (
+                "session/resume"
+                | "session/prompt"
+                | "session/cancel"
+                | "session/close"
+                | "session/set_config_option"
             ):
-                return {"messageId": await self.command(agent, content[0].text)}
-            return {"messageId": await agent.submit(content)}
-        if method == "session/cancel":
-            await agent.cancel()
-            return None
-        if method == "session/close":
-            await self.unsubscribe(sid)
-            return {}
-        return await self.set_option(agent, params["configId"], params["value"])
+                sid = params["sessionId"]
+                agent = await self.hub.get(sid, self.owner, self.granted)
+
+            case _:
+                raise RequestError(-32601, "Method not found")
+
+        match method:
+            case "session/resume":
+                schema.ResumeSessionRequest.model_validate(params)
+                replay = params.get("replayFrom")
+                if replay:
+                    if replay.get("type") != "start":
+                        raise ValueError("Only replay from start is supported")
+
+                await self._connect(agent, params)
+                options = await self.hub.store.acp(Query.ACP_OPTIONS, sid, None)
+                if await self.hub.store.pending_inputs(sid):
+                    agent.wake()
+
+                return {"configOptions": options["update"]["configOptions"]}
+
+            case "session/prompt":
+                schema.PromptRequest.model_validate(params)
+                content = content_parts(params["prompt"])
+                match content:
+                    case [m.TextPart(text=text)] if text.startswith("/"):
+                        message_id = await self.command(agent, text)
+
+                    case _:
+                        message_id = await agent.submit(content)
+
+                return {"messageId": message_id}
+
+            case "session/cancel":
+                await agent.cancel()
+
+                return None
+
+            case "session/close":
+                await self.unsubscribe(sid)
+
+                return {}
+
+            case "session/set_config_option":
+                return await self.set_option(agent, params["configId"], params["value"])
+
+            case _:
+                raise RequestError(-32601, "Method not found")
 
     async def _connect(self, agent: Agent, params: dict) -> None:
         if params.get("mcpServers"):
@@ -549,10 +714,9 @@ class AcpAgent:
         if choice is None:
             raise ValueError("Unknown choice")
         if key == "model":
-            if selected not in self.granted:
-                raise PermissionError("Profile is not permitted")
+            profile = self.hub.profiles.require(selected, self.granted)
             previous = await self.hub.store.latest(agent.session_id)
-            values = self.hub.profile_records(selected, previous)
+            values = self.hub.profile_to_records(profile, previous=previous)
         else:
             current = await self.hub.store.latest(
                 agent.session_id,

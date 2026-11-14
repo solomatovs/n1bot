@@ -8,7 +8,7 @@ import logging
 import logging.config
 import sys
 import time
-from collections.abc import AsyncGenerator, Iterable, Iterator, Mapping, Sequence
+from collections.abc import AsyncGenerator, Iterable, Iterator, Sequence
 from contextlib import aclosing, asynccontextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -39,7 +39,7 @@ from starlette.routing import BaseRoute, Route, WebSocketRoute
 from starlette.types import Receive, Scope, Send
 from starlette.websockets import WebSocket
 
-from boba.agent.acp_server import AcpAgent, SessionHub
+from boba.agent.acp_server import AcpAgent, AgentProfiles, SessionHub
 from boba.agent.app import Installed
 from boba.agent.history import HistoryStore
 from boba.agent.llm import OpenAiTransport
@@ -118,26 +118,6 @@ class Caller:
     profiles: frozenset[str]
 
 
-class AgentProfiles(ProfileCatalog):
-    """Профили агента [agent.profiles] как каталог профилей входа: вход
-    кладёт в области токена профили, выданные ролям вошедшего, а
-    подключение открывает сессии только на них. Создаётся сборкой службы."""
-
-    def __init__(self, profiles: Mapping[str, AgentProfile]) -> None:
-        self._profiles = dict(profiles)
-
-    def granted_by_roles(self, user_roles: frozenset[str]) -> frozenset[str]:
-        names: set[str] = set()
-        for name, profile in self._profiles.items():
-            if profile.visible_for(user_roles):
-                names.add(name)
-
-        return frozenset(names)
-
-    def known(self, name: str) -> bool:
-        return name in self._profiles
-
-
 class ServeAgents(UserRows, RoleCatalog):
     """Один пул, один SessionHub и независимые ACP-подключения."""
 
@@ -145,6 +125,7 @@ class ServeAgents(UserRows, RoleCatalog):
         self,
         section: ServeSection,
         history: ServeHistory,
+        profiles: AgentProfiles,
         version: str,
         auth_methods: Sequence[schema.AgentAuthMethod],
     ) -> None:
@@ -152,10 +133,7 @@ class ServeAgents(UserRows, RoleCatalog):
         self._postgres = history.postgres
         self._pool = AsyncPostgresPool(history.postgres)
         self._users = UsersTable(self._pool, history.db_schema)
-        profiles = {name: profile.model for name, profile in section.profiles.items()}
-        self._llm = OpenAiTransport(
-            {name: profile.provider for name, profile in profiles.items()}
-        )
+        self._llm = OpenAiTransport(profiles)
         self.hub = SessionHub(
             HistoryStore(self._pool), self._llm, profiles, section.settings, version
         )
@@ -550,6 +528,7 @@ class ServeHost:
         self._agents = ServeAgents(
             config.agent,
             config.history,
+            self._profiles,
             version,
             self._auth_methods(),
         )
