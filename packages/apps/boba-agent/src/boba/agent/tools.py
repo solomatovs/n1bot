@@ -301,6 +301,25 @@ class PermissionClassification(m.DataModel):
     decision: Literal["allow", "deny"]
 
 
+class ToolSearchArguments(m.DataModel):
+    """Запрос к каталогу либо точные имена для загрузки определений tools."""
+
+    query: str = ""
+    select: tuple[m.NonEmptyStr, ...] | None = None
+
+    def score(self, name: str, description: str) -> int:
+        if not self.query.strip():
+            return 1
+
+        text = f"{name} {description}".casefold()
+        score = 0
+        for word in set(self.query.casefold().split()):
+            if word in text:
+                score += 1
+
+        return score
+
+
 def content_parts(blocks: list[dict]) -> tuple:
     """Разбор входящего ACP/MCP, без чтения файлов или URL из содержимого."""
     parts = []
@@ -339,6 +358,7 @@ def content_parts(blocks: list[dict]) -> tuple:
                 )
             case kind:
                 raise ValueError(f"Unsupported incoming content type: {kind}")
+
     return tuple(parts)
 
 
@@ -627,23 +647,28 @@ class ToolRunner:
         return records
 
     async def search(self, agent: Agent, arguments: dict) -> tuple:
-        catalog = {
-            r.key: r
-            for r in await agent.store.latest(agent.session_id, category="tool_catalog")
-            if isinstance(r, m.ToolAddedRecord)
-        }
-        selected = arguments.get("select")
+        search = ToolSearchArguments.model_validate(arguments)
+        catalog: dict[str, m.ToolAddedRecord] = {}
+        records = await agent.store.latest(agent.session_id, category="tool_catalog")
+        for record in records:
+            if isinstance(record, m.ToolAddedRecord):
+                catalog[record.key] = record
+
+        selected = search.select
         if selected is None:
-            query = str(arguments.get("query", "")).casefold()
-            names = [
-                name
-                for name, item in catalog.items()
-                if query in f"{name} {item.payload.tool.description}".casefold()
-            ]
-            return tuple(
-                m.TextPart(text=f"{name}: {catalog[name].payload.tool.description}")
-                for name in names
-            )
+            matches = []
+            for name, item in catalog.items():
+                score = search.score(name, item.payload.tool.description)
+                if score > 0:
+                    matches.append((-score, name))
+
+            found = []
+            for _, name in sorted(matches):
+                description = catalog[name].payload.tool.description
+                found.append(m.TextPart(text=f"{name}: {description}"))
+
+            return tuple(found)
+
         definitions, records, parts = {}, [], []
         for name in dict.fromkeys(selected):
             if name not in catalog:

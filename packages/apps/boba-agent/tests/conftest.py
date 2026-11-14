@@ -4,27 +4,22 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import tomllib
 from collections.abc import AsyncIterator
 from pathlib import Path
 
 import psycopg
 import pytest
-import uvicorn
+from agent_stand import AgentSystem, InferenceServer
+from psycopg.rows import dict_row
 from pydantic import PositiveFloat, TypeAdapter
-from starlette.applications import Starlette
-from starlette.requests import Request
-from starlette.responses import Response
-from starlette.routing import Route
 
-from boba.agent.acp_server import AgentProfiles
 from boba.agent.history import HistoryStore
-from boba.agent.settings import AgentProfile, ModelSettings, ProviderSettings
+from boba.agent.models import HISTORY_RECORD_ADAPTER
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
 from boba.krb import KerberosWorkspace
-from boba.transport.http import HttpTransportConfig
-from boba.transport.http.connection import NoneAuth
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -124,51 +119,6 @@ async def history(postgres: PostgresConfig) -> AsyncIterator[HistoryStore]:
         await pool.close()
 
 
-class InferenceServer:
-    """Локальный HTTP-сервер с заданным ответом и записью полученного тела."""
-
-    def __init__(self, port: int, timeout: float) -> None:
-        self.requests: list[bytes] = []
-        self.response = Response(status_code=501)
-        self.responses: tuple[Response, ...] = ()
-        self.settings = ProviderSettings(
-            base_url=f"http://127.0.0.1:{port}/v1",
-            auth=NoneAuth(method="none"),
-            retry_statuses={503: 3},
-            retry_backoff_sec=0,
-            timeout_sec=max(120, timeout),
-            transport=HttpTransportConfig(stream_stall_sec=timeout),
-        )
-        self.profiles = AgentProfiles(
-            {
-                "test": AgentProfile(
-                    roles=["*"],
-                    model=ModelSettings(provider=self.settings, model="test"),
-                )
-            }
-        )
-        app = Starlette(
-            routes=[Route("/v1/chat/completions", self.handle, methods=["POST"])]
-        )
-        self.server = uvicorn.Server(
-            uvicorn.Config(
-                app, host="127.0.0.1", port=port, log_level="error", ws="none"
-            )
-        )
-
-    async def handle(self, request: Request) -> Response:
-        self.requests.append(await request.body())
-
-        if self.responses:
-            index = len(self.requests) - 1
-            if index >= len(self.responses):
-                return Response("Unexpected inference request", status_code=500)
-
-            return self.responses[index]
-
-        return self.response
-
-
 @pytest.fixture
 async def inference(
     free_tcp_port: int, agent_timeout: float
@@ -190,3 +140,34 @@ async def inference(
         server.server.should_exit = True
         async with asyncio.timeout(agent_timeout):
             await worker
+
+
+@pytest.fixture
+async def system(
+    history: HistoryStore,
+    inference: InferenceServer,
+    postgres: PostgresConfig,
+    agent_timeout: float,
+) -> AsyncIterator[AgentSystem]:
+    stand = AgentSystem(history, inference, postgres, agent_timeout)
+    await stand.hub.start(postgres)
+    try:
+        yield stand
+    finally:
+        await stand.close()
+
+
+@pytest.fixture
+async def demo_records(sql_connection):
+    root = Path(__file__).resolve().parents[4]
+    source = (root / "experiments/history-sql/fixtures.sql").read_text()
+    source = re.sub(r"(?m)^(begin|commit);\s*$", "", source)
+    await sql_connection.execute(source, prepare=False)
+    async with psycopg.AsyncRawCursor(sql_connection, row_factory=dict_row) as cursor:
+        await cursor.execute(
+            "select to_jsonb(r) as record from boba.records r where session_id like 'sql-%' order by session_id, seq"
+        )
+        rows = [row["record"] for row in await cursor.fetchall()]
+    for row in rows:
+        HISTORY_RECORD_ADAPTER.validate_python(row)
+    return rows

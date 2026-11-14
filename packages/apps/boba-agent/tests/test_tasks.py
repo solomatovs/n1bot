@@ -2,7 +2,7 @@ import asyncio
 from uuid import uuid4
 
 import pytest
-from test_runtime import Llm
+from agent_stand import Llm
 
 from boba.agent import models as m
 from boba.agent.acp_server import AgentProfiles, SessionHub

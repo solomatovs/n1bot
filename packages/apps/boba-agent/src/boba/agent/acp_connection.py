@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from acp import schema as v1_schema
 from acp.agent.connection import AgentSideConnection as V1Connection
 from acp.experimental.negotiation import AgentProtocolConnection, AgentProtocolRouter
 from acp.experimental.v2.agent import AgentSideConnection as V2Connection
+from acp.router import MessageRouter
 
 from boba.agent.acp_server import AcpOperations, SessionHub
 from boba.agent.acp_v1 import AcpV1
@@ -52,7 +54,35 @@ class AcpAgent:
         self, input_stream, output_stream=None, **kwargs
     ) -> AgentProtocolConnection:
         connection = self._router.connect(input_stream, output_stream, **kwargs)
-        self._operations.attach(connection._connection)
+        transport = connection._connection
+        self._operations.attach(transport)
+        negotiate = transport._handler
+
+        async def initialize(method, params, is_notification):
+            result = await negotiate(method, params, is_notification)
+            if isinstance(self._protocol, AcpV1):
+                selected = getattr(negotiate, "_selected", None)
+                if not isinstance(selected, MessageRouter):
+                    raise RuntimeError("ACP SDK did not install the v1 message router")
+
+                # В SDK rc3 negotiation не передаёт use_unstable_protocol в v1 attach.
+                selected.route_request(
+                    "mcp/message",
+                    v1_schema.MessageMcpRequest,
+                    self._protocol,
+                    "mcp_message",
+                )
+                selected.route_notification(
+                    "mcp/message",
+                    v1_schema.MessageMcpNotification,
+                    self._protocol,
+                    "notify_mcp",
+                )
+
+            transport._handler = negotiate
+            return result
+
+        transport._handler = initialize
 
         return connection
 
