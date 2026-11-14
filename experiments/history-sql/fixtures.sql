@@ -1,5 +1,9 @@
 -- test data for history_sql.records; run schema.sql once in an empty experiment database.
 -- this file replaces only the named sql-* example sessions below.
+-- sql-admission-batch-demo: three inputs arrive while two tools run.
+-- openai.sql(session_id, 'before-admission', null): user, assistant, tool, tool.
+-- openai.sql(session_id, 'after-admission', null): the same, then user, user, user.
+-- openai.sql(session_id, null, 14) produces the same body as 'after-admission'.
 -- openai.sql params: session_id, request_id, through_seq (both null select the latest boundary).
 -- sql-background-demo: r0, r1, r1c, r2, r3, r4
 -- sql-context-demo: r0, r1, r2, r3, r4, r5, r6, r7
@@ -17,6 +21,12 @@ from
     history_sql.records
 where 1=1
     and session_id in (
+        'sql-options-demo',
+        'sql-services-demo',
+        'sql-commands-demo',
+        'sql-permission-demo',
+        'sql-admission-batch-demo',
+        'sql-admission-demo',
         'sql-acp-actions-demo',
         'sql-acp-copy-demo',
         'sql-acp-duplicate-demo',
@@ -32,16 +42,17 @@ where 1=1
         'sql-tool-search-demo'
     );
 
-insert into history_sql.records (
+with
+source(
     session_id, seq, record_id, kind, category, role, key, operation, request_id, copied_from_id, created_at, version, payload
-)
-values
+) as (
+    values
     ('sql-background-demo', 1, 'model', 'model', 'setting', null, 'model', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"value":{"model":"test-model"},"provider":"openai"}'::jsonb),
     ('sql-background-demo', 2, 'sampling', 'sampling', 'setting', null, 'sampling', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"value":{"top_p":0.9,"temperature":0.2}}'::jsonb),
     ('sql-background-demo', 3, 'inference', 'inference', 'setting', null, 'inference', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"value":{"reasoning_effort":"low","max_completion_tokens":1024}}'::jsonb),
     ('sql-background-demo', 4, 'provider', 'provider_parameters', 'setting', null, 'provider_parameters', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"value":{"parallel_tool_calls":true}}'::jsonb),
     ('sql-background-demo', 5, 'system', 'system_prompt_added', 'prompt', 'system', 'agent.role', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', e'{"content":[{"kind":"text","text":"Ты помощник.\\r\\n"}],"source_uri":null}'::jsonb),
-    ('sql-background-demo', 6, 'user', 'user_message', 'message', 'user', null, 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', e'{"content":[{"kind":"text","text":"Привет  世界\\n"}]}'::jsonb),
+    ('sql-background-demo', 6, 'user', 'user_message', 'input', 'user', null, 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', e'{"content":[{"kind":"text","text":"Привет  世界\\n"}]}'::jsonb),
     ('sql-background-demo', 7, 'explore-add', 'agent_added', 'context', 'user', 'agent:explore', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"agent":{"name":"explore","source_uri":"file:///workspace/agents/explore.md","description":"Исследование проекта"},"content":[{"kind":"text","text":"Доступен агент explore."}]}'::jsonb),
     ('sql-background-demo', 8, 'run-add', 'tool_added', 'tool_catalog', null, 'mcp__workspace__run', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"tool":{"description":"Run a command"}}'::jsonb),
     ('sql-background-demo', 9, 'run-schema', 'tool_schema', 'tool_schema', null, 'mcp__workspace__run', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"tool":{"deferred":true,"parameters":{"type":"object","properties":{}},"description":"Run a command"},"catalog_revision":"run-add"}'::jsonb),
@@ -105,7 +116,7 @@ values
     ('sql-context-demo', 3, 'inference', 'inference', 'setting', null, 'inference', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"value":{"reasoning_effort":"low","max_completion_tokens":1024}}'::jsonb),
     ('sql-context-demo', 4, 'provider', 'provider_parameters', 'setting', null, 'provider_parameters', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"value":{"parallel_tool_calls":true}}'::jsonb),
     ('sql-context-demo', 5, 'system', 'system_prompt_added', 'prompt', 'system', 'agent.role', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', e'{"content":[{"kind":"text","text":"Ты помощник.\\r\\n"}],"source_uri":null}'::jsonb),
-    ('sql-context-demo', 6, 'user', 'user_message', 'message', 'user', null, 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', e'{"content":[{"kind":"text","text":"Привет  世界\\n"}]}'::jsonb),
+    ('sql-context-demo', 6, 'user', 'user_message', 'input', 'user', null, 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', e'{"content":[{"kind":"text","text":"Привет  世界\\n"}]}'::jsonb),
     ('sql-context-demo', 7, 'project', 'system_prompt_added', 'prompt', 'system', 'project.rules:workspace', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', e'{"content":[{"kind":"text","text":"Правила проекта.\\r\\n"}],"source_uri":"file:///workspace/AGENTS.md"}'::jsonb),
     ('sql-context-demo', 8, 'review-v1', 'skill_added', 'context', 'user', 'skill:workspace:review', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', e'{"skill":{"name":"review","source_uri":"file:///workspace/skills/review/SKILL.md","description":"Проверка изменений","instructions":"Исходные инструкции v1:  世界\\r\\n"},"content":[{"kind":"text","text":"Доступен review v1."}]}'::jsonb),
     ('sql-context-demo', 9, 'docs', 'skill_added', 'context', 'user', 'skill:web:docs', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"skill":{"name":"docs","source_uri":"https://example.org/skills/docs","description":"Документация","instructions":null},"content":[{"kind":"text","text":"Доступен docs по URL."}]}'::jsonb),
@@ -142,7 +153,7 @@ values
     ('sql-demo', 3, 'inference', 'inference', 'setting', null, 'inference', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"value":{"reasoning_effort":"low","max_completion_tokens":1024}}'::jsonb),
     ('sql-demo', 4, 'provider', 'provider_parameters', 'setting', null, 'provider_parameters', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"value":{"parallel_tool_calls":true}}'::jsonb),
     ('sql-demo', 5, 'system', 'system_prompt_added', 'prompt', 'system', 'agent.role', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', e'{"content":[{"kind":"text","text":"Ты помощник.\\r\\n"}],"source_uri":null}'::jsonb),
-    ('sql-demo', 6, 'user', 'user_message', 'message', 'user', null, 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', e'{"content":[{"kind":"text","text":"Привет  世界\\n"}]}'::jsonb),
+    ('sql-demo', 6, 'user', 'user_message', 'input', 'user', null, 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', e'{"content":[{"kind":"text","text":"Привет  世界\\n"}]}'::jsonb),
     ('sql-demo', 7, 'project-old', 'system_prompt_added', 'prompt', 'system', 'project', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"content":[{"kind":"text","text":"Старые правила"}],"source_uri":null}'::jsonb),
     ('sql-demo', 8, 'project', 'system_prompt_added', 'prompt', 'system', 'project', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"content":[{"kind":"text","text":"Правила проекта."}],"source_uri":null}'::jsonb),
     ('sql-demo', 9, 'tool-add', 'tool_added', 'tool_catalog', null, 'mcp__database__list_tables', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"tool":{"description":"List tables"}}'::jsonb),
@@ -186,8 +197,8 @@ values
     ('sql-demo', 47, 'compact/search-schema', 'tool_schema', 'tool_schema', null, 'tool_search', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"tool":{"deferred":true,"parameters":{"type":"object","properties":{}},"description":"Find tools"},"catalog_revision":"compact/search-add"}'::jsonb),
     ('sql-demo', 48, 'compact/schema-new', 'tool_schema', 'tool_schema', null, 'mcp__database__list_tables', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"tool":{"deferred":true,"parameters":{"type":"object","properties":{}},"description":"List tables, fresh schema"},"catalog_revision":"compact/tool-add-again"}'::jsonb),
     ('sql-demo', 49, 'compact-result', 'slash_command_result', 'operational', null, null, 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"error":null,"content":[{"kind":"text","text":"Готово."}],"outcome":"succeeded","command_id":"compact-command","structured_content":null}'::jsonb),
-    ('sql-demo', 50, 'new-user', 'user_message', 'message', 'user', null, 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"content":[{"kind":"text","text":"Продолжим."}]}'::jsonb),
-    ('sql-demo', 51, 'resource', 'resource_message', 'message', 'user', null, 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', e'{"source":"client.editor","content":[{"kind":"text","text":"Выделение:\\n"},{"kind":"resource","uri":"file:///workspace/a.py","name":"a.py","content":[{"kind":"text","text":"print(''Привет'')\\r\\n"}],"line_end":1,"truncated":false,"line_start":1,"media_type":"text/x-python"}],"related_message_id":"new-user"}'::jsonb),
+    ('sql-demo', 50, 'new-user', 'user_message', 'input', 'user', null, 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"content":[{"kind":"text","text":"Продолжим."}]}'::jsonb),
+    ('sql-demo', 51, 'resource', 'resource_message', 'input', 'user', null, 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', e'{"source":"client.editor","content":[{"kind":"text","text":"Выделение:\\n"},{"kind":"resource","uri":"file:///workspace/a.py","name":"a.py","content":[{"kind":"text","text":"print(''Привет'')\\r\\n"}],"line_end":1,"truncated":false,"line_start":1,"media_type":"text/x-python"}],"related_message_id":"new-user"}'::jsonb),
     ('sql-demo', 52, 'permissions', 'permission_state', 'operational', null, null, 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"mode":"default","rules":[]}'::jsonb),
     ('sql-demo', 53, 'permission-decision', 'permission_decision', 'operational', null, null, 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"reason":"Allowed","call_id":"call-search","decision":"allow"}'::jsonb),
     ('sql-demo', 54, 'attempt', 'llm_request_attempt', 'operational', null, null, 'set', 'r1', null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"url":"https://inference.invalid/v1/chat/completions","error":null,"level":"info","method":"POST","attempt":1,"content":[{"kind":"text","text":"Запрос выполнен."}],"duration_ms":125,"status_code":200,"retry_after_ms":null}'::jsonb),
@@ -211,7 +222,7 @@ values
     ('sql-demo', 72, 'later-compact/compact/search-schema', 'tool_schema', 'tool_schema', null, 'tool_search', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"tool":{"deferred":true,"parameters":{"type":"object","properties":{}},"description":"Find tools"},"catalog_revision":"later-compact/compact/search-add"}'::jsonb),
     ('sql-demo', 73, 'later-compact/compact/schema-new', 'tool_schema', 'tool_schema', null, 'mcp__database__list_tables', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"tool":{"deferred":true,"parameters":{"type":"object","properties":{}},"description":"List tables, fresh schema"},"catalog_revision":"later-compact/compact/tool-add-again"}'::jsonb),
     ('sql-elicitation-demo', 1, 'model', 'model', 'setting', null, 'model', 'set', null, null, '2026-11-14 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"value":{"model":"test-model"},"provider":"openai"}'::jsonb),
-    ('sql-elicitation-demo', 2, 'user', 'user_message', 'message', 'user', null, 'set', null, null, '2026-11-14 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"content":[{"kind":"text","text":"Продолжим работу после настройки доступа."}]}'::jsonb),
+    ('sql-elicitation-demo', 2, 'user', 'user_message', 'input', 'user', null, 'set', null, null, '2026-11-14 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"content":[{"kind":"text","text":"Продолжим работу после настройки доступа."}]}'::jsonb),
     ('sql-elicitation-demo', 3, 'r0', 'llm_request_boundary', 'request', null, null, 'set', null, null, '2026-11-14 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{}'::jsonb),
     ('sql-elicitation-demo', 4, 'elicit-form', 'elicitation_request', 'operational', null, null, 'set', null, null, '2026-11-14 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"url":null,"mode":"form","source":"agent.preferences","call_id":null,"message":"Какие проверки запускать?","requested_schema":{"type":"object","required":["checks"],"properties":{"checks":{"type":"array","items":{"enum":["lint","tests"],"type":"string"},"minItems":1}}},"related_message_id":null}'::jsonb),
     ('sql-elicitation-demo', 5, 'elicit-form-response', 'elicitation_response', 'operational', null, null, 'set', null, null, '2026-11-14 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"action":"accept","content":{"checks":["lint","tests"]},"elicitation_id":"elicit-form"}'::jsonb),
@@ -230,7 +241,7 @@ values
     ('sql-elicitation-demo', 18, 'elicit-url-cancelled-completed', 'elicitation_completed', 'operational', null, null, 'set', null, null, '2026-11-14 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"error":null,"outcome":"cancelled","elicitation_id":"elicit-url-cancelled"}'::jsonb),
     ('sql-elicitation-demo', 19, 'r1', 'llm_request_boundary', 'request', null, null, 'set', null, null, '2026-11-14 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{}'::jsonb),
     ('sql-parameters-demo', 1, 'model', 'model', 'setting', null, 'model', 'set', null, null, '2026-11-14 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"value":{"model":"test-model"},"provider":"openai"}'::jsonb),
-    ('sql-parameters-demo', 2, 'user', 'user_message', 'message', 'user', null, 'set', null, null, '2026-11-14 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"content":[{"kind":"text","text":"Проверь настройки запроса."}]}'::jsonb),
+    ('sql-parameters-demo', 2, 'user', 'user_message', 'input', 'user', null, 'set', null, null, '2026-11-14 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"content":[{"kind":"text","text":"Проверь настройки запроса."}]}'::jsonb),
     ('sql-parameters-demo', 3, 'set-sampling', 'sampling', 'setting', null, 'sampling', 'set', null, null, '2026-11-14 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"value":{"temperature":0.2}}'::jsonb),
     ('sql-parameters-demo', 4, 'set-inference', 'inference', 'setting', null, 'inference', 'set', null, null, '2026-11-14 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"value":{"max_completion_tokens":1024}}'::jsonb),
     ('sql-parameters-demo', 5, 'set-provider_parameters', 'provider_parameters', 'setting', null, 'provider_parameters', 'set', null, null, '2026-11-14 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"value":{"parallel_tool_calls":true}}'::jsonb),
@@ -255,7 +266,7 @@ values
     ('sql-subagent-demo', 3, 'sampling', 'sampling', 'setting', null, 'sampling', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"value":{"temperature":0.1}}'::jsonb),
     ('sql-subagent-demo', 4, 'inference', 'inference', 'setting', null, 'inference', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"value":{"max_completion_tokens":128}}'::jsonb),
     ('sql-subagent-demo', 5, 'system', 'system_prompt_added', 'prompt', 'system', 'agent.role', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"content":[{"kind":"text","text":"Внутренние инструкции дочерней сессии: исследуй сборку запроса."}],"source_uri":null}'::jsonb),
-    ('sql-subagent-demo', 6, 'assignment', 'user_message', 'message', 'user', null, 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"content":[{"kind":"text","text":"Найди сборщик LLM-запроса."}]}'::jsonb),
+    ('sql-subagent-demo', 6, 'assignment', 'user_message', 'input', 'user', null, 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"content":[{"kind":"text","text":"Найди сборщик LLM-запроса."}]}'::jsonb),
     ('sql-subagent-demo', 7, 'child-r0', 'llm_request_boundary', 'request', null, null, 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{}'::jsonb),
     ('sql-subagent-demo', 8, 'answer', 'assistant_message', 'message', 'assistant', null, 'set', 'child-r0', null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"content":[{"kind":"text","text":"Сборщик найден в openai.sql."}],"completion":"complete"}'::jsonb),
     ('sql-tool-reference-demo', 1, 'model', 'model', 'setting', null, 'model', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"value":{"model":"test-model"},"provider":"openai"}'::jsonb),
@@ -263,7 +274,7 @@ values
     ('sql-tool-reference-demo', 3, 'inference', 'inference', 'setting', null, 'inference', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"value":{"reasoning_effort":"low","max_completion_tokens":1024}}'::jsonb),
     ('sql-tool-reference-demo', 4, 'provider', 'provider_parameters', 'setting', null, 'provider_parameters', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"value":{"parallel_tool_calls":true}}'::jsonb),
     ('sql-tool-reference-demo', 5, 'system', 'system_prompt_added', 'prompt', 'system', 'agent.role', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', e'{"content":[{"kind":"text","text":"Ты помощник.\\r\\n"}],"source_uri":null}'::jsonb),
-    ('sql-tool-reference-demo', 6, 'user', 'user_message', 'message', 'user', null, 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"content":[{"kind":"text","text":"Найди инструмент для получения списка таблиц."}]}'::jsonb),
+    ('sql-tool-reference-demo', 6, 'user', 'user_message', 'input', 'user', null, 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"content":[{"kind":"text","text":"Найди инструмент для получения списка таблиц."}]}'::jsonb),
     ('sql-tool-reference-demo', 7, 'search-add', 'tool_added', 'tool_catalog', null, 'tool_search', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"tool":{"description":"Find tools"}}'::jsonb),
     ('sql-tool-reference-demo', 8, 'search-schema', 'tool_schema', 'tool_schema', null, 'tool_search', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"tool":{"deferred":true,"parameters":{"type":"object","required":["query"],"properties":{"query":{"type":"string"}}},"description":"Find tools"},"catalog_revision":"search-add"}'::jsonb),
     ('sql-tool-reference-demo', 9, 'database-add', 'tool_added', 'tool_catalog', null, 'mcp__database__list_tables', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"tool":{"description":"List database tables"}}'::jsonb),
@@ -277,7 +288,7 @@ values
     ('sql-tool-search-demo', 3, 'inference', 'inference', 'setting', null, 'inference', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"value":{"reasoning_effort":"low","max_completion_tokens":1024}}'::jsonb),
     ('sql-tool-search-demo', 4, 'provider', 'provider_parameters', 'setting', null, 'provider_parameters', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"value":{"parallel_tool_calls":true}}'::jsonb),
     ('sql-tool-search-demo', 5, 'system', 'system_prompt_added', 'prompt', 'system', 'agent.role', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', e'{"content":[{"kind":"text","text":"Ты помощник.\\r\\n"}],"source_uri":null}'::jsonb),
-    ('sql-tool-search-demo', 6, 'user', 'user_message', 'message', 'user', null, 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"content":[{"kind":"text","text":"Найди инструмент для получения списка таблиц."}]}'::jsonb),
+    ('sql-tool-search-demo', 6, 'user', 'user_message', 'input', 'user', null, 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"content":[{"kind":"text","text":"Найди инструмент для получения списка таблиц."}]}'::jsonb),
     ('sql-tool-search-demo', 7, 'search-add', 'tool_added', 'tool_catalog', null, 'tool_search', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"tool":{"description":"Find tools"}}'::jsonb),
     ('sql-tool-search-demo', 8, 'search-schema', 'tool_schema', 'tool_schema', null, 'tool_search', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"tool":{"deferred":true,"parameters":{"type":"object","required":["query"],"properties":{"query":{"type":"string"}}},"description":"Find tools"},"catalog_revision":"search-add"}'::jsonb),
     ('sql-tool-search-demo', 9, 'database-add', 'tool_added', 'tool_catalog', null, 'mcp__database__list_tables', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"tool":{"description":"List database tables"}}'::jsonb),
@@ -287,17 +298,11 @@ values
     ('sql-tool-search-demo', 13, 'database-schema', 'tool_schema', 'tool_schema', null, 'mcp__database__list_tables', 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{"tool":{"deferred":true,"parameters":{"type":"object","properties":{}},"description":"List database tables"},"catalog_revision":"database-add"}'::jsonb),
     ('sql-tool-search-demo', 14, 'r1', 'llm_request_boundary', 'request', null, null, 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{}'::jsonb),
     ('sql-tool-search-demo', 15, 'database-remove', 'tool_removed', 'tool_catalog', null, 'mcp__database__list_tables', 'remove', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{}'::jsonb),
-    ('sql-tool-search-demo', 16, 'r2', 'llm_request_boundary', 'request', null, null, 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{}'::jsonb);
-
--- ACP: full history, compaction copies, diagnostic replay and live elicitation.
-insert into history_sql.records (
-    session_id, seq, record_id, kind, category, role, key, operation, request_id, copied_from_id, created_at, version, payload
-)
-values
+    ('sql-tool-search-demo', 16, 'r2', 'llm_request_boundary', 'request', null, null, 'set', null, null, '2026-11-13 09:00:00+00:00'::timestamptz, '0.0.33.dev4', '{}'::jsonb),
     ('sql-acp-demo', 1, 'model', 'model', 'setting', null, 'model', 'set', null, null, '2026-11-14T10:00:00Z', '0.0.33.dev4', '{"value": {"model": "test-model"}, "provider": "openai"}'::jsonb),
     ('sql-acp-demo', 2, 'sampling', 'sampling', 'setting', null, 'sampling', 'set', null, null, '2026-11-14T10:00:00Z', '0.0.33.dev4', '{"value": {"temperature": 0.2, "top_p": 0.9}}'::jsonb),
     ('sql-acp-demo', 3, 'permission', 'permission_state', 'operational', null, null, 'set', null, null, '2026-11-14T10:00:00Z', '0.0.33.dev4', '{"mode": "default", "rules": [{"tool": "mcp__workspace__read", "decision": "ask"}]}'::jsonb),
-    ('sql-acp-demo', 4, 'user', 'user_message', 'message', 'user', null, 'set', null, null, '2026-11-14T10:00:00Z', '0.0.33.dev4', '{"content": [{"kind": "text", "text": "Прочитай файл.\r\n"}, {"kind": "image", "media_type": "image/png", "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk-A8AAQUBAScY42YAAAAASUVORK5CYII="}, {"kind": "resource", "name": "app.py", "uri": "file:///workspace/app.py", "media_type": "text/x-python", "content": [{"kind": "text", "text": "print(\"Привет\")\n"}], "line_start": 10, "line_end": 10, "truncated": true}, {"kind": "resource", "name": "empty", "uri": "file:///workspace/empty", "media_type": "text/plain", "content": [], "line_start": null, "line_end": null, "truncated": false}, {"kind": "resource", "name": "remote", "uri": "https://example.com/skill.md", "media_type": "text/markdown", "content": null, "line_start": null, "line_end": null, "truncated": false}]}'::jsonb),
+    ('sql-acp-demo', 4, 'user', 'user_message', 'input', 'user', null, 'set', null, null, '2026-11-14T10:00:00Z', '0.0.33.dev4', '{"content": [{"kind": "text", "text": "Прочитай файл.\r\n"}, {"kind": "image", "media_type": "image/png", "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk-A8AAQUBAScY42YAAAAASUVORK5CYII="}, {"kind": "resource", "name": "app.py", "uri": "file:///workspace/app.py", "media_type": "text/x-python", "content": [{"kind": "text", "text": "print(\"Привет\")\n"}], "line_start": 10, "line_end": 10, "truncated": true}, {"kind": "resource", "name": "empty", "uri": "file:///workspace/empty", "media_type": "text/plain", "content": [], "line_start": null, "line_end": null, "truncated": false}, {"kind": "resource", "name": "remote", "uri": "https://example.com/skill.md", "media_type": "text/markdown", "content": null, "line_start": null, "line_end": null, "truncated": false}]}'::jsonb),
     ('sql-acp-demo', 5, 'r0', 'llm_request_boundary', 'request', null, null, 'set', null, null, '2026-11-14T10:00:00Z', '0.0.33.dev4', '{}'::jsonb),
     ('sql-acp-demo', 6, 'assistant', 'assistant_message', 'message', 'assistant', null, 'set', 'r0', null, '2026-11-14T10:00:00Z', '0.0.33.dev4', '{"content": [{"kind": "reasoning", "text": "Нужно прочитать.", "signature": null, "format": null}, {"kind": "text", "text": "Читаю."}, {"kind": "tool_call", "call_id": "call-read", "name": "mcp__workspace__read", "arguments": {"path": "app.py", "optional": null}}, {"kind": "text", "text": "Ожидаю результат."}], "completion": "complete"}'::jsonb),
     ('sql-acp-demo', 7, 'result', 'tool_result', 'message', 'tool', null, 'set', null, null, '2026-11-14T10:00:00Z', '0.0.33.dev4', '{"call_id": "call-read", "content": [{"kind": "text", "text": "print(\"Привет\")\n"}], "is_error": false}'::jsonb),
@@ -311,20 +316,14 @@ values
     ('sql-acp-demo', 15, 'end', 'turn_end', 'operational', null, null, 'set', null, null, '2026-11-14T10:00:00Z', '0.0.33.dev4', '{"turn_id": "turn-1", "outcome": "completed", "duration_ms": 100, "error": null}'::jsonb),
     ('sql-acp-demo', 16, 'compact', 'compact_message', 'compact', 'user', null, 'set', null, null, '2026-11-14T10:00:00Z', '0.0.33.dev4', '{"reason": "manual", "content": [{"kind": "text", "text": "Файл прочитан."}]}'::jsonb),
     ('sql-acp-demo', 17, 'copy-model', 'model', 'setting', null, 'model', 'set', null, 'model', '2026-11-14T10:00:00Z', '0.0.33.dev4', '{"value": {"model": "test-model"}, "provider": "openai"}'::jsonb),
-    ('sql-acp-demo', 18, 'copy-user', 'user_message', 'message', 'user', null, 'set', null, 'user', '2026-11-14T10:00:00Z', '0.0.33.dev4', '{"content": [{"kind": "text", "text": "Прочитай файл.\r\n"}, {"kind": "image", "media_type": "image/png", "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk-A8AAQUBAScY42YAAAAASUVORK5CYII="}, {"kind": "resource", "name": "app.py", "uri": "file:///workspace/app.py", "media_type": "text/x-python", "content": [{"kind": "text", "text": "print(\"Привет\")\n"}], "line_start": 10, "line_end": 10, "truncated": true}, {"kind": "resource", "name": "empty", "uri": "file:///workspace/empty", "media_type": "text/plain", "content": [], "line_start": null, "line_end": null, "truncated": false}, {"kind": "resource", "name": "remote", "uri": "https://example.com/skill.md", "media_type": "text/markdown", "content": null, "line_start": null, "line_end": null, "truncated": false}]}'::jsonb),
+    ('sql-acp-demo', 18, 'copy-user', 'user_message', 'input', 'user', null, 'set', null, 'user', '2026-11-14T10:00:00Z', '0.0.33.dev4', '{"content": [{"kind": "text", "text": "Прочитай файл.\r\n"}, {"kind": "image", "media_type": "image/png", "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk-A8AAQUBAScY42YAAAAASUVORK5CYII="}, {"kind": "resource", "name": "app.py", "uri": "file:///workspace/app.py", "media_type": "text/x-python", "content": [{"kind": "text", "text": "print(\"Привет\")\n"}], "line_start": 10, "line_end": 10, "truncated": true}, {"kind": "resource", "name": "empty", "uri": "file:///workspace/empty", "media_type": "text/plain", "content": [], "line_start": null, "line_end": null, "truncated": false}, {"kind": "resource", "name": "remote", "uri": "https://example.com/skill.md", "media_type": "text/markdown", "content": null, "line_start": null, "line_end": null, "truncated": false}]}'::jsonb),
     ('sql-acp-demo', 19, 'copy-assistant', 'assistant_message', 'message', 'assistant', null, 'set', 'r0', 'assistant', '2026-11-14T10:00:00Z', '0.0.33.dev4', '{"content": [{"kind": "reasoning", "text": "Нужно прочитать.", "signature": null, "format": null}, {"kind": "text", "text": "Читаю."}, {"kind": "tool_call", "call_id": "call-read", "name": "mcp__workspace__read", "arguments": {"path": "app.py", "optional": null}}, {"kind": "text", "text": "Ожидаю результат."}], "completion": "complete"}'::jsonb),
     ('sql-acp-demo', 20, 'copy-result', 'tool_result', 'message', 'tool', null, 'set', null, 'result', '2026-11-14T10:00:00Z', '0.0.33.dev4', '{"call_id": "call-read", "content": [{"kind": "text", "text": "print(\"Привет\")\n"}], "is_error": false}'::jsonb),
     ('sql-acp-demo', 21, 'sampling-new', 'sampling', 'setting', null, 'sampling', 'set', null, null, '2026-11-14T10:00:00Z', '0.0.33.dev4', '{"value": {"temperature": 0.7}}'::jsonb),
     ('sql-acp-demo', 22, 'sampling-removed', 'sampling_removed', 'setting', null, 'sampling', 'remove', null, null, '2026-11-14T10:00:00Z', '0.0.33.dev4', '{}'::jsonb),
     ('sql-acp-demo', 23, 'one-request', 'sampling', 'setting', null, 'sampling', 'set', 'r1', null, '2026-11-14T10:00:00Z', '0.0.33.dev4', '{"value": {"temperature": 0.8}}'::jsonb),
     ('sql-acp-demo', 24, 'r1', 'llm_request_boundary', 'request', null, null, 'set', null, null, '2026-11-14T10:00:00Z', '0.0.33.dev4', '{}'::jsonb),
-    ('sql-acp-demo', 25, 'final', 'assistant_message', 'message', 'assistant', null, 'set', 'r1', null, '2026-11-14T10:00:00Z', '0.0.33.dev4', '{"content": [{"kind": "text", "text": "Готово."}], "completion": "complete"}'::jsonb);
-
--- ACP actions and deliberately inconsistent journals: validate before sending.
-insert into history_sql.records (
-    session_id, seq, record_id, kind, category, role, key, operation, request_id, copied_from_id, created_at, version, payload
-)
-values
+    ('sql-acp-demo', 25, 'final', 'assistant_message', 'message', 'assistant', null, 'set', 'r1', null, '2026-11-14T10:00:00Z', '0.0.33.dev4', '{"content": [{"kind": "text", "text": "Готово."}], "completion": "complete"}'::jsonb),
     ('sql-acp-actions-demo', 1, 'info', 'notice', 'operational', null, null, 'set', null, null, '2026-11-14T12:00:00Z', '0.0.33.dev4', '{"level": "info", "content": [{"kind": "text", "text": "Информация."}]}'::jsonb),
     ('sql-acp-actions-demo', 2, 'error', 'notice', 'operational', null, null, 'set', null, null, '2026-11-14T12:00:00Z', '0.0.33.dev4', '{"level": "error", "content": [{"kind": "text", "text": "Сервис недоступен."}]}'::jsonb),
     ('sql-acp-actions-demo', 3, 'cancelled', 'elicitation_request', 'operational', null, null, 'set', null, null, '2026-11-14T12:00:00Z', '0.0.33.dev4', '{"source": "agent.demo", "message": "Продолжить?", "mode": "form", "related_message_id": null, "call_id": null, "requested_schema": {"type": "object", "properties": {"confirm": {"type": "boolean"}}}, "url": null}'::jsonb),
@@ -339,9 +338,158 @@ values
     ('sql-acp-actions-demo', 12, 'pending', 'elicitation_request', 'operational', null, null, 'set', null, null, '2026-11-14T12:00:00Z', '0.0.33.dev4', '{"source": "agent.demo", "message": "Продолжить?", "mode": "form", "related_message_id": null, "call_id": null, "requested_schema": {"type": "object", "properties": {"confirm": {"type": "boolean"}}}, "url": null}'::jsonb),
     ('sql-acp-actions-demo', 13, 'pending-url', 'elicitation_request', 'operational', null, null, 'set', null, null, '2026-11-14T12:00:00Z', '0.0.33.dev4', '{"source": "agent.demo", "message": "Подключите доступ.", "mode": "url", "related_message_id": null, "call_id": null, "requested_schema": null, "url": "https://example.com/connect"}'::jsonb),
     ('sql-acp-orphan-demo', 1, 'result', 'tool_result', 'message', 'tool', null, 'set', null, null, '2026-11-14T12:00:00Z', '0.0.33.dev4', '{"call_id": "no-call", "content": [{"kind": "text", "text": "Результат без вызова."}], "is_error": false}'::jsonb),
-    ('sql-acp-copy-demo', 1, 'copy', 'user_message', 'message', 'user', null, 'set', null, 'missing-original', '2026-11-14T12:00:00Z', '0.0.33.dev4', '{"content": [{"kind": "text", "text": "Несуществующий оригинал."}]}'::jsonb),
+    ('sql-acp-copy-demo', 1, 'copy', 'user_message', 'input', 'user', null, 'set', null, 'missing-original', '2026-11-14T12:00:00Z', '0.0.33.dev4', '{"content": [{"kind": "text", "text": "Несуществующий оригинал."}]}'::jsonb),
     ('sql-acp-duplicate-demo', 1, 'r0', 'llm_request_boundary', 'request', null, null, 'set', null, null, '2026-11-14T12:00:00Z', '0.0.33.dev4', '{}'::jsonb),
     ('sql-acp-duplicate-demo', 2, 'first', 'assistant_message', 'message', 'assistant', null, 'set', 'r0', null, '2026-11-14T12:00:00Z', '0.0.33.dev4', '{"content": [{"kind": "tool_call", "call_id": "duplicate-call", "name": "mcp__workspace__read", "arguments": {}}], "completion": "complete"}'::jsonb),
-    ('sql-acp-duplicate-demo', 3, 'second', 'assistant_message', 'message', 'assistant', null, 'set', 'r0', null, '2026-11-14T12:00:00Z', '0.0.33.dev4', '{"content": [{"kind": "tool_call", "call_id": "duplicate-call", "name": "mcp__workspace__read", "arguments": {}}], "completion": "complete"}'::jsonb);
+    ('sql-acp-duplicate-demo', 3, 'second', 'assistant_message', 'message', 'assistant', null, 'set', 'r0', null, '2026-11-14T12:00:00Z', '0.0.33.dev4', '{"content": [{"kind": "tool_call", "call_id": "duplicate-call", "name": "mcp__workspace__read", "arguments": {}}], "completion": "complete"}'::jsonb)
+),
+expanded as (
+    select
+        s.session_id,
+        s.seq,
+        s.record_id,
+        s.kind,
+        s.category,
+        s.role,
+        s.key,
+        s.operation,
+        s.request_id,
+        s.copied_from_id,
+        s.created_at,
+        s.version,
+        s.payload,
+        0 as step
+    from
+        source s
+    union all
+    select
+        session_id, seq, record_id || '/accepted', 'message_accepted', 'admission',
+        null, null, 'set', null, copied_from_id || '/accepted', created_at, version,
+        jsonb_build_object('source_record_id', record_id), 1
+    from
+        source
+    where 1=1
+        and category = 'input'
+)
+insert into history_sql.records (
+    session_id, seq, record_id, kind, category, role, key, operation, request_id, copied_from_id, created_at, version, payload
+)
+select
+    session_id,
+    row_number() over (partition by session_id order by seq, step),
+    record_id, kind, category, role, key, operation, request_id,
+    copied_from_id, created_at, version, payload
+from
+    expanded
+order by
+    session_id, seq, step;
+
+-- Input received during a tool call: ACP sees seq=6 immediately; LLM admits it at seq=9.
+insert into history_sql.records (
+    session_id, seq, record_id, kind, category, role, key, operation, request_id, copied_from_id, created_at, version, payload
+)
+values
+    ('sql-admission-demo', 1, 'model', 'model', 'setting', null, 'model', 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"provider": "openai", "value": {"model": "test-model"}}'::jsonb),
+    ('sql-admission-demo', 2, 'first', 'user_message', 'input', 'user', null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"content": [{"kind": "text", "text": "Проверь проект."}]}'::jsonb),
+    ('sql-admission-demo', 3, 'first-accepted', 'message_accepted', 'admission', null, null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"source_record_id": "first"}'::jsonb),
+    ('sql-admission-demo', 4, 'r0', 'llm_request_boundary', 'request', null, null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{}'::jsonb),
+    ('sql-admission-demo', 5, 'call', 'assistant_message', 'message', 'assistant', null, 'set', 'r0', null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"completion": "complete", "content": [{"kind": "tool_call", "call_id": "check", "name": "mcp__workspace__check", "arguments": {}}]}'::jsonb),
+    ('sql-admission-demo', 6, 'next', 'user_message', 'input', 'user', null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"content": [{"kind": "text", "text": "И проверь тесты.\r\n"}]}'::jsonb),
+    ('sql-admission-demo', 7, 'result', 'tool_result', 'message', 'tool', null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"call_id": "check", "content": [{"kind": "text", "text": "Проект проверен."}], "is_error": false}'::jsonb),
+    ('sql-admission-demo', 8, 'r1', 'llm_request_boundary', 'request', null, null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{}'::jsonb),
+    ('sql-admission-demo', 9, 'next-accepted', 'message_accepted', 'admission', null, null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"source_record_id": "next"}'::jsonb),
+    ('sql-admission-demo', 10, 'r2', 'llm_request_boundary', 'request', null, null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{}'::jsonb);
+
+-- Native permission request: pending, selected and cancelled outcomes.
+insert into history_sql.records (
+    session_id, seq, record_id, kind, category, role, key, operation, request_id, copied_from_id, created_at, version, payload
+)
+values
+    ('sql-permission-demo', 1, 'model', 'model', 'setting', null, 'model', 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"value": {"model": "test-model"}, "provider": "openai"}'::jsonb),
+    ('sql-permission-demo', 2, 'user', 'user_message', 'input', 'user', null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"content": [{"kind": "text", "text": "Проверь проект."}]}'::jsonb),
+    ('sql-permission-demo', 3, 'accepted', 'message_accepted', 'admission', null, null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"source_record_id": "user"}'::jsonb),
+    ('sql-permission-demo', 4, 'r0', 'llm_request_boundary', 'request', null, null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{}'::jsonb),
+    ('sql-permission-demo', 5, 'assistant', 'assistant_message', 'message', 'assistant', null, 'set', 'r0', null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"content": [{"kind": "tool_call", "call_id": "pending-call", "name": "mcp__workspace__run", "arguments": {"command": "pytest"}}, {"kind": "tool_call", "call_id": "answered-call", "name": "mcp__workspace__run", "arguments": {"command": "pytest"}}, {"kind": "tool_call", "call_id": "cancelled-call", "name": "mcp__workspace__run", "arguments": {"command": "pytest"}}], "completion": "complete"}'::jsonb),
+    ('sql-permission-demo', 6, 'pending', 'permission_request', 'operational', null, null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"related_message_id": "assistant", "call_id": "pending-call", "title": "Запустить pytest?", "description": null, "options": [{"option_id": "once", "name": "Разрешить один раз", "decision": "allow", "scope": "call"}, {"option_id": "session", "name": "Разрешить в этой сессии", "decision": "allow", "scope": "session"}, {"option_id": "deny", "name": "Отказать", "decision": "deny", "scope": "call"}]}'::jsonb),
+    ('sql-permission-demo', 7, 'answered', 'permission_request', 'operational', null, null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"related_message_id": "assistant", "call_id": "answered-call", "title": "Запустить pytest?", "description": null, "options": [{"option_id": "once", "name": "Разрешить один раз", "decision": "allow", "scope": "call"}, {"option_id": "session", "name": "Разрешить в этой сессии", "decision": "allow", "scope": "session"}, {"option_id": "deny", "name": "Отказать", "decision": "deny", "scope": "call"}]}'::jsonb),
+    ('sql-permission-demo', 8, 'answered-response', 'permission_response', 'operational', null, null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"permission_request_id": "answered", "action": "selected", "option_id": "once"}'::jsonb),
+    ('sql-permission-demo', 9, 'cancelled', 'permission_request', 'operational', null, null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"related_message_id": "assistant", "call_id": "cancelled-call", "title": "Запустить pytest?", "description": null, "options": [{"option_id": "once", "name": "Разрешить один раз", "decision": "allow", "scope": "call"}, {"option_id": "session", "name": "Разрешить в этой сессии", "decision": "allow", "scope": "session"}, {"option_id": "deny", "name": "Отказать", "decision": "deny", "scope": "call"}]}'::jsonb),
+    ('sql-permission-demo', 10, 'cancelled-response', 'permission_response', 'operational', null, null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"permission_request_id": "cancelled", "action": "cancelled", "option_id": null}'::jsonb);
+
+-- Available commands: add, remove, replacement and empty catalogue.
+insert into history_sql.records (
+    session_id, seq, record_id, kind, category, role, key, operation, request_id, copied_from_id, created_at, version, payload
+)
+values
+    ('sql-commands-demo', 1, 'compact', 'command_added', 'operational', null, 'compact', 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"description": "Сжать контекст разговора", "owner": {"kind": "agent"}, "input_hint": "Что сохранить в пересказе"}'::jsonb),
+    ('sql-commands-demo', 2, 'mcp', 'command_added', 'operational', null, 'mcp__database__report', 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"description": "Построить отчёт", "owner": {"kind": "mcp_prompt"}, "input_hint": null}'::jsonb),
+    ('sql-commands-demo', 3, 'remove-compact', 'command_removed', 'operational', null, 'compact', 'remove', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{}'::jsonb),
+    ('sql-commands-demo', 4, 'update-mcp', 'command_added', 'operational', null, 'mcp__database__report', 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"description": "Построить подробный отчёт", "owner": {"kind": "mcp_prompt"}, "input_hint": "Период отчёта"}'::jsonb),
+    ('sql-commands-demo', 5, 'remove-mcp', 'command_removed', 'operational', null, 'mcp__database__report', 'remove', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{}'::jsonb);
+
+-- Normal dialogue, summarization and permission classification in ONE session.
+insert into history_sql.records (
+    session_id, seq, record_id, kind, category, role, key, operation, request_id, copied_from_id, created_at, version, payload
+)
+values
+    ('sql-services-demo', 1, 'model', 'model', 'setting', null, 'model', 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"value": {"model": "test-model"}, "provider": "openai"}'::jsonb),
+    ('sql-services-demo', 2, 'sampling', 'sampling', 'setting', null, 'sampling', 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"value": {"temperature": 0.2}}'::jsonb),
+    ('sql-services-demo', 3, 'system', 'system_prompt_added', 'prompt', 'system', 'agent', 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"source_uri": null, "content": [{"kind": "text", "text": "Помогай пользователю."}]}'::jsonb),
+    ('sql-services-demo', 4, 'tool', 'tool_added', 'tool_catalog', null, 'mcp__workspace__run', 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"tool": {"description": "Run a command"}}'::jsonb),
+    ('sql-services-demo', 5, 'schema', 'tool_schema', 'tool_schema', null, 'mcp__workspace__run', 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"catalog_revision": "tool", "tool": {"description": "Run a command", "parameters": {"type": "object", "properties": {}}, "deferred": true}}'::jsonb),
+    ('sql-services-demo', 6, 'user', 'user_message', 'input', 'user', null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"content": [{"kind": "text", "text": "Какие задачи остались?"}]}'::jsonb),
+    ('sql-services-demo', 7, 'accepted', 'message_accepted', 'admission', null, null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"source_record_id": "user"}'::jsonb),
+    ('sql-services-demo', 8, 'r0', 'llm_request_boundary', 'request', null, null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{}'::jsonb),
+    ('sql-services-demo', 9, 'answer', 'assistant_message', 'message', 'assistant', null, 'set', 'r0', null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"content": [{"kind": "text", "text": "Осталось проверить сборку SQL."}], "completion": "complete"}'::jsonb),
+    ('sql-services-demo', 10, 'summary-context', 'request_context', 'request_context', null, null, 'set', 'summary', null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"mode": "conversation", "from_seq": null, "through_seq": 9}'::jsonb),
+    ('sql-services-demo', 11, 'summary-input', 'request_message', 'request_message', 'user', null, 'set', 'summary', null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"content": [{"kind": "text", "text": "Составь краткий пересказ решений и оставшихся задач."}]}'::jsonb),
+    ('sql-services-demo', 12, 'summary', 'llm_request_boundary', 'request', null, null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{}'::jsonb),
+    ('sql-services-demo', 13, 'summary-answer', 'request_output', 'operational', 'assistant', null, 'set', 'summary', null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"content": [{"kind": "text", "text": "Нужно проверить сборку SQL."}], "completion": "complete"}'::jsonb),
+    ('sql-services-demo', 14, 'summary-usage', 'token_usage', 'operational', null, null, 'set', 'summary', null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"usage": {"input_tokens": 120, "output_tokens": 20, "reasoning_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0}}'::jsonb),
+    ('sql-services-demo', 15, 'classifier-context', 'request_context', 'request_context', null, null, 'set', 'classifier', null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"mode": "isolated", "from_seq": null, "through_seq": null}'::jsonb),
+    ('sql-services-demo', 16, 'classifier-system', 'system_prompt_added', 'prompt', 'system', 'permission', 'set', 'classifier', null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"source_uri": null, "content": [{"kind": "text", "text": "Определи, допустим ли вызов инструмента. Верни решение JSON."}]}'::jsonb),
+    ('sql-services-demo', 17, 'classifier-format', 'response_format', 'setting', null, 'response_format', 'set', 'classifier', null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"value": {"response_format": {"type": "json_object"}}}'::jsonb),
+    ('sql-services-demo', 18, 'classifier-input', 'request_message', 'request_message', 'user', null, 'set', 'classifier', null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"content": [{"kind": "text", "text": "Инструмент mcp__workspace__run; аргументы: {\"command\":\"pytest\"}."}]}'::jsonb),
+    ('sql-services-demo', 19, 'classifier', 'llm_request_boundary', 'request', null, null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{}'::jsonb),
+    ('sql-services-demo', 20, 'classifier-answer', 'request_output', 'operational', 'assistant', null, 'set', 'classifier', null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"content": [{"kind": "text", "text": "{\"decision\":\"allow\"}"}], "completion": "complete"}'::jsonb),
+    ('sql-services-demo', 21, 'r1', 'llm_request_boundary', 'request', null, null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{}'::jsonb);
+
+-- Native configuration choices read current values from saved settings.
+insert into history_sql.records (
+    session_id, seq, record_id, kind, category, role, key, operation, request_id, copied_from_id, created_at, version, payload
+)
+values
+    ('sql-options-demo', 1, 'sampling', 'sampling', 'setting', null, 'sampling', 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"value": {"temperature": 0.2, "top_p": 0.9}}'::jsonb),
+    ('sql-options-demo', 2, 'temperature', 'parameter_option', 'operational', null, 'temperature', 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"name": "Температура", "description": null, "source_kinds": ["sampling", "sampling_removed"], "source_key": "sampling", "value_path": ["value", "temperature"], "choices": [{"value_id": "unset", "name": "Не задана", "value": null}, {"value_id": "precise", "name": "Точный", "value": 0.2}, {"value_id": "creative", "name": "Творческий", "value": 0.8}]}'::jsonb),
+    ('sql-options-demo', 3, 'sampling-new', 'sampling', 'setting', null, 'sampling', 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"value": {"temperature": 0.8, "top_p": 0.5}}'::jsonb),
+    ('sql-options-demo', 4, 'sampling-removed', 'sampling_removed', 'setting', null, 'sampling', 'remove', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{}'::jsonb),
+    ('sql-options-demo', 5, 'permission', 'permission_state', 'operational', null, null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"mode": "default", "rules": []}'::jsonb),
+    ('sql-options-demo', 6, 'permission-mode', 'parameter_option', 'operational', null, 'mode', 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"name": "Разрешения", "description": null, "source_kinds": ["permission_state"], "source_key": null, "value_path": ["mode"], "choices": [{"value_id": "default", "name": "Обычный", "value": "default"}, {"value_id": "plan", "name": "Планирование", "value": "plan"}]}'::jsonb),
+    ('sql-options-demo', 7, 'permission-new', 'permission_state', 'operational', null, null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"mode": "plan", "rules": [{"tool": "mcp__workspace__run", "decision": "deny"}]}'::jsonb),
+    ('sql-options-demo', 8, 'temperature-removed', 'parameter_option_removed', 'operational', null, 'temperature', 'remove', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{}'::jsonb),
+    ('sql-options-demo', 9, 'mode-removed', 'parameter_option_removed', 'operational', null, 'mode', 'remove', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{}'::jsonb),
+    ('sql-options-demo', 10, 'model', 'model', 'setting', null, 'model', 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"value": {"model": "test-model"}, "provider": "openai"}'::jsonb),
+    ('sql-options-demo', 11, 'model-options', 'parameter_option', 'operational', null, 'model', 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"name": "Модель", "description": null, "source_kinds": ["model"], "source_key": "model", "value_path": [], "choices": [{"value_id": "default", "name": "Основная", "value": {"provider": "openai", "value": {"model": "test-model"}}}, {"value_id": "other", "name": "Другая", "value": {"provider": "other", "value": {"model": "test-model"}}}]}'::jsonb);
+
+-- Three inputs arrive while two tools run; all three are admitted in arrival order.
+insert into history_sql.records (
+    session_id, seq, record_id, kind, category, role, key, operation, request_id, copied_from_id, created_at, version, payload
+)
+values
+    ('sql-admission-batch-demo', 1, 'model', 'model', 'setting', null, 'model', 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"value": {"model": "test-model"}, "provider": "openai"}'::jsonb),
+    ('sql-admission-batch-demo', 2, 'first', 'user_message', 'input', 'user', null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"content": [{"kind": "text", "text": "Проверь проект."}]}'::jsonb),
+    ('sql-admission-batch-demo', 3, 'accept-first', 'message_accepted', 'admission', null, null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"source_record_id": "first"}'::jsonb),
+    ('sql-admission-batch-demo', 4, 'r0', 'llm_request_boundary', 'request', null, null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{}'::jsonb),
+    ('sql-admission-batch-demo', 5, 'calls', 'assistant_message', 'message', 'assistant', null, 'set', 'r0', null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"content": [{"kind": "tool_call", "call_id": "check", "name": "mcp__workspace__check", "arguments": {}}, {"kind": "tool_call", "call_id": "tests", "name": "mcp__workspace__tests", "arguments": {}}], "completion": "complete"}'::jsonb),
+    ('sql-admission-batch-demo', 6, 'next-1', 'user_message', 'input', 'user', null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"content": [{"kind": "text", "text": "Проверь также документацию."}]}'::jsonb),
+    ('sql-admission-batch-demo', 7, 'next-2', 'user_message', 'input', 'user', null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"content": [{"kind": "text", "text": "И конфигурацию.\r\n  世界"}]}'::jsonb),
+    ('sql-admission-batch-demo', 8, 'result-check', 'tool_result', 'message', 'tool', null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"call_id": "check", "content": [{"kind": "text", "text": "Проект проверен."}], "is_error": false}'::jsonb),
+    ('sql-admission-batch-demo', 9, 'next-3', 'user_message', 'input', 'user', null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"content": [{"kind": "text", "text": "В конце перечисли найденные проблемы."}]}'::jsonb),
+    ('sql-admission-batch-demo', 10, 'result-tests', 'tool_result', 'message', 'tool', null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"call_id": "tests", "content": [{"kind": "text", "text": "Тесты прошли."}], "is_error": false}'::jsonb),
+    ('sql-admission-batch-demo', 11, 'before-admission', 'llm_request_boundary', 'request', null, null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{}'::jsonb),
+    ('sql-admission-batch-demo', 12, 'accept-next-1', 'message_accepted', 'admission', null, null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"source_record_id": "next-1"}'::jsonb),
+    ('sql-admission-batch-demo', 13, 'accept-next-2', 'message_accepted', 'admission', null, null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"source_record_id": "next-2"}'::jsonb),
+    ('sql-admission-batch-demo', 14, 'accept-next-3', 'message_accepted', 'admission', null, null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{"source_record_id": "next-3"}'::jsonb),
+    ('sql-admission-batch-demo', 15, 'after-admission', 'llm_request_boundary', 'request', null, null, 'set', null, null, '2026-11-14T09:00:00Z', '0.0.33.dev4', '{}'::jsonb);
 
 commit;

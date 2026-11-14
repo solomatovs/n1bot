@@ -11,10 +11,15 @@ SQL создаёт данные протокола; отправка, capabiliti
 
 ## Как использовать запросы
 
-Это четыре операции адаптера с разными поводами для запуска. При восстановлении чата
+Это семь операций адаптера с разными поводами для запуска. При восстановлении чата
 используются `acp_history.sql` и `acp_state.sql`. Когда агенту нужно сейчас показать
 предупреждение или задать вопрос, используются соответственно `acp_notice.sql` и
-`acp_elicitation.sql`. Запускать все четыре подряд для восстановления не нужно.
+`acp_elicitation.sql`. `acp_permission.sql` запрашивает разрешение выполнить tool.
+Эти три запроса действий при восстановлении переписки не запускаются.
+`acp_commands.sql` собирает доступные команды для ответа session/new/resume
+и для обновления каталога во время работы.
+`acp_options.sql` собирает редактируемые параметры configOptions из сохранённых
+описаний вариантов и текущих настроек.
 
 Все запросы только читают уже сохранённую историю и возвращают данные. Выполнение SQL
 в редакторе ничего не отправляет клиенту, не запускает tools и не вызывает LLM.
@@ -28,10 +33,10 @@ SQL создаёт данные протокола; отправка, capabiliti
 [fixtures.sql](../experiments/history-sql/fixtures.sql).
 
 - `session_id` — идентификатор чата из `records.session_id`. В примерах: `'sql-acp-demo'`.
-- `seq` — порядковый номер сохранённой записи внутри этого чата. В тестовом чате: 1–25.
+- `seq` — порядковый номер сохранённой записи внутри этого чата. В тестовом чате: 1–27.
 - `record_id` — идентификатор одной записи из `records.record_id`, например `'warning'`.
   Он выбирает конкретное предупреждение или вопрос; это не номер `seq`.
-- `request_id` — связь с LLM-запросом. **Ни один из этих четырёх ACP-запросов его не принимает.**
+- `request_id` — связь с LLM-запросом. **Ни один из ACP-запросов его не принимает.**
 
 `$1`, `$2`, `$3` — места для параметров при вызове из программы. Для ручного запуска
 открой нужный SQL-файл и замени значения **только в первом CTE `params`**, как показано ниже.
@@ -60,22 +65,22 @@ params as (
 
 `after_seq` исключает сам указанный номер и всё перед ним; `null` равнозначен 0.
 `through_seq` включает указанный номер; `null` выбирает последний seq на момент чтения.
-Поэтому параметры `(15, 25)` означают записи **16–25**, а не количество записей или OFFSET.
+Поэтому параметры `(16, 27)` означают записи **17–27**, а не количество записей или OFFSET.
 
 Готовые случаи из тестовых данных:
 
 | Случай | Параметры | Ожидаемый результат |
 | --- | --- | --- |
-| Весь чат | `'sql-acp-demo', null, null` | 15 ACP-уведомлений, bounds.through_seq=25 |
+| Весь чат | `'sql-acp-demo', null, null` | 15 ACP-уведомлений, bounds.through_seq=27 |
 | Только настройки | `'sql-acp-demo', null, 3` | Пустой notifications: настройки не становятся репликами чата |
 | Ввод с вложениями | `'sql-acp-demo', 3, 4` | Одно user_message: текст, изображение, ресурс с текстом, пустой ресурс и ссылка на незагруженный ресурс |
-| Ответ с вызовом tool | `'sql-acp-demo', 5, 6` | Строго agent_thought → agent_message → tool_call_update → agent_message |
-| Только результат tool | `'sql-acp-demo', 6, 7` | Одно tool_call_update со status=completed и toolCallId=call-read; вызов найден в предыдущей части истории |
-| Предупреждение в истории | `'sql-acp-demo', 7, 9` | Два agent_message с сохранёнными предупреждениями; активные notice не создаются |
-| До компактизации | `'sql-acp-demo', null, 15` | 13 уведомлений; compact ещё отсутствует |
-| После компактизации | `'sql-acp-demo', 15, 25` | compaction_update и финальный agent_message; копии диалога не дублируются |
-| Только копии и настройки | `'sql-acp-demo', 16, 24` | Пустой notifications; bounds.through_seq=24 остаётся позицией прочитанной порции |
-| Пустой диапазон | `'sql-acp-demo', 25, 25` | Пустой notifications, без ошибки |
+| Ответ с вызовом tool | `'sql-acp-demo', 6, 7` | Строго agent_thought → agent_message → tool_call_update → agent_message |
+| Только результат tool | `'sql-acp-demo', 7, 8` | Одно tool_call_update со status=completed и toolCallId=call-read; вызов найден в предыдущей части истории |
+| Предупреждение в истории | `'sql-acp-demo', 8, 10` | Два agent_message с сохранёнными предупреждениями; активные notice не создаются |
+| До компактизации | `'sql-acp-demo', null, 16` | 13 уведомлений; compact ещё отсутствует |
+| После компактизации | `'sql-acp-demo', 16, 27` | compaction_update и финальный agent_message; копии диалога не дублируются |
+| Только копии и настройки | `'sql-acp-demo', 17, 25` | Пустой notifications; bounds.through_seq=25 остаётся позицией прочитанной порции |
+| Пустой диапазон | `'sql-acp-demo', 27, 27` | Пустой notifications, без ошибки |
 | Background и сабагент | `'sql-background-demo', null, null` | Вызовы и результаты tools, сообщения задач, subagent_update для дочерней сессии |
 | Slash-команды | `'sql-demo', null, null` | Команды как user_message, результаты как agent_message; повторного исполнения нет |
 
@@ -108,23 +113,23 @@ params as (
 params as (
     select
         'sql-acp-demo'::text as session_id,
-        25::bigint as through_seq
+        27::bigint as through_seq
 ),
 ```
 
-`through_seq=15` покажет настройки до компактизации, `25` — в конце примера,
-`null` — на последнем сохранённом seq. На seq=25 постоянный sampling снят;
+`through_seq=16` покажет настройки до компактизации, `27` — в конце примера,
+`null` — на последнем сохранённом seq. На seq=27 постоянный sampling снят;
 sampling для одного LLM-запроса его не заменяет. При восстановлении передавай сюда
 **тот же верхний seq, до которого прочитана история**, чтобы получить согласованный снимок.
 
 | Параметры | Ожидаемые settings |
 | --- | --- |
 | `'sql-acp-demo', 3` | model и sampling с temperature=0.2, top_p=0.9 |
-| `'sql-acp-demo', 17` | model: после компактизации перенесена только модель |
-| `'sql-acp-demo', 21` | model и sampling с temperature=0.7 |
-| `'sql-acp-demo', 22` | model: sampling явно снят |
-| `'sql-acp-demo', 23` | model: разовый sampling с request_id=r1 не становится постоянным |
-| `'sql-acp-demo', null` | Тот же снимок settings, что на seq=25; permissions содержит правило ask; usage.input_tokens=12 |
+| `'sql-acp-demo', 18` | model: после компактизации перенесена только модель |
+| `'sql-acp-demo', 23` | model и sampling с temperature=0.7 |
+| `'sql-acp-demo', 24` | model: sampling явно снят |
+| `'sql-acp-demo', 25` | model: разовый sampling с request_id=r1 не становится постоянным |
+| `'sql-acp-demo', null` | Тот же снимок settings, что на seq=27; permissions содержит правило ask; usage.input_tokens=12 |
 
 Результат — одна строка с `bounds`, `update` и `replay_complete`.
 `update` — стандартный `agent_message` с вложенным JSON-ресурсом настроек. Его содержимое
@@ -218,23 +223,182 @@ params as (
 Это проверяет координатор. Восстановление переписки показывает старые вопросы через
 `acp_history.sql` и само по себе не запускает elicitation повторно.
 
+### `acp_permission.sql` — запросить разрешение выполнить tool
+
+[Запрос](../experiments/history-sql/acp_permission.sql) читает сохранённый
+`PermissionRequestRecord`; имя и аргументы вызова получает из связанного
+`AssistantMessageRecord`. Возвращает готовые `method` и `params` для стандартного ACP
+`session/request_permission`. JSON-RPC id назначает транспорт.
+
+```sql
+params as (
+    select
+        'sql-permission-demo'::text as session_id,
+        'pending'::text as record_id
+),
+```
+
+`pending` — ещё не отвеченный вопрос. `answered` и `cancelled` отклоняются с
+`permission_already_resolved`; `missing` — с `permission_not_found`.
+Вопрос после сохранённого tool result тоже не отправляется.
+
+```python
+class AcpPermissionDraft(DataModel):
+    session_id: str
+    record_id: str
+    seq: PositiveInt | None
+    response_count: NonNegativeInt
+    result_count: NonNegativeInt
+    call_count: NonNegativeInt
+    method: Literal["session/request_permission"]
+    params: dict[str, JsonValue]
+```
+
+```json
+{
+  "session_id": "sql-permission-demo",
+  "record_id": "pending",
+  "seq": 6,
+  "response_count": 0,
+  "result_count": 0,
+  "call_count": 1,
+  "method": "session/request_permission",
+  "params": {
+    "sessionId": "sql-permission-demo",
+    "title": "Запустить pytest?",
+    "subject": {
+      "type": "tool_call",
+      "toolCall": {
+        "toolCallId": "pending-call",
+        "name": "mcp__workspace__run",
+        "status": "pending",
+        "rawInput": {"command": "pytest"}
+      }
+    },
+    "options": [
+      {"optionId": "once", "name": "Разрешить один раз", "kind": "allow_once"},
+      {"optionId": "session", "name": "Разрешить в этой сессии", "kind": "allow_always"},
+      {"optionId": "deny", "name": "Отказать", "kind": "reject_once"}
+    ]
+  }
+}
+```
+
+`AcpHistoryValidator.require_permission` проверяет единственность исходного вызова,
+отсутствие ответа/результата и форму ACP. Перед продолжением агент сохраняет
+`PermissionResponseRecord`; выбранный option_id проверяется по сохранённым options.
+Один вопрос имеет один ответ, даже если сессия открыта несколькими клиентами.
+Повторная доставка незавершённого вопроса и выбор клиента относятся к координатору.
+
+### `acp_commands.sql` — доступные команды на выбранный seq
+
+[Запрос](../experiments/history-sql/acp_commands.sql) выбирает LAST add/remove по имени
+команды из `CommandAddedRecord` и `CommandRemovedRecord`. Возвращает стандартное
+`available_commands_update`; массив availableCommands используется также в ответе
+session/new/resume. Владелец команды остаётся в истории для маршрутизации исполнения.
+
+```sql
+params as (
+    select
+        'sql-commands-demo'::text as session_id,
+        2::bigint as through_seq
+),
+```
+
+Срез 1 содержит compact; 2 — compact и mcp__database__report; 3 — только MCP-команду;
+4 — обновлённое описание MCP-команды; 5 — пустой каталог. null выбирает последний seq.
+`AcpHistoryValidator.require_commands` проверяет границы и допустимые уникальные имена.
+
+```python
+class AcpCommandsDraft(DataModel):
+    bounds: StateBounds
+    update: dict[str, JsonValue]
+```
+
+```json
+{
+  "bounds": {"session_id": "sql-commands-demo", "through_seq": 5, "last_seq": 5},
+  "update": {"sessionUpdate": "available_commands_update", "availableCommands": []}
+}
+```
+
+### `acp_options.sql` — варианты изменения настроек и текущий выбор
+
+[Запрос](../experiments/history-sql/acp_options.sql) читает ParameterOptionRecord,
+ParameterOptionRemovedRecord и последние постоянные настройки по source_kinds/source_key.
+value_path выбирает значение внутри payload. Имена параметров, пути и допустимые
+значения хранятся в записях; SQL не содержит перечня sampling/model-полей.
+
+```sql
+params as (
+    select
+        'sql-options-demo'::text as session_id,
+        3::bigint as through_seq
+),
+```
+
+Срез 2: temperature=precise; 3: creative; 4: unset после SamplingRemovedRecord;
+6: дополнительно mode=default; 7: mode=plan; 8: остаётся только mode; 9: пустой список;
+11: выбор модели с учётом provider. null выбирает последний seq.
+
+```python
+class ParameterSelection(DataModel):
+    seq: PositiveInt
+    key: str
+    matches: NonNegativeInt
+
+
+class AcpOptionsDraft(DataModel):
+    bounds: StateBounds
+    update: dict[str, JsonValue]
+    selections: tuple[ParameterSelection, ...]
+```
+
+```json
+{
+  "bounds": {"session_id": "sql-options-demo", "through_seq": 3, "last_seq": 11},
+  "update": {
+    "sessionUpdate": "config_option_update",
+    "configOptions": [{
+      "configId": "temperature", "name": "Температура", "type": "select",
+      "currentValue": "creative",
+      "options": [
+        {"value": "unset", "name": "Не задана"},
+        {"value": "precise", "name": "Точный"},
+        {"value": "creative", "name": "Творческий"}
+      ]
+    }]
+  },
+  "selections": [{"seq": 2, "key": "temperature", "matches": 1}]
+}
+```
+
+`require_options` проверяет единственное соответствие текущего значения варианту.
+Необъявленное или неоднозначное значение — invalid_parameter_selection.
+Пустой список явно очищает controls клиента. В ответ session/new/resume передаётся
+готовый массив configOptions. Полученный от клиента value_id производитель проверяет
+по сохранённым choices и записывает новое значение настройки; сборщик ничего не меняет.
+Все остальные значения доступны через acp_state.sql как ресурс для чтения.
+
 ### Какие запросы вызываются при восстановлении чата
 
 Для тестового чата последовательность такая:
 
 1. Выполнить `acp_history.sql` с `('sql-acp-demo', null, null)`. Прочитать верхнюю границу
-   из `bounds.through_seq`; в подготовленных данных это 25. Проверить и отправить `notifications`.
-2. Выполнить `acp_state.sql` с `('sql-acp-demo', 25)`. Проверить и отправить `update` настроек,
+   из `bounds.through_seq`; в подготовленных данных это 27. Проверить и отправить `notifications`.
+2. Выполнить `acp_state.sql` с `('sql-acp-demo', 27)`. Проверить и отправить `update` настроек,
    затем один `replay_complete`.
 3. Транспорт сообщает текущее состояние исполнения и отвечает на `session/resume`.
    Текущее состояние берётся у работающего агента.
 
 При подключении к агенту используется общий ограниченный пул PostgreSQL; число клиентов
 не определяет число соединений с БД. Для большого журнала перед чтением фиксируется
-последний seq через хранилище, а диапазон до него читается порциями. Например, при верхней границе 25: сначала
-`(null, 15)`, затем `(15, 25)`, после чего снимок настроек на 25 и один маркер завершения.
+последний seq через хранилище, а диапазон до него читается порциями. Например, при верхней границе 27: сначала
+`(null, 16)`, затем `(16, 27)`, после чего снимок настроек на 27 и один маркер завершения.
 Новые записи за зафиксированной границей обрабатываются после replay.
-`acp_notice.sql` и `acp_elicitation.sql` в эту последовательность не входят.
+`acp_notice.sql`, `acp_permission.sql` и `acp_elicitation.sql` в эту последовательность не входят.
+Каталоги acp_commands.sql и acp_options.sql читаются на том же верхнем seq;
+готовые availableCommands и configOptions помещаются в ответ session/resume.
 
 В проверенном нагрузочном профиле каждый запрос истории ограничен 1000 записями —
 как replay, так и первое чтение изменений с after_seq=0. После порции соединение
@@ -252,19 +416,19 @@ params as (
 
 | Сессия | Число записей | Содержимое |
 | --- | ---: | --- |
-| sql-acp-load-1000 | 1 002 | 100 циклов user / assistant / tool / notice / usage / elicitation / settings |
-| sql-acp-load-10000 | 10 002 | 1 000 таких циклов |
-| sql-acp-load-50000 | 50 002 | 5 000 таких циклов |
+| sql-acp-load-1000 | 1 102 | 100 циклов user / assistant / tool / notice / usage / elicitation / settings |
+| sql-acp-load-10000 | 11 002 | 1 000 таких циклов |
+| sql-acp-load-50000 | 55 002 | 5 000 таких циклов |
 | sql-acp-load-commands | 2 000 | 1 000 slash-команд и их результатов |
-| sql-acp-stress-0001 … sql-acp-stress-0512 | 961 024 суммарно | 512 сессий: 480 по 1 002 записи, 28 по 10 002 и 4 по 50 002 |
+| sql-acp-stress-0001 … sql-acp-stress-0512 | 1 057 024 суммарно | 512 сессий: 480 по 1 102 записи, 28 по 11 002 и 4 по 55 002 |
 
 | Запрос | Параметры | Что измерять |
 | --- | --- | --- |
 | acp_history.sql | `'sql-acp-load-1000', null, null` | Полная небольшая история |
-| acp_history.sql | `'sql-acp-load-10000', null, null` | Полная история, результат около 7,2 МБ |
-| acp_history.sql | `'sql-acp-load-50000', null, null` | Полная большая история, результат около 36 МБ |
+| acp_history.sql | `'sql-acp-load-10000', null, null` | Полная история, результат зависит от сохранённого content |
+| acp_history.sql | `'sql-acp-load-50000', null, null` | Полная большая история, результат зависит от сохранённого content |
 | acp_history.sql | `'sql-acp-load-50000', 0, 100` | Первые 100 записей |
-| acp_history.sql | `'sql-acp-load-50000', 49902, 50002` | Последние 100 записей с проверкой предшествующих вызовов |
+| acp_history.sql | `'sql-acp-load-50000', 54902, 55002` | Последние 100 записей с проверкой предшествующих вызовов |
 | acp_history.sql | `'sql-acp-load-commands', null, null` | Большое число результатов команд |
 | acp_state.sql | `'sql-acp-load-50000', null` | Снимок настроек и сумма 5 000 usage-записей |
 | acp_notice.sql | `'sql-acp-load-50000', 'notice-1'` | Поиск одной записи по идентификатору |
@@ -283,6 +447,8 @@ Python-валидатор перед отправкой клиенту.
 | acp_notice.sql | `'sql-acp-demo', 'missing'` | notice_not_found |
 
 ## Содержимое и сообщения
+
+### Сохранённые части
 
 Используются стандартные блоки SDK. Данные ресурсов берутся из истории; SQL не открывает URI.
 Порядок — порядок массива `payload.content`, включая дочерние части ресурсов.
@@ -316,6 +482,66 @@ ContentBlock = Annotated[
 Загруженные части становятся `resource` с `text` или `blob`; base64 преобразуется в стандартный
 алфавит. Поля выделения `line_start/line_end/truncated` остаются в истории: у ACP resource
 нет равнозначных полей. `tool_reference` отображается текстом имени инструмента.
+
+### Поток ответа и несколько подключений
+
+Чанки обязательно передаются через ACP: `agent_message_chunk` для ответа,
+`agent_thought_chunk` для показываемых рассуждений. Это стандартные варианты
+[ACP v2](https://agentclientprotocol.com/protocol/v2/prompt-lifecycle).
+SQL преобразует сохранённые записи; потоковый адаптер преобразует ещё не сохранённые
+дельты провайдера. SQL на каждый чанк не выполняется.
+
+```python
+class MessageChunk(DataModel):
+    """Временное событие ACP; не модель строки records."""
+
+    session_update: Literal["agent_message_chunk", "agent_thought_chunk"] = Field(
+        alias="sessionUpdate"
+    )
+    message_id: str = Field(alias="messageId", min_length=1)
+    content: ContentBlock
+```
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+    "sessionId": "session-1",
+    "update": {
+      "sessionUpdate": "agent_message_chunk",
+      "messageId": "[\"assistant-1\", [1]]",
+      "content": {"type": "text", "text": "Проверяю"}
+    }
+  }
+}
+```
+
+`record_id` ответа назначается до первого чанка. `messageId` части совпадает с ID,
+который `acp_history.sql` получает из пары `[record_id, position]`; нумерация частей
+начинается с 1 и не меняется при сохранении итогового сообщения. Дельты одной текстовой
+части накапливаются в одной части `content`, не создавая отдельный элемент на каждый токен.
+После commit итоговое `agent_message` с тем же `messageId` заменяет накопленный текст.
+Неудачная попытка генерации получает отдельный ID; её текст не смешивается с повтором.
+
+Одна исполняющая сессия агента обслуживает несколько авторизованных ACP-подключений.
+Каждый подписчик имеет ограниченный буфер отправки; медленный подписчик не останавливает
+LLM и других клиентов. При переполнении клиент переподключается и восстанавливает состояние.
+Отключение одного подписчика не означает отмену работы сессии.
+
+При resume агент согласует подписку с границей сохранённой истории: сначала replay до
+фиксированного seq, затем `replay_complete`, снимок незавершённых сообщений из памяти
+и последующие дельты. Во время синхронизации исходящие события для этого клиента
+буферизуются; уже отражённые снимком дельты повторно не отправляются.
+Снимок незавершённого сообщения — обычный `agent_message`/`agent_thought` с полным content,
+а не повтор всех старых чанков. После перезапуска процесса доступны только сохранённые записи.
+
+В PostgreSQL хранятся итоговые сообщения, принятый при отмене частичный ответ, usage
+и результаты выполнения. Таблиц live-токенов нет. `boba-aid` получает историю и поток
+исключительно через ACP. При нескольких процессах агент направляет подписчиков к
+владельцу исполняющей сессии; второй исполнитель для той же сессии не запускается.
+Вопросы permission/elicitation направляются одному выбранному клиенту, а не всем
+подписчикам как независимые действия.
 
 ```python
 class MessageUpdate(DataModel):
@@ -794,7 +1020,27 @@ class ReplayCompleteUpdate(DataModel):
 `boba-aid` получает историю и чанки от агента по ACP.
 
 
-## Нагрузка: 14 ноября 2026
+## Проверка расширенного набора SQL: 14 ноября 2026
+
+После добавления принятия ввода, служебных LLM-запросов, permissions, commands и options:
+512 клиентов — 128 писателей и 384 читателя — через пул из 16 соединений, 128 чатов.
+Читатели выполняли OpenAI и все семь ACP-запросов, каждый результат проходил валидатор.
+За 31,56 с: 290 чтений/с, 95 пачек записи/с, 26 874 записанные строки, ошибок нет.
+Каждый клиент завершил минимум 23 операции. Прирост временных файлов и байтов — нулевой;
+временные таблицы не используются. p95 ACP history — 1,89 с, включая ожидание пула;
+p95 самого ожидания пула — 1,84 с. Это результат одного Python-генератора с валидацией,
+а не измерение предельной производительности PostgreSQL.
+
+В генераторе исправлена несправедливая выдача соединений: до исправления были три таймаута
+ожидания пула, после — ни одного. Производственный пул агента не изменялся.
+При удержании незавершённой записи чтение того же чата заняло 7,19 мс, запись другого —
+5,78 мс. 32 параллельных писателя одного чата получили уникальные последовательные seq.
+177 результатов ACP отдельно проверены по закреплённой схеме протокола.
+Артефакты: `.dev/history-sql/completeness-2026-11-14/`.
+
+## Нагрузка: 14 ноября 2026, до введения записей принятия
+
+Ниже сохранены результаты прежней версии. Они не являются замером расширенного набора SQL.
 
 PostgreSQL 17.10, work_mem=4MB. Восьмипроцессный генератор, 512 подготовленных сессий,
 961 024 исходные записи в той же records; вместе с остальными данными — больше миллиона строк.

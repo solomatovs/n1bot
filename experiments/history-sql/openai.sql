@@ -26,6 +26,9 @@ history as not materialized (
 categories(category, reduction, scoped, section, strict_remove) as (
     values
         ('message',         'sum',  false,  1,      false),
+        ('admission',       'sum',  false,  1,      false),
+        ('request_message', 'sum',  true,   1,      false),
+        ('request_context', 'last', true,   null,   false),
         ('compact',         'sum',  false,  1,      false),
         ('prompt',          'last', true,   0,      true),
         ('context',         'last', true,   1,      false),
@@ -136,17 +139,44 @@ request_boundaries as materialized (
     where 1=1
         and category = 'request'
 ),
-changes as materialized (
+scoped_inputs as materialized (
     select
-        i.*,
-        row_number() over (partition by i.category, i.key order by i.request_local desc, i.seq desc) as rank
+        i.seq,
+        i.record_id,
+        i.category,
+        i.key,
+        i.operation,
+        i.request_id,
+        i.reduction,
+        i.scoped,
+        i.section,
+        i.strict_remove,
+        i.request_local
     from
         inputs i
         cross join target t
         left join request_boundaries b on b.request_id = i.request_id
     where 1=1
-        and i.reduction = 'last'
         and (not i.request_local or b.seq is null or b.seq = t.seq)
+),
+changes as (
+    select
+        i.seq,
+        i.record_id,
+        i.category,
+        i.key,
+        i.operation,
+        i.request_id,
+        i.reduction,
+        i.scoped,
+        i.section,
+        i.strict_remove,
+        i.request_local,
+        row_number() over (partition by i.category, i.key order by i.request_local desc, i.seq desc) as rank
+    from
+        scoped_inputs i
+    where 1=1
+        and i.reduction = 'last'
 ),
 selected as materialized (
     select
@@ -154,23 +184,57 @@ selected as materialized (
         record_id,
         category,
         key,
-        section
+        section,
+        request_local,
+        not request_local as windowed
     from
-        inputs
+        scoped_inputs
     where 1=1
         and reduction = 'sum'
+        and operation = 'set'
     union all
     select
         seq,
         record_id,
         category,
         key,
-        section
+        section,
+        request_local,
+        false
     from
         changes
     where 1=1
         and rank = 1
         and operation = 'set'
+),
+request_context as (
+    select
+        s.seq,
+        s.record_id,
+        coalesce(h.payload ->> 'mode', 'conversation') as mode,
+        (h.payload ->> 'from_seq')::bigint as from_seq,
+        (h.payload ->> 'through_seq')::bigint as through_seq
+    from
+        params p
+        left join selected s on s.category = 'request_context'
+        left join history h on h.seq = s.seq
+),
+kept as materialized (
+    select
+        s.seq,
+        s.record_id,
+        s.category,
+        s.key,
+        s.section,
+        s.request_local,
+        s.windowed
+    from
+        selected s
+        cross join request_context c
+    where 1=1
+        and (c.mode = 'conversation' or s.request_local or s.category in ('setting', 'request_context'))
+        and (not s.windowed or c.from_seq is null or s.seq >= c.from_seq)
+        and (not s.windowed or c.through_seq is null or s.seq <= c.through_seq)
 ),
 selected_records as materialized (
     select
@@ -182,8 +246,27 @@ selected_records as materialized (
         r.role,
         r.payload
     from
-        selected s
+        kept s
         join history r on r.seq = s.seq
+    where 1=1
+        and s.category <> 'admission'
+    union all
+    select
+        a.seq,
+        a.record_id,
+        'message',
+        null,
+        a.section,
+        r.role,
+        r.payload
+    from
+        kept a
+        join history h on h.seq = a.seq
+        join history r on r.record_id = h.payload ->> 'source_record_id'
+    where 1=1
+        and a.category = 'admission'
+        and r.category = 'input'
+        and r.seq < a.seq
 ),
 -- each catalog add is valid until the next actual remove; repeated adds do not close it.
 catalog as materialized (
@@ -229,7 +312,7 @@ tools as (
         ) as value
     from
         schemas s
-        join selected a
+        join kept a
             on a.seq = s.seq
     where 1=1
         and s.removed_at is null
@@ -411,7 +494,7 @@ request_fields as materialized (
     from
         tools
     having
-        count(*) > 0
+        count(1) > 0
 ),
 -- source metadata for the pure python validator.
 state_sources as (
@@ -427,7 +510,7 @@ state_sources as (
     from
         inputs
     where 1=1
-        and reduction = 'last'
+        and (reduction = 'last' or request_local)
 ),
 schema_sources as (
     select
@@ -463,8 +546,31 @@ parameter_sources as (
         request_fields f
         left join active_records h
             on h.seq = f.seq
+),
+admission_sources as (
+    select
+        a.seq,
+        a.record_id,
+        h.payload ->> 'source_record_id' as source_record_id,
+        r.seq as source_seq,
+        r.category as source_category
+    from
+        inputs a
+        join history h on h.seq = a.seq
+        left join history r on r.record_id = h.payload ->> 'source_record_id'
+    where 1=1
+        and a.category = 'admission'
 )
 select
+    (
+        select
+            payload ->> 'provider'
+        from
+            selected_records
+        where 1=1
+            and category = 'setting'
+            and key = 'model'
+    ) as provider,
     (
         select
             jsonb_object_agg(name, value order by name)
@@ -472,6 +578,13 @@ select
             request_fields
     ) as request,
     jsonb_build_object(
+        'request_context', (select to_jsonb(c) from request_context c),
+        'admission_sources', (
+            select
+                coalesce(jsonb_agg(to_jsonb(a) order by seq), '[]'::jsonb)
+            from
+                admission_sources a
+        ),
         'selection', (
             select
                 to_jsonb(s)

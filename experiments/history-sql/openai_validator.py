@@ -94,6 +94,20 @@ class ParameterSource(DataModel):
     record_id: str | None
 
 
+class AdmissionSource(RecordSource):
+    source_record_id: str | None
+    source_seq: PositiveInt | None
+    source_category: str | None
+
+
+class RequestContext(DataModel):
+    seq: PositiveInt | None
+    record_id: str | None
+    mode: Literal["conversation", "isolated"]
+    from_seq: PositiveInt | None
+    through_seq: NonNegativeInt | None
+
+
 class ValidationData(DataModel):
     """Required arrays: omitting metadata must never silently skip a check."""
 
@@ -106,9 +120,12 @@ class ValidationData(DataModel):
     content_sources: tuple[ContentSource, ...]
     message_sources: tuple[MessageSource, ...]
     parameter_sources: tuple[ParameterSource, ...]
+    admission_sources: tuple[AdmissionSource, ...]
+    request_context: RequestContext
 
 
 class OpenAiRequestDraft(DataModel):
+    provider: str | None
     request: dict[str, JsonValue]
     validation_data: ValidationData
 
@@ -179,6 +196,9 @@ class OpenAiRequestValidator:
             )
 
         errors = [
+            *self._context(data),
+            *self._wire(draft),
+            *self._admissions(data),
             *self._scopes(data),
             *self._removals(data),
             *self._schemas(data),
@@ -198,6 +218,61 @@ class OpenAiRequestValidator:
                 ),
             )
         )
+
+    @staticmethod
+    def _context(data: ValidationData) -> Iterable[AssemblyIssue]:
+        context = data.request_context
+        lower = context.from_seq
+        upper = context.through_seq
+        if context.mode == "isolated" and (lower is not None or upper is not None):
+            yield issue("isolated_context_has_range")
+        if lower is not None and lower < data.compact_seq:
+            yield issue("context_range_before_compact")
+        if upper is not None and (
+            upper < max(lower or 0, data.compact_seq) or upper >= (context.seq or 0)
+        ):
+            yield issue("invalid_context_range")
+        if lower is not None and lower >= (context.seq or 0):
+            yield issue("invalid_context_range")
+
+    @staticmethod
+    def _wire(draft: OpenAiRequestDraft) -> Iterable[AssemblyIssue]:
+        """Check the actual outbound object as well as SQL source metadata."""
+        if not draft.provider:
+            yield issue("missing_provider")
+        messages = draft.request.get("messages")
+        if not isinstance(messages, list):
+            yield issue("invalid_messages")
+            return
+        sources = sorted(
+            draft.validation_data.message_sources, key=lambda s: (s.section, s.seq)
+        )
+        if len(messages) != len(sources):
+            yield issue("message_count_mismatch")
+        for index, message in enumerate(messages):
+            if not isinstance(message, dict):
+                yield issue("invalid_message", index=index)
+                continue
+            if index < len(sources) and message.get("role") != sources[index].role:
+                yield issue("message_role_mismatch", sources[index], index=index)
+            if "content" not in message:
+                yield issue("missing_message_content", index=index)
+            if message.get("role") == "tool" and not message.get("tool_call_id"):
+                yield issue("missing_tool_call_id", index=index)
+
+    @staticmethod
+    def _admissions(data: ValidationData) -> Iterable[AssemblyIssue]:
+        seen = set()
+        for source in data.admission_sources:
+            if (
+                source.source_seq is None
+                or source.source_seq >= source.seq
+                or source.source_category != "input"
+            ):
+                yield issue("invalid_admission_reference", source)
+            if source.source_record_id in seen:
+                yield issue("duplicate_admission", source)
+            seen.add(source.source_record_id)
 
     def require_valid(self, draft: OpenAiRequestDraft) -> dict[str, JsonValue]:
         errors = self.validate(draft)

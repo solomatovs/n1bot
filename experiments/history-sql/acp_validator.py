@@ -36,6 +36,16 @@ class MessageUpdate(DataModel):
     content: tuple[ContentBlock, ...]
 
 
+class MessageChunk(DataModel):
+    """Transient ACP content; the final upsert uses the same messageId."""
+
+    session_update: Literal["agent_message_chunk", "agent_thought_chunk"] = Field(
+        alias="sessionUpdate"
+    )
+    message_id: str = Field(alias="messageId", min_length=1)
+    content: ContentBlock
+
+
 class ToolCallUpdate(DataModel):
     """The result patches the original call using the same toolCallId."""
 
@@ -164,6 +174,23 @@ class AcpStateDraft(DataModel):
     update: dict[str, JsonValue]
 
 
+class AcpCommandsDraft(DataModel):
+    bounds: StateBounds
+    update: dict[str, JsonValue]
+
+
+class ParameterSelection(DataModel):
+    seq: PositiveInt
+    key: str
+    matches: NonNegativeInt
+
+
+class AcpOptionsDraft(DataModel):
+    bounds: StateBounds
+    update: dict[str, JsonValue]
+    selections: tuple[ParameterSelection, ...]
+
+
 class ReplayCompleteUpdate(DataModel):
     session_update: Literal["replay_complete"] = Field(
         default="replay_complete", alias="sessionUpdate"
@@ -186,6 +213,17 @@ class AcpElicitationDraft(DataModel):
     method: Literal["elicitation/create"]
     required_mode: Literal["form", "url"] | None
     params: dict[str, JsonValue] | None
+
+
+class AcpPermissionDraft(DataModel):
+    session_id: str
+    record_id: str
+    seq: PositiveInt | None
+    response_count: NonNegativeInt
+    result_count: NonNegativeInt
+    call_count: NonNegativeInt
+    method: Literal["session/request_permission"]
+    params: dict[str, JsonValue]
 
 
 class AcpAssemblyError(ValueError):
@@ -285,6 +323,31 @@ class AcpHistoryValidator:
             raise AcpAssemblyError("snapshot_mismatch")
         return result
 
+    def require_commands(self, draft: AcpCommandsDraft) -> BaseModel:
+        self.bounds(draft.bounds)
+        result = schema.AvailableCommandsUpdate.model_validate(draft.update)
+        names = [c.name for c in result.available_commands]
+        if len(names) != len(set(names)) or any(
+            not name or name.startswith("/") or any(c.isspace() for c in name)
+            for name in names
+        ):
+            raise AcpAssemblyError("invalid_command_names")
+        return result
+
+    def require_options(self, draft: AcpOptionsDraft) -> BaseModel:
+        self.bounds(draft.bounds)
+        for selection in draft.selections:
+            if selection.matches != 1:
+                raise AcpAssemblyError("invalid_parameter_selection", key=selection.key)
+        result = schema.ConfigOptionUpdate.model_validate(draft.update)
+        if len(result.config_options) != len(draft.selections):
+            raise AcpAssemblyError("parameter_count_mismatch")
+        for option in result.config_options:
+            ids = [choice.value for choice in option.options]
+            if len(ids) != len(set(ids)) or option.current_value not in ids:
+                raise AcpAssemblyError("invalid_parameter_choices")
+        return result
+
     def require_elicitation(self, draft: AcpElicitationDraft) -> BaseModel:
         if draft.seq is None or draft.params is None:
             raise AcpAssemblyError("elicitation_not_found")
@@ -300,6 +363,21 @@ class AcpHistoryValidator:
         if model is None:
             raise AcpAssemblyError("unsupported_elicitation_mode")
         return model.model_validate(draft.params)
+
+    def require_permission(self, draft: AcpPermissionDraft) -> BaseModel:
+        if draft.seq is None:
+            raise AcpAssemblyError("permission_not_found")
+        if draft.response_count or draft.result_count:
+            raise AcpAssemblyError("permission_already_resolved")
+        if draft.call_count != 1:
+            raise AcpAssemblyError("invalid_permission_call")
+        if draft.params.get("sessionId") != draft.session_id:
+            raise AcpAssemblyError("session_mismatch")
+        result = schema.RequestPermissionRequest.model_validate(draft.params)
+        ids = [o.option_id for o in result.options]
+        if not ids or len(set(ids)) != len(ids):
+            raise AcpAssemblyError("invalid_permission_options")
+        return result
 
 
 class AcpNoticeDraft(DataModel):

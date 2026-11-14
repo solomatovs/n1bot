@@ -1,6 +1,6 @@
 -- Восстановление переписки: сохранённые записи -> массив ACP session/update.
 -- Ручной просмотр: в params подставить 'sql-acp-demo', null, null и выполнить весь файл.
--- Для seq=16..25: 'sql-acp-demo', 15, 25. Границы относятся к records.seq.
+-- Для seq=17..27: 'sql-acp-demo', 16, 27. Границы относятся к records.seq.
 -- Результат: bounds, notifications, validation_data. После проверки отправляется
 -- notification каждого элемента массива; SQL сам ничего не отправляет.
 -- Подробнее: docs/agent-history-to-acp.md, раздел «Как использовать запросы».
@@ -13,7 +13,19 @@ params as (
 ),
 history as not materialized (
     select
-        r.*
+        r.session_id,
+        r.seq,
+        r.record_id,
+        r.kind,
+        r.category,
+        r.role,
+        r.key,
+        r.operation,
+        r.request_id,
+        r.copied_from_id,
+        r.created_at,
+        r.version,
+        r.payload
     from
         history_sql.records r
     where 1=1
@@ -48,6 +60,11 @@ routes(kind, route) as (
         ('compact_message',             'compact'),
         ('slash_command',               'command'),
         ('slash_command_result',        'command_result'),
+        ('command_added',               'state'),
+        ('command_removed',             'state'),
+        ('request_output',              'state'),
+        ('parameter_option',            'state'),
+        ('parameter_option_removed',    'state'),
         ('notice',                      'notice'),
         ('llm_request_attempt',         'notice'),
         ('task_state',                  'notice'),
@@ -56,6 +73,8 @@ routes(kind, route) as (
         ('elicitation_response',        'diagnostic'),
         ('elicitation_completed',       'diagnostic'),
         ('permission_state',            'state'),
+        ('permission_request',          'diagnostic'),
+        ('permission_response',         'diagnostic'),
         ('permission_decision',         'diagnostic'),
         ('token_usage',                 'state'),
         ('subagent_session',            'state'),
@@ -69,7 +88,10 @@ category_routes(category, route) as (
         ('setting',         'state'),
         ('tool_catalog',    'state'),
         ('tool_schema',     'state'),
-        ('request',         'state')
+        ('request',         'state'),
+        ('admission',       'state'),
+        ('request_context', 'state'),
+        ('request_message', 'state')
 ),
 -- The index supplies message order; scalar bounds preserve that order in the plan.
 stream as not materialized (
@@ -97,7 +119,12 @@ entries as not materialized (
         cross join lateral (
             with
             records as materialized (
-                select r.*
+                select
+                    r.seq,
+                    r.record_id,
+                    r.kind,
+                    r.payload,
+                    r.route
             ),
             top_parts as materialized (
                 select
@@ -267,7 +294,11 @@ entries as not materialized (
             -- Separate adjacent message/thought/call runs without moving text across a tool call.
             run_starts as (
                 select
-                    b.*,
+                    b.seq,
+                    b.position,
+                    b.route,
+                    b.channel,
+                    b.value,
                     (channel = 'call' or channel is distinct from lag(channel) over (
                         partition by seq order by position
                     ))::integer as starts_run
@@ -276,7 +307,12 @@ entries as not materialized (
             ),
             run_parts as (
                 select
-                    b.*,
+                    b.seq,
+                    b.position,
+                    b.route,
+                    b.channel,
+                    b.value,
+                    b.starts_run,
                     sum(starts_run) over (partition by seq order by position) as run
                 from
                     run_starts b
@@ -480,9 +516,7 @@ folded as (
             filter (where e.family = 'unmapped'), '[]'::jsonb) as unmapped
     from
         entries e
-
 )
-
 select
     to_jsonb(b) as bounds,
     f.notifications,

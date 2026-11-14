@@ -1,5 +1,5 @@
 -- Снимок сохранённых настроек, разрешений и счётчиков для показа при восстановлении.
--- Ручной просмотр: в params подставить 'sql-acp-demo', 25 и выполнить весь файл.
+-- Ручной просмотр: в params подставить 'sql-acp-demo', 27 и выполнить весь файл.
 -- Результат: bounds, update с JSON-ресурсом настроек, отдельный replay_complete.
 -- Маркер отправляет адаптер один раз после всей истории; SQL ничего не отправляет.
 -- Текущее состояние исполнения и редактируемые configOptions здесь не собираются.
@@ -12,7 +12,19 @@ params as (
 ),
 history as not materialized (
     select
-        r.*
+        r.session_id,
+        r.seq,
+        r.record_id,
+        r.kind,
+        r.category,
+        r.role,
+        r.key,
+        r.operation,
+        r.request_id,
+        r.copied_from_id,
+        r.created_at,
+        r.version,
+        r.payload
     from
         history_sql.records r
     where 1=1

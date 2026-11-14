@@ -12,7 +12,19 @@ params as (
 ),
 history as not materialized (
     select
-        r.*
+        r.session_id,
+        r.seq,
+        r.record_id,
+        r.kind,
+        r.category,
+        r.role,
+        r.key,
+        r.operation,
+        r.request_id,
+        r.copied_from_id,
+        r.created_at,
+        r.version,
+        r.payload
     from
         history_sql.records r
     where 1=1
@@ -33,7 +45,7 @@ request as (
 ),
 responses as (
     select
-        count(*) as count
+        count(1) as count
     from
         history h
         cross join params p
@@ -43,7 +55,7 @@ responses as (
 ),
 completions as (
     select
-        count(*) as count
+        count(1) as count
     from
         history h
         cross join params p

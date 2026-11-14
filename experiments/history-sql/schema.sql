@@ -43,3 +43,14 @@ create index records_elicitation
     on history_sql.records (session_id, (payload ->> 'elicitation_id'), kind)
     where 1=1
         and kind in ('elicitation_response', 'elicitation_completed');
+
+-- A received message enters the LLM dialogue once; compaction copies use fresh IDs.
+create unique index records_admission
+    on history_sql.records (session_id, (payload ->> 'source_record_id'))
+    where 1=1
+        and category = 'admission';
+
+create unique index records_permission_response
+    on history_sql.records (session_id, (payload ->> 'permission_request_id'))
+    where 1=1
+        and kind = 'permission_response';
