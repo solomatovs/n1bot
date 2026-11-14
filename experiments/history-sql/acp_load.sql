@@ -11,7 +11,8 @@ where 1=1
     and session_id in ('sql-acp-load-1000', 'sql-acp-load-10000', 'sql-acp-load-50000', 'sql-acp-load-commands');
 
 insert into history_sql.records (
-    session_id, seq, record_id, created_at, version, kind, category, key, operation, request_id, payload
+    session_id, seq, record_id, kind, category, role, key, operation, request_id,
+    copied_from_id, created_at, version, payload
 )
 with
 sizes(session_id, rounds) as (
@@ -20,12 +21,12 @@ sizes(session_id, rounds) as (
         ('sql-acp-load-10000', 1000),
         ('sql-acp-load-50000', 5000)
 ),
-initial(seq, record_id, kind, category, key, payload) as (
+initial(seq, record_id, kind, category, role, key, payload) as (
     values
-        (1, 'model', 'model', 'setting', 'model',
-            '{"role":null,"value":{"model":"test-model"},"provider":"openai"}'::jsonb),
-        (2, 'permission', 'permission_state', 'operational', null,
-            '{"role":null,"mode":"default","rules":[]}'::jsonb)
+        (1, 'model', 'model', 'setting', null::text, 'model',
+            '{"value":{"model":"test-model"},"provider":"openai"}'::jsonb),
+        (2, 'permission', 'permission_state', 'operational', null, null,
+            '{"mode":"default","rules":[]}'::jsonb)
 ),
 rounds as (
     select
@@ -40,7 +41,7 @@ rounds as (
 ),
 entries as (
     select
-        s.session_id, i.seq, i.record_id, i.kind, i.category, i.key,
+        s.session_id, i.seq, i.record_id, i.kind, i.category, i.role, i.key,
         null::text as request_id, i.payload
     from
         sizes s
@@ -48,52 +49,52 @@ entries as (
     union all
     select
         r.session_id, 2 + (r.number - 1) * 10 + e.part_no,
-        e.record_id, e.kind, e.category, e.key, e.request_id, e.payload
+        e.record_id, e.kind, e.category, e.role, e.key, e.request_id, e.payload
     from
         rounds r
         cross join lateral (
             values
-                (1, 'user-' || r.number, 'user_message', 'message', null::text, null::text,
-                    jsonb_build_object('role', 'user', 'content', jsonb_build_array(
+                (1, 'user-' || r.number, 'user_message', 'message', 'user', null::text, null::text,
+                    jsonb_build_object('content', jsonb_build_array(
                         jsonb_build_object('kind', 'text', 'text', r.text)))),
-                (2, r.request_id, 'llm_request_boundary', 'request', null, null,
-                    jsonb_build_object('role', null)),
-                (3, 'assistant-' || r.number, 'assistant_message', 'message', null, r.request_id,
-                    jsonb_build_object('role', 'assistant', 'completion', 'complete', 'content',
+                (2, r.request_id, 'llm_request_boundary', 'request', null, null, null,
+                    '{}'::jsonb),
+                (3, 'assistant-' || r.number, 'assistant_message', 'message', 'assistant', null, r.request_id,
+                    jsonb_build_object('completion', 'complete', 'content',
                         jsonb_build_array(
                             jsonb_build_object('kind', 'reasoning', 'text', 'Проверю данные.',
                                 'signature', null, 'format', null),
                             jsonb_build_object('kind', 'text', 'text', r.text),
                             jsonb_build_object('kind', 'tool_call', 'call_id', r.call_id,
                                 'name', 'mcp__workspace__read', 'arguments', jsonb_build_object('path', 'app.py'))))),
-                (4, 'result-' || r.number, 'tool_result', 'message', null, null,
-                    jsonb_build_object('role', 'tool', 'call_id', r.call_id, 'is_error', false,
+                (4, 'result-' || r.number, 'tool_result', 'message', 'tool', null, null,
+                    jsonb_build_object('call_id', r.call_id, 'is_error', false,
                         'content', jsonb_build_array(jsonb_build_object('kind', 'text', 'text', r.text)))),
-                (5, 'notice-' || r.number, 'notice', 'operational', null, null,
-                    jsonb_build_object('role', null, 'level', 'warning', 'content',
+                (5, 'notice-' || r.number, 'notice', 'operational', null, null, null,
+                    jsonb_build_object('level', 'warning', 'content',
                         jsonb_build_array(jsonb_build_object('kind', 'text', 'text', 'Повтор операции.')))),
-                (6, 'usage-' || r.number, 'token_usage', 'operational', null, r.request_id,
-                    jsonb_build_object('role', null, 'usage', jsonb_build_object(
+                (6, 'usage-' || r.number, 'token_usage', 'operational', null, null, r.request_id,
+                    jsonb_build_object('usage', jsonb_build_object(
                         'input_tokens', 100, 'output_tokens', 30, 'reasoning_tokens', 5,
                         'cache_read_tokens', 0, 'cache_write_tokens', 0))),
-                (7, r.question_id, 'elicitation_request', 'operational', null, null,
-                    jsonb_build_object('role', null, 'source', 'agent.demo', 'message', 'Продолжить?',
+                (7, r.question_id, 'elicitation_request', 'operational', null, null, null,
+                    jsonb_build_object('source', 'agent.demo', 'message', 'Продолжить?',
                         'mode', 'form', 'related_message_id', null, 'call_id', null, 'url', null,
                         'requested_schema', jsonb_build_object('type', 'object', 'properties',
                             jsonb_build_object('confirm', jsonb_build_object('type', 'boolean'))))),
-                (8, 'answer-' || r.number, 'elicitation_response', 'operational', null, null,
-                    jsonb_build_object('role', null, 'elicitation_id', r.question_id, 'action', 'accept',
+                (8, 'answer-' || r.number, 'elicitation_response', 'operational', null, null, null,
+                    jsonb_build_object('elicitation_id', r.question_id, 'action', 'accept',
                         'content', jsonb_build_object('confirm', true))),
-                (9, 'sampling-' || r.number, 'sampling', 'setting', 'sampling', null,
-                    jsonb_build_object('role', null, 'value', jsonb_build_object('temperature', 0.2))),
-                (10, 'end-' || r.number, 'turn_end', 'operational', null, null,
-                    jsonb_build_object('role', null, 'turn_id', r.request_id, 'outcome', 'completed',
+                (9, 'sampling-' || r.number, 'sampling', 'setting', null, 'sampling', null,
+                    jsonb_build_object('value', jsonb_build_object('temperature', 0.2))),
+                (10, 'end-' || r.number, 'turn_end', 'operational', null, null, null,
+                    jsonb_build_object('turn_id', r.request_id, 'outcome', 'completed',
                         'duration_ms', 100, 'error', null))
-        ) e(part_no, record_id, kind, category, key, request_id, payload)
+        ) e(part_no, record_id, kind, category, role, key, request_id, payload)
 )
 select
-    session_id, seq, record_id, '2026-11-14 12:00:00+00'::timestamptz,
-    '0.0.33.dev4', kind, category, key, 'set', request_id, payload
+    session_id, seq, record_id, kind, category, role, key, 'set', request_id,
+    null::text, '2026-11-14 12:00:00+00'::timestamptz, '0.0.33.dev4', payload
 from
     entries
 order by
@@ -101,20 +102,21 @@ order by
 
 -- Отдельный профиль: много результатов slash-команд, включая пустые.
 insert into history_sql.records (
-    session_id, seq, record_id, created_at, version, kind, category, operation, payload
+    session_id, seq, record_id, kind, category, role, operation, created_at, version, payload
 )
 select
     'sql-acp-load-commands', (n.number - 1) * 2 + e.part_no, e.record_id,
-    '2026-11-14 12:00:00+00'::timestamptz, '0.0.33.dev4', e.kind, 'operational', 'set', e.payload
+    e.kind, 'operational', null::text, 'set',
+    '2026-11-14 12:00:00+00'::timestamptz, '0.0.33.dev4', e.payload
 from
     generate_series(1, 1000) n(number)
     cross join lateral (
         values
             (1, 'command-' || n.number, 'slash_command', jsonb_build_object(
-                'role', null, 'name', 'demo', 'text', '/demo', 'arguments', '{}'::jsonb,
+                'name', 'demo', 'text', '/demo', 'arguments', '{}'::jsonb,
                 'owner', jsonb_build_object('kind', 'agent'))),
             (2, 'result-' || n.number, 'slash_command_result', jsonb_build_object(
-                'role', null, 'command_id', 'command-' || n.number, 'outcome', 'succeeded',
+                'command_id', 'command-' || n.number, 'outcome', 'succeeded',
                 'content', jsonb_build_array(jsonb_build_object('kind', 'text', 'text', 'Команда выполнена.')),
                 'structured_content', null, 'error', null))
     ) e(part_no, record_id, kind, payload)
@@ -132,8 +134,8 @@ where 1=1
     and r.session_id = 'sql-acp-stress-' || lpad(n.number::text, 4, '0');
 
 insert into history_sql.records (
-    session_id, seq, record_id, copied_from_id, created_at, version,
-    kind, category, key, operation, request_id, payload
+    session_id, seq, record_id, kind, category, role, key, operation, request_id,
+    copied_from_id, created_at, version, payload
 )
 with
 sessions as (
@@ -148,8 +150,8 @@ sessions as (
         generate_series(1, 512) n(number)
 )
 select
-    s.session_id, r.seq, r.record_id, r.copied_from_id, r.created_at, r.version,
-    r.kind, r.category, r.key, r.operation, r.request_id, r.payload
+    s.session_id, r.seq, r.record_id, r.kind, r.category, r.role, r.key, r.operation,
+    r.request_id, r.copied_from_id, r.created_at, r.version, r.payload
 from
     sessions s
     join history_sql.records r on r.session_id = s.source_session_id

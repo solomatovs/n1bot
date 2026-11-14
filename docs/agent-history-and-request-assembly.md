@@ -7,6 +7,10 @@ ACP-проекция описана отдельно: [модели и SQL](agen
 
 ## 1 Общие значения
 
+---
+
+### Импорты и общие типы
+
 ```python
 from __future__ import annotations
 
@@ -41,6 +45,10 @@ T = TypeVar("T")
 NonEmptyTuple: TypeAlias = Annotated[tuple[T, ...], Field(min_length=1)]
 ```
 
+---
+
+### `DataModel`
+
 ```python
 class DataModel(BaseModel):
     """Общие настройки Pydantic; предметные данные не зависят от инфраструктуры."""
@@ -61,6 +69,10 @@ JSON базового класса; самостоятельной запись�
 {}
 ```
 
+---
+
+### `HistoryCategory`
+
 Категории и общие поля строк; конкретные модели ниже уточняют `kind` и `payload`.
 
 ```python
@@ -79,6 +91,10 @@ HistoryCategory = Literal[
 CATEGORIES = get_args(HistoryCategory)
 ```
 
+---
+
+### `TextPart`
+
 ```python
 class TextPart(DataModel):
     """Текст сохраняется буквально, включая пустую строку."""
@@ -93,6 +109,10 @@ class TextPart(DataModel):
   "text": "Привет"
 }
 ```
+
+---
+
+### `ImagePart`
 
 ```python
 class ImagePart(DataModel):
@@ -110,6 +130,10 @@ class ImagePart(DataModel):
   "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk-A8AAQUBAScY42YAAAAASUVORK5CYII="
 }
 ```
+
+---
+
+### `ResourcePart`
 
 ```python
 class ResourcePart(DataModel):
@@ -157,6 +181,10 @@ class ResourcePart(DataModel):
 }
 ```
 
+---
+
+### `ReasoningPart`
+
 ```python
 class ReasoningPart(DataModel):
     """Рассуждение; подпись и её формат передаются без интерпретации."""
@@ -182,6 +210,10 @@ class ReasoningPart(DataModel):
 }
 ```
 
+---
+
+### `ToolCallPart`
+
 ```python
 class ToolCallPart(DataModel):
     """Вызов в сообщении LLM; call_id связывает его с ToolResultRecord."""
@@ -201,6 +233,10 @@ class ToolCallPart(DataModel):
 }
 ```
 
+---
+
+### `ToolReferencePart`
+
 ```python
 class ToolReferencePart(DataModel):
     """Ссылка на найденный инструмент и использованную запись каталога."""
@@ -218,6 +254,10 @@ class ToolReferencePart(DataModel):
 }
 ```
 
+---
+
+### `UserPart`, `AssistantPart`, `ToolResultPart`
+
 ```python
 UserPart = Annotated[
     TextPart | ImagePart | ResourcePart,
@@ -233,6 +273,10 @@ ToolResultPart = Annotated[
 ]
 ```
 
+---
+
+### `ToolCatalogItem`
+
 ```python
 class ToolCatalogItem(DataModel):
     """Имя и описание доступного инструмента без полной схемы."""
@@ -245,6 +289,10 @@ class ToolCatalogItem(DataModel):
   "description": "Получить список таблиц."
 }
 ```
+
+---
+
+### `ToolDefinition`
 
 ```python
 class ToolDefinition(DataModel):
@@ -266,6 +314,10 @@ class ToolDefinition(DataModel):
   "deferred": false
 }
 ```
+
+---
+
+### `SkillDefinition`
 
 ```python
 class SkillDefinition(DataModel):
@@ -292,6 +344,10 @@ class SkillDefinition(DataModel):
 }
 ```
 
+---
+
+### `AgentCatalogItem`
+
 ```python
 class AgentCatalogItem(DataModel):
     """Описание доступного типа агента; конфигурация запуска фиксируется в дочерней истории."""
@@ -309,6 +365,10 @@ class AgentCatalogItem(DataModel):
 }
 ```
 
+---
+
+### `TaskExecutionMode` и `TaskStatus`
+
 ```python
 TaskExecutionMode = Literal["foreground", "background"]
 TaskStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
@@ -318,6 +378,10 @@ TaskTerminalStatus = Literal["completed", "failed", "cancelled"]
 `ToolCallPart` един для foreground/background. Сабагент вызывается инструментом `agent`.
 Состояния задачи ссылаются на сохранённый вызов по `related_message_id` и `call_id`;
 имя и аргументы остаются в исходном сообщении.
+
+---
+
+### `TaskSnapshot`
 
 ```python
 class TaskSnapshot(DataModel):
@@ -357,6 +421,10 @@ class TaskSnapshot(DataModel):
   "error": null
 }
 ```
+
+---
+
+### `EnvironmentState`
 
 ```python
 class EnvironmentState(DataModel):
@@ -403,25 +471,33 @@ class EnvironmentState(DataModel):
 или URL). Клиент собирает своё окружение; ресурс получают через клиент, MCP или HTTP.
 Сборщик не читает файлы, URI, часы или настройки процесса и не рендерит текст повторно.
 
+---
+
+### `RecordBase`
+
 ```python
 class RecordBase(DataModel):
     """Одно сообщение = одна строка records; session_id и seq назначает хранилище."""
 
     class Payload(DataModel):
-        role: Literal["system", "user", "assistant", "tool"] | None = None
+        pass
 
     session_id: NonEmptyStr | None = None
     seq: PositiveInt | None = None
-    record_id: NonEmptyStr
-    # Предыдущая запись той же сессии, скопированная при компактизации.
-    copied_from_id: NonEmptyStr | None = None
-    created_at: AwareDatetime
-    version: NonEmptyStr  # Версия boba-cli, создавшего сообщение.
+    record_id: NonEmptyStr  # Уникален среди всех записей одной сессии.
+
     kind: NonEmptyStr
     category: HistoryCategory = "operational"
+    role: Literal["system", "user", "assistant", "tool"] | None = None
+
     key: NonEmptyStr | None = None
     operation: Literal["set", "remove"] = "set"
     request_id: NonEmptyStr | None = None
+    # Предыдущая запись той же сессии, скопированная при компактизации.
+    copied_from_id: NonEmptyStr | None = None
+
+    created_at: AwareDatetime
+    version: NonEmptyStr  # Версия boba-cli, создавшего сообщение.
     payload: Payload
 
     @model_validator(mode="after")
@@ -438,30 +514,33 @@ JSON базового класса; самостоятельной запись�
   "session_id": "session-1",
   "seq": 1,
   "record_id": "record-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "record_example",
   "category": "operational",
+  "role": null,
   "key": null,
   "operation": "set",
   "request_id": null,
-  "payload": {
-    "role": null
-  }
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
+  "payload": {}
 }
 ```
 
+`role` — роль записи в диалоге; у записей без роли значение `null`.
 `payload.content` — упорядоченный массив типизированных частей сообщения.
 `created_at` и `version` принадлежат сообщению; части не дублируют его метаданные.
 JSONB сохраняет порядок элементов массивов; отдельный position в частях не требуется.
+
+---
+
+### `SystemPromptAddedRecord`
 
 ```python
 class SystemPromptAddedRecord(RecordBase):
     """Инструкция указанного типа: постоянная либо только для request_id."""
 
     class Payload(RecordBase.Payload):
-        role: Literal["system"] = "system"
         source_uri: NonEmptyStr | None = (
             None  # Источник инструкции; LLM-сборщик не читает его.
         )
@@ -469,6 +548,7 @@ class SystemPromptAddedRecord(RecordBase):
 
     kind: Literal["system_prompt_added"] = "system_prompt_added"
     category: Literal["prompt"] = "prompt"
+    role: Literal["system"] = "system"
     operation: Literal["set"] = "set"
     request_id: NonEmptyStr | None = None
     key: NonEmptyStr  # Свободный ключ, например agent.role или project.rules.
@@ -480,16 +560,16 @@ class SystemPromptAddedRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "prompt-add-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "system_prompt_added",
   "category": "prompt",
+  "role": "system",
   "key": "agent.role",
   "operation": "set",
   "request_id": null,
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": "system",
     "source_uri": null,
     "content": [
       {
@@ -501,19 +581,20 @@ class SystemPromptAddedRecord(RecordBase):
 }
 ```
 
+---
+
+### `SystemPromptRemovedRecord`
+
 ```python
 class SystemPromptRemovedRecord(RecordBase):
     """Удалить промпт постоянно либо исключить его только из request_id."""
 
-    class Payload(RecordBase.Payload):
-        role: Literal["system"] = "system"
-
     kind: Literal["system_prompt_removed"] = "system_prompt_removed"
     category: Literal["prompt"] = "prompt"
+    role: Literal["system"] = "system"
     operation: Literal["remove"] = "remove"
     request_id: NonEmptyStr | None = None
     key: NonEmptyStr
-    payload: Payload
 ```
 
 ```json
@@ -521,34 +602,37 @@ class SystemPromptRemovedRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "prompt-remove-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "system_prompt_removed",
   "category": "prompt",
+  "role": "system",
   "key": "agent.role",
   "operation": "remove",
   "request_id": null,
-  "payload": {
-    "role": "system"
-  }
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
+  "payload": {}
 }
 ```
 
 AGENTS.md, инструкции MCP, язык и стиль ответа используют эти модели. `key` обозначает
 заменяемую секцию, `source_uri` — источник. Назначение инструкции задаёт производитель.
 
+---
+
+### `SkillAddedRecord`
+
 ```python
 class SkillAddedRecord(RecordBase):
     """Полный снимок одного доступного навыка и готовое объявление для модели."""
 
     class Payload(RecordBase.Payload):
-        role: Literal["user"] = "user"
         skill: SkillDefinition
         content: NonEmptyTuple[TextPart]
 
     kind: Literal["skill_added"] = "skill_added"
     category: Literal["context"] = "context"
+    role: Literal["user"] = "user"
     operation: Literal["set"] = "set"
     request_id: None = None
     key: NonEmptyStr  # Устойчивая идентичность навыка, например skill:workspace:review.
@@ -560,16 +644,16 @@ class SkillAddedRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "skill-add-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "skill_added",
   "category": "context",
+  "role": "user",
   "key": "skill:workspace:review",
   "operation": "set",
   "request_id": null,
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": "user",
     "skill": {
       "name": "review",
       "description": "Проверка изменений проекта.",
@@ -586,19 +670,20 @@ class SkillAddedRecord(RecordBase):
 }
 ```
 
+---
+
+### `SkillRemovedRecord`
+
 ```python
 class SkillRemovedRecord(RecordBase):
     """Снять доступность навыка; ранее активированные инструкции сохраняются."""
 
-    class Payload(RecordBase.Payload):
-        role: Literal["user"] = "user"
-
     kind: Literal["skill_removed"] = "skill_removed"
     category: Literal["context"] = "context"
+    role: Literal["user"] = "user"
     operation: Literal["remove"] = "remove"
     request_id: None = None
     key: NonEmptyStr
-    payload: Payload
 ```
 
 ```json
@@ -606,32 +691,35 @@ class SkillRemovedRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "skill-remove-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "skill_removed",
   "category": "context",
+  "role": "user",
   "key": "skill:workspace:review",
   "operation": "remove",
   "request_id": null,
-  "payload": {
-    "role": "user"
-  }
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
+  "payload": {}
 }
 ```
+
+---
+
+### `SkillActivatedRecord`
 
 ```python
 class SkillActivatedRecord(RecordBase):
     """Полученные инструкции навыка с уже подставленными аргументами вызова."""
 
     class Payload(RecordBase.Payload):
-        role: Literal["system"] = "system"
         name: NonEmptyStr
         source_uri: NonEmptyStr | None = None
         content: NonEmptyTuple[TextPart]
 
     kind: Literal["skill_activated"] = "skill_activated"
     category: Literal["prompt"] = "prompt"
+    role: Literal["system"] = "system"
     operation: Literal["set"] = "set"
     key: NonEmptyStr  # Та же идентичность, что в каталоге, но категория prompt.
     payload: Payload
@@ -642,16 +730,16 @@ class SkillActivatedRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "skill-activate-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "skill_activated",
   "category": "prompt",
+  "role": "system",
   "key": "skill:workspace:review",
   "operation": "set",
   "request_id": null,
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": "system",
     "name": "review",
     "source_uri": "file:///workspace/skills/review/SKILL.md",
     "content": [
@@ -670,17 +758,21 @@ class SkillActivatedRecord(RecordBase):
 и активация сохраняются одной пачкой. Снятие объявления не снимает активированную инструкцию:
 для неё используется `SystemPromptRemovedRecord` с ключом активации.
 
+---
+
+### `MemoryAddedRecord`
+
 ```python
 class MemoryAddedRecord(RecordBase):
     """Полный снимок выбранной памяти, действующий до замены или отмены."""
 
     class Payload(RecordBase.Payload):
-        role: Literal["user"] = "user"
         source_uri: NonEmptyStr | None = None
         content: NonEmptyTuple[TextPart]
 
     kind: Literal["memory_added"] = "memory_added"
     category: Literal["context"] = "context"
+    role: Literal["user"] = "user"
     operation: Literal["set"] = "set"
     key: NonEmptyStr  # Устойчивая идентичность фрагмента памяти, например memory:workspace:project.
     payload: Payload
@@ -691,16 +783,16 @@ class MemoryAddedRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "memory-add-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "memory_added",
   "category": "context",
+  "role": "user",
   "key": "memory:workspace:project",
   "operation": "set",
   "request_id": null,
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": "user",
     "source_uri": "https://example.org/workspaces/boba/memory/project",
     "content": [
       {
@@ -712,18 +804,19 @@ class MemoryAddedRecord(RecordBase):
 }
 ```
 
+---
+
+### `MemoryRemovedRecord`
+
 ```python
 class MemoryRemovedRecord(RecordBase):
     """Прекратить включение выбранной памяти в запросы; исходные записи остаются."""
 
-    class Payload(RecordBase.Payload):
-        role: Literal["user"] = "user"
-
     kind: Literal["memory_removed"] = "memory_removed"
     category: Literal["context"] = "context"
+    role: Literal["user"] = "user"
     operation: Literal["remove"] = "remove"
     key: NonEmptyStr
-    payload: Payload
 ```
 
 ```json
@@ -731,17 +824,16 @@ class MemoryRemovedRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "memory-remove-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "memory_removed",
   "category": "context",
+  "role": "user",
   "key": "memory:workspace:project",
   "operation": "remove",
   "request_id": null,
-  "payload": {
-    "role": "user"
-  }
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
+  "payload": {}
 }
 ```
 
@@ -751,17 +843,21 @@ class MemoryRemovedRecord(RecordBase):
 `ResourceMessageRecord`, фактический результат tool — к `ToolResultRecord`.
 Постоянная память переносится в снимок компактизации.
 
+---
+
+### `AgentAddedRecord`
+
 ```python
 class AgentAddedRecord(RecordBase):
     """Полный снимок одного доступного типа агента и готовое объявление для модели."""
 
     class Payload(RecordBase.Payload):
-        role: Literal["user"] = "user"
         agent: AgentCatalogItem
         content: NonEmptyTuple[TextPart]
 
     kind: Literal["agent_added"] = "agent_added"
     category: Literal["context"] = "context"
+    role: Literal["user"] = "user"
     operation: Literal["set"] = "set"
     request_id: None = None
     key: NonEmptyStr  # Например agent:explore; не идентификатор запущенной задачи.
@@ -773,16 +869,16 @@ class AgentAddedRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "agent-add-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "agent_added",
   "category": "context",
+  "role": "user",
   "key": "agent:explore",
   "operation": "set",
   "request_id": null,
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": "user",
     "agent": {
       "name": "explore",
       "description": "Исследование проекта без изменения файлов.",
@@ -798,19 +894,20 @@ class AgentAddedRecord(RecordBase):
 }
 ```
 
+---
+
+### `AgentRemovedRecord`
+
 ```python
 class AgentRemovedRecord(RecordBase):
     """Снять тип агента из каталога; уже запущенные задачи продолжают работу."""
 
-    class Payload(RecordBase.Payload):
-        role: Literal["user"] = "user"
-
     kind: Literal["agent_removed"] = "agent_removed"
     category: Literal["context"] = "context"
+    role: Literal["user"] = "user"
     operation: Literal["remove"] = "remove"
     request_id: None = None
     key: NonEmptyStr
-    payload: Payload
 ```
 
 ```json
@@ -818,34 +915,37 @@ class AgentRemovedRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "agent-remove-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "agent_removed",
   "category": "context",
+  "role": "user",
   "key": "agent:explore",
   "operation": "remove",
   "request_id": null,
-  "payload": {
-    "role": "user"
-  }
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
+  "payload": {}
 }
 ```
 
 Каталог агентов — LAST по `(context, key)`. Параметры, инструменты, инструкции и разрешения
 запуска сохраняются отдельными записями дочерней сессии.
 
+---
+
+### `EnvironmentRecord`
+
 ```python
 class EnvironmentRecord(RecordBase):
     """Полный снимок одной среды; state=None явно снимает её объявление."""
 
     class Payload(RecordBase.Payload):
-        role: Literal["user"] = "user"
         state: EnvironmentState | None
         content: tuple[TextPart, ...] = ()
 
     kind: Literal["environment"] = "environment"
     category: Literal["context"] = "context"
+    role: Literal["user"] = "user"
     request_id: NonEmptyStr | None = None
     key: NonEmptyStr
     payload: Payload
@@ -870,16 +970,16 @@ class EnvironmentRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "environment-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "environment",
   "category": "context",
+  "role": "user",
   "key": "environment.executor.shell",
   "operation": "set",
   "request_id": null,
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": "user",
     "state": {
       "working_directory": "/workspace/boba/packages",
       "workspace_roots": [
@@ -904,18 +1004,22 @@ class EnvironmentRecord(RecordBase):
 корнях список пуст. Пути не задают разрешений или cwd процесса сервера.
 Ключ среды свободный; снимок и подготовленное описание всегда полные.
 
+---
+
+### `DateRecord`
+
 ```python
 class DateRecord(RecordBase):
     """Наблюдённая календарная дата в выбранной зоне; отличается от времени записи."""
 
     class Payload(RecordBase.Payload):
-        role: Literal["user"] = "user"
         date: CalendarDate
         timezone: NonEmptyStr
         content: NonEmptyTuple[TextPart]
 
     kind: Literal["date"] = "date"
     category: Literal["context"] = "context"
+    role: Literal["user"] = "user"
     key: NonEmptyStr = "calendar.current"
     operation: Literal["set"] = "set"
     request_id: NonEmptyStr | None = None
@@ -927,16 +1031,16 @@ class DateRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "date-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "date",
   "category": "context",
+  "role": "user",
   "key": "calendar.current",
   "operation": "set",
   "request_id": null,
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": "user",
     "date": "2026-11-13",
     "timezone": "Europe/Moscow",
     "content": [
@@ -951,6 +1055,10 @@ class DateRecord(RecordBase):
 
 Дату и часовой пояс фиксирует производитель при изменении. `calendar.current` — ключ
 по умолчанию; разрешены другие ключи. SQL использует сохранённую дату, а не текущие часы.
+
+---
+
+### `ToolAddedRecord`
 
 ```python
 class ToolAddedRecord(RecordBase):
@@ -971,22 +1079,26 @@ class ToolAddedRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "tool-add-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "tool_added",
   "category": "tool_catalog",
+  "role": null,
   "key": "mcp__database__list_tables",
   "operation": "set",
   "request_id": null,
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": null,
     "tool": {
       "description": "Получить список таблиц."
     }
   }
 }
 ```
+
+---
+
+### `ToolRemovedRecord`
 
 ```python
 class ToolRemovedRecord(RecordBase):
@@ -1003,19 +1115,22 @@ class ToolRemovedRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "tool-remove-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "tool_removed",
   "category": "tool_catalog",
+  "role": null,
   "key": "mcp__database__list_tables",
   "operation": "remove",
   "request_id": null,
-  "payload": {
-    "role": null
-  }
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
+  "payload": {}
 }
 ```
+
+---
+
+### `ToolSchemaRecord`
 
 ```python
 class ToolSchemaRecord(RecordBase):
@@ -1039,16 +1154,16 @@ class ToolSchemaRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "tool-schema-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "tool_schema",
   "category": "tool_schema",
+  "role": null,
   "key": "mcp__database__list_tables",
   "operation": "set",
   "request_id": null,
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": null,
     "catalog_revision": "tool-add-1",
     "tool": {
       "description": "Получить список таблиц.",
@@ -1062,6 +1177,10 @@ class ToolSchemaRecord(RecordBase):
   }
 }
 ```
+
+---
+
+### `ParameterRecord`
 
 ```python
 class ParameterRecord(RecordBase):
@@ -1091,16 +1210,16 @@ JSON базового класса; самостоятельной запись�
   "session_id": "session-1",
   "seq": 1,
   "record_id": "parameters-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "parameter_example",
   "category": "setting",
+  "role": null,
   "key": "sampling",
   "operation": "set",
   "request_id": null,
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": null,
     "value": {
       "temperature": 0.2
     }
@@ -1113,6 +1232,14 @@ JSON базового класса; самостоятельной запись�
 Отмена — отдельная remove-запись без `value`; `{}` запрещён. Вложенные `{}`, `null`, `false`
 и `0` остаются обычными значениями параметров. Конфликт выходных полей — `duplicate_parameter`.
 Выбор модели заменяется новым `ModelRecord`.
+
+В настройках `request_id=null` задаёт постоянное действие, заполненный `request_id` —
+действие только для указанного LLM-запроса. `operation=remove` отменяет настройки с данным
+`key`: постоянно до следующего set либо только для указанного request_id.
+
+---
+
+### `ParameterRemovedRecord`
 
 ```python
 class ParameterRemovedRecord(RecordBase):
@@ -1130,19 +1257,22 @@ JSON базового класса; самостоятельной запись�
   "session_id": "session-1",
   "seq": 1,
   "record_id": "parameter_removed_example-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "parameter_removed_example",
   "category": "setting",
+  "role": null,
   "key": "sampling",
   "operation": "remove",
   "request_id": null,
-  "payload": {
-    "role": null
-  }
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
+  "payload": {}
 }
 ```
+
+---
+
+### `ModelRecord`
 
 ```python
 class ModelRecord(ParameterRecord):
@@ -1161,16 +1291,16 @@ class ModelRecord(ParameterRecord):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "model-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "model",
   "category": "setting",
+  "role": null,
   "key": "model",
   "operation": "set",
   "request_id": null,
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": null,
     "value": {
       "model": "agent-model"
     },
@@ -1178,6 +1308,13 @@ class ModelRecord(ParameterRecord):
   }
 }
 ```
+
+`ModelRecord.payload.provider` выбирает подключение и адаптер; поля payload.value
+переносятся в тело запроса. Новая модель и совместимые настройки сохраняются до LlmRequestBoundaryRecord.
+
+---
+
+### `SamplingRecord`
 
 ```python
 class SamplingRecord(ParameterRecord):
@@ -1192,16 +1329,16 @@ class SamplingRecord(ParameterRecord):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "sampling-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "sampling",
   "category": "setting",
+  "role": null,
   "key": "sampling",
   "operation": "set",
   "request_id": null,
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": null,
     "value": {
       "temperature": 0.2,
       "top_p": 0.9
@@ -1209,6 +1346,10 @@ class SamplingRecord(ParameterRecord):
   }
 }
 ```
+
+---
+
+### `SamplingRemovedRecord`
 
 ```python
 class SamplingRemovedRecord(ParameterRemovedRecord):
@@ -1223,19 +1364,22 @@ class SamplingRemovedRecord(ParameterRemovedRecord):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "sampling_removed-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "sampling_removed",
   "category": "setting",
+  "role": null,
   "key": "sampling",
   "operation": "remove",
   "request_id": null,
-  "payload": {
-    "role": null
-  }
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
+  "payload": {}
 }
 ```
+
+---
+
+### `InferenceRecord`
 
 ```python
 class InferenceRecord(ParameterRecord):
@@ -1250,16 +1394,16 @@ class InferenceRecord(ParameterRecord):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "inference-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "inference",
   "category": "setting",
+  "role": null,
   "key": "inference",
   "operation": "set",
   "request_id": null,
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": null,
     "value": {
       "max_completion_tokens": 1024,
       "reasoning_effort": "medium"
@@ -1267,6 +1411,10 @@ class InferenceRecord(ParameterRecord):
   }
 }
 ```
+
+---
+
+### `InferenceRemovedRecord`
 
 ```python
 class InferenceRemovedRecord(ParameterRemovedRecord):
@@ -1281,19 +1429,22 @@ class InferenceRemovedRecord(ParameterRemovedRecord):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "inference_removed-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "inference_removed",
   "category": "setting",
+  "role": null,
   "key": "inference",
   "operation": "remove",
   "request_id": null,
-  "payload": {
-    "role": null
-  }
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
+  "payload": {}
 }
 ```
+
+---
+
+### `ProviderParametersRecord`
 
 ```python
 class ProviderParametersRecord(ParameterRecord):
@@ -1308,22 +1459,26 @@ class ProviderParametersRecord(ParameterRecord):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "provider_parameters-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "provider_parameters",
   "category": "setting",
+  "role": null,
   "key": "provider_parameters",
   "operation": "set",
   "request_id": null,
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": null,
     "value": {
       "parallel_tool_calls": true
     }
   }
 }
 ```
+
+---
+
+### `ProviderParametersRemovedRecord`
 
 ```python
 class ProviderParametersRemovedRecord(ParameterRemovedRecord):
@@ -1338,19 +1493,22 @@ class ProviderParametersRemovedRecord(ParameterRemovedRecord):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "provider_parameters_removed-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "provider_parameters_removed",
   "category": "setting",
+  "role": null,
   "key": "provider_parameters",
   "operation": "remove",
   "request_id": null,
-  "payload": {
-    "role": null
-  }
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
+  "payload": {}
 }
 ```
+
+---
+
+### `ResponseFormatRecord`
 
 ```python
 class ResponseFormatRecord(ParameterRecord):
@@ -1366,16 +1524,16 @@ class ResponseFormatRecord(ParameterRecord):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "response_format-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "response_format",
   "category": "setting",
+  "role": null,
   "key": "response_format",
   "operation": "set",
   "request_id": "request-1",
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": null,
     "value": {
       "response_format": {
         "type": "json_schema",
@@ -1401,6 +1559,10 @@ class ResponseFormatRecord(ParameterRecord):
 }
 ```
 
+---
+
+### `ResponseFormatRemovedRecord`
+
 ```python
 class ResponseFormatRemovedRecord(ParameterRemovedRecord):
     """Формат ответа: отмена для одного запроса."""
@@ -1415,19 +1577,22 @@ class ResponseFormatRemovedRecord(ParameterRemovedRecord):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "response_format_removed-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "response_format_removed",
   "category": "setting",
+  "role": null,
   "key": "response_format",
   "operation": "remove",
   "request_id": "request-1",
-  "payload": {
-    "role": null
-  }
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
+  "payload": {}
 }
 ```
+
+---
+
+### `ToolChoiceRecord`
 
 ```python
 class ToolChoiceRecord(ParameterRecord):
@@ -1443,22 +1608,26 @@ class ToolChoiceRecord(ParameterRecord):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "tool_choice-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "tool_choice",
   "category": "setting",
+  "role": null,
   "key": "tool_choice",
   "operation": "set",
   "request_id": "request-1",
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": null,
     "value": {
       "tool_choice": "auto"
     }
   }
 }
 ```
+
+---
+
+### `ToolChoiceRemovedRecord`
 
 ```python
 class ToolChoiceRemovedRecord(ParameterRemovedRecord):
@@ -1474,19 +1643,22 @@ class ToolChoiceRemovedRecord(ParameterRemovedRecord):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "tool_choice_removed-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "tool_choice_removed",
   "category": "setting",
+  "role": null,
   "key": "tool_choice",
   "operation": "remove",
   "request_id": "request-1",
-  "payload": {
-    "role": null
-  }
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
+  "payload": {}
 }
 ```
+
+---
+
+### `StreamingRecord`
 
 ```python
 class StreamingRecord(ParameterRecord):
@@ -1502,22 +1674,26 @@ class StreamingRecord(ParameterRecord):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "streaming-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "streaming",
   "category": "setting",
+  "role": null,
   "key": "streaming",
   "operation": "set",
   "request_id": "request-1",
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": null,
     "value": {
       "stream": true
     }
   }
 }
 ```
+
+---
+
+### `StreamingRemovedRecord`
 
 ```python
 class StreamingRemovedRecord(ParameterRemovedRecord):
@@ -1533,43 +1709,40 @@ class StreamingRemovedRecord(ParameterRemovedRecord):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "streaming_removed-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "streaming_removed",
   "category": "setting",
+  "role": null,
   "key": "streaming",
   "operation": "remove",
   "request_id": "request-1",
-  "payload": {
-    "role": null
-  }
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
+  "payload": {}
 }
 ```
 
-В записях настроек `request_id=null` означает: применять настройку к следующим запросам.
-`request_id="request-1"` означает: применить её только при сборке запроса request-1.
-Некоторые настройки, например response_format, допускают только второй вариант.
+---
 
-Remove с `request_id=null` отменяет всю категорию настроек с данным key до следующего set.
-Remove с `request_id="request-1"` убирает её только из запроса request-1. Например,
-sampling_removed для request-1 исключает sampling из этого запроса; следующий запрос
-снова использует постоянный sampling, если он сохранён.
-
-`ModelRecord.payload.provider` определяет, через какое подключение и адаптер отправлять
-запрос. В его тело переносятся поля payload.value. При смене провайдера агент сначала
-сохраняет новую модель и совместимые с ней настройки, затем фиксирует запрос описанной ниже записью.
-
-`LlmRequestBoundaryRecord` — служебная запись истории: **«собрать запрос с этим ID
-по данным, сохранённым до этой записи»**. Её добавляет агент перед вызовом сборщика.
-Она нужна, чтобы последующие сообщения не меняли состав уже подготовленного запроса.
+### `LlmRequestBoundaryRecord`
 
 ```python
 class LlmRequestBoundaryRecord(RecordBase):
-    """Фиксирует, на какой момент истории собрать один запрос в LLM.
+    """Позволяет восстановить тело LLM-запроса, найти ответ и узнать расход токенов.
 
-    record_id — ID запроса; читать входы с seq меньше seq этой записи.
-    Агент сохраняет её после входов и перед сборкой. При повторе используется тот же ID.
+    record_id — идентификатор записи LlmRequestBoundaryRecord, уникальный в сессии.
+    request_id связанных записей равен LlmRequestBoundaryRecord.record_id:
+    - разовые настройки задают параметры сборки;
+    - LlmRequestAttemptRecord содержит попытки отправки, длительность и ошибки;
+    - AssistantMessageRecord содержит полученный ответ;
+    - TokenUsageRecord содержит расход токенов.
+
+    seq фиксирует конец входной истории для восстановления тела запроса.
+    Сборщик использует предшествующие сообщения, инструкции, tools и настройки
+    от последнего CompactMessageRecord либо с начала чата.
+    Добавленные позже сообщения не изменяют повторную сборку запроса.
+    Агент сохраняет LlmRequestBoundaryRecord до отправки; created_at — время подготовки.
+    Сведения о выполнении сохраняются в связанных LlmRequestAttemptRecord.
     """
 
     kind: Literal["llm_request_boundary"] = "llm_request_boundary"
@@ -1580,69 +1753,35 @@ class LlmRequestBoundaryRecord(RecordBase):
 ```json
 {
   "session_id": "session-1",
-  "seq": 4,
+  "seq": 10,
   "record_id": "request-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "llm_request_boundary",
   "category": "request",
+  "role": null,
   "key": null,
   "operation": "set",
   "request_id": null,
-  "payload": {
-    "role": null
-  }
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
+  "payload": {}
 }
 ```
 
-В примере record_id=request-1 — имя подготовленного запроса, а seq=4 означает:
-при его сборке читать записи с seq меньше 4. Сама служебная запись в LLM не отправляется.
-Её payload не содержит сообщения или параметров: они уже находятся в предыдущих записях.
-Поле request_id у неё равно null, потому что она сама задаёт ID запроса; остальные
-записи ссылаются на неё через request_id=request-1.
+---
 
-Пример последовательности; показаны только поля, важные для сборки:
-
-```text
-seq  kind                  record_id   request_id   содержимое
-1    model                 model-1     null         model="agent-model"
-2    user_message          user-1      null         "Ответь в JSON"
-3    response_format       format-1    request-1    response_format={"type":"json_object"}
-4    llm_request_boundary  request-1   null
-5    assistant_message     answer-1    request-1    "{\"ok\": true}"
-6    user_message          user-2      null         "Продолжай"
-7    llm_request_boundary  request-2   null
-```
-
-Агент заранее создаёт ID request-1, поэтому может указать его в настройке на seq=3,
-а саму фиксирующую запись сохранить последней, на seq=4.
-
-- Сборка request-1 использует модель на seq=1, ввод на seq=2 и формат на seq=3.
-  Ответ на seq=5 и новый ввод на seq=6 в него не попадут даже при повторной сборке позже.
-- Сборка request-2 использует прежнюю модель и диалог на seq=2, 5, 6.
-  Формат с request_id=request-1 в request-2 не применяется.
-
-Таким образом, request_id у настройки ограничивает её одним запросом, а у ответа
-ассистента показывает, какой запрос породил ответ. Диалог не фильтруется по совпадению request_id.
-Повтор HTTP-попытки request-1 использует ту же служебную запись; следующее обращение
-к модели для продолжения диалога получает новую, как request-2 в примере.
-
-Если до выбранной записи была компактизация, сборка начинается с последнего
-CompactMessageRecord перед ней, включая пересказ и последующие записи. Если компактизации
-не было, сборка начинается с начала чата. Затем применяются правила LAST/SUM категорий.
-Сборщик читает этот срез из хранилища и сам записей не добавляет.
+### `UserMessageRecord`
 
 ```python
 class UserMessageRecord(RecordBase):
     """Сообщение пользователя в журнале истории."""
 
     class Payload(RecordBase.Payload):
-        role: Literal["user"] = "user"
         content: NonEmptyTuple[UserPart]
 
     kind: Literal["user_message"] = "user_message"
     category: Literal["message"] = "message"
+    role: Literal["user"] = "user"
     operation: Literal["set"] = "set"
     payload: Payload
 ```
@@ -1652,16 +1791,16 @@ class UserMessageRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "user-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "user_message",
   "category": "message",
+  "role": "user",
   "key": null,
   "operation": "set",
   "request_id": null,
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": "user",
     "content": [
       {
         "kind": "text",
@@ -1672,6 +1811,10 @@ class UserMessageRecord(RecordBase):
 }
 ```
 
+---
+
+### `ResourceMessageRecord`
+
 ```python
 class ResourceMessageRecord(RecordBase):
     """Материалы, добавленные клиентом или агентом: выбранный фрагмент, файл, ресурс.
@@ -1680,7 +1823,6 @@ class ResourceMessageRecord(RecordBase):
     """
 
     class Payload(RecordBase.Payload):
-        role: Literal["user"] = "user"
         source: (
             NonEmptyStr  # Например client.editor, resource.prefetch или file.watcher.
         )
@@ -1691,6 +1833,7 @@ class ResourceMessageRecord(RecordBase):
 
     kind: Literal["resource_message"] = "resource_message"
     category: Literal["message"] = "message"
+    role: Literal["user"] = "user"
     operation: Literal["set"] = "set"
     payload: Payload
 
@@ -1706,16 +1849,16 @@ class ResourceMessageRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "resource-message-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "resource_message",
   "category": "message",
+  "role": "user",
   "key": null,
   "operation": "set",
   "request_id": null,
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": "user",
     "source": "client.editor",
     "related_message_id": "user-1",
     "content": [
@@ -1748,6 +1891,10 @@ class ResourceMessageRecord(RecordBase):
 Непустой массив содержит сохранённые текстовые блоки и изображения. Незагруженная ссылка не выдаётся за прочитанный ресурс.
 `related_message_id` связывает материал с предыдущей записью, не ограничивая одним запросом.
 
+---
+
+### `CompactMessageRecord`
+
 ```python
 class CompactMessageRecord(RecordBase):
     """Результат успешной компактизации и первое сообщение нового контекста.
@@ -1756,12 +1903,12 @@ class CompactMessageRecord(RecordBase):
     """
 
     class Payload(RecordBase.Payload):
-        role: Literal["user"] = "user"
         reason: NonEmptyStr
         content: NonEmptyTuple[TextPart]
 
     kind: Literal["compact_message"] = "compact_message"
     category: Literal["compact"] = "compact"
+    role: Literal["user"] = "user"
     operation: Literal["set"] = "set"
     payload: Payload
 ```
@@ -1771,16 +1918,16 @@ class CompactMessageRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "compact-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "compact_message",
   "category": "compact",
+  "role": "user",
   "key": null,
   "operation": "set",
   "request_id": null,
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": "user",
     "reason": "context_limit",
     "content": [
       {
@@ -1806,6 +1953,10 @@ class CompactMessageRecord(RecordBase):
 настройки без границы запроса — ошибка подготовки. Команда `/compact` и ошибка сжатия
 не меняют активную границу; сборщик не достраивает неполный снимок.
 
+---
+
+### `AssistantMessageRecord`
+
 ```python
 class AssistantMessageRecord(RecordBase):
     """Итог одного сообщения LLM: текст, reasoning и/или вызовы tools в исходном порядке.
@@ -1815,12 +1966,12 @@ class AssistantMessageRecord(RecordBase):
     """
 
     class Payload(RecordBase.Payload):
-        role: Literal["assistant"] = "assistant"
         content: NonEmptyTuple[AssistantPart]
         completion: Literal["complete", "cancelled", "output_limit"] = "complete"
 
     kind: Literal["assistant_message"] = "assistant_message"
     category: Literal["message"] = "message"
+    role: Literal["assistant"] = "assistant"
     operation: Literal["set"] = "set"
     request_id: NonEmptyStr
     payload: Payload
@@ -1839,16 +1990,16 @@ class AssistantMessageRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "assistant-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "assistant_message",
   "category": "message",
+  "role": "assistant",
   "key": null,
   "operation": "set",
   "request_id": "request-1",
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": "assistant",
     "content": [
       {
         "kind": "text",
@@ -1873,18 +2024,22 @@ class AssistantMessageRecord(RecordBase):
 Ошибка попытки фиксируется в `LlmRequestAttemptRecord`, её частичный ответ не сохраняется.
 `boba-aid` получает историю и чанки только от агента через ACP.
 
+---
+
+### `ToolResultRecord`
+
 ```python
 class ToolResultRecord(RecordBase):
     """Один окончательный результат; отказ и отмена имеют is_error=True."""
 
     class Payload(RecordBase.Payload):
-        role: Literal["tool"] = "tool"
         call_id: NonEmptyStr
         content: tuple[ToolResultPart, ...] = ()
         is_error: bool
 
     kind: Literal["tool_result"] = "tool_result"
     category: Literal["message"] = "message"
+    role: Literal["tool"] = "tool"
     operation: Literal["set"] = "set"
     payload: Payload
 ```
@@ -1894,16 +2049,16 @@ class ToolResultRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "tool-result-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "tool_result",
   "category": "message",
+  "role": "tool",
   "key": null,
   "operation": "set",
   "request_id": null,
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": "tool",
     "call_id": "call-1",
     "content": [
       {
@@ -1915,6 +2070,10 @@ class ToolResultRecord(RecordBase):
   }
 }
 ```
+
+---
+
+### `ElicitationRequestRecord`
 
 ```python
 class ElicitationRequestRecord(RecordBase):
@@ -1957,16 +2116,16 @@ class ElicitationRequestRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "elicit-form-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-14T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "elicitation_request",
   "category": "operational",
+  "role": null,
   "key": null,
   "operation": "set",
   "request_id": null,
+  "copied_from_id": null,
+  "created_at": "2026-11-14T09:00:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": null,
     "source": "agent.preferences",
     "message": "Какие проверки запускать?",
     "mode": "form",
@@ -2003,16 +2162,16 @@ class ElicitationRequestRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "elicit-url-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-14T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "elicitation_request",
   "category": "operational",
+  "role": null,
   "key": null,
   "operation": "set",
   "request_id": null,
+  "copied_from_id": null,
+  "created_at": "2026-11-14T09:00:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": null,
     "source": "agent.credentials.github",
     "message": "Подключите доступ к GitHub.",
     "mode": "url",
@@ -2023,6 +2182,10 @@ class ElicitationRequestRecord(RecordBase):
   }
 }
 ```
+
+---
+
+### `ElicitationResponseRecord`
 
 ```python
 class ElicitationResponseRecord(RecordBase):
@@ -2050,16 +2213,16 @@ class ElicitationResponseRecord(RecordBase):
   "session_id": "session-1",
   "seq": 2,
   "record_id": "elicit-response-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-14T09:01:00Z",
-  "version": "0.0.33.dev4",
   "kind": "elicitation_response",
   "category": "operational",
+  "role": null,
   "key": null,
   "operation": "set",
   "request_id": null,
+  "copied_from_id": null,
+  "created_at": "2026-11-14T09:01:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": null,
     "elicitation_id": "elicit-form-1",
     "action": "accept",
     "content": {
@@ -2071,6 +2234,10 @@ class ElicitationResponseRecord(RecordBase):
   }
 }
 ```
+
+---
+
+### `ElicitationCompletedRecord`
 
 ```python
 class ElicitationCompletedRecord(RecordBase):
@@ -2098,16 +2265,16 @@ class ElicitationCompletedRecord(RecordBase):
   "session_id": "session-1",
   "seq": 3,
   "record_id": "elicit-completed-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-14T09:02:00Z",
-  "version": "0.0.33.dev4",
   "kind": "elicitation_completed",
   "category": "operational",
+  "role": null,
   "key": null,
   "operation": "set",
   "request_id": null,
+  "copied_from_id": null,
+  "created_at": "2026-11-14T09:02:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": null,
     "elicitation_id": "elicit-url-1",
     "outcome": "completed",
     "error": null
@@ -2119,6 +2286,10 @@ class ElicitationCompletedRecord(RecordBase):
 `ToolResultRecord` или `UserMessageRecord`. Ошибка доставки — `NoticeRecord`, не отказ пользователя.
 Формы содержат несекретные данные; credentials обрабатываются внешним URL-процессом.
 Восстановление истории само по себе не отправляет вопрос повторно и не запускает действие.
+
+---
+
+### `AgentCommandOwner`
 
 ```python
 class AgentCommandOwner(DataModel):
@@ -2133,6 +2304,10 @@ class AgentCommandOwner(DataModel):
 }
 ```
 
+---
+
+### `ClientCommandOwner`
+
 ```python
 class ClientCommandOwner(DataModel):
     """Команду объявляет клиент и исполняет его обработчик."""
@@ -2146,6 +2321,10 @@ class ClientCommandOwner(DataModel):
 }
 ```
 
+---
+
+### `McpPromptCommandOwner`
+
 ```python
 class McpPromptCommandOwner(DataModel):
     """MCP-промпт; имя команды mcp__<server>__<prompt> определяет адрес prompts/get."""
@@ -2158,6 +2337,10 @@ class McpPromptCommandOwner(DataModel):
   "kind": "mcp_prompt"
 }
 ```
+
+---
+
+### `McpAppCommandOwner`
 
 ```python
 class McpAppCommandOwner(DataModel):
@@ -2176,12 +2359,20 @@ class McpAppCommandOwner(DataModel):
 }
 ```
 
+---
+
+### `SlashCommandOwner`
+
 ```python
 SlashCommandOwner = Annotated[
     AgentCommandOwner | ClientCommandOwner | McpPromptCommandOwner | McpAppCommandOwner,
     Field(discriminator="kind"),
 ]
 ```
+
+---
+
+### `SlashCommandRecord`
 
 ```python
 class SlashCommandRecord(RecordBase):
@@ -2204,16 +2395,16 @@ class SlashCommandRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "command-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "slash_command",
   "category": "operational",
+  "role": null,
   "key": null,
   "operation": "set",
   "request_id": null,
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": null,
     "name": "compact",
     "text": "/compact",
     "arguments": {},
@@ -2223,6 +2414,10 @@ class SlashCommandRecord(RecordBase):
   }
 }
 ```
+
+---
+
+### `SlashCommandResultRecord`
 
 ```python
 class SlashCommandResultRecord(RecordBase):
@@ -2254,16 +2449,16 @@ class SlashCommandResultRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "command-result-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "slash_command_result",
   "category": "operational",
+  "role": null,
   "key": null,
   "operation": "set",
   "request_id": null,
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": null,
     "command_id": "command-1",
     "outcome": "succeeded",
     "content": [
@@ -2277,6 +2472,10 @@ class SlashCommandResultRecord(RecordBase):
   }
 }
 ```
+
+---
+
+### `PermissionRule`
 
 ```python
 class PermissionRule(DataModel):
@@ -2292,6 +2491,10 @@ class PermissionRule(DataModel):
   "decision": "allow"
 }
 ```
+
+---
+
+### `PermissionStateRecord`
 
 ```python
 class PermissionStateRecord(RecordBase):
@@ -2319,16 +2522,16 @@ class PermissionStateRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "permission-state-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "permission_state",
   "category": "operational",
+  "role": null,
   "key": null,
   "operation": "set",
   "request_id": null,
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": null,
     "mode": "default",
     "rules": [
       {
@@ -2339,6 +2542,10 @@ class PermissionStateRecord(RecordBase):
   }
 }
 ```
+
+---
+
+### `PermissionDecisionRecord`
 
 ```python
 class PermissionDecisionRecord(RecordBase):
@@ -2360,16 +2567,16 @@ class PermissionDecisionRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "permission-decision-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "permission_decision",
   "category": "operational",
+  "role": null,
   "key": null,
   "operation": "set",
   "request_id": null,
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": null,
     "call_id": "call-1",
     "decision": "allow",
     "reason": "Инструмент разрешён правилами агента."
@@ -2380,6 +2587,10 @@ class PermissionDecisionRecord(RecordBase):
 Исполнитель использует последнюю `PermissionStateRecord`; `deny` запрещает инструмент,
 не удаляя его из каталога. Решение сохраняется в `PermissionDecisionRecord`, отказ —
 в обычном `ToolResultRecord`. Эти правила действуют только в своей сессии.
+
+---
+
+### `NoticeRecord`
 
 ```python
 class NoticeRecord(RecordBase):
@@ -2402,16 +2613,16 @@ JSON базового класса; самостоятельной запись�
   "session_id": "session-1",
   "seq": 1,
   "record_id": "notice-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "notice",
   "category": "operational",
+  "role": null,
   "key": null,
   "operation": "set",
   "request_id": null,
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": null,
     "level": "info",
     "content": [
       {
@@ -2422,6 +2633,10 @@ JSON базового класса; самостоятельной запись�
   }
 }
 ```
+
+---
+
+### `TextNoticeRecord`
 
 ```python
 class TextNoticeRecord(NoticeRecord):
@@ -2437,16 +2652,16 @@ class TextNoticeRecord(NoticeRecord):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "notice-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "notice",
   "category": "operational",
+  "role": null,
   "key": null,
   "operation": "set",
   "request_id": null,
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": null,
     "level": "info",
     "content": [
       {
@@ -2457,6 +2672,10 @@ class TextNoticeRecord(NoticeRecord):
   }
 }
 ```
+
+---
+
+### `LlmRequestAttemptRecord`
 
 ```python
 class LlmRequestAttemptRecord(NoticeRecord):
@@ -2489,16 +2708,16 @@ class LlmRequestAttemptRecord(NoticeRecord):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "request-attempt-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "llm_request_attempt",
   "category": "operational",
+  "role": null,
   "key": null,
   "operation": "set",
   "request_id": "request-1",
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": null,
     "level": "warning",
     "content": [
       {
@@ -2521,6 +2740,10 @@ class LlmRequestAttemptRecord(NoticeRecord):
 структурные сведения. Производитель выбирает info/warning/error. Попытка LLM сама содержит
 уведомление, отдельный дубликат не создаётся. Участие в LLM определяется категорией,
 завершение хода — отдельной `TurnEndRecord`.
+
+---
+
+### `TaskStateRecord`
 
 ```python
 class TaskStateRecord(NoticeRecord):
@@ -2545,16 +2768,16 @@ class TaskStateRecord(NoticeRecord):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "task-state-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "task_state",
   "category": "operational",
+  "role": null,
   "key": null,
   "operation": "set",
   "request_id": null,
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": null,
     "level": "info",
     "content": [
       {
@@ -2579,18 +2802,22 @@ class TaskStateRecord(NoticeRecord):
 }
 ```
 
+---
+
+### `TaskContextRecord`
+
 ```python
 class TaskContextRecord(RecordBase):
     """Снимок фоновой задачи или её необработанного итога, подготовленный для LLM."""
 
     class Payload(RecordBase.Payload):
-        role: Literal["user"] = "user"
         related_message_id: NonEmptyStr  # Исходная TaskStateRecord в этой сессии.
         state: TaskSnapshot
         content: NonEmptyTuple[TextPart]
 
     kind: Literal["task_context"] = "task_context"
     category: Literal["context"] = "context"
+    role: Literal["user"] = "user"
     operation: Literal["set"] = "set"
     request_id: None = None
     key: NonEmptyStr  # task_id из TaskStateRecord.
@@ -2608,16 +2835,16 @@ class TaskContextRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "task-context-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "task_context",
   "category": "context",
+  "role": "user",
   "key": "task:tests-1",
   "operation": "set",
   "request_id": null,
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": "user",
     "related_message_id": "task-state-1",
     "state": {
       "execution_mode": "background",
@@ -2639,18 +2866,22 @@ class TaskContextRecord(RecordBase):
 }
 ```
 
+---
+
+### `TaskNotificationRecord`
+
 ```python
 class TaskNotificationRecord(NoticeRecord):
     """Итог фоновой задачи в диалоге; автоматическое событие, не ответ пользователя."""
 
     class Payload(NoticeRecord.Payload):
-        role: Literal["user"] = "user"
         task_id: NonEmptyStr
         status: TaskTerminalStatus
         related_message_id: NonEmptyStr  # Терминальная TaskStateRecord в этой сессии.
 
     kind: Literal["task_notification"] = "task_notification"
     category: Literal["message"] = "message"
+    role: Literal["user"] = "user"
     operation: Literal["set"] = "set"
     payload: Payload
 ```
@@ -2660,16 +2891,16 @@ class TaskNotificationRecord(NoticeRecord):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "task-notification-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "task_notification",
   "category": "message",
+  "role": "user",
   "key": null,
   "operation": "set",
   "request_id": null,
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": "user",
     "level": "info",
     "content": [
       {
@@ -2684,12 +2915,15 @@ class TaskNotificationRecord(NoticeRecord):
 }
 ```
 
+---
+
+### `TaskAcknowledgedRecord`
+
 ```python
 class TaskAcknowledgedRecord(RecordBase):
     """Итог обработан: снять задачу с учёта в активном контексте, сохранив её историю."""
 
     class Payload(RecordBase.Payload):
-        role: Literal["user"] = "user"
         notification_id: NonEmptyStr
         related_message_id: (
             NonEmptyStr  # Ответ агента или явная команда, обработавшая итог.
@@ -2697,6 +2931,7 @@ class TaskAcknowledgedRecord(RecordBase):
 
     kind: Literal["task_acknowledged"] = "task_acknowledged"
     category: Literal["context"] = "context"
+    role: Literal["user"] = "user"
     operation: Literal["remove"] = "remove"
     request_id: None = None
     key: NonEmptyStr  # task_id принятого результата.
@@ -2708,21 +2943,25 @@ class TaskAcknowledgedRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "task-ack-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "task_acknowledged",
   "category": "context",
+  "role": "user",
   "key": "task:tests-1",
   "operation": "remove",
   "request_id": null,
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": "user",
     "notification_id": "task-notification-1",
     "related_message_id": "assistant-report-1"
   }
 }
 ```
+
+---
+
+### `SubagentSessionRecord`
 
 ```python
 class SubagentSessionRecord(RecordBase):
@@ -2746,16 +2985,16 @@ class SubagentSessionRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "child-origin-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "subagent_session",
   "category": "operational",
+  "role": null,
   "key": null,
   "operation": "set",
   "request_id": null,
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": null,
     "parent_session_id": "parent-chat-1",
     "parent_task_id": "task:review-1",
     "parent_request_id": "parent-request-1"
@@ -2763,27 +3002,15 @@ class SubagentSessionRecord(RecordBase):
 }
 ```
 
-Координатор сверяет вызов с историей и сохраняет `pending` до запуска. Далее допустимы
-`running` и один терминальный исход; из pending возможен прямой отказ/отмена.
-Режим и ссылка на вызов неизменны, повторный запуск получает новый `task_id`.
-
-Foreground возвращает полный `ToolResultRecord`; background — результат с идентификатором
-принятой задачи. Вызывающий цикл сохраняет результат, закрывая call. Поздний итог фона —
-уведомление, а не второй tool result. Чтение вывода и отмена — новые вызовы tools;
-отмену подтверждает событие исполнителя. `output_uri` не подменяет сохранённый результат.
-
-События задачи сохраняются сразу. После закрытия группы tools `deliver` копирует последнее
-фоновое состояние в `TaskContextRecord`, терминальный итог — также в `TaskNotificationRecord`.
-Доставка не повторяется и ищет события по всей истории, включая записи до компактизации.
-После обработки итога `TaskAcknowledgedRecord` снимает снимок. До этого он переносится
-при компактизации. Прогресс и уведомления не являются согласием пользователя; продолжение
-инициирует цикл агента через новую границу запроса.
-
 Инструмент `agent` создаёт/продолжает дочернюю сессию. Её входы сохраняются до первого
 запроса; наследуется явно выбранный завершённый контекст родителя. Дочерний сборщик читает
 только свою сессию, родитель получает состояние и итог. Продолжение использует прежнюю
 дочернюю сессию и новый task_id. После перезапуска координатор сверяет задачи с исполнителем;
 сама запись не запускает их повторно.
+
+---
+
+### `TokenUsage`
 
 ```python
 class TokenUsage(DataModel):
@@ -2804,6 +3031,10 @@ class TokenUsage(DataModel):
 }
 ```
 
+---
+
+### `TokenUsageRecord`
+
 ```python
 class TokenUsageRecord(RecordBase):
     """Итоговые счётчики токенов одного запроса."""
@@ -2823,16 +3054,16 @@ class TokenUsageRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "token-usage-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "token_usage",
   "category": "operational",
+  "role": null,
   "key": null,
   "operation": "set",
   "request_id": "request-1",
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": null,
     "usage": {
       "input_tokens": 120,
       "output_tokens": 35,
@@ -2843,6 +3074,10 @@ class TokenUsageRecord(RecordBase):
   }
 }
 ```
+
+---
+
+### `TurnEndRecord`
 
 ```python
 class TurnEndRecord(RecordBase):
@@ -2865,16 +3100,16 @@ class TurnEndRecord(RecordBase):
   "session_id": "session-1",
   "seq": 1,
   "record_id": "turn-end-1",
-  "copied_from_id": null,
-  "created_at": "2026-11-13T09:00:00Z",
-  "version": "0.0.33.dev4",
   "kind": "turn_end",
   "category": "operational",
+  "role": null,
   "key": null,
   "operation": "set",
   "request_id": null,
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
   "payload": {
-    "role": null,
     "turn_id": "turn-1",
     "outcome": "completed",
     "duration_ms": 1800,
@@ -2882,6 +3117,10 @@ class TurnEndRecord(RecordBase):
   }
 }
 ```
+
+---
+
+### `HistoryRecord`
 
 ```python
 # Все допустимые конкретные записи; выбор модели — только по kind.
@@ -2939,6 +3178,10 @@ HistoryRecord = Annotated[
 ]
 ```
 
+---
+
+### `History`
+
 ```python
 class History(DataModel):
     """Подтверждённая история; rows содержит строки records без изменения их формы."""
@@ -2965,16 +3208,16 @@ class History(DataModel):
       "session_id": "session-1",
       "seq": 1,
       "record_id": "user-1",
-      "copied_from_id": null,
-      "created_at": "2026-11-13T09:00:00Z",
-      "version": "0.0.33.dev4",
       "kind": "user_message",
       "category": "message",
+      "role": "user",
       "key": null,
       "operation": "set",
       "request_id": null,
+      "copied_from_id": null,
+      "created_at": "2026-11-13T09:00:00Z",
+      "version": "0.0.33.dev4",
       "payload": {
-        "role": "user",
         "content": [
           {
             "kind": "text",
@@ -2987,10 +3230,18 @@ class History(DataModel):
 }
 ```
 
+---
+
+### `HISTORY_RECORD_ADAPTER`
+
 ```python
 HISTORY_RECORD_ADAPTER = TypeAdapter(HistoryRecord)
 # Неизвестный kind и неверная форма любой записи — ValidationError.
 ```
+
+---
+
+### `HistoryWriteError`
 
 ```python
 class HistoryWriteError(Exception):
@@ -3008,8 +3259,13 @@ class HistoryWriteError(Exception):
         self.record_ids = record_ids
         self.code = code
         super().__init__(message)
+```
 
+---
 
+### `HistoryStore`
+
+```python
 class HistoryStore(Protocol):
     async def append(
         self,
@@ -3040,16 +3296,25 @@ class HistoryStore(Protocol):
 При сбое возвращается `HistoryWriteError`: storage_unavailable, record_conflict,
 invalid_reference, stale_history или commit_unknown. При неизвестном исходе проверяется журнал.
 
-`HistoryCompactor.prepare` — чистая подготовка по истории и готовому пересказу.
-Вызывающий код сохраняет результат с `expected_seq`; сборщик компактор не вызывает.
+---
+
+### `CompactionError`
 
 ```python
 class CompactionError(ValueError):
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
+```
 
+---
 
+### `HistoryCompactor`
+
+`HistoryCompactor.prepare` — чистая подготовка по истории и готовому пересказу.
+Вызывающий код сохраняет результат с `expected_seq`; сборщик компактор не вызывает.
+
+```python
 class HistoryCompactor(Protocol):
     def prepare(
         self,
@@ -3067,6 +3332,10 @@ class HistoryCompactor(Protocol):
         """
         ...
 ```
+
+---
+
+### `TaskCoordinator`
 
 `TaskCoordinator` проверяет переходы, происхождение, обработку уведомлений и отсутствие
 повторной доставки. Пачки доставки фиксируются с `expected_seq`.
@@ -3111,6 +3380,26 @@ class TaskCoordinator(Protocol):
         """Проверить обработку терминального уведомления и снять снимок задачи."""
         ...
 ```
+
+Координатор сверяет вызов с историей и сохраняет `pending` до запуска. Далее допустимы
+`running` и один терминальный исход; из pending возможен прямой отказ/отмена.
+Режим и ссылка на вызов неизменны, повторный запуск получает новый `task_id`.
+
+Foreground возвращает полный `ToolResultRecord`; background — результат с идентификатором
+принятой задачи. Вызывающий цикл сохраняет результат, закрывая call. Поздний итог фона —
+уведомление, а не второй tool result. Чтение вывода и отмена — новые вызовы tools;
+отмену подтверждает событие исполнителя. `output_uri` не подменяет сохранённый результат.
+
+События задачи сохраняются сразу. После закрытия группы tools `deliver` копирует последнее
+фоновое состояние в `TaskContextRecord`, терминальный итог — также в `TaskNotificationRecord`.
+Доставка не повторяется и ищет события по всей истории, включая записи до компактизации.
+После обработки итога `TaskAcknowledgedRecord` снимает снимок. До этого он переносится
+при компактизации. Прогресс и уведомления не являются согласием пользователя; продолжение
+инициирует цикл агента через новую границу запроса.
+
+---
+
+### `ElicitationCoordinator`
 
 ```python
 class ElicitationCoordinator(Protocol):
@@ -3159,13 +3448,25 @@ class ElicitationCoordinator(Protocol):
 на предыдущие записи, включая ссылки через границу компактизации. Ошибка откатывает пачку.
 Форму данных проверяют Pydantic-модели; SQL задаёт ключи и уникальность record_id.
 
-[`fixtures.sql`](../experiments/history-sql/fixtures.sql) заполняет тестовые сессии `sql-*`;
-доступные `session_id` и `request_id` перечислены в начале файла.
-
 [`openai.sql`](../experiments/history-sql/openai.sql) принимает параметры только в CTE `params`:
-`session_id` и `request_id` — record_id выбранной LlmRequestBoundaryRecord.
-При request_id=null выбирается последняя такая запись; если её нет, возвращается ошибка.
-Входы читаются до её seq, начиная с последней компактизации перед ней или с начала чата.
+`session_id`, `request_id`, `through_seq`.
+
+- `request_id` находит seq записи LlmRequestBoundaryRecord по её record_id.
+- `through_seq` задаёт seq непосредственно, включая указанную запись.
+
+Далее сборка одинакова: от последней компактизации в срезе либо с начала чата до выбранного seq.
+Разовые настройки действуют до своей LlmRequestBoundaryRecord включительно: уже сохранённые
+настройки формируемого запроса учитываются и до появления границы. После границы разовые
+настройки зафиксированного запроса не применяются. Записи после выбранного seq не влияют на сборку.
+
+При обоих `null` выбирается последняя LlmRequestBoundaryRecord; отсутствие границы — `missing_request`.
+Если заданы оба параметра, seq найденной границы должен совпасть с through_seq;
+иначе — `conflicting_selection`.
+Срез вне диапазона `0..last_seq` — `invalid_history_range`. Произвольный срез может быть
+неполным: например, отсутствие результата tool — `missing_tool_result`, модели — `missing_model`.
+Разовые настройки нескольких ещё не закрытых границей запросов — `ambiguous_request_scope`.
+SQL возвращает кандидат и метаданные; ошибки обнаруживает валидатор.
+
 `active_records` читает метаданные диапазона без `operational` через индекс `records_llm_seq`.
 LAST/SUM работают с метаданными; `selected_records` один раз получает payload выбранных сообщений.
 `top_parts` раскрывает content только выбранных сообщений; `parts` добавляет содержимое ресурсов.
@@ -3192,6 +3493,10 @@ SQL возвращает кандидат `request` и сведения `validat
 Валидатор чистый, значения инференса не проверяет. Новые kind существующих категорий
 не меняют SQL; новый формат содержимого требует поддержки адаптером.
 
+---
+
+### `AssemblyIssue`
+
 ```python
 class AssemblyIssue(DataModel):
     code: str
@@ -3211,25 +3516,45 @@ class AssemblyIssue(DataModel):
 }
 ```
 
+---
+
+### `RequestValidationError`
+
 ```python
 class RequestValidationError(ValueError):
     def __init__(self, issues: tuple[AssemblyIssue, ...]) -> None:
         self.issues = issues
         super().__init__("LLM request validation failed")
+```
 
+---
 
+### `OpenAiRequestValidator`
+
+```python
 class OpenAiRequestValidator(Protocol):
     def validate(self, draft: OpenAiRequestDraft) -> tuple[AssemblyIssue, ...]: ...
 
     def require_valid(self, draft: OpenAiRequestDraft) -> JsonObject:
         """Вернуть request либо поднять RequestValidationError с найденными нарушениями."""
         ...
+```
 
+---
 
+### `OpenAiHistoryAdapter`
+
+```python
 class OpenAiHistoryAdapter(Protocol):
     """Выполнить SQL, проверить кандидат чистым валидатором и вернуть запрос провайдера."""
 
     async def build(
-        self, session_id: str, request_id: str | None = None
-    ) -> JsonObject: ...
+        self,
+        session_id: str,
+        request_id: str | None = None,
+        *,
+        through_seq: NonNegativeInt | None = None,
+    ) -> JsonObject:
+        """Собрать сохранённый запрос по request_id либо срез до through_seq включительно."""
+        ...
 ```

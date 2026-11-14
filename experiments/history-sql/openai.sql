@@ -1,10 +1,12 @@
 -- candidate request and source metadata; validate with openai_validator.py.
--- request_id is optional; null selects the latest stored request boundary.
+-- request_id resolves to a seq; through_seq supplies an inclusive seq directly.
+-- both null select the latest boundary; both supplied must identify the same seq.
 with
 params as (
     select
         $1::text as session_id,
-        $2::text as request_id
+        $2::text as request_id,
+        $3::bigint as through_seq
 ),
 history as not materialized (
     select
@@ -12,6 +14,7 @@ history as not materialized (
         r.record_id,
         r.kind,
         r.category,
+        r.role,
         r.key,
         r.operation,
         r.request_id,
@@ -37,7 +40,7 @@ roles(role, empty_content) as (
         ('assistant', 'null'::jsonb),
         ('tool',      '""'::jsonb)
 ),
-target as materialized (
+requested_boundary as materialized (
     select
         h.seq,
         h.record_id as request_id
@@ -46,11 +49,38 @@ target as materialized (
         cross join params p
     where 1=1
         and h.category = 'request'
+        and (p.through_seq is null or p.request_id is not null)
         and (p.request_id is null or h.record_id = p.request_id)
     order by
         h.seq desc
     limit
         1
+),
+target as (
+    select
+        coalesce(p.through_seq, b.seq) as seq
+    from
+        params p
+        left join requested_boundary b on true
+),
+selection as (
+    select
+        p.request_id,
+        p.through_seq,
+        b.seq as request_seq,
+        coalesce((
+            select
+                h.seq
+            from
+                history h
+            order by
+                h.seq desc
+            limit
+                1
+        ), 0) as last_seq
+    from
+        params p
+        left join requested_boundary b on true
 ),
 compact as (
     select
@@ -60,7 +90,7 @@ compact as (
         cross join target t
     where 1=1
         and r.category = 'compact'
-        and r.seq < t.seq
+        and r.seq <= t.seq
 ),
 active_records as materialized (
     select
@@ -97,6 +127,15 @@ inputs as materialized (
         join categories c
             on c.category = h.category
 ),
+request_boundaries as materialized (
+    select
+        seq,
+        record_id as request_id
+    from
+        active_records
+    where 1=1
+        and category = 'request'
+),
 changes as materialized (
     select
         i.*,
@@ -104,9 +143,10 @@ changes as materialized (
     from
         inputs i
         cross join target t
+        left join request_boundaries b on b.request_id = i.request_id
     where 1=1
         and i.reduction = 'last'
-        and (not i.scoped or i.request_id is null or i.request_id = t.request_id)
+        and (not i.request_local or b.seq is null or b.seq = t.seq)
 ),
 selected as materialized (
     select
@@ -139,6 +179,7 @@ selected_records as materialized (
         s.category,
         s.key,
         s.section,
+        r.role,
         r.payload
     from
         selected s
@@ -198,7 +239,7 @@ message_records as materialized (
         seq,
         record_id,
         section,
-        payload ->> 'role'      as role,
+        role,
         payload ->> 'call_id'   as call_id
     from
         selected_records
@@ -212,7 +253,7 @@ top_parts as materialized (
         array[p.number::integer] as position,
         p.value ->> 'kind' as kind,
         p.value as payload,
-        s.payload ->> 'role' as role
+        s.role
     from
         selected_records s
         cross join lateral jsonb_array_elements(s.payload -> 'content')
@@ -373,15 +414,6 @@ request_fields as materialized (
         count(*) > 0
 ),
 -- source metadata for the pure python validator.
-request_boundaries as (
-    select
-        seq,
-        record_id as request_id
-    from
-        active_records
-    where 1=1
-        and category = 'request'
-),
 state_sources as (
     select
         seq,
@@ -440,11 +472,20 @@ select
             request_fields
     ) as request,
     jsonb_build_object(
+        'selection', (
+            select
+                to_jsonb(s)
+            from
+                selection s
+        ),
         'request_boundary', (
             select
-                to_jsonb(t)
+                to_jsonb(b)
             from
-                target t
+                request_boundaries b
+                cross join target t
+            where 1=1
+                and b.seq = t.seq
         ),
         'compact_seq', (
             select

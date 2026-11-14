@@ -2,7 +2,7 @@
 with
 entries as (
     select
-        seq, record_id, copied_from_id, kind, category, request_id, payload
+        seq, record_id, kind, category, role, request_id, copied_from_id, payload
     from
         history_sql.records
     where 1=1
@@ -25,7 +25,7 @@ links as (
     from
         entries
     where 1=1
-        and payload ->> 'role' = 'assistant'
+        and role = 'assistant'
     union all
     select
         seq, record_id, payload ->> 'elicitation_id', 'operational',

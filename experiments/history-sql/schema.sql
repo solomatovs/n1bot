@@ -5,14 +5,15 @@ create table history_sql.records (
     session_id text not null,
     seq bigint not null,
     record_id text not null,
-    copied_from_id text,
-    created_at timestamptz not null,
-    version text,
     kind text not null,
     category text not null,
+    role text,
     key text,
     operation text,
     request_id text,
+    copied_from_id text,
+    created_at timestamptz not null,
+    version text,
     payload jsonb not null,
     primary key (session_id, seq)
 );

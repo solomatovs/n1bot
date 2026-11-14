@@ -34,6 +34,20 @@ class RequestBoundary(DataModel):
     request_id: str
 
 
+class RequestSelection(DataModel):
+    """SQL inputs and the last committed seq visible in the same snapshot."""
+
+    request_id: str | None
+    through_seq: int | None  # Invalid ranges are reported as AssemblyIssue.
+    request_seq: PositiveInt | None
+    last_seq: NonNegativeInt
+
+    @property
+    def seq(self) -> int | None:
+        """Both selectors resolve to the same inclusive history position."""
+        return self.through_seq if self.through_seq is not None else self.request_seq
+
+
 class StateSource(RecordSource):
     """Operations before LAST; request_local/strict_remove are category policies."""
 
@@ -83,6 +97,7 @@ class ParameterSource(DataModel):
 class ValidationData(DataModel):
     """Required arrays: omitting metadata must never silently skip a check."""
 
+    selection: RequestSelection
     request_boundary: RequestBoundary | None
     compact_seq: NonNegativeInt
     request_boundaries: tuple[RequestBoundary, ...]
@@ -143,15 +158,32 @@ class OpenAiRequestValidator:
 
     def validate(self, draft: OpenAiRequestDraft) -> tuple[AssemblyIssue, ...]:
         data = draft.validation_data
-        if data.request_boundary is None:
+        selection = data.selection
+        if selection.request_id is not None and selection.request_seq is None:
             return (issue("missing_request"),)
+        if (
+            selection.request_id is not None
+            and selection.through_seq is not None
+            and selection.through_seq != selection.request_seq
+        ):
+            return (issue("conflicting_selection"),)
+        if selection.seq is None:
+            return (issue("missing_request"),)
+        if not 0 <= selection.seq <= selection.last_seq:
+            return (
+                issue(
+                    "invalid_history_range",
+                    through_seq=selection.seq,
+                    last_seq=selection.last_seq,
+                ),
+            )
 
         errors = [
             *self._scopes(data),
             *self._removals(data),
             *self._schemas(data),
             *self._content(data),
-            *self._tool_pairs(data),
+            *self._tool_pairs(data, through_seq=selection.seq),
             *self._parameters(data),
         ]
         if not data.message_sources:
@@ -176,10 +208,17 @@ class OpenAiRequestValidator:
     @staticmethod
     def _scopes(data: ValidationData) -> Iterable[AssemblyIssue]:
         boundaries = {r.request_id: r.seq for r in data.request_boundaries}
+        last_boundary_seq = max(boundaries.values(), default=0)
+        pending = set()
         for source in data.state_sources:
             if not source.request_local:
                 continue
             boundary_seq = boundaries.get(source.request_id)
+            # A pending request is assembled from its already saved local settings.
+            # Appending its boundary later must not change this earlier slice.
+            if boundary_seq is None and source.seq > last_boundary_seq:
+                pending.add(source.request_id)
+                continue
             if boundary_seq is None or boundary_seq <= source.seq:
                 yield issue(
                     "invalid_request_scope",
@@ -187,17 +226,21 @@ class OpenAiRequestValidator:
                     request_id=source.request_id,
                     boundary_seq=boundary_seq,
                 )
+        if len(pending) > 1:
+            yield issue("ambiguous_request_scope", request_ids=sorted(pending))
 
     @staticmethod
     def _removals(data: ValidationData) -> Iterable[AssemblyIssue]:
         # Global state is applied first; the selected request's overlay follows it.
+        boundaries = {r.request_id: r.seq for r in data.request_boundaries}
         previous = {}
         for source in sorted(
             data.state_sources, key=lambda s: (s.request_local, s.seq)
         ):
             if (
                 source.request_local
-                and source.request_id != data.request_boundary.request_id
+                and boundaries.get(source.request_id, data.selection.seq)
+                != data.selection.seq
             ):
                 continue
             slot = source.category, source.key
@@ -256,7 +299,9 @@ class OpenAiRequestValidator:
                             call_position=list(call.position),
                         )
 
-    def _tool_pairs(self, data: ValidationData) -> Iterable[AssemblyIssue]:
+    def _tool_pairs(
+        self, data: ValidationData, *, through_seq: int
+    ) -> Iterable[AssemblyIssue]:
         calls, results = defaultdict(list), defaultdict(list)
         for source in data.content_sources:
             if source.kind == "tool_call":
@@ -269,9 +314,7 @@ class OpenAiRequestValidator:
         steps = sorted(
             s.seq for s in data.message_sources if s.section == 1 and s.role != "tool"
         )
-        next_step = dict(
-            zip(steps, [*steps[1:], data.request_boundary.seq + 1], strict=False)
-        )
+        next_step = dict(zip(steps, [*steps[1:], through_seq + 1], strict=False))
         for call_id, sources in calls.items():
             for source in sources:
                 following = next_step.get(source.seq)
@@ -304,6 +347,8 @@ class OpenAiRequestValidator:
         fields = defaultdict(list)
         for source in data.parameter_sources:
             fields[source.name].append(source)
+        if "model" not in fields:
+            yield issue("missing_model")
         for name, sources in fields.items():
             if len(sources) > 1:
                 # SQL min(seq) ignores NULL origins of generated fields.
