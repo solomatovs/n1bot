@@ -204,7 +204,7 @@ sampling для одного LLM-запроса его не заменяет. П
 ### `v2/notice.sql` — показать новое предупреждение сейчас
 
 [Запрос](../packages/apps/boba-agent/src/boba/agent/sql/acp/v2/notice.sql) выбирает **одну конкретную запись**
-`notice`, `llm_request_attempt`, `task_state` или `task_notification` и готовит стандартный
+`notice` или `llm_request_attempt` и готовит стандартный
 ACP `notice` с её уровнем и текстом.
 
 Повод для запуска: агент сохранил новое предупреждение, получил его `record_id`
@@ -668,9 +668,14 @@ class ToolCallUpdate(DataModel):
 }
 ```
 
-`ToolCallPart` создаёт вызов; `ToolResultRecord` обновляет его по тому же `toolCallId`.
-`is_error=false/true` преобразуется в `completed/failed`. Исполнение в фоне само по себе
-не меняет статус первоначального вызова: принятие задачи уже может завершить этот вызов.
+SQL раскрывает ToolCallReferencePart через ToolCallRecord в одно событие вызова; `ToolResultRecord.key` задаёт тот же `toolCallId` для ответа.
+`ToolCallRecord.payload.task_id` связывает вызов с задачей; `ToolStatusRecord` обновляет
+состояние этого вызова. SQL использует сохранённое наблюдение и не читает таблицу задач.
+Ответ отдельного `task_status` использует собственный toolCallId и точную status_record_id.
+У обычного ответа `is_error=false/true` преобразуется в `completed/failed`.
+У исходного запуска наблюдение pending/running даёт pending, completed — completed,
+failed/cancelled/interrupted — failed с сохранённым пояснением. Успешный опрос task_status
+даёт completed для самого опроса, даже когда опрашиваемая задача ещё выполняется.
 
 ```json
 {
@@ -722,7 +727,7 @@ class SubagentUpdate(DataModel):
 }
 ```
 
-Источник — `TaskStateRecord.payload.state.child_session_id` в родительской сессии.
+Источник — `ToolStatusRecord.payload.state.child_session_id` в родительской сессии.
 Ассоциация передаётся перед текстом состояния задачи; повторное объявление идемпотентно.
 История ребёнка читается отдельно и отправляется с его `sessionId` только после объявления
 ассоциации. Транспорт проверяет владение сессией; SQL не даёт прав на чужую историю.
@@ -730,12 +735,14 @@ class SubagentUpdate(DataModel):
 
 ## Уведомления и вопросы
 
-Исторические `notice`, неуспешные `llm_request_attempt`, `task_state`, `task_notification`
+Исторические `notice` и неуспешные `llm_request_attempt`
 дают обычный `agent_message` с сохранённым текстом и уровнем. `turn_end` и записи
 `permission_request`, `permission_response`, `permission_decision` не создают реплик чата.
 Разрешение запрашивается через `session/request_permission`; результат исполнения tool
 отображается через `tool_call_update`. Записи elicitation показываются без повторного
 запуска действий. Replay не создаёт новых предупреждений или вопросов.
+Наблюдения задач отображаются как обновления соответствующих tools; отдельные
+реплики пользователя и notice для каждого прочитанного снимка не создаются.
 
 ```json
 {
