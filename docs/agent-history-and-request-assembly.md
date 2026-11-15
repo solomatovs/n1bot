@@ -56,7 +56,7 @@
 содержимое даёт ошибку, а не удаляется из сообщения.
 
 `role` задаёт роль сообщения; у записей без собственной роли значение `null`.
-`key` — непустой ключ заменяемого состояния, имени инструмента, вызова или задачи
+`key` — непустой ключ заменяемого состояния, имени инструмента или вызова
 согласно категории; для остальных записей — `null`. Префиксы ключей задают производители.
 `operation` имеет только значения `set` и `remove`; это действие над состоянием,
 а не идентификатор операции. LAST выбирает целую запись, а SUM сохраняет последовательность.
@@ -95,18 +95,28 @@
 
 ### Вызовы инструментов и наблюдения
 
-`AssistantMessageRecord`, определения всех вызовов и реальные начальные снимки `pending`
-либо непосредственные результаты сохраняются одной транзакцией с регистрацией задач.
-Эти записи имеют один `operation_id` ответа. Для каждого вызова SQL выбирает окончательный
-`ToolResultRecord`, а при его отсутствии — последний `ToolStatusRecord` по `task_id`.
+`AssistantMessageRecord`, определения всех вызовов и начальные `ToolResultRecord`
+сохраняются одной транзакцией с регистрацией задач. Для поставленного на исполнение
+вызова результат имеет status=pending; быстрый вызов может сразу иметь завершённый результат.
+Эти записи имеют один `operation_id` ответа. Для каждого включённого вызова SQL выбирает
+LAST `ToolResultRecord` по key=call_id в выбранном срезе, независимо от стадии исполнения.
 В запросе все результаты стоят сразу после assistant с вызовами, в порядке ссылок
 в `content`. Группа допустима только целиком: каждый вызов должен иметь результат.
 Пользовательские сообщения и изменения контекста можно сохранять во время исполнения tools.
 
-Worker меняет состояние задачи в API задач. Координатор читает `task_status` и сохраняет
-каждый полученный снимок, включая повторную `revision`. Новое чтение — новая операция;
-LAST определяется `seq` наблюдения. Вызов инструмента `task_status` всегда имеет собственный
-ответ со своим `call_id`, даже если наблюдённое состояние не изменилось.
+Worker меняет состояние задачи в API задач. Координатор находит исходный вызов по
+ToolCallRecord.payload.task_id и сохраняет каждое чтение новым ToolResultRecord этого вызова,
+включая повторную revision. Новое чтение — новая операция; LAST определяется seq наблюдения.
+Терминальный снимок уже является результатом: дополнительная строка о завершении не нужна.
+
+Вызов `task_status` получает собственный ToolResultRecord с key своего call_id и
+status=completed при успешном чтении. source_record_id закрепляет точную запись наблюдения;
+последующие изменения задачи не меняют ответ этому опросу. Статус опроса не наследуется
+из наблюдения: проверяемая задача может быть running или failed. При отсутствии исходного
+вызова в сессии снимок внешней задачи хранится непосредственно в результате опроса.
+
+Каталог доступности tool_catalog и полученные схемы tool_schema ведутся независимыми
+дельтами. Получение схемы само по себе не добавляет инструмент в каталог.
 
 ### Попытка инференса, ответ и компактизация
 
@@ -117,7 +127,7 @@ LAST определяется `seq` наблюдения. Вызов инстр�
 Технические данные и необязательный debug-payload этой записи не влияют на сборку.
 
 Ответ имеет свой `operation_id`; `parent_operation_id` указывает на операцию конкретной
-попытки. `AssistantMessageRecord`, его `ToolCallRecord`, начальные `ToolStatusRecord`
+попытки. `AssistantMessageRecord`, его `ToolCallRecord`, начальные `ToolResultRecord`
 и `TokenUsageRecord` принадлежат операции ответа. Группа может содержать разные категории:
 счётчики токенов имеют `category=operational` и не становятся содержимым LLM-запроса.
 Тело фактической отправки можно сохранить для debug; без тела либо сохранённых координат
@@ -148,8 +158,8 @@ operation_id=attempt-4, parent_operation_id=attempt-3
 
 operation_id=answer-1, parent_operation_id=attempt-4
 ├── position=0: AssistantMessageRecord
-├── position=1: ToolCallRecord, task_id=t1
-├── position=2: ToolStatusRecord, task_id=t1, status=pending
+├── position=1: ToolCallRecord, key=call-1, task_id=t1
+├── position=2: ToolResultRecord, key=call-1, status=pending
 └── position=3: TokenUsageRecord
 ```
 
@@ -235,8 +245,7 @@ HistoryCategory = Literal[
     "message",  # SUM сообщений сессии и собственных входов выбранной операции.
     "assembly",  # LAST условий по key выбранной операции; управляет отбором.
     "tool_call",  # SUM определений вызовов из включённых assistant-сообщений.
-    "tool_result",  # LAST окончательного ответа по key=call_id.
-    "tool_status",  # LAST прочитанного снимка по key=task_id.
+    "tool_result",  # LAST состояния и содержимого ответа по key=call_id.
     "compact",  # LAST границы; пересказ входит первым сообщением активного диалога.
     "prompt",  # LAST set/remove по key секции инструкций; role=system.
     "context",  # LAST set/remove по key объявления; role=user.
@@ -308,16 +317,7 @@ message         │     ├── AssistantMessageRecord
                 │     │       └── ToolCallReferencePart
 tool_call       │     ├── ToolCallRecord
 tool_result     │     ├── ToolResultRecord
-                │     │   └── payload.content[]
-                │     │       ├── TextPart
-                │     │       ├── ImagePart
-                │     │       ├── ResourcePart
-                │     │       │   └── content[]
-                │     │       │       ├── TextPart
-                │     │       │       └── ImagePart
-                │     │       └── ToolReferencePart
-tool_status     │     ├── ToolStatusRecord
-                │     │   ├── payload.state: TaskSnapshot
+                │     │   ├── payload.state: TaskSnapshot | None
                 │     │   └── payload.content[]
                 │     │       ├── TextPart
                 │     │       ├── ImagePart
@@ -438,9 +438,10 @@ operational     │     └── SessionForkedRecord
 ```text
 ToolCallReferencePart.call_id                → ToolCallRecord.key
 ToolCallRecord.payload.assistant_record_id   → AssistantMessageRecord.record_id
-ToolCallRecord.payload.task_id               ↔ ToolStatusRecord.key  (общий task_id)
+ToolResultRecord.key                         → ToolCallRecord.key  (общий call_id)
 ToolResultRecord.payload.call_record_id      → ToolCallRecord.record_id
-ToolResultRecord.payload.status_record_id    → ToolStatusRecord.record_id
+ToolResultRecord.payload.source_record_id    → ToolResultRecord.record_id  (точный источник content/state)
+ToolResultRecord.payload.state.task_id       → задача из API; у исходного вызова совпадает с payload.task_id
 ToolReferencePart.catalog_revision           → ToolAddedRecord.record_id
 ToolSchemaRecord.payload.catalog_revision    → ToolAddedRecord.record_id
 ```
@@ -730,10 +731,11 @@ class AgentCatalogItem(DataModel):
 
 ---
 
-### `TaskStatus`
+### `ExecutionStatus`
 
 ```python
-TaskStatus = Literal[
+# Общие значения стадий; поле status относится к исполнению своего вызова или задачи.
+ExecutionStatus = Literal[
     "pending", "running", "completed", "failed", "cancelled", "interrupted"
 ]
 ```
@@ -744,11 +746,12 @@ TaskStatus = Literal[
 
 ```python
 class TaskSnapshot(DataModel):
-    """Состояние из API задач; revision меняется при изменении состояния worker'ом."""
+    """Наблюдение задачи task_id из API; revision меняется worker'ом, status относится к задаче."""
 
+    task_id: NonEmptyStr
     revision: PositiveInt
     description: NonEmptyStr
-    status: TaskStatus
+    status: ExecutionStatus
     execution_id: NonEmptyStr | None = None
     child_session_id: NonEmptyStr | None = (
         None  # Диалог сабагента, если вызов запускает его.
@@ -759,15 +762,23 @@ class TaskSnapshot(DataModel):
 
     @model_validator(mode="after")
     def consistent_outcome(self) -> Self:
-        if (self.status in ("failed", "interrupted")) != (self.error is not None):
+        failed = self.status in ("failed", "interrupted")
+        has_error = self.error is not None
+        if failed != has_error:
             raise ValueError("Failed and interrupted tasks require an error")
-        if self.status in ("pending", "running") and self.result is not None:
+
+        if self.status not in ("pending", "running"):
+            return self
+
+        if self.result is not None:
             raise ValueError("An unfinished task cannot have a final result")
+
         return self
 ```
 
 ```json
 {
+  "task_id": "task:tests-1",
   "revision": 2,
   "description": "Проверка проекта",
   "status": "running",
@@ -2877,44 +2888,69 @@ class ToolCallRecord(RecordBase):
 
 ---
 
-### `ToolStatusRecord`
+### `ToolResultRecord`
 
 ```python
-class ToolStatusRecord(RecordBase):
-    """Прочитанный снимок исполнения инструмента; повторное чтение той же revision тоже сохраняется."""
+class ToolResultRecord(RecordBase):
+    """Состояние и содержимое ответа вызову key=call_id; сборщик выбирает LAST по seq.
+
+    status относится к вызову; state.status — к наблюдаемой задаче.
+    source_record_id закрепляет content/state конкретной записи, сохраняя собственный status.
+    """
 
     class Payload(RecordBase.Payload):
-        state: TaskSnapshot
-        content: NonEmptyTuple[ToolResultPart]  # Текст состояния; после завершения — также результат.
+        call_record_id: NonEmptyStr  # ToolCallRecord, которому отвечает эта запись.
+        status: ExecutionStatus
+        state: TaskSnapshot | None = None  # Прочитанный снимок, если ответ содержит наблюдение задачи.
+        source_record_id: NonEmptyStr | None = None  # Ранее сохранённый ToolResultRecord с собственным content/state.
+        content: tuple[ToolResultPart, ...] = ()
 
-    kind: Literal["tool_status"] = "tool_status"
-    category: Literal["tool_status"] = "tool_status"
-    role: None = None  # Самостоятельной реплики нет; содержимое используется в tool result.
-    key: NonEmptyStr  # task_id из API задач; связь с ToolCallRecord.payload.task_id.
+        @model_validator(mode="after")
+        def single_source(self) -> Self:
+            if self.source_record_id is None:
+                return self
+
+            if self.content:
+                raise ValueError("a referenced result supplies the entire content")
+
+            if self.state is not None:
+                raise ValueError("a referenced result supplies the entire observed state")
+
+            return self
+
+    kind: Literal["tool_result"] = "tool_result"
+    category: Literal["tool_result"] = "tool_result"
+    role: Literal["tool"] = "tool"
+    key: NonEmptyStr  # call_id; последовательные записи обновляют ответ одному вызову.
     operation: Literal["set"] = "set"
     payload: Payload
 ```
 
+Наблюдение выполнения исходного вызова `call-1`:
+
 ```json
 {
   "session_id": "session-1",
-  "seq": 1,
-  "record_id": "task-status-2",
-  "operation_id": "operation-task-status-2",
+  "seq": 6,
+  "record_id": "result-running-1",
+  "operation_id": "observe-running-1",
   "operation_position": 0,
   "parent_operation_id": null,
-  "kind": "tool_status",
-  "category": "tool_status",
-  "role": null,
-  "key": "task:tests-1",
+  "kind": "tool_result",
+  "category": "tool_result",
+  "role": "tool",
+  "key": "call-1",
   "operation": "set",
   "copied_from_id": null,
   "created_at": "2026-11-13T09:00:00Z",
   "version": "0.0.33.dev4",
   "payload": {
+    "call_record_id": "invoke-1",
+    "status": "running",
     "state": {
+      "task_id": "task:tables-1",
       "revision": 2,
-      "description": "Проверка проекта",
+      "description": "List database tables",
       "status": "running",
       "execution_id": "workspace-job-42",
       "child_session_id": null,
@@ -2922,51 +2958,26 @@ class ToolStatusRecord(RecordBase):
       "result": null,
       "error": null
     },
+    "source_record_id": null,
     "content": [
       {
         "kind": "text",
-        "text": "Задача task:tests-1 выполняется. Исполнение: workspace-job-42. Проверить состояние: task_status(task_id=\"task:tests-1\")."
+        "text": "Task task:tables-1 is running. Check task_status(task_id=\"task:tables-1\")."
       }
     ]
   }
 }
 ```
 
----
-
-### `ToolResultRecord`
-
-```python
-class ToolResultRecord(RecordBase):
-    """Окончательный ответ одному вызову; содержимое либо ссылка на сохранённый снимок."""
-
-    class Payload(RecordBase.Payload):
-        call_record_id: NonEmptyStr  # Исходная ToolCallRecord в этой сессии.
-        status_record_id: NonEmptyStr | None = None  # Точная ToolStatusRecord с содержимым ответа.
-        content: tuple[ToolResultPart, ...] = ()
-        is_error: bool  # Ошибка вызова инструмента, а не статус опрашиваемой задачи.
-
-        @model_validator(mode="after")
-        def single_source(self) -> Self:
-            if self.status_record_id is not None and self.content:
-                raise ValueError("A referenced status supplies the entire result content")
-            return self
-
-    kind: Literal["tool_result"] = "tool_result"
-    category: Literal["tool_result"] = "tool_result"
-    role: Literal["tool"] = "tool"
-    key: NonEmptyStr  # call_id; уникален среди вызовов сессии, кроме копий компактизации.
-    operation: Literal["set"] = "set"
-    payload: Payload
-```
+Ответ вызову `task_status`, у которого свой `call_id=call-status-1`:
 
 ```json
 {
   "session_id": "session-1",
-  "seq": 1,
-  "record_id": "tool-result-1",
-  "operation_id": "operation-tool-result-1",
-  "operation_position": 0,
+  "seq": 7,
+  "record_id": "result-poll-1",
+  "operation_id": "observe-running-1",
+  "operation_position": 1,
   "parent_operation_id": null,
   "kind": "tool_result",
   "category": "tool_result",
@@ -2978,9 +2989,57 @@ class ToolResultRecord(RecordBase):
   "version": "0.0.33.dev4",
   "payload": {
     "call_record_id": "invoke-status-1",
-    "status_record_id": "task-status-2",
-    "content": [],
-    "is_error": false
+    "status": "completed",
+    "state": null,
+    "source_record_id": "result-running-1",
+    "content": []
+  }
+}
+```
+
+Завершение исходного `call-1`; ответ прежнему опросу остаётся привязан к `result-running-1`:
+
+```json
+{
+  "session_id": "session-1",
+  "seq": 8,
+  "record_id": "result-completed-1",
+  "operation_id": "observe-completed-1",
+  "operation_position": 0,
+  "parent_operation_id": null,
+  "kind": "tool_result",
+  "category": "tool_result",
+  "role": "tool",
+  "key": "call-1",
+  "operation": "set",
+  "copied_from_id": null,
+  "created_at": "2026-11-13T09:00:00Z",
+  "version": "0.0.33.dev4",
+  "payload": {
+    "call_record_id": "invoke-1",
+    "status": "completed",
+    "state": {
+      "task_id": "task:tables-1",
+      "revision": 3,
+      "description": "List database tables",
+      "status": "completed",
+      "execution_id": "workspace-job-42",
+      "child_session_id": null,
+      "output_uri": "file:///workspace/tasks/tests-1.log",
+      "result": {
+        "tables": [
+          "users"
+        ]
+      },
+      "error": null
+    },
+    "source_record_id": null,
+    "content": [
+      {
+        "kind": "text",
+        "text": "Task task:tables-1 completed. Tables: users."
+      }
+    ]
   }
 }
 ```
@@ -4144,7 +4203,6 @@ HistoryRecord = Annotated[
     | PermissionResponseRecord
     | PermissionDecisionRecord
     | LlmRequestAttemptRecord
-    | ToolStatusRecord
     | SubagentSessionRecord
     | TokenUsageRecord
     | NoticeRecord
@@ -4382,13 +4440,16 @@ class HistoryCompactor(Protocol):
 а если родитель не копируется — остаётся ссылкой на исходную операцию той же сессии.
 
 Для незавершённой задачи переносятся исходное assistant-сообщение, определения всех
-его вызовов и последние снимки исполнения. У группы сохраняются результаты всех вызовов,
-включая уже завершённые. Ссылки на точные status_record_id переносятся вместе со снимками.
-При переносе нескольких снимков одной задачи сохраняется их исходный порядок;
-старый снимок для ответа task_status не должен затенить более новый снимок задачи.
-assistant_record_id, call_record_id и status_record_id указывают на копии; call_id и task_id сохраняются.
-Копия `ToolCallRecord` с прежним task_id не создаёт новую задачу. Завершённую обработанную
-группу можно заменить пересказом; состояние ещё наблюдаемой задачи терять нельзя.
+его вызовов и последние ToolResultRecord по call_id, включая результаты завершённых вызовов
+этой группы. Дополнительно копируются точные источники source_record_id.
+Несколько результатов одного call_id копируются в исходном порядке: старое наблюдение
+для ответа task_status не должно затенить более новый результат исходного вызова.
+assistant_record_id, call_record_id и source_record_id переводятся на копии соответствующих
+строк; call_id и task_id сохраняются. Если исходный вызов не переносится в диалог, копия
+используемого наблюдения сохраняет call_record_id исходной строки и служит только источником
+по source_record_id. Самостоятельного tool-сообщения такой источник не создаёт.
+Копия ToolCallRecord с прежним task_id не создаёт новую задачу. Завершённую обработанную
+группу можно заменить пересказом; состояние ещё наблюдаемого вызова терять нельзя.
 
 ---
 
@@ -4400,7 +4461,7 @@ assistant_record_id, call_record_id и status_record_id указывают на 
 
 ```python
 class TaskCoordinator(Protocol):
-    """Регистрация задач и запись каждого прочитанного снимка; не собирает LLM-запросы."""
+    """Связывает задачи с ToolCallRecord и сохраняет наблюдения как ToolResultRecord вызовов."""
 
     async def start(
         self,
@@ -4410,8 +4471,9 @@ class TaskCoordinator(Protocol):
         *,
         usage: TokenUsageRecord | None = None,
     ) -> tuple[HistoryRecord, ...]:
-        """Атомарно сохранить assistant, задачи с начальными снимками и ответы быстрых вызовов.
+        """Атомарно сохранить assistant, вызовы, задачи и начальные ToolResultRecord.
 
+        Поставленные задачи получают status=pending; быстрые вызовы — итоговый статус.
         usage при наличии входит в ту же операцию ответа и транзакцию.
         Возвращает сохранённые записи; worker видит новые pending-задачи после commit.
         """
@@ -4419,8 +4481,12 @@ class TaskCoordinator(Protocol):
 
     async def observe(
         self, session_id: NonEmptyStr, task_id: NonEmptyStr
-    ) -> ToolStatusRecord:
-        """Сохранить каждое чтение; при первом терминальном снимке также сохранить ToolResultRecord."""
+    ) -> ToolResultRecord:
+        """Найти исходный вызов по task_id и сохранить чтение новым ToolResultRecord с key=call_id.
+
+        status совпадает со статусом исполняющей задачи; state содержит снимок с task_id.
+        Повторная revision также сохраняется. Отсутствие исходного вызова — HistoryWriteError.
+        """
         ...
 
     async def answer_status(
@@ -4430,14 +4496,16 @@ class TaskCoordinator(Protocol):
         *,
         call_record_id: NonEmptyStr,
     ) -> ToolResultRecord:
-        """Для вызова модели атомарно сохранить новое наблюдение и ответ с status_record_id.
+        """Ответить конкретному вызову task_status, указанному через call_record_id.
 
-        При ошибке чтения сохранить только ответ с is_error=true.
+        Если исходный запуск есть в сессии, атомарно сохранить его наблюдение и ответ опросу
+        с source_record_id. Иначе снимок внешней задачи хранится прямо в ответе опросу.
+        Успешное чтение даёт status=completed независимо от state.status; ошибка чтения — failed.
         """
         ...
 
-    async def reconcile(self, session_id: NonEmptyStr) -> tuple[ToolStatusRecord, ...]:
-        """Восстановить наблюдение по истории, сверить незавершённые задачи."""
+    async def reconcile(self, session_id: NonEmptyStr) -> tuple[ToolResultRecord, ...]:
+        """Сверить через API задачи незавершённых вызовов и сохранить новые ToolResultRecord."""
         ...
 ```
 
@@ -4463,8 +4531,8 @@ Runtime решает, когда продолжать генерацию пос�
 AssistantMessageRecord или технической записи попытки. Состояние задачи восстанавливается
 через API, а каждое прочитанное наблюдение сохраняется до использования в сборке.
 Наличие только pending/running не запускает бесконечный опрос LLM.
-Автоматическое наблюдение прекращается после сохранения терминального снимка;
-явный вызов `task_status` по-прежнему читает таблицу и создаёт новое наблюдение.
+Автоматическое наблюдение прекращается после сохранения терминального ToolResultRecord;
+явный вызов `task_status` по-прежнему читает таблицу и сохраняет новое наблюдение и свой ответ.
 
 ---
 
@@ -4551,10 +4619,10 @@ missing_tool_result или missing_model. SQL возвращает кандид�
   из перенесённого снимка и последующих изменений.
 - `tool_call`: определения вызовов из включённых assistant-сообщений. Каждая ссылка
   ToolCallReferencePart должна иметь ровно одно соответствующее определение.
-- `tool_result`: LAST окончательного ответа по key=call_id; content берётся из записи
-  либо из точной ссылки status_record_id. Ссылка на снимок закрепляет конкретное наблюдение.
-- `tool_status`: LAST по key=task_id в срезе. До окончательного ответа этот снимок
-  служит содержимым результата исходного вызова. Самостоятельной реплики не создаётся.
+- `tool_result`: LAST по key=call_id среди записей выбранного среза, для каждого включённого
+  вызова. status не меняет правило выбора: pending/running и терминальные стадии обрабатываются
+  одинаково. content/state берутся из выбранной записи либо из точного source_record_id.
+  Источник читается независимо от LAST по его собственному call_id; status ответа не наследуется.
 - `tool_catalog`: LAST доступности по имени. Полные MCP-имена имеют префикс
   mcp__<server>__<tool>; отдельного поля сервера не требуется. Изменение MCP сохраняет
   разницу имён: remove только для реально исчезнувших tools, add для появившихся.
@@ -4591,11 +4659,18 @@ tools сразу после содержащего вызовы assistant-соо
 или изменения контекста между вызовом и результатом группу не разрывают. Все calls
 должны иметь результаты; никакой заглушки без сохранённого статуса сборщик не создаёт.
 
-ToolStatusRecord содержит TextPart для pending/running и сохранённый результат после
+ToolResultRecord содержит TextPart для pending/running и сохранённый результат после
 завершения. JSON состояния можно хранить как готовый текст; сборщик не сериализует
 TaskSnapshot заново. Содержимое результата может включать изображения, ресурсы и ссылки
 найденных tools. ToolReferencePart передаёт имя; полная схема берётся из ToolSchemaRecord.
 Один снимок может обслужить исходный запуск и отдельный вызов task_status — с разными call_id.
+
+call_record_id адресует ToolCallRecord с тем же key в этой сессии. source_record_id адресует
+ранее сохранённый ToolResultRecord этой сессии с собственным content/state, без следующей ссылки.
+Ссылка на себя, цепочка ссылок, отсутствующий источник или несовпадение call_id — явная ошибка.
+При использовании source_record_id поля content и state текущего ответа пусты; источник
+поставляет только содержимое и наблюдение, а status и принадлежность вызову остаются у ответа.
+Успешный опрос задачи в состоянии failed имеет status=completed; сбой самого опроса — failed.
 
 Текст передаётся буквально; формат изображений и структурных частей преобразует адаптер.
 Незагруженный ResourcePart.content=null остаётся ссылкой: сборщик не открывает URI.
