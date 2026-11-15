@@ -193,6 +193,7 @@ class V2System(AgentSystem):
         if owner is None:
             owner = self.owner
 
+        self.owners.add(owner)
         client = V2Client(self.hub, owner, self.timeout, granted)
         self.connections.push_async_callback(client.close)
         await client.initialize()

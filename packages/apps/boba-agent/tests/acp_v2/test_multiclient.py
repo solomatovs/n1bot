@@ -12,7 +12,6 @@ from boba.agent.acp_server import AgentProfiles, SessionHub
 from boba.agent.settings import (
     AgentProfile,
     ModelSettings,
-    ProviderSettings,
     SettingsLayer,
 )
 from boba.llm.http.openai import WireChunk
@@ -24,12 +23,13 @@ class StreamingLlm:
         self.finish = asyncio.Event()
         self.requests = []
 
-    def address(self, provider):
-        return "https://test.invalid/chat/completions"
+    def for_user(self, owner, providers):
+        return self
 
     async def generate(self, provider, request, output, emit):
         self.requests.append(request)
         output.status = 200
+        output.address = "https://test.invalid/chat/completions"
         for delta in output.response.deltas(
             WireChunk.model_validate({"choices": [{"delta": {"content": "Начало "}}]})
         ):
@@ -67,23 +67,18 @@ class Client:
 @pytest.mark.anyio
 @pytest.mark.integration
 async def test_two_acp_clients_share_stream_and_replay_from_postgres(  # noqa: PLR0915
-    history, agent_timeout: float
+    history, system, agent_timeout: float
 ):
     model = ModelSettings(
-        provider=ProviderSettings.model_validate(
-            {
-                "kind": "openai",
-                "baseUrl": "https://test.invalid/v1",
-                "auth": {"method": "none"},
-            }
-        ),
         model="test",
         system_prompt="You are a test assistant.",
     )
     llm = StreamingLlm()
     profiles = AgentProfiles({"test": AgentProfile(roles=["*"], model=model)})
-    hub = SessionHub(history, llm, profiles, SettingsLayer(), "test")
-    owner = uuid4().hex
+    hub = SessionHub(
+        history, llm, profiles, SettingsLayer(), "test", providers=system.providers
+    )
+    owner = system.owner
     first, second = (
         AcpAgent(hub, owner, frozenset({"test"}), "test"),
         AcpAgent(hub, owner, frozenset({"test"}), "test"),

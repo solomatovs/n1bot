@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date as CalendarDate
+from enum import StrEnum
 from typing import (
     Annotated,
     Literal,
@@ -509,6 +510,13 @@ class ParameterOptionRecord(RecordBase):
         value_path: tuple[NonEmptyStr, ...]
         choices: NonEmptyTuple[ParameterChoice]
 
+        def choose(self, value_id: str) -> ParameterChoice:
+            for choice in self.choices:
+                if choice.value_id == value_id:
+                    return choice
+
+            raise ValueError(f"Parameter {self.name!r} has no choice {value_id!r}")
+
         @model_validator(mode="after")
         def unique_choices(self) -> Self:
             if len({c.value_id for c in self.choices}) != len(self.choices):
@@ -560,7 +568,8 @@ class ModelRecord(ParameterRecord):
     """Выбранный инференс и готовые поля выбора модели."""
 
     class Payload(ParameterRecord.Payload):
-        provider: NonEmptyStr  # Маршрутизация агентом; не поле тела запроса.
+        provider: NonEmptyStr | None  # None, пока пользователь не выбрал подключение.
+        profile_id: NonEmptyStr | None = None  # Пресет настроек модели, если выбран.
 
     kind: Literal["model"] = "model"
     key: Literal["model"] = "model"
@@ -1025,6 +1034,33 @@ class SlashCommandResultRecord(RecordBase):
         return self
 
 
+class PermissionMode(StrEnum):
+    """Политика разрешений инструментов, сохраняемая в истории сессии."""
+
+    DEFAULT = "default"
+    ACCEPT_EDITS = "accept_edits"
+    PLAN = "plan"
+    DONT_ASK = "dont_ask"
+    BYPASS = "bypass_permissions"
+    AUTO = "auto"
+
+    @property
+    def label(self) -> str:
+        match self:
+            case self.DEFAULT:
+                return "Ask before tools"
+            case self.ACCEPT_EDITS:
+                return "Accept edits"
+            case self.PLAN:
+                return "Plan"
+            case self.DONT_ASK:
+                return "Deny unapproved tools"
+            case self.BYPASS:
+                return "Bypass permissions"
+            case self.AUTO:
+                return "Automatic approval"
+
+
 class PermissionRule(DataModel):
     """Правило сессии для одного инструмента, указанного полным именем."""
 
@@ -1036,14 +1072,7 @@ class PermissionStateRecord(RecordBase):
     """Полный снимок режима и правил разрешений текущей сессии; действует последний."""
 
     class Payload(RecordBase.Payload):
-        mode: Literal[
-            "default",
-            "accept_edits",
-            "plan",
-            "dont_ask",
-            "bypass_permissions",
-            "auto",
-        ]
+        mode: PermissionMode
         rules: tuple[PermissionRule, ...]
 
     kind: Literal["permission_state"] = "permission_state"
@@ -1284,6 +1313,27 @@ class TurnEndRecord(RecordBase):
     payload: Payload
 
 
+class SessionDeletedRecord(RecordBase):
+    """Закрывает сессию для новых обращений; сохранённая история остаётся доступна администратору."""
+
+    kind: Literal["session_deleted"] = "session_deleted"
+    category: Literal["operational"] = "operational"
+    operation: Literal["set"] = "set"
+
+
+class SessionForkedRecord(RecordBase):
+    """Фиксирует источник независимой копии истории; создаётся в новой сессии."""
+
+    class Payload(RecordBase.Payload):
+        source_session_id: NonEmptyStr
+        through_seq: PositiveInt
+
+    kind: Literal["session_forked"] = "session_forked"
+    category: Literal["operational"] = "operational"
+    operation: Literal["set"] = "set"
+    payload: Payload
+
+
 # Все допустимые конкретные записи; выбор модели — только по kind.
 HistoryRecord = Annotated[
     SystemPromptAddedRecord
@@ -1345,7 +1395,9 @@ HistoryRecord = Annotated[
     | SubagentSessionRecord
     | TokenUsageRecord
     | TextNoticeRecord
-    | TurnEndRecord,
+    | TurnEndRecord
+    | SessionDeletedRecord
+    | SessionForkedRecord,
     Field(discriminator="kind"),
 ]
 

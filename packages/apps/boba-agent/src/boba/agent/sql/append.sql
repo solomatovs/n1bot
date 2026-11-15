@@ -72,6 +72,17 @@ decision as (
             when b.size = 0 then 'empty_batch'
             when b.ids <> b.size then 'record_conflict'
             when f.size > 0 and (f.matches <> b.size or f.positions <> 1) then 'record_conflict'
+            when f.size = 0 and (
+                select
+                    r.seq
+                from
+                    params p
+                    join boba.records r on r.session_id = p.session_id
+                where 1=1
+                    and r.kind = 'session_deleted'
+                limit
+                    1
+            ) is not null then 'session_deleted'
             when f.size = 0 and p.expected_seq is not null and p.expected_seq <> h.seq then 'stale_history'
         end as error
     from

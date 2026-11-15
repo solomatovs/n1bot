@@ -28,6 +28,7 @@ from boba.agent.models import (
     History,
     HistoryRecord,
     HistoryWriteError,
+    SessionForkedRecord,
 )
 from boba.agent.openai_validator import OpenAiRequestDraft, OpenAiRequestValidator
 from boba.agent.queries import Query
@@ -131,6 +132,54 @@ class HistoryStore:
             raise LookupError("Session not found")
         return rows[0]
 
+    async def fork_session(
+        self,
+        source_session_id: str,
+        session_id: str,
+        owner_id: str,
+        cwd: str,
+        marker: SessionForkedRecord,
+        records: Sequence[HistoryRecord],
+    ) -> None:
+        """SQL копирует строки целиком; ссылки сохраняются внутри новой сессии."""
+        async with self.transaction(source_session_id) as transaction:
+            source = await transaction.rows(
+                Query.SESSION_GET, source_session_id, owner_id
+            )
+            if not source:
+                raise LookupError(f"Session {source_session_id!r} was not found")
+
+            pending = await transaction.pending_inputs()
+            if pending:
+                raise ValueError("Cannot fork a session with pending user messages")
+
+            head = await transaction.head()
+            if head != marker.payload.through_seq:
+                raise ValueError(
+                    "Cannot fork a session whose history changed during preparation"
+                )
+
+            raw = (await transaction.rows(Query.OPENAI, source_session_id, None, head))[
+                0
+            ]
+            draft = OpenAiRequestDraft.model_validate(raw)
+            OpenAiRequestValidator().require_valid(draft)
+
+            tasks = await transaction.rows(Query.SESSION_TASKS, source_session_id)
+            for task in tasks:
+                if task["status"] in {"pending", "running"}:
+                    raise ValueError(
+                        f"Cannot fork session {source_session_id!r}: "
+                        f"task {task['task_id']!r} is {task['status']}"
+                    )
+
+            await transaction.rows(Query.LOCK, session_id)
+            await transaction.rows(
+                Query.SESSION_FORK, source_session_id, session_id, owner_id, cwd
+            )
+            child = HistoryTransaction(transaction.connection, session_id)
+            await child.append([marker, *records])
+
     async def openai(
         self,
         session_id: str,
@@ -157,9 +206,15 @@ class HistoryStore:
             Query.ACP_NOTICE: (AcpNoticeDraft, AcpNoticeDraft.require_valid),
             Query.ACP_V1_NOTICE: (AcpNoticeDraft, AcpNoticeDraft.require_v1),
             Query.ACP_PERMISSION: (AcpPermissionDraft, validator.require_permission),
-            Query.ACP_V1_PERMISSION: (AcpPermissionDraft, validator.require_v1_permission),
+            Query.ACP_V1_PERMISSION: (
+                AcpPermissionDraft,
+                validator.require_v1_permission,
+            ),
             Query.ACP_ELICITATION: (AcpElicitationDraft, validator.require_elicitation),
-            Query.ACP_V1_ELICITATION: (AcpElicitationDraft, validator.require_v1_elicitation),
+            Query.ACP_V1_ELICITATION: (
+                AcpElicitationDraft,
+                validator.require_v1_elicitation,
+            ),
         }
         model, validate = contracts[query]
         raw = (await self.rows(query, *params))[0]

@@ -2,8 +2,50 @@ import asyncio
 from uuid import uuid4
 
 import pytest
+from psycopg import sql
 
 from boba.agent import models as m
+from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres.connection import PostgresConfig
+from boba.db.postgres.migrate import (
+    MigrationScripts,
+    MigrationTarget,
+    PostgresMigrations,
+)
+
+
+@pytest.mark.anyio
+@pytest.mark.integration
+async def test_latest_migration_installs_all_tables_on_empty_schema(
+    postgres: PostgresConfig,
+):
+    schema_name = "agent_install_" + uuid4().hex
+    migration = MigrationScripts(schema_name).application("boba.agent")
+    try:
+        await PostgresMigrations().apply([MigrationTarget(postgres, migration)])
+        async with await AsyncPostgresPool.dedicated(postgres) as connection:
+            rows = await (
+                await connection.execute(
+                    "select tablename from pg_tables where schemaname = %s",
+                    (schema_name,),
+                )
+            ).fetchall()
+
+        assert {row[0] for row in rows} == {
+            "users",
+            "roles",
+            "user_roles",
+            "sessions",
+            "records",
+            "providers",
+        }
+    finally:
+        async with await AsyncPostgresPool.dedicated(postgres) as connection:
+            await connection.execute(
+                sql.SQL("drop schema if exists {} cascade").format(
+                    sql.Identifier(schema_name)
+                )
+            )
 
 
 @pytest.mark.anyio
@@ -30,6 +72,21 @@ async def test_failed_reference_rolls_back_and_retry_is_idempotent(history):
             payload={"source_record_id": value.record_id},
         )
         assert (await history.append(sid, [accepted]))[0].seq == 2
+        await history.append(sid, [record(m.SessionDeletedRecord, "test")])
+        assert await history.append(sid, [value]) == first
+        with pytest.raises(m.HistoryWriteError) as deleted:
+            await history.append(
+                sid,
+                [
+                    record(
+                        m.UserMessageRecord,
+                        "test",
+                        payload={"content": [m.TextPart(text="Too late")]},
+                    )
+                ],
+            )
+
+        assert deleted.value.code == "session_deleted"
     finally:
         async with history.pool.connection() as conn:
             await conn.execute("delete from boba.records where session_id = %s", (sid,))

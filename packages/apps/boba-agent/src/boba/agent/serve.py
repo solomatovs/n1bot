@@ -43,7 +43,7 @@ from boba.agent.acp_connection import AcpAgent
 from boba.agent.acp_server import AgentProfiles, SessionHub
 from boba.agent.acp_validator import AcpVersion
 from boba.agent.history import HistoryStore
-from boba.agent.llm import OpenAiTransport
+from boba.agent.llm import OpenAiTransport, Providers
 from boba.agent.settings import (
     AgentProfile,
     AgentServerConfig,
@@ -60,6 +60,7 @@ from boba.auth.config import ProxyAuthConfig
 from boba.cancellation import ProcessStop
 from boba.config import ConfigError, bind
 from boba.config.application import ConfigFiles
+from boba.crypto import SecretCipher
 from boba.db.postgres import AsyncPostgresPool
 from boba.http_server import (
     HealthCheckError,
@@ -134,9 +135,13 @@ class ServeAgents(UserRows, RoleCatalog):
         self._postgres = history.postgres
         self._pool = AsyncPostgresPool(history.postgres)
         self._users = UsersTable(self._pool, history.db_schema)
-        self._llm = OpenAiTransport(profiles)
+        llm = OpenAiTransport()
+        store = HistoryStore(self._pool)
+        cipher = SecretCipher(section.providers.cipher.get_secret_value())
+        providers = Providers(store, cipher)
+
         self.hub = SessionHub(
-            HistoryStore(self._pool), self._llm, profiles, section.settings, version
+            store, llm, profiles, section.settings, version, providers=providers
         )
 
     async def start(self) -> None:
@@ -161,7 +166,6 @@ class ServeAgents(UserRows, RoleCatalog):
 
     async def stop(self) -> None:
         await self.hub.close()
-        await self._llm.close()
         await self._pool.close()
 
     def opened_sessions(self) -> int:

@@ -29,8 +29,13 @@ async def test_websocket_negotiates_v1_and_creates_session(
         assert response.protocol_version == 1
         assert response.agent_capabilities is not None
         assert response.agent_capabilities.load_session
+        assert response.agent_capabilities.providers is not None
+        listed = await connection.send_request("providers/list", {})
+        provider_response = schema.ListProvidersResponse.model_validate(listed)
+        assert len(provider_response.providers) == 1
         result = await connection.send_request(
             "session/new", {"cwd": "/workspace", "mcpServers": []}
         )
         created = schema.NewSessionResponse.model_validate(result)
         assert created.config_options
+        assert created.modes is not None

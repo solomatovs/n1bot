@@ -129,6 +129,7 @@ configurations as (
             'id', o.key,
             'name', o.payload -> 'name',
             'description', o.payload -> 'description',
+            'category', case when o.key in ('mode', 'model') then o.key end,
             'type', 'select',
             'currentValue', s.current_id,
             'options', s.choices

@@ -15,6 +15,7 @@ ACP-проекция описана отдельно: [модели и SQL](agen
 from __future__ import annotations
 
 from datetime import date as CalendarDate
+from enum import StrEnum
 from typing import (
     Annotated,
     Literal,
@@ -1409,7 +1410,8 @@ class ModelRecord(ParameterRecord):
     """Выбранный инференс и готовые поля выбора модели."""
 
     class Payload(ParameterRecord.Payload):
-        provider: NonEmptyStr  # Маршрутизация агентом; не поле тела запроса.
+        provider: NonEmptyStr | None  # Личное подключение; None до выбора пользователем.
+        profile_id: NonEmptyStr | None = None  # Выбранный пресет настроек модели.
 
     kind: Literal["model"] = "model"
     key: Literal["model"] = "model"
@@ -1434,13 +1436,17 @@ class ModelRecord(ParameterRecord):
     "value": {
       "model": "agent-model"
     },
-    "provider": "openai"
+    "provider": "openai",
+    "profile_id": "general"
   }
 }
 ```
 
-`ModelRecord.payload.provider` выбирает подключение и адаптер; поля payload.value
-переносятся в тело запроса. Новая модель и совместимые настройки сохраняются до LlmRequestBoundaryRecord.
+`ModelRecord.payload.provider` содержит ID личного подключения владельца чата;
+поля `payload.value` переносятся в тело запроса. До выбора провайдера `provider = null`:
+история сохраняется, отправка в инференс отклоняется с `missing_provider`.
+`profile_id` различает пресеты, включая пресеты с одинаковым именем модели.
+Новая модель и совместимые настройки сохраняются до `LlmRequestBoundaryRecord`.
 
 ---
 
@@ -2926,18 +2932,20 @@ class PermissionRule(DataModel):
 ### `PermissionStateRecord`
 
 ```python
+class PermissionMode(StrEnum):
+    DEFAULT = "default"
+    ACCEPT_EDITS = "accept_edits"
+    PLAN = "plan"
+    DONT_ASK = "dont_ask"
+    BYPASS = "bypass_permissions"
+    AUTO = "auto"
+
+
 class PermissionStateRecord(RecordBase):
     """Полный снимок режима и правил разрешений текущей сессии; действует последний."""
 
     class Payload(RecordBase.Payload):
-        mode: Literal[
-            "default",
-            "accept_edits",
-            "plan",
-            "dont_ask",
-            "bypass_permissions",
-            "auto",
-        ]
+        mode: PermissionMode
         rules: tuple[PermissionRule, ...]
 
     kind: Literal["permission_state"] = "permission_state"
@@ -3677,6 +3685,76 @@ class TurnEndRecord(RecordBase):
 
 ---
 
+### `SessionDeletedRecord`
+
+```python
+class SessionDeletedRecord(RecordBase):
+    """Закрывает сессию для новых обращений; сохранённая история остаётся доступна администратору."""
+
+    kind: Literal["session_deleted"] = "session_deleted"
+    category: Literal["operational"] = "operational"
+    operation: Literal["set"] = "set"
+```
+
+```json
+{
+  "session_id": "session-1",
+  "seq": 1,
+  "record_id": "deleted-1",
+  "kind": "session_deleted",
+  "category": "operational",
+  "role": null,
+  "key": null,
+  "operation": "set",
+  "request_id": null,
+  "copied_from_id": null,
+  "created_at": "2026-11-15T09:00:00Z",
+  "version": "0.0.33.dev4",
+  "payload": {}
+}
+```
+
+---
+
+### `SessionForkedRecord`
+
+```python
+class SessionForkedRecord(RecordBase):
+    """Фиксирует источник независимой копии истории; создаётся в новой сессии."""
+
+    class Payload(RecordBase.Payload):
+        source_session_id: NonEmptyStr
+        through_seq: PositiveInt
+
+    kind: Literal["session_forked"] = "session_forked"
+    category: Literal["operational"] = "operational"
+    operation: Literal["set"] = "set"
+    payload: Payload
+```
+
+```json
+{
+  "session_id": "branch-1",
+  "seq": 101,
+  "record_id": "forked-1",
+  "kind": "session_forked",
+  "category": "operational",
+  "role": null,
+  "key": null,
+  "operation": "set",
+  "request_id": null,
+  "copied_from_id": null,
+  "created_at": "2026-11-15T09:00:00Z",
+  "version": "0.0.33.dev4",
+  "payload": {
+    "source_session_id": "session-1",
+    "through_seq": 100
+  }
+}
+```
+
+---
+
 ### `HistoryRecord`
 
 ```python
@@ -3741,7 +3819,9 @@ HistoryRecord = Annotated[
     | SubagentSessionRecord
     | TokenUsageRecord
     | TextNoticeRecord
-    | TurnEndRecord,
+    | TurnEndRecord
+    | SessionDeletedRecord
+    | SessionForkedRecord,
     Field(discriminator="kind"),
 ]
 ```

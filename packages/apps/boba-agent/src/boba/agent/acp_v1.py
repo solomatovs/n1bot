@@ -6,6 +6,7 @@ from typing import Any, ClassVar, Never
 
 from acp import Agent as SdkAgent
 from acp import RequestError, schema
+from psycopg.types.json import Jsonb
 
 from boba.agent import models as m
 from boba.agent.acp_server import AcpOperations
@@ -49,14 +50,46 @@ class AcpV1(SdkAgent, SessionProtocol):
             ),
             agent_capabilities=schema.AgentCapabilities.model_validate(
                 {
+                    "providers": {},
                     "loadSession": True,
                     "promptCapabilities": {"image": True, "embeddedContext": True},
                     "mcpCapabilities": {"acp": True},
-                    "sessionCapabilities": {"list": {}, "resume": {}, "close": {}},
+                    "sessionCapabilities": {
+                        "list": {},
+                        "resume": {},
+                        "close": {},
+                        "delete": {},
+                        "fork": {},
+                    },
                 }
             ),
             auth_methods=[],
         )
+
+    async def list_providers(self, **kwargs: Any) -> Any:
+        async with self._operations.errors():
+            return await self._operations.list_providers(Query.ACP_V1_PROVIDERS)
+
+    async def set_provider(
+        self,
+        provider_id: str,
+        api_type: str,
+        base_url: str,
+        headers: dict[str, str] | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        async with self._operations.errors():
+            await self._operations.set_provider(
+                provider_id, api_type, base_url, headers
+            )
+
+            return {}
+
+    async def disable_provider(self, provider_id: str, **kwargs: Any) -> Any:
+        async with self._operations.errors():
+            await self._operations.disable_provider(provider_id)
+
+            return {}
 
     async def new_session(
         self,
@@ -79,9 +112,46 @@ class AcpV1(SdkAgent, SessionProtocol):
             agent = await operations.hub.create(
                 operations.owner, operations.granted, cwd, additional=additional
             )
-            await operations.open(agent, self._servers(mcp_servers), self)
-            response = await self._setup(agent.session_id)
-            return {"sessionId": agent.session_id, **response}
+            async with operations.created_session(
+                agent, self._servers(mcp_servers), self
+            ):
+                return (await self._setup(agent.session_id))["created"]
+
+    async def delete_session(self, session_id: str, **kwargs: Any) -> Any:
+        operations = self._operations
+        async with operations.errors():
+            await operations.hub.delete(session_id, operations.owner)
+            await operations.unsubscribe(session_id)
+
+            return {}
+
+    async def fork_session(
+        self,
+        session_id: str,
+        cwd: str,
+        additional_directories: list[str] | None = None,
+        mcp_servers: list[
+            schema.HttpMcpServer
+            | schema.SseMcpServer
+            | schema.AcpMcpServer
+            | schema.McpServerStdio
+        ]
+        | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        operations = self._operations
+        async with operations.errors():
+            additional = additional_directories
+            if additional is None:
+                additional = []
+
+            agent = await operations.hub.fork(
+                session_id, operations.owner, operations.granted, cwd, additional
+            )
+            async with operations.created_session(
+                agent, self._servers(mcp_servers), self
+            ):
+                return (await self._setup(agent.session_id))["created"]
 
     async def load_session(
         self,
@@ -103,7 +173,7 @@ class AcpV1(SdkAgent, SessionProtocol):
             await operations.open(
                 agent, self._servers(mcp_servers), self, replay_history=True
             )
-            return await self._setup(session_id)
+            return (await self._setup(session_id))["setup"]
 
     async def resume_session(
         self,
@@ -123,7 +193,7 @@ class AcpV1(SdkAgent, SessionProtocol):
         async with operations.errors():
             agent = await operations.restore(session_id, cwd)
             await operations.open(agent, self._servers(mcp_servers), self)
-            return await self._setup(session_id)
+            return (await self._setup(session_id))["setup"]
 
     async def list_sessions(
         self, cwd: str | None = None, cursor: str | None = None, **kwargs: Any
@@ -175,7 +245,19 @@ class AcpV1(SdkAgent, SessionProtocol):
                 session_id, operations.owner, operations.granted
             )
             await operations.set_option(agent, config_id, value)
-            return await self._setup(session_id)
+            return (await self._setup(session_id))["configured"]
+
+    async def set_session_mode(
+        self, session_id: str, mode_id: str, **kwargs: Any
+    ) -> Any:
+        operations = self._operations
+        async with operations.errors():
+            agent = await operations.hub.get(
+                session_id, operations.owner, operations.granted
+            )
+            await operations.set_option(agent, "mode", mode_id)
+
+            return {}
 
     async def cancel(self, session_id: str, **kwargs: Any) -> None:
         operations = self._operations
@@ -231,7 +313,8 @@ class AcpV1(SdkAgent, SessionProtocol):
         await agent.idle.wait()
         subscriber = self._operations.subscriptions.get(agent.session_id)
         if subscriber is not None:
-            await subscriber.flush()
+            if not agent.closed:
+                await subscriber.flush()
         rows = await self._store.rows(Query.ACP_V1_PROMPT, agent.session_id, message_id)
         if not rows:
             raise RequestError(-32603, f"No completed turn for input {message_id}")
@@ -243,7 +326,10 @@ class AcpV1(SdkAgent, SessionProtocol):
 
     async def _setup(self, sid: str) -> dict:
         options = await self._store.acp(Query.ACP_V1_OPTIONS, sid, None)
-        return {"configOptions": options["update"]["configOptions"]}
+        rows = await self._store.rows(
+            Query.ACP_V1_SESSION, sid, Jsonb(options["update"])
+        )
+        return rows[0]
 
     def _frame(self, sid: str, update: dict) -> tuple[str, dict]:
         return "session/update", {"sessionId": sid, "update": update}
@@ -273,7 +359,7 @@ class AcpV1(SdkAgent, SessionProtocol):
         )
         options = await self._store.acp(Query.ACP_V1_OPTIONS, sid, snapshot.through_seq)
         frames.append(self._frame(sid, commands["update"]))
-        frames.append(self._frame(sid, options["update"]))
+        frames.extend(await self._option_frames(sid, options))
         for delta in snapshot.partial:
             frames.append(self.chunk(sid, delta))
         return frames
@@ -319,9 +405,17 @@ class AcpV1(SdkAgent, SessionProtocol):
             draft["method"], draft["params"]
         )
 
-    async def options(self, session_id: str) -> tuple[str, dict]:
+    async def _option_frames(self, sid: str, draft: dict) -> list[tuple[str, dict]]:
+        rows = await self._store.rows(Query.ACP_V1_SESSION, sid, Jsonb(draft["update"]))
+        frames = [self._frame(sid, draft["update"])]
+        if update := rows[0]["mode_update"]:
+            frames.append(self._frame(sid, update))
+
+        return frames
+
+    async def options(self, session_id: str) -> list[tuple[str, dict]]:
         draft = await self._store.acp(Query.ACP_V1_OPTIONS, session_id, None)
-        return self._frame(session_id, draft["update"])
+        return await self._option_frames(session_id, draft)
 
     def chunk(self, session_id: str, delta: TextDelta) -> tuple[str, dict]:
         model: type[schema.AgentMessageChunk] | type[schema.AgentThoughtChunk] = (
@@ -340,10 +434,6 @@ class AcpV1(SdkAgent, SessionProtocol):
     async def _unsupported(self, *args: Any, **kwargs: Any) -> Never:
         raise RequestError.method_not_found("ACP operation is not supported by Boba")
 
-    delete_session = _unsupported
-    list_providers = _unsupported
-    set_provider = _unsupported
-    disable_provider = _unsupported
     logout = _unsupported
     start_nes = _unsupported
     suggest_nes = _unsupported
@@ -355,9 +445,7 @@ class AcpV1(SdkAgent, SessionProtocol):
     did_close = _unsupported
     did_save = _unsupported
     did_focus = _unsupported
-    set_session_mode = _unsupported
     authenticate = _unsupported
-    fork_session = _unsupported
     ext_method = _unsupported
     ext_notification = _unsupported
 

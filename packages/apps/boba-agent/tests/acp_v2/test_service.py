@@ -24,6 +24,11 @@ async def test_websocket_negotiates_v2_and_creates_session(
         )
         response = schema.InitializeResponse.model_validate(initialized)
         assert response.protocol_version == 2
+        assert response.capabilities is not None
+        assert response.capabilities.providers is not None
+        listed = await connection.send_request("providers/list", {})
+        provider_response = schema.ListProvidersResponse.model_validate(listed)
+        assert len(provider_response.providers) == 1
         assert "systemPrompt" not in initialized["capabilities"]["session"]
         created = await connection.send_request("session/new", {"cwd": "/workspace"})
         assert "availableCommands" not in created

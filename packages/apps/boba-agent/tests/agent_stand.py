@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import secrets
 from collections.abc import AsyncGenerator, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
 from time import time
@@ -28,7 +29,7 @@ from starlette.routing import Route, WebSocketRoute
 from boba.agent import models as m
 from boba.agent.acp_server import AgentProfiles, SessionHub
 from boba.agent.history import HistoryStore
-from boba.agent.llm import OpenAiTransport
+from boba.agent.llm import OpenAiTransport, ProviderConfiguration, Providers
 from boba.agent.serve import AcpEndpoint, ServeAgents
 from boba.agent.settings import (
     AgentProfile,
@@ -38,6 +39,7 @@ from boba.agent.settings import (
     SettingsLayer,
 )
 from boba.agent.tools import McpBinding
+from boba.crypto import SecretCipher
 from boba.db.postgres.connection import PostgresConfig
 from boba.llm.http.openai import WireChunk
 from boba.oauth.claims import TokenClaims
@@ -50,6 +52,8 @@ class InferenceServer:
 
     def __init__(self, port: int, timeout: float) -> None:
         self.requests: list[bytes] = []
+        self.request_headers: list[Mapping[str, str]] = []
+        self.request_paths: list[str] = []
         self.response = Response(status_code=501)
         self.responses: tuple[Response, ...] = ()
         self.settings = ProviderSettings(
@@ -64,12 +68,15 @@ class InferenceServer:
             {
                 "test": AgentProfile(
                     roles=["*"],
-                    model=ModelSettings(provider=self.settings, model="test"),
+                    model=ModelSettings(model="test"),
                 )
             }
         )
         app = Starlette(
-            routes=[Route("/v1/chat/completions", self.handle, methods=["POST"])]
+            routes=[
+                Route("/v1/chat/completions", self.handle, methods=["POST"]),
+                Route("/client/v1/chat/completions", self.handle, methods=["POST"]),
+            ]
         )
         self.server = uvicorn.Server(
             uvicorn.Config(
@@ -79,6 +86,8 @@ class InferenceServer:
 
     async def handle(self, request: Request) -> Response:
         self.requests.append(await request.body())
+        self.request_headers.append(dict(request.headers))
+        self.request_paths.append(request.url.path)
 
         if self.responses:
             index = len(self.requests) - 1
@@ -105,18 +114,16 @@ class AgentSystem:
         self.postgres = postgres
         self.timeout = timeout
         self.owner = uuid4().hex
+        self.owners = {self.owner}
         self.profiles = AgentProfiles(
             {
                 "hidden": AgentProfile(
                     roles=["administrators"],
-                    model=ModelSettings(
-                        provider=inference.settings, model="hidden-model"
-                    ),
+                    model=ModelSettings(model="hidden-model"),
                 ),
                 "test": AgentProfile(
                     roles=["users"],
                     model=ModelSettings(
-                        provider=inference.settings,
                         model="system-test-model",
                         sampling={"temperature": 0.2},
                         inference={"max_completion_tokens": 128},
@@ -126,24 +133,50 @@ class AgentSystem:
                 ),
                 "alternative": AgentProfile(
                     roles=["operators"],
+                    model=ModelSettings(model="alternative-model"),
+                ),
+                "same-model": AgentProfile(
+                    roles=["variants"],
                     model=ModelSettings(
-                        provider=inference.settings, model="alternative-model"
+                        model="system-test-model", sampling={"temperature": 0.8}
                     ),
                 ),
             }
         )
-        self.llm = OpenAiTransport(self.profiles)
+        self.llm = OpenAiTransport()
+        self.providers = Providers(history, SecretCipher(secrets.token_bytes(32)))
         self.settings = SettingsLayer(
             mcp=McpSettings(list_timeout_sec=timeout, call_timeout_sec=timeout)
         )
-        self.hub = SessionHub(history, self.llm, self.profiles, self.settings, "test")
+        self.hub = SessionHub(
+            history,
+            self.llm,
+            self.profiles,
+            self.settings,
+            "test",
+            providers=self.providers,
+        )
         self.connections = AsyncExitStack()
+
+    async def seed_provider(self) -> None:
+        configuration = ProviderConfiguration(
+            owner_id=self.owner,
+            provider_id="test",
+            settings=self.inference.settings,
+            headers={},
+        )
+        await self.providers.save(configuration, enabled=True)
 
     async def restart(self) -> None:
         await self.connections.aclose()
         await self.hub.close()
         self.hub = SessionHub(
-            self.history, self.llm, self.profiles, self.settings, "test"
+            self.history,
+            self.llm,
+            self.profiles,
+            self.settings,
+            "test",
+            providers=self.providers,
         )
         await self.hub.start(self.postgres)
 
@@ -196,15 +229,19 @@ class AgentSystem:
         await self.connections.aclose()
 
         await self.hub.close()
-        await self.llm.close()
         async with self.history.pool.connection() as connection:
             await connection.execute(
-                "delete from boba.records where session_id in "
-                "(select session_id from boba.sessions where owner_id = %s)",
-                (self.owner,),
+                "delete from boba.providers where owner_id = any(%s)",
+                (list(self.owners),),
             )
             await connection.execute(
-                "delete from boba.sessions where owner_id = %s", (self.owner,)
+                "delete from boba.records where session_id in "
+                "(select session_id from boba.sessions where owner_id = any(%s))",
+                (list(self.owners),),
+            )
+            await connection.execute(
+                "delete from boba.sessions where owner_id = any(%s)",
+                (list(self.owners),),
             )
 
 
@@ -431,6 +468,10 @@ class ServiceHost:
             store = self.agents.hub.store
             async with store.pool.connection() as connection:
                 await connection.execute(
+                    "delete from boba.providers where owner_id = %s",
+                    (str(self.tokens.user_id),),
+                )
+                await connection.execute(
                     "delete from boba.records where session_id in "
                     "(select session_id from boba.sessions where owner_id = %s)",
                     (str(self.tokens.user_id),),
@@ -446,12 +487,13 @@ class Llm:
     def __init__(self):
         self.requests = []
 
-    def address(self, provider):
-        return "https://test.invalid/v1/chat/completions"
+    def for_user(self, owner, providers):
+        return self
 
     async def generate(self, provider, request, output, emit):
         self.requests.append(request)
         output.status = 200
+        output.address = "https://test.invalid/v1/chat/completions"
         if len(self.requests) == 1:
             message = {
                 "tool_calls": [

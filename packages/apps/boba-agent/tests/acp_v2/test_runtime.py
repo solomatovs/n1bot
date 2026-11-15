@@ -24,7 +24,7 @@ class Tool:
 @pytest.mark.anyio
 @pytest.mark.integration
 async def test_inputs_persist_during_tool_and_enter_one_request_with_live_acp(
-    history, inference, agent_timeout: float
+    history, inference, system, agent_timeout: float
 ):
     sid = "runtime-test-" + uuid4().hex
     llm, tool = Llm(), Tool()
@@ -46,7 +46,14 @@ async def test_inputs_persist_during_tool_and_enter_one_request_with_live_acp(
         from boba.agent.acp_server import SessionHub
         from boba.agent.settings import SettingsLayer
 
-        hub = SessionHub(history, llm, inference.profiles, SettingsLayer(), "test")
+        hub = SessionHub(
+            history,
+            llm,
+            inference.profiles,
+            SettingsLayer(),
+            "test",
+            providers=system.providers,
+        )
         operations = AcpOperations(hub, "runtime-test", frozenset({"test"}), "test")
         await agent.subscribe(send, AcpV2(operations))
         await agent.submit([m.TextPart(text="Start")])

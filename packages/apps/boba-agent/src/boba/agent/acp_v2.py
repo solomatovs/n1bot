@@ -8,6 +8,8 @@ from typing import Any, ClassVar, Literal, Never
 from acp import RequestError
 from acp.experimental.v2 import Agent as SdkAgent
 from acp.experimental.v2 import schema
+from psycopg.types.json import Jsonb
+from pydantic import AnyUrl
 
 from boba.agent import models as m
 from boba.agent.acp_server import AcpOperations
@@ -44,14 +46,42 @@ class AcpV2(SdkAgent, SessionProtocol):
             info=schema.Implementation(name="boba", version=self._operations.version),
             capabilities=schema.AgentCapabilities.model_validate(
                 {
+                    "providers": {},
                     "session": {
                         "prompt": {"image": {}, "embeddedContext": {}},
                         "mcp": {"acp": {}},
-                    }
+                        "delete": {},
+                        "fork": {},
+                    },
                 }
             ),
             auth_methods=[],
         )
+
+    async def list_providers(self, **kwargs: Any) -> Any:
+        async with self._operations.errors():
+            return await self._operations.list_providers(Query.ACP_PROVIDERS)
+
+    async def set_provider(
+        self,
+        provider_id: str,
+        api_type: str,
+        base_url: str | AnyUrl,
+        headers: dict[str, str] | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        async with self._operations.errors():
+            await self._operations.set_provider(
+                provider_id, api_type, str(base_url), headers
+            )
+
+            return {}
+
+    async def disable_provider(self, provider_id: str, **kwargs: Any) -> Any:
+        async with self._operations.errors():
+            await self._operations.disable_provider(provider_id)
+
+            return {}
 
     async def new_session(
         self,
@@ -74,9 +104,46 @@ class AcpV2(SdkAgent, SessionProtocol):
             agent = await operations.hub.create(
                 operations.owner, operations.granted, cwd, additional=additional
             )
-            await operations.open(agent, self._servers(mcp_servers), self)
-            response = await self._setup(agent.session_id)
-            return {"sessionId": agent.session_id, **response}
+            async with operations.created_session(
+                agent, self._servers(mcp_servers), self
+            ):
+                return (await self._setup(agent.session_id))["created"]
+
+    async def delete_session(self, session_id: str, **kwargs: Any) -> Any:
+        operations = self._operations
+        async with operations.errors():
+            await operations.hub.delete(session_id, operations.owner)
+            await operations.unsubscribe(session_id)
+
+            return {}
+
+    async def fork_session(
+        self,
+        session_id: str,
+        cwd: str,
+        additional_directories: list[str] | None = None,
+        mcp_servers: list[
+            schema.HttpMcpServer
+            | schema.AcpMcpServer
+            | schema.StdioMcpServer
+            | schema.OtherMcpServer
+        ]
+        | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        operations = self._operations
+        async with operations.errors():
+            additional = additional_directories
+            if additional is None:
+                additional = []
+
+            agent = await operations.hub.fork(
+                session_id, operations.owner, operations.granted, cwd, additional
+            )
+            async with operations.created_session(
+                agent, self._servers(mcp_servers), self
+            ):
+                return (await self._setup(agent.session_id))["created"]
 
     async def resume_session(
         self,
@@ -107,7 +174,7 @@ class AcpV2(SdkAgent, SessionProtocol):
                 self,
                 replay_history=replay_from is not None,
             )
-            return await self._setup(session_id)
+            return (await self._setup(session_id))["setup"]
 
     async def list_sessions(
         self, cwd: str | None = None, cursor: str | None = None, **kwargs: Any
@@ -162,8 +229,7 @@ class AcpV2(SdkAgent, SessionProtocol):
                 session_id, operations.owner, operations.granted
             )
             await operations.set_option(agent, config_id, value)
-            draft = await self._store.acp(Query.ACP_OPTIONS, session_id, None)
-            return {"configOptions": draft["update"]["configOptions"]}
+            return (await self._setup(session_id))["configured"]
 
     async def cancel_session(self, session_id: str, **kwargs: Any) -> None:
         operations = self._operations
@@ -218,10 +284,10 @@ class AcpV2(SdkAgent, SessionProtocol):
     async def _setup(self, sid: str) -> dict:
         options = await self._store.acp(Query.ACP_OPTIONS, sid, None)
         commands = await self._store.acp(Query.ACP_COMMANDS, sid, None)
-        return {
-            "configOptions": options["update"]["configOptions"],
-            "availableCommands": commands["update"]["availableCommands"],
-        }
+        rows = await self._store.rows(
+            Query.ACP_SESSION, sid, Jsonb(options["update"]), Jsonb(commands["update"])
+        )
+        return rows[0]
 
     def _frame(self, sid: str, update: dict) -> tuple[str, dict]:
         return "session/update", {"sessionId": sid, "update": update}
@@ -289,9 +355,9 @@ class AcpV2(SdkAgent, SessionProtocol):
             draft["method"], draft["params"]
         )
 
-    async def options(self, session_id: str) -> tuple[str, dict]:
+    async def options(self, session_id: str) -> list[tuple[str, dict]]:
         draft = await self._store.acp(Query.ACP_OPTIONS, session_id, None)
-        return self._frame(session_id, draft["update"])
+        return [self._frame(session_id, draft["update"])]
 
     def chunk(self, session_id: str, delta: TextDelta) -> tuple[str, dict]:
         channel: Literal["agent_message_chunk", "agent_thought_chunk"] = (
@@ -323,11 +389,6 @@ class AcpV2(SdkAgent, SessionProtocol):
 
     login = _unsupported
     logout = _unsupported
-    list_providers = _unsupported
-    set_provider = _unsupported
-    disable_provider = _unsupported
-    delete_session = _unsupported
-    fork_session = _unsupported
     start_nes = _unsupported
     suggest_nes = _unsupported
     accept_nes = _unsupported

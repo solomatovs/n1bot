@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar, Literal
@@ -12,11 +13,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from pydantic.alias_generators import to_camel
 
 from boba.access import RoleVisibility
+from boba.agent.models import ParameterChoice, PermissionMode
 from boba.auth.assembly import AuthBackends
 from boba.auth.config import AuthConfig
 from boba.auth.providers.backends import StandardAuthBackends
 from boba.auth.settings import SignInSettings
 from boba.config import ConfigVariant
+from boba.crypto.config import ValueCipherConfig
 from boba.db.postgres.connection import PostgresConfig
 from boba.http_server import ProcessLogging, ServerConfig
 from boba.identity.service import ServiceAddress
@@ -53,7 +56,7 @@ class ProviderSettings(SettingsModel):
         if (
             url.scheme not in {"http", "https"}
             or not url.hostname
-            or url.username
+            or url.username is not None
             or url.query
             or url.fragment
         ):
@@ -74,7 +77,6 @@ class ProviderSettings(SettingsModel):
 
 
 class ModelSettings(SettingsModel):
-    provider: ProviderSettings
     model: str = Field(min_length=1)
     sampling: dict[str, Any] = Field(default_factory=dict)
     inference: dict[str, Any] = Field(default_factory=dict)
@@ -92,6 +94,34 @@ class PermissionSettings(SettingsModel):
     allow_bypass: bool = False
     allow: tuple[str, ...] = ()
     deny: tuple[str, ...] = ()
+
+    @property
+    def mode(self) -> PermissionMode:
+        match self.default_mode:
+            case "acceptEdits":
+                return PermissionMode.ACCEPT_EDITS
+            case "dontAsk":
+                return PermissionMode.DONT_ASK
+            case "bypassPermissions" if self.allow_bypass:
+                return PermissionMode.BYPASS
+            case "bypassPermissions":
+                return PermissionMode.DEFAULT
+            case _:
+                return PermissionMode(self.default_mode)
+
+    def choices(self) -> Iterator[ParameterChoice]:
+        for mode in PermissionMode:
+            match mode:
+                case PermissionMode.BYPASS if not self.allow_bypass:
+                    continue
+                case PermissionMode.ACCEPT_EDITS if (
+                    self.mode is not PermissionMode.ACCEPT_EDITS
+                ):
+                    continue
+
+            yield ParameterChoice(
+                value_id=mode.value, name=mode.label, value=mode.value
+            )
 
 
 class Limits(SettingsModel):
@@ -222,6 +252,7 @@ class ServeSection(BaseModel):
     """Слой настроек агента: права, лимиты, сессии, серверы MCP, промпт.
     Историю, профили моделей и профиль по умолчанию задаёт служба."""
     profiles: dict[str, AgentProfile] = Field(min_length=1)
+    providers: ValueCipherConfig
     clients: dict[str, TrustedClient] = Field(default_factory=dict)
     """Доверенные клиенты OAuth по client_id: им разрешён вход proxy."""
 

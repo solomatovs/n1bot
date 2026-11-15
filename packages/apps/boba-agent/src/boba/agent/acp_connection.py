@@ -67,6 +67,30 @@ class AcpAgent:
 
                 # В SDK rc3 negotiation не передаёт use_unstable_protocol в v1 attach.
                 selected.route_request(
+                    "providers/list",
+                    v1_schema.ListProvidersRequest,
+                    self._protocol,
+                    "list_providers",
+                )
+                selected.route_request(
+                    "providers/set",
+                    v1_schema.SetProviderRequest,
+                    self._protocol,
+                    "set_provider",
+                )
+                selected.route_request(
+                    "providers/disable",
+                    v1_schema.DisableProviderRequest,
+                    self._protocol,
+                    "disable_provider",
+                )
+                selected.route_request(
+                    "session/fork",
+                    v1_schema.ForkSessionRequest,
+                    self._protocol,
+                    "fork_session",
+                )
+                selected.route_request(
                     "mcp/message",
                     v1_schema.MessageMcpRequest,
                     self._protocol,

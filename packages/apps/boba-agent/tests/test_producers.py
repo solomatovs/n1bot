@@ -11,12 +11,10 @@ from boba.llm.http.openai import WireChunk
 
 
 class Summary:
-    def address(self, provider):
-        return "https://test.invalid/v1/chat/completions"
-
     async def generate(self, provider, request, output, emit):
         assert request["tool_choice"] == "none"
         output.status = 200
+        output.address = "https://test.invalid/v1/chat/completions"
         for delta in output.response.deltas(
             WireChunk.model_validate(
                 {

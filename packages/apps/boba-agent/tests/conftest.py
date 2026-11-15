@@ -151,6 +151,7 @@ async def system(
 ) -> AsyncIterator[AgentSystem]:
     stand = AgentSystem(history, inference, postgres, agent_timeout)
     await stand.hub.start(postgres)
+    await stand.seed_provider()
     try:
         yield stand
     finally:

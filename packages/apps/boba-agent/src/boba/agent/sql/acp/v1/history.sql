@@ -80,6 +80,8 @@ routes(kind, route) as (
         ('permission_decision',         'state'),
         ('token_usage',                 'state'),
         ('subagent_session',            'state'),
+        ('session_deleted',             'state'),
+        ('session_forked',              'state'),
         ('skill_activated',             'state'),
         ('task_notification',           'notice')
 ),

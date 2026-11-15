@@ -11,7 +11,6 @@ from boba.agent.settings import (
     AgentProfile,
     ModelSettings,
     PermissionSettings,
-    ProviderSettings,
     SettingsLayer,
 )
 from boba.llm.http.openai import WireChunk
@@ -76,12 +75,13 @@ async def test_background_result_is_admitted_after_tool_result_and_acknowledged(
 @pytest.mark.anyio
 @pytest.mark.integration
 async def test_subagent_has_own_history_and_parent_call_keeps_normal_pair(
-    history, agent_timeout: float
+    history, system, agent_timeout: float
 ):
     class SubagentLlm(Llm):
         async def generate(self, provider, request, output, emit):
             self.requests.append(request)
             output.status = 200
+            output.address = "https://test.invalid/chat/completions"
             if len(self.requests) == 1:
                 message = {
                     "tool_calls": [
@@ -109,22 +109,19 @@ async def test_subagent_has_own_history_and_parent_call_keeps_normal_pair(
                 await emit(delta.position, delta.kind, delta.text)
 
     llm = SubagentLlm()
-    model = ModelSettings(
-        provider=ProviderSettings.model_validate(
-            {"baseUrl": "https://test.invalid", "auth": {"method": "none"}}
-        ),
-        model="test",
-    )
+    model = ModelSettings(model="test")
     settings = SettingsLayer(
         permissions=PermissionSettings(
             default_mode="bypassPermissions", allow_bypass=True
         )
     )
     profiles = AgentProfiles({"test": AgentProfile(roles=["*"], model=model)})
-    hub = SessionHub(history, llm, profiles, settings, "test")
+    hub = SessionHub(
+        history, llm, profiles, settings, "test", providers=system.providers
+    )
     ids = []
     try:
-        parent = await hub.create(uuid4().hex, frozenset({"test"}), "/workspace")
+        parent = await hub.create(system.owner, frozenset({"test"}), "/workspace")
         await parent.submit([m.TextPart(text="parent")])
         async with asyncio.timeout(agent_timeout):
             await parent.idle.wait()

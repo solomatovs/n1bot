@@ -11,4 +11,7 @@ select
     ), '[]'::jsonb)) as response
 from
     params p
-    join boba.sessions s on s.owner_id = p.owner_id;
+    join boba.sessions s on s.owner_id = p.owner_id
+    left join boba.records d on d.session_id = s.session_id and d.kind = 'session_deleted'
+where 1=1
+    and d.seq is null;

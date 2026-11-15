@@ -63,7 +63,7 @@ class SessionProtocol(Protocol):
     async def saved(self, batch: SavedBatch) -> list[tuple[str, dict]]: ...
 
     @abstractmethod
-    async def options(self, session_id: str) -> tuple[str, dict]: ...
+    async def options(self, session_id: str) -> list[tuple[str, dict]]: ...
 
     @abstractmethod
     def chunk(self, session_id: str, delta: TextDelta) -> tuple[str, dict]: ...
@@ -246,8 +246,8 @@ class Agent:
 
     async def options_changed(self) -> None:
         for protocol in self._protocols().values():
-            update = await protocol.options(self.session_id)
-            self._publish([update], protocol)
+            updates = await protocol.options(self.session_id)
+            self._publish(updates, protocol)
 
     def _publish(
         self, frames: Sequence[tuple[str, dict]], protocol: SessionProtocol
@@ -537,6 +537,8 @@ class Agent:
         finally:
             records = []
             reply = None
+            address = output.address
+
             if content:
                 reply = self.make(
                     m.RequestOutputRecord if service else m.AssistantMessageRecord,
@@ -553,28 +555,32 @@ class Agent:
                         payload={"usage": output.usage},
                     )
                 )
-            records.append(
-                self.make(
-                    m.LlmRequestAttemptRecord,
-                    request_id=request_id,
-                    payload={
-                        "attempt": attempt,
-                        "method": "POST",
-                        "url": self.llm.address(draft.provider),
-                        "status_code": output.status,
-                        "duration_ms": int((time.monotonic() - started) * 1000),
-                        "error": error,
-                        "level": "warning" if error else "info",
-                        "content": [
-                            m.TextPart(
-                                text=f"LLM request {request_id}: {error or 'completed'}"
-                            )
-                        ],
-                    },
+            if address is not None:
+                records.append(
+                    self.make(
+                        m.LlmRequestAttemptRecord,
+                        request_id=request_id,
+                        payload={
+                            "attempt": attempt,
+                            "method": "POST",
+                            "url": address,
+                            "status_code": output.status,
+                            "duration_ms": int((time.monotonic() - started) * 1000),
+                            "error": error,
+                            "level": "warning" if error else "info",
+                            "content": [
+                                m.TextPart(
+                                    text=f"LLM request {request_id}: {error or 'completed'}"
+                                )
+                            ],
+                        },
+                    )
                 )
-            )
             async with self.lock:
-                saved = await self.store.append(self.session_id, records)
+                saved = ()
+                if records:
+                    saved = await self.store.append(self.session_id, records)
+
                 if reply is not None:
                     reply = next(
                         row
@@ -582,13 +588,15 @@ class Agent:
                         if isinstance(row, m.AssistantMessageRecord)
                         and row.record_id == output_id
                     )
-                await self._publish_saved(saved)
+                if saved:
+                    await self._publish_saved(saved)
+
                 if not service:
                     self.partial.clear()
         if failure is not None:
             retry = getattr(self.llm, "retry_delay", None)
             if not output.has_content and retry is not None:
-                delay = retry(draft.provider, failure, attempt)
+                delay = retry(output, failure, attempt)
                 if delay is not None:
                     await asyncio.sleep(delay)
                     return await self.generate(
@@ -735,3 +743,5 @@ class Agent:
                 await self.worker
         for subscriber in tuple(self.subscribers):
             await subscriber.close()
+
+        self.subscribers.clear()

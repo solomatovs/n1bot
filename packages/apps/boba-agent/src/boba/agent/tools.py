@@ -526,6 +526,23 @@ class ToolRunner:
         async with asyncio.timeout(self.list_timeout):
             await peer.close()
 
+    def _shared_peer(self, peer: McpPeer) -> bool:
+        for bindings in self.clients.values():
+            if peer in bindings.values():
+                return True
+
+        return False
+
+    async def release_session(self, session_id: str) -> None:
+        bindings = self.clients.pop(session_id, {})
+        self.ask.pop(session_id, None)
+        async with AsyncExitStack() as closing:
+            for peer in bindings.values():
+                if self._shared_peer(peer):
+                    continue
+
+                closing.push_async_callback(self.close_peer, peer)
+
     async def _mcp(
         self, agent: Agent, server: str, method: str, params: dict, *, timeout=None
     ):
@@ -769,7 +786,9 @@ class ToolRunner:
         state = (
             m.PermissionStateRecord.model_validate(states[0]).payload
             if states
-            else m.PermissionStateRecord.Payload(mode="default", rules=())
+            else m.PermissionStateRecord.Payload(
+                mode=m.PermissionMode.DEFAULT, rules=()
+            )
         )
         rules: dict[str, Literal["allow", "deny", "ask"]] = {
             rule.tool: rule.decision for rule in state.rules

@@ -10,6 +10,7 @@ from collections.abc import (
     Iterable,
     Iterator,
     Mapping,
+    Sequence,
     Set,
 )
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
@@ -22,6 +23,7 @@ from pydantic import ValidationError
 
 from boba.agent import models as m
 from boba.agent.history import HistoryStore, _rows
+from boba.agent.llm import Providers
 from boba.agent.queries import Query
 from boba.agent.runtime import Agent, SessionProtocol, Subscription, record
 from boba.agent.settings import (
@@ -39,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 
 class AgentProfiles(ProfileCatalog):
-    """Единый каталог профилей для входа, SessionHub и OpenAiTransport.
+    """Каталог настроек моделей для входа и SessionHub, без HTTP-подключений.
 
     Сборка службы создаёт каталог из конфига; каталог выбирает профили
     по выданным именам и предоставляет варианты выбора для истории.
@@ -104,10 +106,7 @@ class AgentProfiles(ProfileCatalog):
             yield m.ParameterChoice(
                 value_id=profile.name,
                 name=profile.name,
-                value={
-                    "provider": profile.name,
-                    "value": {"model": profile.settings.model},
-                },
+                value=profile.name,
             )
 
     def granted_by_roles(self, user_roles: frozenset[str]) -> frozenset[str]:
@@ -136,12 +135,15 @@ class SessionHub:
         profiles: AgentProfiles,
         settings: SettingsLayer,
         version: str,
+        *,
+        providers: Providers,
     ) -> None:
         self.store = store
         self.llm = llm
         self.profiles = profiles
         self.settings = settings
         self.version = version
+        self.providers = providers
         self.tools = ToolRunner(
             list_timeout=settings.mcp.list_timeout_sec,
             call_timeout=settings.mcp.call_timeout_sec,
@@ -190,10 +192,13 @@ class SessionHub:
             if not registered and connection is not None:
                 await _rows(connection, Query.OWNER_UNLOCK, (sid,))
 
-    async def _vacancy(self) -> None:
+    async def _vacancy(self, *, protected: str | None = None) -> None:
         if len(self.agents) < self.settings.sessions.max_open:
             return
         for sid, agent in tuple(self.agents.items()):
+            if sid == protected:
+                continue
+
             if agent.idle.is_set() and not agent.subscribers and not agent.background:
                 await agent.close()
                 if self.owner_connection is not None:
@@ -240,6 +245,7 @@ class SessionHub:
         self,
         profile: NamedProfile,
         *,
+        provider: str | None,
         previous: Iterable[m.HistoryRecord] = (),
     ) -> list[m.HistoryRecord]:
         record_keys = self._active_record_keys(previous)
@@ -249,7 +255,8 @@ class SessionHub:
             self.make(
                 m.ModelRecord,
                 payload={
-                    "provider": profile.name,
+                    "provider": provider,
+                    "profile_id": profile.name,
                     "value": {"model": profile.settings.model},
                 },
             )
@@ -273,77 +280,188 @@ class SessionHub:
             )
         return records
 
+    def _model_option(
+        self, choices: Sequence[m.ParameterChoice]
+    ) -> m.ParameterOptionRecord:
+        return self.make(
+            m.ParameterOptionRecord,
+            key="model",
+            payload={
+                "name": "Model",
+                "source_kinds": ["model"],
+                "source_key": "model",
+                "value_path": ["profile_id"],
+                "choices": choices,
+            },
+        )
+
+    def _provider_option(
+        self, provider_ids: Sequence[str]
+    ) -> m.ParameterOptionRecord | None:
+        if not provider_ids:
+            return None
+
+        choices = []
+        for provider_id in provider_ids:
+            choices.append(
+                m.ParameterChoice(
+                    value_id=provider_id, name=provider_id, value=provider_id
+                )
+            )
+
+        return self.make(
+            m.ParameterOptionRecord,
+            key="provider",
+            payload={
+                "name": "Provider",
+                "source_kinds": ["model"],
+                "source_key": "model",
+                "value_path": ["provider"],
+                "choices": choices,
+            },
+        )
+
+    async def _update_option(
+        self, agent: Agent, option: m.ParameterOptionRecord
+    ) -> bool:
+        current = await self.store.latest(
+            agent.session_id, kind="parameter_option", key=option.key
+        )
+        if current:
+            previous = m.ParameterOptionRecord.model_validate(current[0])
+            if previous.payload == option.payload:
+                return False
+
+        await agent.append([option])
+
+        return True
+
+    async def refresh_provider_options(self, agent: Agent, owner: str) -> None:
+        provider_ids = await self.providers.choices(owner)
+        option = self._provider_option(provider_ids)
+        if option is None:
+            return
+
+        selected = await self.store.latest(agent.session_id, kind="model")
+        model = m.ModelRecord.model_validate(selected[0])
+        if model.payload.provider is None:
+            payload = model.payload.model_copy(update={"provider": provider_ids[0]})
+            await agent.append([self.make(m.ModelRecord, payload=payload)])
+
+        if await self._update_option(agent, option):
+            await agent.options_changed()
+
+    async def _restore_model_profile(
+        self, agent: Agent, granted: frozenset[str]
+    ) -> None:
+        selected = await self.store.latest(agent.session_id, kind="model")
+        model = m.ModelRecord.model_validate(selected[0])
+        if model.payload.profile_id is None:
+            options = await self.store.latest(
+                agent.session_id, kind="parameter_option", key="model"
+            )
+            if not options:
+                return
+
+            definition = m.ParameterOptionRecord.model_validate(options[0]).payload
+            value = model.payload.model_dump(mode="json", exclude={"profile_id"})
+            for part in definition.value_path:
+                value = value[part]
+
+            matches = []
+            for choice in definition.choices:
+                if choice.value == value:
+                    matches.append(choice.value_id)
+
+            if len(matches) != 1:
+                raise SettingsError(
+                    f"Cannot restore model profile for session {agent.session_id!r}: "
+                    f"expected one saved selection, got {len(matches)}"
+                )
+
+            self.profiles.require(matches[0], granted)
+            payload = model.payload.model_copy(update={"profile_id": matches[0]})
+            await agent.append([self.make(m.ModelRecord, payload=payload)])
+
+        if choices := self.profiles.choices(granted):
+            await self._update_option(agent, self._model_option(choices))
+
+    def _permission_rules(self) -> Iterator[m.PermissionRule]:
+        for name in self.settings.permissions.allow:
+            yield m.PermissionRule(tool=name, decision="allow")
+
+        for name in self.settings.permissions.deny:
+            yield m.PermissionRule(tool=name, decision="deny")
+
+    def _environment(self, cwd: str, additional: Sequence[str]) -> m.EnvironmentRecord:
+        return self.make(
+            m.EnvironmentRecord,
+            key="client",
+            payload={
+                "state": {
+                    "working_directory": cwd,
+                    "workspace_roots": tuple(additional),
+                    "platform": None,
+                    "os_version": None,
+                    "shell": None,
+                    "temporary_directory": None,
+                },
+                "content": [m.TextPart(text=f"Client working directory: {cwd}")],
+            },
+        )
+
     async def create(
         self,
         owner: str,
         granted: frozenset[str],
         cwd: str,
         *,
-        additional=(),
+        additional: Sequence[str] = (),
+        inherited_model: m.ModelRecord | None = None,
     ) -> Agent:
-        profile = self.profiles.default(granted)
         choices = self.profiles.choices(granted)
+        provider_ids = await self.providers.choices(owner)
+        values: list[m.HistoryRecord]
+
+        if inherited_model is None:
+            profile = self.profiles.default(granted)
+            provider = next(iter(provider_ids), None)
+            values = self.profile_to_records(profile, provider=provider)
+        else:
+            values = [self.make(m.ModelRecord, payload=inherited_model.payload)]
+
+        if provider_option := self._provider_option(provider_ids):
+            values.append(provider_option)
+
+        if choices:
+            values.append(self._model_option(choices))
 
         async with self.lock:
             await self._vacancy()
             sid = uuid4().hex
-            agent = self._agent(sid)
-            values = self.profile_to_records(profile)
+            agent = self._agent(sid, owner)
 
             permissions = self.settings.permissions
-            modes = {
-                "bypassPermissions": "bypass_permissions",
-                "acceptEdits": "accept_edits",
-                "dontAsk": "dont_ask",
-            }
-            mode = modes.get(permissions.default_mode, permissions.default_mode)
-            if mode == "bypass_permissions" and not permissions.allow_bypass:
-                mode = "default"
             values += [
                 self.make(
                     m.PermissionStateRecord,
                     payload={
-                        "mode": mode,
-                        "rules": [
-                            *[
-                                m.PermissionRule(tool=name, decision="allow")
-                                for name in permissions.allow
-                            ],
-                            *[
-                                m.PermissionRule(tool=name, decision="deny")
-                                for name in permissions.deny
-                            ],
-                        ],
-                    },
-                ),
-                self.make(
-                    m.EnvironmentRecord,
-                    key="client",
-                    payload={
-                        "state": {
-                            "working_directory": cwd,
-                            "workspace_roots": list(additional),
-                            "platform": None,
-                            "os_version": None,
-                            "shell": None,
-                            "temporary_directory": None,
-                        },
-                        "content": [
-                            m.TextPart(text=f"Client working directory: {cwd}")
-                        ],
+                        "mode": permissions.mode,
+                        "rules": tuple(self._permission_rules()),
                     },
                 ),
                 self.make(
                     m.ParameterOptionRecord,
-                    key="model",
+                    key="mode",
                     payload={
-                        "name": "Model",
-                        "source_kinds": ["model"],
-                        "source_key": "model",
-                        "value_path": [],
-                        "choices": choices,
+                        "name": "Tool permissions",
+                        "source_kinds": ["permission_state"],
+                        "source_key": None,
+                        "value_path": ["mode"],
+                        "choices": tuple(permissions.choices()),
                     },
                 ),
+                self._environment(cwd, additional),
                 self.make(
                     m.CommandAddedRecord,
                     key="compact",
@@ -361,11 +479,13 @@ class SessionHub:
 
             return agent
 
-    def _agent(self, sid: str) -> Agent:
+    def _agent(self, sid: str, owner: str) -> Agent:
+        inference = self.llm.for_user(owner, self.providers)
+
         return Agent(
             sid,
             self.store,
-            self.llm,
+            inference,
             self.tools,
             version=self.version,
             max_steps=self.settings.limits.max_turns,
@@ -375,20 +495,86 @@ class SessionHub:
     async def get(self, sid: str, owner: str, granted: frozenset[str]) -> Agent:
         await self.store.session(sid, owner)
         selected = await self.store.latest(sid, kind="model")
-        if not selected:
-            raise PermissionError("Session model is not permitted for this user")
-
         model = m.ModelRecord.model_validate(selected[0])
-        self.profiles.require(model.payload.provider, granted)
+        if model.payload.profile_id is not None:
+            self.profiles.require(model.payload.profile_id, granted)
 
         async with self.lock:
-            if sid not in self.agents:
-                await self._vacancy()
-                async with self._claim(sid):
-                    self.agents[sid] = self._agent(sid)
-                    self.owners[sid] = owner
+            await self.store.session(sid, owner)
+            if agent := self.agents.get(sid):
+                return agent
 
-            return self.agents[sid]
+            await self._vacancy()
+            async with self._claim(sid):
+                self.agents[sid] = self._agent(sid, owner)
+                self.owners[sid] = owner
+
+            agent = self.agents[sid]
+
+        await self._restore_model_profile(agent, granted)
+        await self.refresh_provider_options(agent, owner)
+
+        return agent
+
+    async def delete(self, sid: str, owner: str) -> None:
+        """Останавливает общий исполнитель и сохраняет запрет дальнейшего открытия."""
+        async with self.lock:
+            visible = await self.store.rows(Query.SESSION_GET, sid, owner)
+            if not visible:
+                return
+
+            agent = self.agents.get(sid)
+            if agent is None:
+                async with self._claim(sid):
+                    await self.store.append(sid, [self.make(m.SessionDeletedRecord)])
+
+                return
+
+            await agent.close()
+            await self.store.append(sid, [self.make(m.SessionDeletedRecord)])
+            self.agents.pop(sid)
+            self.owners.pop(sid, None)
+            try:
+                await self.tools.release_session(sid)
+
+            finally:
+                if self.owner_connection is not None:
+                    await _rows(self.owner_connection, Query.OWNER_UNLOCK, (sid,))
+
+    async def fork(
+        self,
+        sid: str,
+        owner: str,
+        granted: frozenset[str],
+        cwd: str,
+        additional: Sequence[str],
+    ) -> Agent:
+        """Создаёт независимую сессию из завершённой истории без запуска сохранённых действий."""
+        source = await self.get(sid, owner, granted)
+        async with self.lock, source.lock:
+            if not source.idle.is_set():
+                raise ValueError(f"Cannot fork running session {sid!r}")
+
+            if source.background:
+                raise ValueError(f"Cannot fork session {sid!r} with background work")
+
+            await self._vacancy(protected=sid)
+            through_seq = await self.store.head(sid)
+            target_id = uuid4().hex
+            marker = self.make(
+                m.SessionForkedRecord,
+                payload={"source_session_id": sid, "through_seq": through_seq},
+            )
+            async with self._claim(target_id):
+                target = self._agent(target_id, owner)
+                environment = self._environment(cwd, additional)
+                await self.store.fork_session(
+                    sid, target_id, owner, cwd, marker, [environment]
+                )
+                self.agents[target_id] = target
+                self.owners[target_id] = owner
+
+            return target
 
     async def launch_subagent(self, parent: Agent, reply, call):
         prompt = call.arguments["prompt"]
@@ -403,7 +589,7 @@ class SessionHub:
             (await self.store.latest(parent.session_id, kind="model"))[0]
         )
         child = await self.create(
-            owner, frozenset({selected.payload.provider}), info["cwd"]
+            owner, frozenset(), info["cwd"], inherited_model=selected
         )
         self.tools.clients[child.session_id] = self.tools.clients.get(
             parent.session_id, {}
@@ -591,6 +777,20 @@ class AcpOperations:
         if await self.hub.store.pending_inputs(agent.session_id):
             agent.wake()
 
+    @asynccontextmanager
+    async def created_session(
+        self, agent: Agent, params: dict, protocol: SessionProtocol
+    ) -> AsyncGenerator[None, None]:
+        """Неудачное открытие нового чата освобождает ресурсы и закрывает созданную сессию."""
+        async with AsyncExitStack() as opening:
+            opening.push_async_callback(self.hub.delete, agent.session_id, self.owner)
+            if not params.get("mcpServers"):
+                await self.hub.tools.refresh(agent)
+
+            await self.open(agent, params, protocol)
+            yield
+            opening.pop_all()
+
     async def _connect(
         self, agent: Agent, params: dict, protocol: SessionProtocol
     ) -> None:
@@ -626,43 +826,90 @@ class AcpOperations:
 
             raise RequestError(-32602, f"Unknown MCP connection {connection_id!r}")
 
+    async def list_providers(self, query: Query) -> dict:
+        rows = await self.hub.store.rows(query, self.owner)
+
+        return rows[0]["response"]
+
+    async def set_provider(
+        self,
+        provider_id: str,
+        api_type: str,
+        base_url: str,
+        headers: Mapping[str, str] | None,
+    ) -> None:
+        registry = self.hub.providers
+        if api_type != "openai":
+            raise ValueError(
+                f"Provider {provider_id!r} supports API 'openai', got {api_type!r}"
+            )
+
+        request_headers = headers
+        if request_headers is None:
+            request_headers = {}
+
+        await registry.set(
+            self.owner,
+            provider_id,
+            base_url,
+            request_headers,
+        )
+
+        for session_id, agent in tuple(self.hub.agents.items()):
+            if self.hub.owners[session_id] != self.owner:
+                continue
+
+            await self.hub.refresh_provider_options(agent, self.owner)
+
+    async def disable_provider(self, provider_id: str) -> None:
+        registry = self.hub.providers
+        await registry.disable(self.owner, provider_id)
+
     async def set_option(self, agent: Agent, key: str, selected: str) -> None:
+        expected_seq = await self.hub.store.head(agent.session_id)
         options = await self.hub.store.latest(
             agent.session_id,
             key=key,
             kind=("parameter_option", "parameter_option_removed"),
         )
-        if not options or options[0].operation == "remove":
+        if not options:
             raise ValueError("Unknown parameter")
+
+        if options[0].operation == "remove":
+            raise ValueError("Unknown parameter")
+
         definition = m.ParameterOptionRecord.model_validate(options[0]).payload
-        choice = next(
-            (item for item in definition.choices if item.value_id == selected), None
-        )
-        if choice is None:
-            raise ValueError("Unknown choice")
+        choice = definition.choose(selected)
         if key == "model":
             profile = self.hub.profiles.require(selected, self.granted)
             previous = await self.hub.store.latest(agent.session_id)
-            values = self.hub.profile_to_records(profile, previous=previous)
+            selected_model = await self.hub.store.latest(agent.session_id, kind="model")
+            model = m.ModelRecord.model_validate(selected_model[0])
+            values = self.hub.profile_to_records(
+                profile, provider=model.payload.provider, previous=previous
+            )
         else:
-            current = await self.hub.store.latest(
+            current = await self.hub.store.rows(
+                Query.PARAMETER_SOURCE,
                 agent.session_id,
-                key=definition.source_key,
-                kind=definition.source_kinds[0],
+                definition.source_kinds[0],
+                definition.source_key,
             )
             if not current:
                 raise ValueError("No source for this parameter")
-            value = current[0].model_dump(mode="json")
-            payload = value["payload"]
+            source = m.HISTORY_RECORD_ADAPTER.validate_python(current[0]["record"])
+            updated = source.payload.model_dump(mode="python")
+            payload = updated
             for part in definition.value_path[:-1]:
                 payload = payload[part]
             if definition.value_path:
                 payload[definition.value_path[-1]] = choice.value
             else:
-                value["payload"] = choice.value
-            value.update(record_id=uuid4().hex, session_id=None, seq=None)
-            values = [m.HISTORY_RECORD_ADAPTER.validate_python(value)]
-        await agent.append(values)
+                updated = choice.value
+
+            values = [self.hub.make(type(source), key=source.key, payload=updated)]
+
+        await agent.append(values, expected_seq=expected_seq)
         await agent.options_changed()
 
     async def command(self, agent: Agent, text: str) -> str:
@@ -710,16 +957,27 @@ class AcpOperations:
 
     async def unsubscribe(self, sid: str) -> None:
         subscriber = self.subscriptions.pop(sid, None)
-        if subscriber:
-            self.hub.agents[sid].subscribers.discard(subscriber)
+        if subscriber is not None:
+            agent = self.hub.agents.get(sid)
+            if agent is not None:
+                agent.subscribers.discard(subscriber)
+
             await subscriber.close()
         # Closing one observer never cancels execution shared with the other clients.
         action = self.actions.pop(sid, None)
         if self.hub.tools.ask.get(sid) == action:
-            self.hub.tools.ask.pop(sid)
+            self.hub.tools.ask.pop(sid, None)
 
     def busy(self) -> bool:
-        return any(not self.hub.agents[sid].idle.is_set() for sid in self.subscriptions)
+        for sid in self.subscriptions:
+            agent = self.hub.agents.get(sid)
+            if agent is None:
+                continue
+
+            if not agent.idle.is_set():
+                return True
+
+        return False
 
     async def close_all(self) -> None:
         for sid in tuple(self.subscriptions):

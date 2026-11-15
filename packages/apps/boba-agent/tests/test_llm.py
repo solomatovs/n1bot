@@ -8,26 +8,33 @@ from collections.abc import AsyncIterator
 from uuid import uuid4
 
 import pytest
-from conftest import InferenceServer
+from agent_stand import AgentSystem, InferenceServer
 from starlette.responses import JSONResponse, Response, StreamingResponse
 
 from boba.agent import models as m
 from boba.agent.history import HistoryStore
-from boba.agent.llm import Generation, OpenAiTransport
+from boba.agent.llm import Generation, UserInference
 from boba.agent.runtime import record
 from boba.llm.chat import LlmError, LlmServiceError
 
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]
 
 
+@pytest.fixture
+def transport(system: AgentSystem) -> UserInference:
+    return system.llm.for_user(system.owner, system.providers)
+
+
 async def test_sql_body_is_unchanged_and_text_arrives_before_response_finishes(  # noqa: PLR0915
-    history: HistoryStore, inference: InferenceServer, agent_timeout: float
+    transport: UserInference,
+    history: HistoryStore,
+    inference: InferenceServer,
+    agent_timeout: float,
 ) -> None:
     release = asyncio.Event()
     emitted = asyncio.Event()
     deltas = []
     output = Generation()
-    transport = OpenAiTransport(inference.profiles)
     session_id = "http-stream-" + uuid4().hex
     request_id = uuid4().hex
     user = record(
@@ -132,7 +139,6 @@ async def test_sql_body_is_unchanged_and_text_arrives_before_response_finishes( 
         assert (await history.openai(session_id, request_id)).request == draft.request
 
     finally:
-        await transport.close()
         async with history.pool.connection() as conn:
             await conn.execute(
                 "delete from boba.records where session_id = %s", (session_id,)
@@ -140,6 +146,7 @@ async def test_sql_body_is_unchanged_and_text_arrives_before_response_finishes( 
 
 
 async def test_non_stream_response_keeps_both_calls_and_refusal(
+    transport: UserInference,
     inference: InferenceServer,
 ) -> None:
     inference.response = JSONResponse(
@@ -165,26 +172,19 @@ async def test_non_stream_response_keeps_both_calls_and_refusal(
         }
     )
     output = Generation()
-    transport = OpenAiTransport(inference.profiles)
     deltas = []
 
     async def emit(position: int, kind: str, text: str) -> None:
         deltas.append((position, kind, text))
 
-    try:
-        await transport.generate(
-            "test", {"model": "test", "messages": []}, output, emit
-        )
-        assert output.content() == (
-            m.TextPart(text="Refused"),
-            m.ToolCallPart(call_id="one", name="first", arguments={}),
-            m.ToolCallPart(call_id="two", name="second", arguments={"x": 2}),
-        )
-        assert output.usage is None
-        assert deltas == [(1, "text", "Refused")]
-
-    finally:
-        await transport.close()
+    await transport.generate("test", {"model": "test", "messages": []}, output, emit)
+    assert output.content() == (
+        m.TextPart(text="Refused"),
+        m.ToolCallPart(call_id="one", name="first", arguments={}),
+        m.ToolCallPart(call_id="two", name="second", arguments={"x": 2}),
+    )
+    assert output.usage is None
+    assert deltas == [(1, "text", "Refused")]
 
 
 @pytest.mark.parametrize(
@@ -197,57 +197,49 @@ async def test_non_stream_response_keeps_both_calls_and_refusal(
     ],
 )
 async def test_broken_response_preserves_only_received_text(
-    inference: InferenceServer, tail: bytes
+    transport: UserInference, inference: InferenceServer, tail: bytes
 ) -> None:
     body = b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n' + tail
     inference.response = Response(body, media_type="text/event-stream")
     output = Generation()
-    transport = OpenAiTransport(inference.profiles)
     deltas = []
 
     async def emit(position: int, kind: str, text: str) -> None:
         deltas.append((position, kind, text))
 
-    try:
-        with pytest.raises(LlmError):
-            await transport.generate(
-                "test", {"model": "test", "stream": True}, output, emit
-            )
+    with pytest.raises(LlmError):
+        await transport.generate(
+            "test", {"model": "test", "stream": True}, output, emit
+        )
 
-        assert output.content(partial=True) == (m.TextPart(text="partial"),)
-        assert deltas == [(1, "text", "partial")]
-        assert len(inference.requests) == 1
-
-    finally:
-        await transport.close()
+    assert output.content(partial=True) == (m.TextPart(text="partial"),)
+    assert deltas == [(1, "text", "partial")]
+    assert len(inference.requests) == 1
 
 
 async def test_status_is_preserved_and_retry_belongs_to_agent(
+    transport: UserInference,
     inference: InferenceServer,
 ) -> None:
     inference.response = Response("unavailable", status_code=503)
     output = Generation()
-    transport = OpenAiTransport(inference.profiles)
 
     async def emit(position: int, kind: str, text: str) -> None:
         pytest.fail("An HTTP error must not emit text")
 
-    try:
-        with pytest.raises(LlmServiceError) as caught:
-            await transport.generate(
-                "test", {"model": "test", "stream": True}, output, emit
-            )
+    with pytest.raises(LlmServiceError) as caught:
+        await transport.generate(
+            "test", {"model": "test", "stream": True}, output, emit
+        )
 
-        assert caught.value.status == 503
-        assert transport.retry_delay("test", caught.value, 1) == 0
-        assert transport.retry_delay("test", caught.value, 3) is None
-        assert len(inference.requests) == 1
-
-    finally:
-        await transport.close()
+    assert caught.value.status == 503
+    assert transport.retry_delay(output, caught.value, 1) == 0
+    assert transport.retry_delay(output, caught.value, 3) is None
+    assert len(inference.requests) == 1
 
 
 async def test_cancellation_closes_http_while_callback_is_waiting(
+    transport: UserInference,
     inference: InferenceServer,
     agent_timeout: float,
 ) -> None:
@@ -255,7 +247,6 @@ async def test_cancellation_closes_http_while_callback_is_waiting(
     disconnected = asyncio.Event()
     blocked = asyncio.Event()
     output = Generation()
-    transport = OpenAiTransport(inference.profiles)
 
     async def body() -> AsyncIterator[bytes]:
         try:
@@ -290,10 +281,10 @@ async def test_cancellation_closes_http_while_callback_is_waiting(
         blocked.set()
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
-        await transport.close()
 
 
 async def test_output_limit_preserves_text_without_incomplete_tool_call(
+    transport: UserInference,
     inference: InferenceServer,
 ) -> None:
     inference.response = Response(
@@ -305,19 +296,12 @@ async def test_output_limit_preserves_text_without_incomplete_tool_call(
         media_type="text/event-stream",
     )
     output = Generation()
-    transport = OpenAiTransport(inference.profiles)
     deltas = []
 
     async def emit(position: int, kind: str, text: str) -> None:
         deltas.append((position, kind, text))
 
-    try:
-        await transport.generate(
-            "test", {"model": "test", "stream": True}, output, emit
-        )
-        assert output.finish_reason == "length"
-        assert output.content(partial=True) == (m.TextPart(text="partial"),)
-        assert deltas == [(1, "text", "partial")]
-
-    finally:
-        await transport.close()
+    await transport.generate("test", {"model": "test", "stream": True}, output, emit)
+    assert output.finish_reason == "length"
+    assert output.content(partial=True) == (m.TextPart(text="partial"),)
+    assert deltas == [(1, "text", "partial")]

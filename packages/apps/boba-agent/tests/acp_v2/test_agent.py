@@ -658,7 +658,7 @@ async def test_profile_catalog_controls_choices_switching_and_resume(
     resumed = await system.client(granted=granted)
     await resumed.resume(sid)
     state = await system.history.latest(sid, kind="model")
-    assert m.ModelRecord.model_validate(state[0]).payload.provider == "alternative"
+    assert m.ModelRecord.model_validate(state[0]).payload.provider == "test"
     assert len(system.inference.requests) == 2
 
 
