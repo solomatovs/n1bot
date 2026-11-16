@@ -30,6 +30,7 @@ class Query(StrEnum):
     PENDING_MESSAGES = "pending_messages"
     ADVANCE = "advance"
     TOOL_CALLS = "tool_calls"
+    TOOL_TASKS = "tool_tasks"
     HISTORY_INTEGRITY = "history_integrity"
     OPENAI = "openai"
     ACP_HISTORY = "acp/v2/history"

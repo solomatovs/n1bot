@@ -14,7 +14,7 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 from boba.agent import models as m
 from boba.agent.history import HistoryStore
 from boba.agent.llm import Generation, UserInference
-from boba.agent.runtime import RecordFactory
+from boba.agent.records import RecordFactory
 from boba.llm.chat import LlmError, LlmServiceError
 
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]

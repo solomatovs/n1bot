@@ -52,7 +52,7 @@ async def test_latest_migration_installs_all_tables_on_empty_schema(
 @pytest.mark.anyio
 @pytest.mark.integration
 async def test_failed_reference_rolls_back_and_retry_is_idempotent(history):
-    from boba.agent.runtime import RecordFactory
+    from boba.agent.records import RecordFactory
 
     sid = "write-test-" + uuid4().hex
     value = RecordFactory("test").make(
@@ -98,7 +98,7 @@ async def test_failed_reference_rolls_back_and_retry_is_idempotent(history):
 @pytest.mark.anyio
 @pytest.mark.integration
 async def test_concurrent_batches_commit_without_duplicate_or_interleaved_seq(history):
-    from boba.agent.runtime import RecordFactory
+    from boba.agent.records import RecordFactory
 
     sid = "parallel-write-" + uuid4().hex
     batches = tuple(

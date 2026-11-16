@@ -25,7 +25,8 @@ from boba.agent import models as m
 from boba.agent.history import HistoryStore, _rows
 from boba.agent.llm import Providers
 from boba.agent.queries import Query
-from boba.agent.runtime import Agent, RecordFactory, SessionProtocol, Subscription
+from boba.agent.records import RecordFactory
+from boba.agent.runtime import Agent, SessionProtocol, Subscription
 from boba.agent.settings import (
     AgentProfile,
     ModelSettings,

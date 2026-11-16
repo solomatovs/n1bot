@@ -193,8 +193,14 @@ class TaskService:
 
         return state
 
-    async def status(self, owner_id: str, task_id: str) -> TaskState:
-        rows = await self._rows(TaskQuery.STATUS, (owner_id, task_id))
+    async def status(
+        self,
+        owner_id: str,
+        task_id: str,
+        *,
+        connection: psycopg.AsyncConnection[Any] | None = None,
+    ) -> TaskState:
+        rows = await self._rows(TaskQuery.STATUS, (owner_id, task_id), connection)
         if not rows:
             raise TaskServiceError(
                 TaskCode.NOT_FOUND, f"Task {task_id}: not found for owner {owner_id}"
