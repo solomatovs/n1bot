@@ -14,6 +14,7 @@ from collections.abc import (
     Set,
 )
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
+from functools import partial
 from uuid import uuid4
 
 import mcp.types as mt
@@ -22,6 +23,7 @@ from acp.connection import Connection
 from pydantic import ValidationError
 
 from boba.agent import models as m
+from boba.agent.execution import SessionToolExecutor
 from boba.agent.history import HistoryStore, _rows
 from boba.agent.llm import Providers
 from boba.agent.queries import Query
@@ -34,9 +36,13 @@ from boba.agent.settings import (
     SettingsError,
     SettingsLayer,
 )
+from boba.agent.tasks import AgentTaskKind, AgentTaskServices, ToolTaskOutput
 from boba.agent.tools import McpNegotiationError, McpPeer, ToolRunner
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.signin import ProfileCatalog
+from boba.tasks.models import WorkerIdentity
+from boba.tasks.service import TaskService
+from boba.tasks.worker import TaskNotifications, TaskWorker
 
 logger = logging.getLogger(__name__)
 
@@ -157,10 +163,73 @@ class SessionHub:
         self.lock = asyncio.Lock()
         self.owner_connection = None
         self.owner_watch = None
+        self.task_service = TaskService(store.pool)
+        self.task_notifications: TaskNotifications | None = None
+        self.task_workers: dict[str, TaskWorker] = {}
+        self.task_loops: dict[str, asyncio.Task[None]] = {}
+        self.maintenance = TaskWorker(
+            self.task_service,
+            WorkerIdentity(uuid4().hex, frozenset(), all_owners=True),
+            settings.tasks,
+        )
+        self.maintenance_loop: asyncio.Task[None] | None = None
 
     async def start(self, postgres) -> None:
         self.owner_connection = await AsyncPostgresPool.dedicated(postgres)
         self.owner_watch = asyncio.create_task(self._watch_owner())
+        self.task_notifications = TaskNotifications(
+            partial(AsyncPostgresPool.dedicated, postgres)
+        )
+        await self.task_notifications.start()
+
+    async def _start_execution(self, agent: Agent) -> None:
+        if agent.session_id in self.task_loops:
+            return
+
+        if self.maintenance_loop is None:
+            self.maintenance_loop = asyncio.create_task(
+                self.maintenance.run_maintenance(), name="task-maintenance"
+            )
+
+        await agent.start()
+        worker = self.task_workers[agent.session_id]
+        self.task_loops[agent.session_id] = asyncio.create_task(
+            self._run_executor(agent, worker), name=f"executor:{agent.session_id}"
+        )
+        await worker.started.wait()
+
+    async def _run_executor(self, agent: Agent, worker: TaskWorker) -> None:
+        try:
+            await worker.run(maintain=False)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            agent.last_error = exc
+            agent.paused = True
+            agent.idle.set()
+            await agent.append(
+                [
+                    agent.make(
+                        m.NoticeRecord,
+                        payload={
+                            "level": "error",
+                            "content": [m.TextPart(text=f"Task worker failed: {exc}")],
+                        },
+                    )
+                ]
+            )
+            raise
+
+    async def _stop_execution(self, sid: str, *, immediate: bool = False) -> None:
+        loop = self.task_loops.pop(sid, None)
+        worker = self.task_workers.pop(sid, None)
+        if loop is None:
+            return
+
+        if worker is not None:
+            await worker.stop(immediate=immediate)
+
+        await loop
 
     async def _watch_owner(self) -> None:
         connection = self.owner_connection
@@ -176,6 +245,7 @@ class SessionHub:
             logger.exception("Execution ownership connection lost")
             for agent in tuple(self.agents.values()):
                 await agent.close()
+                await self._stop_execution(agent.session_id, immediate=True)
 
     @asynccontextmanager
     async def _claim(self, sid: str) -> AsyncGenerator[None, None]:
@@ -191,6 +261,9 @@ class SessionHub:
         finally:
             registered = sid in self.agents
             connection = self.owner_connection
+            if not registered:
+                self.task_workers.pop(sid, None)
+
             if not registered and connection is not None:
                 await _rows(connection, Query.OWNER_UNLOCK, (sid,))
 
@@ -201,8 +274,9 @@ class SessionHub:
             if sid == protected:
                 continue
 
-            if agent.idle.is_set() and not agent.subscribers and not agent.background:
+            if agent.idle.is_set() and not agent.subscribers:
                 await agent.close()
+                await self._stop_execution(sid)
                 if self.owner_connection is not None:
                     await _rows(self.owner_connection, Query.OWNER_UNLOCK, (sid,))
                 del self.agents[sid]
@@ -481,20 +555,49 @@ class SessionHub:
                 self.agents[sid] = agent
                 self.owners[sid] = owner
 
+            await self._start_execution(agent)
             return agent
 
     def _agent(self, sid: str, owner: str) -> Agent:
         inference = self.llm.for_user(owner, self.providers)
 
-        return Agent(
+        if self.task_notifications is None:
+            raise RuntimeError("Start SessionHub before opening sessions")
+
+        services = AgentTaskServices(
+            self.task_service,
+            self.task_notifications,
+            owner,
+            self.settings.mcp.call_timeout_sec,
+            self.settings.tasks.poll_sec,
+        )
+        agent = Agent(
             sid,
             self.store,
             inference,
             self.tools,
             version=self.version,
+            task_services=services,
             max_steps=self.settings.limits.max_turns,
             subscriber_buffer=self.settings.sessions.subscriber_buffer,
         )
+        if agent.tasks is None:
+            raise RuntimeError("Session task coordinator was not constructed")
+
+        identity = WorkerIdentity(
+            uuid4().hex,
+            frozenset({AgentTaskKind.TOOL}),
+            routes=frozenset({agent.tasks.route_key}),
+            owners=frozenset({owner}),
+        )
+        self.task_workers[sid] = TaskWorker(
+            self.task_service,
+            identity,
+            self.settings.tasks,
+            SessionToolExecutor(agent),
+            self.task_notifications,
+        )
+        return agent
 
     async def get(self, sid: str, owner: str, granted: frozenset[str]) -> Agent:
         await self.store.session(sid, owner)
@@ -517,6 +620,7 @@ class SessionHub:
 
         await self._restore_model_profile(agent, granted)
         await self.refresh_provider_options(agent, owner)
+        await self._start_execution(agent)
 
         return agent
 
@@ -535,6 +639,7 @@ class SessionHub:
                 return
 
             await agent.close()
+            await self._stop_execution(sid, immediate=True)
             await self.store.append(sid, [self.make(m.SessionDeletedRecord)])
             self.agents.pop(sid)
             self.owners.pop(sid, None)
@@ -559,9 +664,6 @@ class SessionHub:
             if not source.idle.is_set():
                 raise ValueError(f"Cannot fork running session {sid!r}")
 
-            if source.background:
-                raise ValueError(f"Cannot fork session {sid!r} with background work")
-
             await self._vacancy(protected=sid)
             through_seq = await self.store.head(sid)
             target_id = uuid4().hex
@@ -578,15 +680,16 @@ class SessionHub:
                 self.agents[target_id] = target
                 self.owners[target_id] = owner
 
+            await self._start_execution(target)
             return target
 
     async def launch_subagent(self, parent: Agent, reply, call):
         prompt = call.payload.arguments["prompt"]
         if not isinstance(prompt, str) or not prompt:
             raise ValueError("Subagent prompt must be nonempty text")
-        background = call.payload.arguments.get("background", False)
-        if not isinstance(background, bool):
-            raise ValueError("background must be boolean")
+        task_id = call.payload.task_id
+        if task_id is None:
+            raise ValueError("Subagent execution requires a task_id")
         owner = self.owners[parent.session_id]
         info = await self.store.session(parent.session_id, owner)
         selected = m.ModelRecord.model_validate(
@@ -601,94 +704,94 @@ class SessionHub:
         if parent.session_id in self.tools.ask:
             self.tools.ask[child.session_id] = self.tools.ask[parent.session_id]
 
-        async def execute(task_id):
-            inherited = await self.store.rows(
-                Query.COMPACT_STATE, parent.session_id, reply.seq, None
-            )
-            values = []
-            for item in inherited:
-                raw = item["record"]
-                if raw["category"] in {"setting", "prompt"}:
-                    raw.update(
-                        session_id=None,
-                        seq=None,
-                        record_id=uuid4().hex,
-                        copied_from_id=None,
-                        operation_id=uuid4().hex,
-                        operation_position=0,
-                        parent_operation_id=None,
-                    )
-                    if raw["category"] == "prompt":
-                        existing = await self.store.latest(
-                            child.session_id, category="prompt", key=raw["key"]
-                        )
-                        if existing and existing[0].operation == "set":
-                            values.append(
-                                child.make(m.SystemPromptRemovedRecord, key=raw["key"])
-                            )
-                    values.append(m.HISTORY_RECORD_ADAPTER.validate_python(raw))
-            permissions = await self.store.latest(
-                parent.session_id, kind="permission_state"
-            )
-            if permissions:
-                values.append(
-                    child.make(m.PermissionStateRecord, payload=permissions[0].payload)
-                )
-            values.append(
-                child.make(
-                    m.SubagentSessionRecord,
-                    payload={
-                        "parent_session_id": parent.session_id,
-                        "parent_task_id": task_id,
-                        "context_through_seq": reply.seq,
-                    },
-                )
-            )
-            await child.append(child.records.group(values, uuid4().hex))
-            await self.tools.refresh(child)
-            parts = []
-            agent_key = call.payload.arguments.get("agent_key")
-            if agent_key is not None:
-                agent_type = await self.store.latest(
-                    parent.session_id, category="context", key=agent_key
-                )
-                if not agent_type or not isinstance(agent_type[0], m.AgentAddedRecord):
-                    raise ValueError("Unknown subagent definition")
-                parts.extend(agent_type[0].payload.content)
-            parts.append(m.TextPart(text=prompt))
-            await child.submit(parts)
-            try:
-                await child.idle.wait()
-                if child.last_error is not None:
-                    raise RuntimeError(
-                        "Subagent execution failed"
-                    ) from child.last_error
-                last = await self.store.latest(
-                    child.session_id, kind="assistant_message"
-                )
-                return tuple(
-                    part
-                    for part in m.AssistantMessageRecord.model_validate(
-                        last[0]
-                    ).payload.content
-                    if isinstance(part, m.TextPart)
-                )
-            except asyncio.CancelledError:
-                await child.cancel()
-                raise
-
-        return await parent.task(
-            reply,
-            call,
-            execute,
-            background=background,
-            child_session_id=child.session_id,
+        inherited = await self.store.rows(
+            Query.COMPACT_STATE, parent.session_id, reply.seq, None
         )
+        values = []
+        for item in inherited:
+            raw = item["record"]
+            if raw["category"] in {"setting", "prompt"}:
+                raw.update(
+                    session_id=None,
+                    seq=None,
+                    record_id=uuid4().hex,
+                    copied_from_id=None,
+                    operation_id=uuid4().hex,
+                    operation_position=0,
+                    parent_operation_id=None,
+                )
+                if raw["category"] == "prompt":
+                    existing = await self.store.latest(
+                        child.session_id, category="prompt", key=raw["key"]
+                    )
+                    if existing and existing[0].operation == "set":
+                        values.append(
+                            child.make(m.SystemPromptRemovedRecord, key=raw["key"])
+                        )
+                values.append(m.HISTORY_RECORD_ADAPTER.validate_python(raw))
+        permissions = await self.store.latest(
+            parent.session_id, kind="permission_state"
+        )
+        if permissions:
+            values.append(
+                child.make(m.PermissionStateRecord, payload=permissions[0].payload)
+            )
+        values.append(
+            child.make(
+                m.SubagentSessionRecord,
+                payload={
+                    "parent_session_id": parent.session_id,
+                    "parent_task_id": task_id,
+                    "context_through_seq": reply.seq,
+                },
+            )
+        )
+        await child.append(child.records.group(values, uuid4().hex))
+        await self.tools.refresh(child)
+        parts = []
+        agent_key = call.payload.arguments.get("agent_key")
+        if agent_key is not None:
+            agent_type = await self.store.latest(
+                parent.session_id, category="context", key=agent_key
+            )
+            if not agent_type or not isinstance(agent_type[0], m.AgentAddedRecord):
+                raise ValueError("Unknown subagent definition")
+            parts.extend(agent_type[0].payload.content)
+        parts.append(m.TextPart(text=prompt))
+        await child.submit(parts)
+        try:
+            await child.idle.wait()
+            if child.last_error is not None:
+                raise RuntimeError("Subagent execution failed") from child.last_error
+            last = await self.store.latest(child.session_id, kind="assistant_message")
+            content = []
+            for part in m.AssistantMessageRecord.model_validate(
+                last[0]
+            ).payload.content:
+                if isinstance(part, (m.TextPart, m.ImagePart, m.ResourcePart)):
+                    content.append(part)
+
+            return ToolTaskOutput(
+                content=tuple(content), child_session_id=child.session_id
+            )
+        except asyncio.CancelledError:
+            await child.cancel()
+            raise
 
     async def close(self) -> None:
         for agent in tuple(self.agents.values()):
             await agent.close()
+        for sid in tuple(self.task_loops):
+            await self._stop_execution(sid)
+
         self.agents.clear()
+        if self.maintenance_loop is not None:
+            await self.maintenance.stop()
+            await self.maintenance_loop
+
+        if self.task_notifications is not None:
+            await self.task_notifications.close()
+
         if self.owner_watch is not None:
             self.owner_watch.cancel()
             with suppress(asyncio.CancelledError):

@@ -160,6 +160,10 @@ class RecordFactory:
     ) -> tuple[m.HistoryRecord, ...]:
         records: list[m.HistoryRecord] = []
         for call in output.calls():
+            task_id = uuid4().hex
+            if call.name == "task_status":
+                task_id = None
+
             invocation = self.make(
                 m.ToolCallRecord,
                 key=call.id,
@@ -167,6 +171,7 @@ class RecordFactory:
                     "assistant_record_id": output_id,
                     "name": call.name,
                     "arguments": dict(call.arguments),
+                    "task_id": task_id,
                 },
             )
             records.append(invocation)

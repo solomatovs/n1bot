@@ -198,6 +198,7 @@ class TaskWorker:
         self._wake = asyncio.Event()
         self._finished = asyncio.Event()
         self._finished.set()
+        self.started = asyncio.Event()
         self._running: set[asyncio.Task[None]] = set()
 
     def _start(self) -> None:
@@ -206,10 +207,15 @@ class TaskWorker:
 
         self._stopping.clear()
         self._finished.clear()
+        self.started.set()
 
-    async def stop(self) -> None:
+    async def stop(self, *, immediate: bool = False) -> None:
         self._stopping.set()
         self._wake.set()
+        if immediate:
+            for action in tuple(self._running):
+                action.cancel()
+
         await self._finished.wait()
 
     async def _pause(self, seconds: float) -> None:
@@ -243,7 +249,7 @@ class TaskWorker:
 
             await self._pause(self.config.maintenance_sec)
 
-    async def run(self) -> None:
+    async def run(self, *, maintain: bool = True) -> None:
         if self.executor is None:
             raise TaskServiceError(
                 TaskCode.CONFLICT, "Task worker requires an executor"
@@ -262,7 +268,8 @@ class TaskWorker:
         try:
             await self._initial_expiry()
             async with asyncio.TaskGroup() as group:
-                group.create_task(self._maintenance(), name="task-maintenance")
+                if maintain:
+                    group.create_task(self._maintenance(), name="task-maintenance")
                 group.create_task(self._claim_loop(), name="task-claims")
 
         finally:
@@ -327,6 +334,10 @@ class TaskWorker:
 
             if lease.state.status.terminal:
                 continue
+
+            if self._stopping.is_set():
+                await self._finish(lease, TaskOutcome(status=TaskStatus.CANCELLED))
+                return
 
             action = asyncio.create_task(
                 self._execute(lease), name=f"task:{lease.state.task_id}"

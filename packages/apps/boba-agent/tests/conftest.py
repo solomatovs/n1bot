@@ -180,3 +180,21 @@ async def demo_records(sql_connection):
             continue
         HISTORY_RECORD_ADAPTER.validate_python(row)
     return rows
+
+
+@pytest.fixture
+async def task_runtime(history, postgres):
+    from functools import partial
+
+    from agent_stand import DirectTaskRuntime
+
+    from boba.tasks.worker import TaskNotifications
+
+    notifications = TaskNotifications(partial(AsyncPostgresPool.dedicated, postgres))
+    await notifications.start()
+    runtime = DirectTaskRuntime(history, notifications)
+    try:
+        yield runtime
+    finally:
+        await runtime.close()
+        await notifications.close()

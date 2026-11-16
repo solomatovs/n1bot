@@ -277,6 +277,9 @@ class AgentSystem:
         await self.hub.close()
         async with self.history.pool.connection() as connection:
             await connection.execute(
+                "delete from boba.tasks where owner_id = any(%s)", (list(self.owners),)
+            )
+            await connection.execute(
                 "delete from boba.providers where owner_id = any(%s)",
                 (list(self.owners),),
             )
@@ -563,3 +566,62 @@ class Llm:
             )
         ):
             await emit(delta.position, delta.kind, delta.text)
+
+
+class DirectTaskRuntime:
+    """Runtime теста без ACP: тот же исполнитель tasks, что запускает SessionHub."""
+
+    def __init__(self, history, notifications):
+        from boba.tasks.service import TaskService
+
+        self.history = history
+        self.notifications = notifications
+        self.service = TaskService(history.pool)
+        self.agents = []
+        self.workers = []
+        self.loops = []
+
+    def create(self, sid, owner, llm, tool):
+        from boba.agent.execution import SessionToolExecutor
+        from boba.agent.runtime import Agent
+        from boba.agent.tasks import AgentTaskKind, AgentTaskServices
+        from boba.tasks.models import WorkerConfig, WorkerIdentity
+        from boba.tasks.worker import TaskWorker
+
+        services = AgentTaskServices(self.service, self.notifications, owner, 30, 0.02)
+        agent = Agent(
+            sid, self.history, llm, tool, version="test", task_services=services
+        )
+        assert agent.tasks is not None
+        identity = WorkerIdentity(
+            uuid4().hex,
+            frozenset({AgentTaskKind.TOOL}),
+            routes=frozenset({agent.tasks.route_key}),
+            owners=frozenset({owner}),
+        )
+        worker = TaskWorker(
+            self.service,
+            identity,
+            WorkerConfig(poll_sec=0.02, shutdown_sec=0.05),
+            SessionToolExecutor(agent),
+            self.notifications,
+        )
+        self.agents.append(agent)
+        self.workers.append(worker)
+        self.loops.append(asyncio.create_task(worker.run()))
+        return agent
+
+    async def close(self):
+        for agent in self.agents:
+            await agent.close()
+        for worker in self.workers:
+            await worker.stop()
+        for loop in self.loops:
+            await loop
+        async with self.history.pool.connection() as connection:
+            for agent in self.agents:
+                assert agent.tasks is not None
+                await connection.execute(
+                    "delete from boba.tasks where route_key = %s",
+                    (agent.tasks.route_key,),
+                )

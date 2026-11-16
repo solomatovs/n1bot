@@ -78,6 +78,7 @@ async def test_two_acp_clients_share_stream_and_replay_from_postgres(  # noqa: P
     hub = SessionHub(
         history, llm, profiles, SettingsLayer(), "test", providers=system.providers
     )
+    await hub.start(system.postgres)
     owner = system.owner
     first, second = (
         AcpAgent(hub, owner, frozenset({"test"}), "test"),

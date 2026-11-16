@@ -24,7 +24,9 @@ from pydantic import ValidationError
 from boba.agent import models as m
 from boba.agent.queries import Query
 from boba.agent.runtime import Agent
+from boba.agent.tasks import ToolTaskInput, ToolTaskOutput
 from boba.llm.chat import LlmError
+from boba.tasks.models import TaskError, TaskExecutionError
 
 logger = logging.getLogger(__name__)
 McpRequest = Callable[[str, dict[str, Any]], Awaitable[Any]]
@@ -52,6 +54,7 @@ class NegotiatedMcp:
 
 @dataclass(frozen=True)
 class McpInvocation:
+    agent: Agent
     reply: m.AssistantMessageRecord
     call: m.ToolCallRecord
 
@@ -76,6 +79,7 @@ class McpPeer:
         self.client_info = mt.Implementation(name="boba", version=agent.version)
         self.client_capabilities = capabilities
         self.invocation: McpInvocation | None = None
+        self.execution_lock = asyncio.Lock()
         self.negotiated: NegotiatedMcp | None = None
         self.connection_id: str | None = None
 
@@ -214,19 +218,15 @@ class McpPeer:
 
     @asynccontextmanager
     async def executing(
-        self, reply: m.AssistantMessageRecord, call: m.ToolCallRecord
+        self, agent: Agent, reply: m.AssistantMessageRecord, call: m.ToolCallRecord
     ) -> AsyncGenerator[None, None]:
-        if self.invocation is not None:
-            raise RuntimeError(
-                f"MCP server {self.server.name} already has an active tool call"
-            )
+        async with self.execution_lock:
+            self.invocation = McpInvocation(agent, reply, call)
+            try:
+                yield
 
-        self.invocation = McpInvocation(reply, call)
-        try:
-            yield
-
-        finally:
-            self.invocation = None
+            finally:
+                self.invocation = None
 
     def _modern_params(self, params: dict[str, Any]) -> dict[str, Any]:
         metadata = params.get("_meta")
@@ -375,9 +375,11 @@ class ToolRunner:
         self.input_rounds = input_rounds
         self.ask: dict[str, Callable] = {}
         self.refresh_lock = asyncio.Lock()
+        self.connections_changed = asyncio.Event()
         self.launch_agent: (
             Callable[
-                [Agent, m.AssistantMessageRecord, m.ToolCallRecord], Awaitable[m.ToolResultRecord]
+                [Agent, m.AssistantMessageRecord, m.ToolCallRecord],
+                Awaitable[ToolTaskOutput],
             ]
             | None
         ) = None
@@ -438,6 +440,7 @@ class ToolRunner:
                     self.clients[agent.session_id] = previous
                     raise
 
+            self.connections_changed.set()
             opening.pop_all()
 
         return tuple(bindings.values())
@@ -479,7 +482,7 @@ class ToolRunner:
                     )
 
                 form = request.params
-                question = peer.agent.make(
+                question = invocation.agent.make(
                     m.ElicitationRequestRecord,
                     payload={
                         "source": invocation.call.payload.name,
@@ -491,7 +494,7 @@ class ToolRunner:
                         "url": getattr(form, "url", None),
                     },
                 )
-                answer = await self.elicit(peer.agent, question)
+                answer = await self.elicit(invocation.agent, question)
                 result = mt.ElicitResult.model_validate(
                     {"action": answer.payload.action, "content": answer.payload.content}
                 )
@@ -624,14 +627,38 @@ class ToolRunner:
             key=added.key,
             payload={"catalog_revision": added.record_id, "tool": definition},
         )
-        records = [added, schema]
+        status = agent.make(
+            m.ToolAddedRecord,
+            key="task_status",
+            payload={
+                "tool": {"description": "Read the current state of a task by task_id."}
+            },
+        )
+        status_schema = agent.make(
+            m.ToolSchemaRecord,
+            key="task_status",
+            payload={
+                "catalog_revision": status.record_id,
+                "tool": {
+                    "description": status.payload.tool.description,
+                    "deferred": False,
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"task_id": {"type": "string"}},
+                        "required": ["task_id"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+        )
+        records = [added, schema, status, status_schema]
         if self.launch_agent is not None:
             child = agent.make(
                 m.ToolAddedRecord,
                 key="agent",
                 payload={
                     "tool": {
-                        "description": "Run a subagent in its own session, optionally in the background."
+                        "description": "Start a subagent task in its own session; inspect progress with task_status."
                     }
                 },
             )
@@ -651,7 +678,6 @@ class ToolRunner:
                                     "properties": {
                                         "prompt": {"type": "string"},
                                         "agent_key": {"type": "string"},
-                                        "background": {"type": "boolean"},
                                     },
                                     "required": ["prompt"],
                                     "additionalProperties": False,
@@ -727,7 +753,7 @@ class ToolRunner:
 
     async def call(
         self, agent: Agent, reply, call: m.ToolCallRecord
-    ) -> tuple[m.ToolResultPart, ...] | m.ToolResultRecord:
+    ) -> tuple[m.ToolResultPart, ...] | ToolTaskOutput:
         if not await self.allowed(agent, reply, call):
             raise PermissionError("Tool execution denied")
         if call.payload.name == "tool_search":
@@ -745,7 +771,7 @@ class ToolRunner:
         params = {"name": name, "arguments": call.payload.arguments}
         for _ in range(self.input_rounds + 1):
             peer = self.clients[agent.session_id][server]
-            async with peer.executing(reply, call):
+            async with peer.executing(agent, reply, call):
                 result = await self._mcp(
                     agent, server, "tools/call", params, timeout=self.call_timeout
                 )
@@ -780,8 +806,89 @@ class ToolRunner:
             raise ValueError("MCP elicitation round limit exceeded")
         if result.get("isError"):
             # Preserve the actual error text so that the model can reload the schema.
-            raise ToolExecutionError(content_parts(result.get("content", [])))
+            parts = content_parts(result.get("content", []))
+            output = ToolTaskOutput(content=parts)
+            raise TaskExecutionError(
+                TaskError(
+                    code="tool_failed",
+                    message=f"Tool {call.payload.name} returned an error",
+                    details=output.model_dump(mode="json"),
+                )
+            )
         return content_parts(result.get("content", []))
+
+    async def wait_available(self, agent: Agent, name: str) -> None:
+        if not name.startswith("mcp__"):
+            return
+
+        server = name.split("__", 2)[1]
+        while server not in self.clients.get(agent.session_id, {}):
+            self.connections_changed.clear()
+            await self.connections_changed.wait()
+
+    async def external(
+        self, agent: Agent, request: ToolTaskInput
+    ) -> tuple[m.ToolResultPart, ...]:
+        """Вызов планировщика через маршрут сессии, без выдуманного assistant/tool_call."""
+        states = await agent.store.latest(agent.session_id, kind="permission_state")
+        if not states:
+            raise PermissionError(
+                "External tool execution requires a session permission policy"
+            )
+
+        policy = m.PermissionStateRecord.model_validate(states[0]).payload
+        decision = None
+        for rule in policy.rules:
+            if rule.tool == request.name:
+                decision = rule.decision
+
+        if decision is None:
+            if policy.mode == "bypass_permissions":
+                decision = "allow"
+
+        if decision != "allow":
+            raise PermissionError(
+                f"External tool {request.name} requires an explicit allow rule"
+            )
+
+        catalog = await agent.store.latest(
+            agent.session_id, category="tool_catalog", key=request.name
+        )
+        if not catalog:
+            raise LookupError(f"Tool {request.name} is unavailable")
+
+        if catalog[0].operation == "remove":
+            raise LookupError(f"Tool {request.name} is unavailable")
+
+        if not request.name.startswith("mcp__"):
+            raise LookupError("External jobs require an MCP tool")
+
+        _, server, name = request.name.split("__", 2)
+        peer = self.clients[agent.session_id][server]
+        async with peer.execution_lock:
+            result = await self._mcp(
+                agent,
+                server,
+                "tools/call",
+                {"name": name, "arguments": request.arguments},
+                timeout=self.call_timeout,
+            )
+
+        if result.get("resultType") == "input_required":
+            raise ValueError("External tool requires interactive input")
+
+        parts = content_parts(result.get("content", []))
+        if result.get("isError"):
+            output = ToolTaskOutput(content=parts)
+            raise TaskExecutionError(
+                TaskError(
+                    code="tool_failed",
+                    message=f"Tool {request.name} returned an error",
+                    details=output.model_dump(mode="json"),
+                )
+            )
+
+        return parts
 
     async def allowed(self, agent: Agent, reply, call: m.ToolCallRecord) -> bool:
         states = await agent.store.latest(agent.session_id, kind="permission_state")
@@ -1081,9 +1188,3 @@ class ToolRunner:
                 )
 
             await agent._publish_saved(saved)
-
-
-class ToolExecutionError(Exception):
-    def __init__(self, content: tuple) -> None:
-        super().__init__("MCP tool returned an error")
-        self.content = content

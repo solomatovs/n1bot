@@ -1,9 +1,12 @@
 """Процесс независимого worker для интеграционных проверок."""
 
 import asyncio
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
+
+from pydantic import NonNegativeFloat
 
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.connection import PostgresConfig
@@ -11,6 +14,7 @@ from boba.krb import KerberosWorkspace
 from boba.tasks.models import (
     ExecutionContext,
     TaskExecutor,
+    TaskModel,
     TaskOutcome,
     TaskState,
     TaskStatus,
@@ -28,13 +32,24 @@ class ProcessConfig:
     cache_dir: Path
 
 
+class ProcessPayload(TaskModel):
+    delay: NonNegativeFloat
+
+
 class ProcessExecutor(TaskExecutor):
+    def __init__(self) -> None:
+        self.logger = logging.getLogger(__name__)
+
     async def execute(self, task: TaskState, context: ExecutionContext) -> TaskOutcome:
-        delay = task.payload["delay"]
-        if not isinstance(delay, (int, float)):
-            raise ValueError("Process test expects a numeric delay")
+        payload = ProcessPayload.model_validate(task.payload)
+        self.logger.info(
+            "Task %s: running for %s seconds", task.task_id, payload.delay
+        )
+
         await context.report_progress({"pid": os.getpid()})
-        await asyncio.sleep(delay)
+        await asyncio.sleep(payload.delay)
+        self.logger.info("Task %s: executor completed", task.task_id)
+
         return TaskOutcome(status=TaskStatus.COMPLETED, result={"pid": os.getpid()})
 
 

@@ -31,6 +31,7 @@ class Query(StrEnum):
     ADVANCE = "advance"
     TOOL_CALLS = "tool_calls"
     TOOL_TASKS = "tool_tasks"
+    TOOL_EXECUTION = "tool_execution"
     HISTORY_INTEGRITY = "history_integrity"
     OPENAI = "openai"
     ACP_HISTORY = "acp/v2/history"

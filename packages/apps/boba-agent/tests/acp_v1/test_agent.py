@@ -107,7 +107,14 @@ async def test_tool_search_and_observer_share_history(
     assert len(client.mcp.tool_calls) == 1
     kinds = tuple(client.received_kinds())
     assert kinds.count("tool_call") == 2
-    assert kinds.count("tool_call_update") == 4
+    assert kinds.count("tool_call_update") >= 4
+    terminal = {}
+    for item in client.updates:
+        update = item.update
+        if isinstance(update, schema.ToolCallProgress):
+            terminal[update.tool_call_id] = update.status
+
+    assert tuple(terminal.values()) == ("completed", "completed")
     assert "agent_message" not in kinds
     await observer.until("agent_message_chunk")
     assert observer.messages()[-1].content.text == "Tool finished"
@@ -285,7 +292,7 @@ async def test_missing_attachment_reader_preserves_tool_failure_without_chat_noi
     decisions = []
     for record in records:
         if isinstance(record, m.ToolResultRecord):
-            if record.payload.status == "pending":
+            if record.payload.status in {"pending", "running"}:
                 continue
             results.append(record)
 
@@ -296,7 +303,7 @@ async def test_missing_attachment_reader_preserves_tool_failure_without_chat_noi
     assert results[0].payload.status == "failed"
     error = results[0].payload.content[0]
     assert isinstance(error, m.TextPart)
-    assert "Tool tool_search, call select-reader failed:" in error.text
+    assert "tool_rejected" in error.text
     assert "Tool 'read_pdf' is not available in the current catalog" in error.text
     assert len(decisions) == 1
     assert decisions[0].payload.decision == "allow"
@@ -317,4 +324,37 @@ async def test_missing_attachment_reader_preserves_tool_failure_without_chat_noi
         assert "permission_decision" not in update_json
         assert "Tool tool_search, call select-reader failed:" not in update_json
 
+    await system.assert_replay(sid)
+
+
+async def test_v1_task_status_returns_external_snapshot(system: V1System) -> None:
+    from uuid import uuid4
+
+    from boba.tasks.models import TaskCreate
+
+    client = await system.client()
+    sid = await client.new_session()
+    command = TaskCreate(
+        task_id=uuid4().hex, kind="scheduled", payload={}, run_timeout_sec=30
+    )
+    await system.hub.task_service.add(system.owner, command)
+    system.inference.responses = (
+        system.call("poll", "task_status", {"task_id": command.task_id}),
+        system.answer("The task is pending"),
+    )
+    response = await client.connection.send_request(
+        "session/prompt",
+        {
+            "sessionId": sid,
+            "prompt": [{"type": "text", "text": "Check the task"}],
+        },
+    )
+    assert schema.PromptResponse.model_validate(response).stop_reason == "end_turn"
+    result = m.ToolResultRecord.model_validate(
+        (await system.history.latest(sid, category="tool_result", key="poll"))[0]
+    )
+    assert result.payload.status == "completed"
+    assert result.payload.state is not None
+    assert result.payload.state.status == "pending"
+    assert not client.mcp.tool_calls
     await system.assert_replay(sid)

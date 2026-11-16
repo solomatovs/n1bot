@@ -103,7 +103,8 @@ async def test_catalog_changes_and_compaction_keep_replay_deterministic(history)
         await tools.refresh(agent)
         _, removed = await build()
         assert [item["function"]["name"] for item in removed["tools"]] == [
-            "tool_search"
+            "task_status",
+            "tool_search",
         ]
         remote["alpha"] = {
             "name": "alpha",

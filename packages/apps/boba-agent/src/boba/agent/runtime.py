@@ -18,6 +18,7 @@ from boba.agent import models as m
 from boba.agent.history import HistoryStore
 from boba.agent.llm import Generation
 from boba.agent.records import AttemptContext, RecordFactory
+from boba.agent.tasks import AgentTaskServices, TaskCoordinator, TaskStatusArguments
 
 logger = logging.getLogger(__name__)
 Send = Callable[[str, dict[str, Any]], Awaitable[None]]
@@ -176,6 +177,7 @@ class Agent:
         tools,
         *,
         version: str,
+        task_services: AgentTaskServices | None = None,
         max_steps: int = 32,
         subscriber_buffer: int = 256,
     ) -> None:
@@ -201,8 +203,75 @@ class Agent:
         self.operation: asyncio.Task | None = None
         self.closed = False
         self.last_error: Exception | None = None
-        self.background: set[asyncio.Task] = set()
         self.continue_requested = False
+        self.paused = False
+        self.generation_steps = 0
+        self.task_observer: asyncio.Task[None] | None = None
+        self.tasks = None
+        self.task_timeout = 0.0
+        if task_services is not None:
+            self.task_timeout = task_services.timeout_sec
+            self.tasks = TaskCoordinator(
+                session_id,
+                task_services.owner_id,
+                store,
+                task_services.service,
+                version=version,
+                notifications=task_services.notifications,
+                lock=self.lock,
+                poll_sec=task_services.poll_sec,
+                publisher=self._publish_saved,
+                resume=self._tasks_completed,
+            )
+
+    async def start(self) -> None:
+        if self.tasks is None:
+            return
+
+        if self.task_observer is not None:
+            return
+
+        await self.tasks.reconcile()
+        self.task_observer = asyncio.create_task(
+            self._observe_tasks(), name=f"observations:{self.session_id}"
+        )
+        if await self.tasks.has_pending():
+            self.idle.clear()
+
+    async def _observe_tasks(self) -> None:
+        if self.tasks is None:
+            return
+
+        try:
+            await self.tasks.run()
+
+        except asyncio.CancelledError:
+            raise
+
+        except Exception as exc:
+            self.last_error = exc
+            self.paused = True
+            self.idle.set()
+            await self.append(
+                [
+                    self.make(
+                        m.NoticeRecord,
+                        payload={
+                            "level": "error",
+                            "content": [
+                                m.TextPart(text=f"Task observation failed: {exc}")
+                            ],
+                        },
+                    )
+                ]
+            )
+            raise
+
+    def _tasks_completed(self) -> None:
+        if self.paused or self.closed:
+            return
+
+        self.wake(continue_tools=True)
 
     def make(self, model: type[R], **fields) -> R:
         return self.records.make(model, **fields)
@@ -307,6 +376,8 @@ class Agent:
     ) -> str:
         if self.closed:
             raise RuntimeError("Agent is closed")
+        await self.start()
+        self.paused = False
         fields = {} if record_id is None else {"record_id": record_id}
         value = self.make(m.UserMessageRecord, payload={"content": content}, **fields)
         inputs: list[m.HistoryRecord] = [value]
@@ -344,6 +415,7 @@ class Agent:
             self.continue_requested = False
 
             if pending:
+                self.generation_steps = 0
                 latest = pending[-1]
                 if latest.seq is None:
                     raise ValueError("Stored input is missing seq")
@@ -375,9 +447,15 @@ class Agent:
                 logger.exception("Agent session failed: %s", self.session_id)
             finally:
                 self.operation = None
-                if not self.changed.is_set():
-                    self.idle.set()
-                    self._state(False)
+                async with self.lock:
+                    pending = False
+                    if self.tasks is not None:
+                        pending = await self.tasks.has_pending()
+
+                    can_finish = not pending and not self.changed.is_set()
+                    if can_finish or self.paused:
+                        self.idle.set()
+                        self._state(False)
 
     async def _turn(self) -> None:
         started = time.monotonic()
@@ -390,6 +468,12 @@ class Agent:
                 if selection is None:
                     break
                 self.changed.clear()
+                if self.generation_steps >= self.max_steps:
+                    outcome = "limit"
+                    self.paused = True
+                    break
+
+                self.generation_steps += 1
                 try:
                     reply = await self.generate(
                         selection.operation_id, through_seq=selection.through_seq
@@ -397,9 +481,7 @@ class Agent:
                 finally:
                     await self.store.advance(self.session_id, selection.input_seq)
                 calls = await self.store.tool_calls(self.session_id, reply.record_id)
-                if calls:
-                    await self._execute(reply, calls)
-                continue_tools = bool(calls)
+                continue_tools = await self._answer_status(calls)
             else:
                 outcome = "limit"
         except asyncio.CancelledError:
@@ -545,43 +627,41 @@ class Agent:
             records.extend(self.records.response(context, output, failure))
 
         reply = None
-        async with self.lock:
-            if records:
-                saved = await self.store.append(self.session_id, records)
-                for row in saved:
-                    if isinstance(
-                        row, (m.AssistantMessageRecord, m.RequestOutputRecord)
-                    ):
-                        reply = row
+        if records:
+            if self.tasks is None:
+                for record in records:
+                    if isinstance(record, m.ToolCallRecord):
+                        raise RuntimeError(
+                            "Tool execution requires configured task services"
+                        )
 
-                await self._publish_saved(saved)
+                saved = await self.append(records)
+            else:
+                commands = tuple(self.tasks.commands(records, self.task_timeout))
+                saved = await self.tasks.dispatch(records, commands)
 
-            if not context.service:
+            for row in saved:
+                if isinstance(row, (m.AssistantMessageRecord, m.RequestOutputRecord)):
+                    reply = row
+
+        if not context.service:
+            async with self.lock:
                 self.partial.clear()
 
         return reply
 
-    async def _execute(self, reply, calls: Sequence[m.ToolCallRecord]) -> None:
-        remaining = list(calls)
-        try:
-            for call in calls:
-                try:
-                    content = await self.tools.call(self, reply, call)
-                    if isinstance(content, m.ToolResultRecord):
-                        remaining.pop(0)
-                        continue
+    async def _answer_status(self, calls: Sequence[m.ToolCallRecord]) -> bool:
+        answered = False
+        for call in calls:
+            if call.payload.name != "task_status":
+                continue
 
-                    status = "completed"
-                except Exception as exc:
-                    content = getattr(exc, "content", None)
-                    if content is None:
-                        content = (
-                            m.TextPart(
-                                text=f"Tool {call.payload.name}, call {call.key} failed: {exc}"
-                            ),
-                        )
-                    status = "failed"
+            if self.tasks is None:
+                raise RuntimeError("task_status requires configured task services")
 
+            try:
+                arguments = TaskStatusArguments.model_validate(call.payload.arguments)
+            except ValueError as exc:
                 await self.append(
                     [
                         self.make(
@@ -589,32 +669,22 @@ class Agent:
                             key=call.key,
                             payload={
                                 "call_record_id": call.record_id,
-                                "status": status,
-                                "content": content,
-                            },
-                        )
-                    ]
-                )
-                remaining.pop(0)
-        finally:
-            for call in remaining:
-                await self.append(
-                    [
-                        self.make(
-                            m.ToolResultRecord,
-                            key=call.key,
-                            payload={
-                                "call_record_id": call.record_id,
-                                "status": "interrupted",
+                                "status": "failed",
                                 "content": [
                                     m.TextPart(
-                                        text="Execution interrupted; completion is not confirmed."
+                                        text=f"Invalid task_status arguments: {exc}"
                                     )
                                 ],
                             },
                         )
                     ]
                 )
+            else:
+                await self.tasks.answer_status(arguments.task_id, call)
+
+            answered = True
+
+        return answered
 
     async def service_request(
         self, inputs: Sequence[m.HistoryRecord], operation_id: str
@@ -640,82 +710,26 @@ class Agent:
         )
 
     async def cancel(self) -> None:
+        self.paused = True
+        self.continue_requested = False
+        self.changed.clear()
         if self.operation is not None:
             self.operation.cancel()
             with suppress(asyncio.CancelledError):
                 await self.operation
 
-    async def task(
-        self, reply, call, action, *, background: bool, child_session_id=None
-    ):
-        """Одинаковое исполнение вызова; background меняет только ожидание результата."""
-        task_id = uuid4().hex
-
-        revision = 0
-
-        async def save(status, *, content=(), error=None):
-            nonlocal revision
-            revision += 1
-            result = None
-            if status == "completed":
-                result = [part.model_dump(mode="json") for part in content]
-
-            if not content:
-                content = (
-                    m.TextPart(text=f"Task {task_id} ({call.payload.name}): {status}"),
-                )
-
-            state = self.make(
-                m.ToolResultRecord,
-                key=call.key,
-                payload={
-                    "call_record_id": call.record_id,
-                    "status": status,
-                    "state": {
-                        "task_id": task_id,
-                        "revision": revision,
-                        "description": call.payload.name,
-                        "status": status,
-                        "child_session_id": child_session_id,
-                        "result": result,
-                        "error": error,
-                    },
-                    "content": content,
-                },
-            )
-            saved = await self.append([state])
-            return m.ToolResultRecord.model_validate(saved[0])
-
-        async def run():
-            try:
-                result = await action(task_id)
-            except asyncio.CancelledError:
-                await save("cancelled")
-                raise
-            except Exception as exc:
-                return await save("failed", error=f"{type(exc).__name__}: {exc}")
-            else:
-                return await save("completed", content=result)
-            finally:
-                if background and not self.closed:
-                    self.wake(continue_tools=True)
-
-        started = await save("running")
-        if not background:
-            return await run()
-
-        running = asyncio.create_task(run(), name=f"task:{task_id}")
-        self.background.add(running)
-        running.add_done_callback(self.background.discard)
-        return started
+        self.idle.set()
+        self._state(False)
 
     async def close(self) -> None:
         self.closed = True
         await self.cancel()
-        for task in tuple(self.background):
-            task.cancel()
-        if self.background:
-            await asyncio.gather(*tuple(self.background), return_exceptions=True)
+        if self.tasks is not None:
+            self.tasks.stop()
+
+        if self.task_observer is not None:
+            with suppress(asyncio.CancelledError):
+                await self.task_observer
         if self.worker is not None:
             self.worker.cancel()
             with suppress(asyncio.CancelledError):

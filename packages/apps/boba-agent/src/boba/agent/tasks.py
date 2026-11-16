@@ -12,6 +12,8 @@ import json
 import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from enum import StrEnum
 from math import isfinite
 from uuid import uuid4
 
@@ -31,6 +33,40 @@ from boba.tasks.service import TaskService
 from boba.tasks.worker import TaskNotifications
 
 logger = logging.getLogger(__name__)
+
+
+class AgentTaskKind(StrEnum):
+    TOOL = "agent_tool"
+
+
+class ToolTaskSource(m.DataModel):
+    call_record_id: m.NonEmptyStr
+
+
+class ToolTaskInput(m.DataModel):
+    """Сохранённый вызов; планировщик может передать name/arguments без source."""
+
+    name: m.NonEmptyStr
+    arguments: m.JsonObject
+    source: ToolTaskSource | None = None
+
+
+class ToolTaskOutput(m.DataModel):
+    content: tuple[m.ToolResultPart, ...]
+    child_session_id: m.NonEmptyStr | None = None
+
+
+class TaskStatusArguments(m.DataModel):
+    task_id: m.NonEmptyStr
+
+
+@dataclass(frozen=True)
+class AgentTaskServices:
+    service: TaskService
+    notifications: TaskNotifications
+    owner_id: str
+    timeout_sec: float
+    poll_sec: float
 
 
 class TaskCoordinationError(RuntimeError):
@@ -107,6 +143,7 @@ class TaskCoordinator:
                 "Creating task coordinator: poll_sec must be finite and positive"
             )
 
+        self.route_key = f"agent:{session_id}"
         self.session_id = session_id
         self.owner_id = owner_id
         self.store = store
@@ -119,6 +156,7 @@ class TaskCoordinator:
         self.resume = resume
         self.ready = asyncio.Event()
         self._changed = asyncio.Event()
+        self._stopping = asyncio.Event()
         self._subscriptions: dict[str, Callable[[], None]] = {}
         self._running = False
 
@@ -155,6 +193,9 @@ class TaskCoordinator:
 
             task_id = record.payload.task_id
             if task_id is None:
+                if record.payload.name == "task_status":
+                    continue
+
                 raise TaskCoordinationError(
                     f"Dispatch call {record.record_id} has no task_id"
                 )
@@ -189,6 +230,10 @@ class TaskCoordinator:
 
             call = calls.get(record.payload.call_record_id)
             if call is None:
+                if self._status_result(record, records):
+                    yield record
+                    continue
+
                 raise TaskCoordinationError(
                     f"Initial result {record.record_id}: call is missing"
                 )
@@ -230,6 +275,56 @@ class TaskCoordinator:
             raise TaskCoordinationError(
                 "Every dispatched call requires an initial pending result"
             )
+
+    def _status_result(
+        self, result: m.ToolResultRecord, records: Sequence[m.HistoryRecord]
+    ) -> bool:
+        for record in records:
+            if not isinstance(record, m.ToolCallRecord):
+                continue
+
+            if record.record_id != result.payload.call_record_id:
+                continue
+
+            return (
+                record.payload.task_id is None and record.payload.name == "task_status"
+            )
+
+        return False
+
+    def commands(
+        self, records: Sequence[m.HistoryRecord], timeout_sec: float
+    ) -> Iterator[TaskCreate]:
+        for record in records:
+            if not isinstance(record, m.ToolCallRecord):
+                continue
+
+            if record.payload.task_id is None:
+                continue
+
+            request = ToolTaskInput(
+                name=record.payload.name,
+                arguments=record.payload.arguments,
+                source=ToolTaskSource(call_record_id=record.record_id),
+            )
+            yield TaskCreate(
+                task_id=record.payload.task_id,
+                kind=AgentTaskKind.TOOL,
+                route_key=self.route_key,
+                payload=request.model_dump(mode="json"),
+                run_timeout_sec=timeout_sec,
+            )
+
+    async def has_pending(self) -> bool:
+        async with self._operation("reading pending task observations"):
+            async with self.store.transaction(self.session_id) as transaction:
+                bindings = await self._bindings(transaction)
+
+            for binding in bindings:
+                if binding.unfinished:
+                    return True
+
+            return False
 
     async def dispatch(
         self, records: Sequence[m.HistoryRecord], commands: Sequence[TaskCreate]
@@ -303,6 +398,19 @@ class TaskCoordinator:
     ) -> m.ToolResultRecord:
         snapshot = self._snapshot(state, call.payload.name)
         content: tuple[m.ToolResultPart, ...] = self._content(snapshot)
+        if state.kind == AgentTaskKind.TOOL:
+            if state.status is TaskStatus.COMPLETED:
+                output = ToolTaskOutput.model_validate(state.result)
+                content = output.content
+                snapshot = snapshot.model_copy(
+                    update={"child_session_id": output.child_session_id}
+                )
+
+            if state.error is not None:
+                if state.error.details:
+                    output = ToolTaskOutput.model_validate(state.error.details)
+                    content = output.content
+
         if state.progress is not None:
             progress = json.dumps(state.progress, ensure_ascii=False)
             content += (m.TextPart(text=f"Progress: {progress}"),)
@@ -444,19 +552,9 @@ class TaskCoordinator:
             )
 
         if binding is None:
-            snapshot = self._snapshot(state, state.kind)
-            return (
-                self.records.make(
-                    m.ToolResultRecord,
-                    key=call.key,
-                    payload={
-                        "call_record_id": call.record_id,
-                        "status": "completed",
-                        "state": snapshot,
-                        "content": self._content(snapshot),
-                    },
-                ),
-            )
+            observation = self._observation(call, state)
+            payload = observation.payload.model_copy(update={"status": "completed"})
+            return (observation.model_copy(update={"payload": payload}),)
 
         if binding.call.record_id == call.record_id:
             raise TaskCoordinationError(
@@ -526,6 +624,10 @@ class TaskCoordinator:
 
         return False
 
+    def stop(self) -> None:
+        self._stopping.set()
+        self._changed.set()
+
     async def run(self) -> None:
         """Цикл наблюдения для TaskGroup владельца; отмена снимает только подписки."""
         async with self._operation("running task observation"):
@@ -538,7 +640,7 @@ class TaskCoordinator:
             self.ready.clear()
             try:
                 await self.notifications.wait_connected()
-                while True:
+                while not self._stopping.is_set():
                     self._changed.clear()
                     try:
                         await self.reconcile()

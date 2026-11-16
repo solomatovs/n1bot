@@ -255,6 +255,7 @@ async def test_acp_tools_accept_all_pending_messages_and_resume_after_restart(  
         system.call("select", "tool_search", {"select": ["mcp__workspace__echo"]}),
         system.call("execute", "mcp__workspace__echo", {"text": "Hello"}),
         StreamingResponse(body(), media_type="text/event-stream"),
+        system.answer("Processed all messages and completed tools"),
     )
     sid = await first.new_session()
     try:
@@ -272,23 +273,23 @@ async def test_acp_tools_accept_all_pending_messages_and_resume_after_restart(  
         assert [
             row.record_id for row in await system.history.pending_messages(sid)
         ] == ids
-        assert len(system.inference.requests) == 2
-        assert not second.chunks()
-        first.mcp.release_tool.set()
+        assert len(system.inference.requests) == 3
         await second.until("agent_message_chunk")
+        interim_request = json.loads(system.inference.requests[-1])
+        assert "running" in str(interim_request["messages"])
+        first.mcp.release_tool.set()
+        async with asyncio.timeout(system.timeout):
+            while True:
+                results = await system.history.latest(
+                    sid, category="tool_result", key="execute"
+                )
+                result = m.ToolResultRecord.model_validate(results[0])
+                if result.payload.status == "completed":
+                    break
+                await asyncio.sleep(0.01)
+
         assert not system.hub.agents[sid].idle.is_set()
         assert second.chunks()[0].content.text == "First "
-        final_request = json.loads(system.inference.requests[-1])
-        assert [item["role"] for item in final_request["messages"]][-5:] == [
-            "assistant",
-            "tool",
-            "user",
-            "user",
-            "user",
-        ]
-        assert [
-            item["content"][0]["text"] for item in final_request["messages"][-3:]
-        ] == list(texts)
         selected = json.loads(system.inference.requests[1])
         assert "mcp__workspace__echo" in [
             item["function"]["name"] for item in selected["tools"]
@@ -299,6 +300,15 @@ async def test_acp_tools_accept_all_pending_messages_and_resume_after_restart(  
         ]
         finish_response.set()
         await system.idle(sid)
+        final_request = json.loads(system.inference.requests[-1])
+        user_messages = [
+            message
+            for message in final_request["messages"]
+            if message["role"] == "user"
+        ]
+        assert [
+            message["content"][0]["text"] for message in user_messages[-3:]
+        ] == list(texts)
         await second.until("agent_message", message_id=second.chunks()[0].message_id)
         chunks = second.chunks()
         final = next(
@@ -321,7 +331,7 @@ async def test_acp_tools_accept_all_pending_messages_and_resume_after_restart(  
         assert restored == final
         assert len(resumed.messages("user_message")) == 4
         assert not resumed.chunks()
-        assert len(system.inference.requests) == 3
+        assert len(system.inference.requests) == 4
         assert any(
             item.update.get("sessionUpdate") == "config_option_update"
             for item in resumed.updates
@@ -806,7 +816,7 @@ async def test_missing_attachment_reader_preserves_tool_failure_without_chat_noi
     decisions = []
     for record in records:
         if isinstance(record, m.ToolResultRecord):
-            if record.payload.status == "pending":
+            if record.payload.status in {"pending", "running"}:
                 continue
             results.append(record)
 
@@ -817,7 +827,7 @@ async def test_missing_attachment_reader_preserves_tool_failure_without_chat_noi
     assert results[0].payload.status == "failed"
     error = results[0].payload.content[0]
     assert isinstance(error, m.TextPart)
-    assert "Tool tool_search, call select-reader failed:" in error.text
+    assert "tool_rejected" in error.text
     assert "Tool 'read_pdf' is not available in the current catalog" in error.text
     assert len(decisions) == 1
     assert decisions[0].payload.decision == "allow"
@@ -840,3 +850,188 @@ async def test_missing_attachment_reader_preserves_tool_failure_without_chat_noi
         )
 
     await system.assert_replay(sid)
+
+
+async def test_task_status_reads_external_task_on_each_call(system: V2System) -> None:
+    from boba.tasks.models import TaskCreate
+
+    client = await system.client()
+    sid = await client.new_session()
+    command = TaskCreate(
+        task_id=uuid4().hex, kind="external_job", payload={}, run_timeout_sec=30
+    )
+    await system.hub.task_service.add(system.owner, command)
+    system.inference.responses = (
+        system.call("poll-one", "task_status", {"task_id": command.task_id}),
+        system.call("poll-two", "task_status", {"task_id": command.task_id}),
+        system.answer("The task is pending"),
+    )
+    await client.prompt(sid, "Check the task twice")
+    await system.idle(sid)
+    rows = (await system.history.read(sid)).rows
+    snapshots = []
+    for row in rows:
+        if not isinstance(row, m.ToolResultRecord):
+            continue
+        if row.payload.state is not None:
+            snapshots.append(row)
+
+    assert len(snapshots) == 2
+    assert snapshots[0].record_id != snapshots[1].record_id
+    assert snapshots[0].payload.state == snapshots[1].payload.state
+    assert all(row.payload.status == "completed" for row in snapshots)
+    state = await system.hub.task_service.status(system.owner, command.task_id)
+    assert state.revision == 1
+    assert state.status == "pending"
+    assert not client.mcp.tool_calls
+    await system.assert_replay(sid)
+
+
+async def test_scheduler_submits_mcp_task_without_history_source(
+    system: V2System,
+) -> None:
+    from boba.agent.tasks import AgentTaskKind, ToolTaskInput
+    from boba.tasks.models import TaskCreate
+
+    client = await system.client()
+    sid = await client.new_session()
+    agent = system.hub.agents[sid]
+    assert agent.tasks is not None
+    await agent.append(
+        [
+            agent.make(
+                m.PermissionStateRecord,
+                payload={
+                    "mode": "default",
+                    "rules": [{"tool": "mcp__workspace__echo", "decision": "allow"}],
+                },
+            )
+        ]
+    )
+    request = ToolTaskInput(
+        name="mcp__workspace__echo", arguments={"text": "Scheduled"}
+    )
+    command = TaskCreate(
+        task_id=uuid4().hex,
+        kind=AgentTaskKind.TOOL,
+        route_key=agent.tasks.route_key,
+        payload=request.model_dump(mode="json"),
+        run_timeout_sec=30,
+    )
+    await system.hub.task_service.add(system.owner, command)
+    async with asyncio.timeout(system.timeout):
+        while True:
+            state = await system.hub.task_service.status(system.owner, command.task_id)
+            if state.status.terminal:
+                break
+            await asyncio.sleep(0.01)
+
+    assert state.status == "completed"
+    assert len(client.mcp.tool_calls) == 1
+    assert not await system.history.latest(sid, category="tool_call")
+    assert not system.inference.requests
+    system.inference.responses = (
+        system.call("poll", "task_status", {"task_id": command.task_id}),
+        system.answer("Scheduled job completed"),
+    )
+    await client.prompt(sid, "Check the scheduled task")
+    await system.idle(sid)
+    result = m.ToolResultRecord.model_validate(
+        (await system.history.latest(sid, category="tool_result", key="poll"))[0]
+    )
+    assert result.payload.status == "completed"
+    assert result.payload.state is not None
+    assert result.payload.state.task_id == command.task_id
+    assert result.payload.source_record_id is None
+    assert result.payload.content == (m.TextPart(text="Tool result 世界"),)
+    assert client.mcp.tool_calls[0]["arguments"] == {"text": "Scheduled"}
+    await system.assert_replay(sid)
+
+
+async def test_lost_mcp_connection_interrupts_task_without_repeating_it(
+    system: V2System,
+) -> None:
+    client = await system.client()
+    client.mcp.release_tool.clear()
+    system.inference.responses = (
+        system.call("select", "tool_search", {"select": ["mcp__workspace__echo"]}),
+        system.call("execute", "mcp__workspace__echo", {"text": "May have run"}),
+        system.answer("Execution outcome is unknown"),
+    )
+    sid = await client.new_session()
+    await client.prompt(sid, "Run the tool")
+    async with asyncio.timeout(system.timeout):
+        await client.mcp.tool_started.wait()
+
+    await client.close()
+    await system.idle(sid)
+    call = m.ToolCallRecord.model_validate(
+        (await system.history.latest(sid, category="tool_call", key="execute"))[0]
+    )
+    assert call.payload.task_id is not None
+    state = await system.hub.task_service.status(system.owner, call.payload.task_id)
+    assert state.status == "interrupted"
+    result = m.ToolResultRecord.model_validate(
+        (await system.history.latest(sid, category="tool_result", key="execute"))[0]
+    )
+    assert result.payload.status == "interrupted"
+    await system.restart()
+    resumed = await system.client()
+    await resumed.resume(sid)
+    assert not resumed.mcp.tool_calls
+    assert (
+        await system.hub.task_service.status(system.owner, call.payload.task_id)
+    ) == state
+
+
+async def test_cancel_pauses_dialogue_but_task_finishes_and_is_observed(
+    system: V2System,
+) -> None:
+    client = await system.client()
+    client.mcp.release_tool.clear()
+    system.inference.responses = (
+        system.call("select", "tool_search", {"select": ["mcp__workspace__echo"]}),
+        system.call(
+            "execute", "mcp__workspace__echo", {"text": "Finish independently"}
+        ),
+        system.answer("The completed task is in history"),
+    )
+    sid = await client.new_session()
+    try:
+        await client.prompt(sid, "Start")
+        async with asyncio.timeout(system.timeout):
+            await client.mcp.tool_started.wait()
+
+        await client.connection.send_notification("session/cancel", {"sessionId": sid})
+        agent = system.hub.agents[sid]
+        async with asyncio.timeout(system.timeout):
+            while not agent.paused:
+                await asyncio.sleep(0.01)
+
+        client.mcp.release_tool.set()
+        async with asyncio.timeout(system.timeout):
+            while True:
+                values = await system.history.latest(
+                    sid, category="tool_result", key="execute"
+                )
+                result = m.ToolResultRecord.model_validate(values[0])
+                if result.payload.status == "completed":
+                    break
+                await asyncio.sleep(0.01)
+
+        assert agent.idle.is_set()
+        assert len(system.inference.requests) == 2
+        assert result.payload.state is not None
+        state = await system.hub.task_service.status(
+            system.owner, result.payload.state.task_id
+        )
+        assert state.status == "completed"
+        await client.prompt(sid, "Continue now")
+        await system.idle(sid)
+        assert len(system.inference.requests) == 3
+        assert len(client.mcp.tool_calls) == 1
+        assert not agent.paused
+        await system.assert_replay(sid)
+
+    finally:
+        client.mcp.release_tool.set()
