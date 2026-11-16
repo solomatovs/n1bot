@@ -117,6 +117,58 @@ async def test_permissions_routes_and_claim_recovery(tasks):
     assert await service.recover(identity(owner), token) is None
 
 
+@pytest.mark.parametrize("all_owners", (False, True))
+async def test_claim_orders_supported_kinds_routes_and_owners(tasks, all_owners):
+    service, owner = tasks
+    first_kind = owner + "-first"
+    second_kind = owner + "-second"
+    commands = (
+        definition(kind=first_kind, route_key="route-b"),
+        definition(kind=second_kind),
+        definition(kind=second_kind, route_key="route-a"),
+        definition(kind=first_kind),
+    )
+    for command in commands:
+        await service.add(owner, command)
+
+    worker = WorkerIdentity(
+        uuid4().hex,
+        frozenset({first_kind, second_kind}),
+        frozenset({"route-a", "route-b"}),
+        frozenset({owner, owner + "-empty"}),
+        all_owners=all_owners,
+    )
+    for command in commands:
+        lease = await service.claim(worker, uuid4(), 5)
+        assert lease is not None
+        assert lease.state.task_id == command.task_id
+
+    assert await service.claim(worker, uuid4(), 5) is None
+
+
+async def test_claim_skips_locked_route_and_uses_unrouted_task(tasks):
+    service, owner = tasks
+    routed = definition(route_key="route")
+    unrouted = definition()
+    await service.add(owner, routed)
+    await service.add(owner, unrouted)
+    worker = identity(owner, routes=frozenset({"route"}))
+    async with service.pool.connection() as connection, connection.transaction():
+        await connection.execute(
+            "select task_id from boba.tasks where task_id = %s for update",
+            (routed.task_id,),
+        )
+        async with asyncio.timeout(2):
+            lease = await service.claim(worker, uuid4(), 5)
+
+        assert lease is not None
+        assert lease.state.task_id == unrouted.task_id
+
+    lease = await service.claim(worker, uuid4(), 5)
+    assert lease is not None
+    assert lease.state.task_id == routed.task_id
+
+
 async def test_expiry_blocks_stale_result_before_and_after_maintenance(tasks):
     service, owner = tasks
     command = definition()

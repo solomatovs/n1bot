@@ -149,6 +149,39 @@ class ControlledExecutor(TaskExecutor):
             self.stopped.set()
 
 
+class PausedRenewal(TaskService):
+    """Удерживает heartbeat внутри транзакции до завершения действия."""
+
+    def __init__(self, pool: AsyncPostgresPool) -> None:
+        super().__init__(pool)
+        self.enabled = False
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        self.cancelled = False
+
+    async def _execute(
+        self,
+        connection: psycopg.AsyncConnection[Any],
+        query: TaskQuery,
+        params: Sequence[Any],
+    ) -> tuple[TaskRow, ...]:
+        if query is not TaskQuery.RENEW:
+            return await super()._execute(connection, query, params)
+
+        if not self.enabled:
+            return await super()._execute(connection, query, params)
+
+        self.entered.set()
+        try:
+            await self.release.wait()
+
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+
+        return await super()._execute(connection, query, params)
+
+
 class FailureStand:
     def __init__(self, pool: AsyncPostgresPool, timeout: float) -> None:
         self.owner = "task-failures-" + uuid4().hex
@@ -248,6 +281,32 @@ async def test_finish_retry_keeps_renewing_lease(failures: FailureStand) -> None
     assert state.finished_at is not None
     assert state.started_at is not None
     assert (state.finished_at - state.started_at).total_seconds() > 0.6
+
+
+async def test_finish_waits_for_heartbeat_transaction(failures: FailureStand) -> None:
+    service = PausedRenewal(failures.service.pool)
+    failures.worker.service = service
+    failures.executor.release.clear()
+    initial = await failures.add()
+    async with failures.running():
+        await failures.executor.started.wait()
+        service.enabled = True
+        await service.entered.wait()
+        failures.executor.release.set()
+        try:
+            state = await failures.terminal(initial.task_id)
+            assert state.status is TaskStatus.COMPLETED
+            stopping = asyncio.create_task(failures.worker.stop())
+            done, _ = await asyncio.wait((stopping,), timeout=0.05)
+            assert not done
+
+        finally:
+            service.release.set()
+
+        await stopping
+
+    assert not service.cancelled
+    assert failures.executor.calls == 1
 
 
 async def test_finish_outage_past_lease_expires_without_reexecution(

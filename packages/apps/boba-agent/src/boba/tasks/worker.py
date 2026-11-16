@@ -365,14 +365,22 @@ class TaskWorker:
         except TimeoutError:
             return
 
-    async def _heartbeat(self, lease: TaskLease) -> None:
+    async def _heartbeat(self, lease: TaskLease, finished: asyncio.Event) -> None:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + lease.remaining_sec
-        while True:
+
+        while not finished.is_set():
             delay = min(self.config.heartbeat_sec, deadline - loop.time())
-            await asyncio.sleep(max(delay, 0))
-            lease = await self._renew(lease, deadline)
-            deadline = loop.time() + lease.remaining_sec
+
+            try:
+                async with asyncio.timeout(max(delay, 0)):
+                    await finished.wait()
+
+                return
+
+            except TimeoutError:
+                lease = await self._renew(lease, deadline)
+                deadline = loop.time() + lease.remaining_sec
 
     async def _renew(self, lease: TaskLease, deadline: float) -> TaskLease:
         loop = asyncio.get_running_loop()
@@ -433,15 +441,16 @@ class TaskWorker:
         try:
             deadline = asyncio.get_running_loop().time() + lease.remaining_sec
             lease = await self._renew(lease, deadline)
-            heartbeat = asyncio.create_task(self._heartbeat(lease))
+
+            finished = asyncio.Event()
+            heartbeat = asyncio.create_task(self._heartbeat(lease, finished))
             try:
                 outcome = await self._invoke(lease, heartbeat)
                 await self._finish(lease, outcome)
 
             finally:
-                heartbeat.cancel()
-                with suppress(asyncio.CancelledError):
-                    await self._end_heartbeat(heartbeat)
+                finished.set()
+                await self._end_heartbeat(heartbeat)
 
         except TaskServiceError as exc:
             if exc.code not in (TaskCode.STORAGE, TaskCode.LEASE_LOST):
