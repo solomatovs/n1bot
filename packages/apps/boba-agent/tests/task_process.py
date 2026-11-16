@@ -3,8 +3,10 @@
 import asyncio
 import logging
 import os
+import signal
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import UUID
 
 from pydantic import NonNegativeFloat
 
@@ -14,6 +16,7 @@ from boba.krb import KerberosWorkspace
 from boba.tasks.models import (
     ExecutionContext,
     TaskExecutor,
+    TaskLease,
     TaskModel,
     TaskOutcome,
     TaskState,
@@ -53,15 +56,37 @@ class ProcessExecutor(TaskExecutor):
         return TaskOutcome(status=TaskStatus.COMPLETED, result={"pid": os.getpid()})
 
 
+class ClaimPausedService(TaskService):
+    """Останавливает тестовый процесс после commit захвата, до входа в исполнитель."""
+
+    async def claim(
+        self, worker: WorkerIdentity, token: UUID, lease_sec: float
+    ) -> TaskLease | None:
+        lease = await super().claim(worker, token, lease_sec)
+        if lease is not None:
+            os.kill(os.getpid(), signal.SIGSTOP)
+
+        return lease
+
+
 class ProcessWorker:
     async def run(
-        self, postgres: PostgresConfig, owner: str, worker_id: str, maintenance: bool
+        self,
+        postgres: PostgresConfig,
+        owner: str,
+        worker_id: str,
+        maintenance: bool,
+        pause_after_claim: bool,
     ) -> None:
         pool = AsyncPostgresPool(postgres)
         await pool.open()
         try:
+            service = TaskService(pool)
+            if pause_after_claim:
+                service = ClaimPausedService(pool)
+
             worker = TaskWorker(
-                TaskService(pool),
+                service,
                 WorkerIdentity(
                     worker_id, frozenset({"process"}), owners=frozenset({owner})
                 ),
@@ -83,9 +108,17 @@ class ProcessWorker:
 
 
 def run_worker(
-    config: ProcessConfig, owner: str, worker_id: str, maintenance: bool = False
+    config: ProcessConfig,
+    owner: str,
+    worker_id: str,
+    maintenance: bool = False,
+    pause_after_claim: bool = False,
 ) -> None:
     KerberosWorkspace.configure(
         str(config.krb5_config), str(config.cache_dir / worker_id)
     )
-    asyncio.run(ProcessWorker().run(config.postgres, owner, worker_id, maintenance))
+    asyncio.run(
+        ProcessWorker().run(
+            config.postgres, owner, worker_id, maintenance, pause_after_claim
+        )
+    )

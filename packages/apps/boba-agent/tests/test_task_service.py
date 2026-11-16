@@ -255,8 +255,9 @@ async def test_notifications_follow_commit_and_reconnect(
         await listener.close()
 
 
+@pytest.mark.parametrize("pause_after_claim", (False, True))
 async def test_separate_process_recovers_task_after_worker_is_killed(
-    tasks, process_config, agent_timeout
+    tasks, process_config, agent_timeout, pause_after_claim
 ):
     import multiprocessing
 
@@ -267,16 +268,26 @@ async def test_separate_process_recovers_task_after_worker_is_killed(
     await service.add(owner, command)
     context = multiprocessing.get_context("spawn")
     worker = context.Process(
-        target=run_worker, args=(process_config, owner, uuid4().hex)
+        target=run_worker,
+        args=(process_config, owner, uuid4().hex),
+        kwargs={"pause_after_claim": pause_after_claim},
     )
     maintenance = context.Process(
         target=run_worker, args=(process_config, owner, uuid4().hex, True)
+    )
+    replacement = context.Process(
+        target=run_worker, args=(process_config, owner, uuid4().hex)
     )
     worker.start()
     try:
         async with asyncio.timeout(agent_timeout):
             while True:
                 state = await service.status(owner, command.task_id)
+                if pause_after_claim:
+                    if state.status is TaskStatus.RUNNING:
+                        assert state.progress is None
+                        break
+
                 if state.progress is not None:
                     break
                 await asyncio.sleep(0.02)
@@ -292,8 +303,24 @@ async def test_separate_process_recovers_task_after_worker_is_killed(
         assert state.error is not None
         assert state.error.code == "lease_expired"
         assert state.result is None
+
+        maintenance.kill()
+        await asyncio.to_thread(maintenance.join, 2)
+        next_command = definition(kind="process", payload={"delay": 0.01})
+        await service.add(owner, next_command)
+        replacement.start()
+        async with asyncio.timeout(agent_timeout):
+            while True:
+                next_state = await service.status(owner, next_command.task_id)
+                if next_state.status.terminal:
+                    break
+
+                await asyncio.sleep(0.02)
+
+        assert next_state.status is TaskStatus.COMPLETED
+        assert await service.status(owner, command.task_id) == state
     finally:
-        for process in (worker, maintenance):
+        for process in (worker, maintenance, replacement):
             if process.is_alive():
                 process.kill()
                 await asyncio.to_thread(process.join, 2)

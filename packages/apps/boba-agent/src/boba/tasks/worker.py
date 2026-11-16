@@ -11,6 +11,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from dataclasses import replace
 from enum import StrEnum
 from functools import partial
 from typing import Any
@@ -367,11 +368,30 @@ class TaskWorker:
     async def _heartbeat(self, lease: TaskLease) -> None:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + lease.remaining_sec
-        delay = min(self.config.heartbeat_sec, lease.remaining_sec)
         while True:
+            delay = min(self.config.heartbeat_sec, deadline - loop.time())
             await asyncio.sleep(max(delay, 0))
+            lease = await self._renew(lease, deadline)
+            deadline = loop.time() + lease.remaining_sec
+
+    async def _renew(self, lease: TaskLease, deadline: float) -> TaskLease:
+        loop = asyncio.get_running_loop()
+        while True:
+            started = loop.time()
             try:
-                lease = await self.service.renew(lease, self.config.lease_sec)
+                async with asyncio.timeout_at(deadline):
+                    renewed = await self.service.renew(lease, self.config.lease_sec)
+
+                elapsed = loop.time() - started
+                return replace(
+                    renewed, remaining_sec=max(0, renewed.remaining_sec - elapsed)
+                )
+
+            except TimeoutError as exc:
+                raise TaskServiceError(
+                    TaskCode.LEASE_LOST,
+                    f"Task {lease.state.task_id}: renewal exceeded the confirmed lease",
+                ) from exc
 
             except TaskServiceError as exc:
                 if exc.code is not TaskCode.STORAGE:
@@ -390,20 +410,38 @@ class TaskWorker:
                     lease.state.task_id,
                     exc,
                 )
-                delay = min(self.config.retry_sec, remaining)
-                continue
-
-            deadline = loop.time() + lease.remaining_sec
-            delay = min(self.config.heartbeat_sec, lease.remaining_sec)
+                await asyncio.sleep(min(self.config.retry_sec, remaining))
 
     async def _progress(self, lease: TaskLease, value: JsonValue) -> None:
-        await self.service.progress(lease, value)
+        while True:
+            try:
+                await self.service.progress(lease, value)
+                return
+
+            except TaskServiceError as exc:
+                if exc.code is not TaskCode.STORAGE:
+                    raise
+
+                logger.warning(
+                    "Task %s: saving progress failed; retrying: %s",
+                    lease.state.task_id,
+                    exc,
+                )
+                await asyncio.sleep(self.config.retry_sec)
 
     async def _execute(self, lease: TaskLease) -> None:
         try:
-            lease = await self.service.renew(lease, self.config.lease_sec)
-            outcome = await self._invoke(lease)
-            await self._finish(lease, outcome)
+            deadline = asyncio.get_running_loop().time() + lease.remaining_sec
+            lease = await self._renew(lease, deadline)
+            heartbeat = asyncio.create_task(self._heartbeat(lease))
+            try:
+                outcome = await self._invoke(lease, heartbeat)
+                await self._finish(lease, outcome)
+
+            finally:
+                heartbeat.cancel()
+                with suppress(asyncio.CancelledError):
+                    await self._end_heartbeat(heartbeat)
 
         except TaskServiceError as exc:
             if exc.code not in (TaskCode.STORAGE, TaskCode.LEASE_LOST):
@@ -413,7 +451,20 @@ class TaskWorker:
                 "Task %s: execution ownership ended: %s", lease.state.task_id, exc
             )
 
-    async def _invoke(self, lease: TaskLease) -> TaskOutcome:
+    async def _end_heartbeat(self, heartbeat: asyncio.Task[None]) -> None:
+        try:
+            await heartbeat
+
+        except TaskServiceError as exc:
+            if exc.code is not TaskCode.LEASE_LOST:
+                raise
+
+            # После commit результата heartbeat закономерно теряет право UPDATE.
+            logger.debug("Task heartbeat ended: %s", exc)
+
+    async def _invoke(
+        self, lease: TaskLease, heartbeat: asyncio.Task[None]
+    ) -> TaskOutcome:
         if self.executor is None:
             raise TaskServiceError(
                 TaskCode.CONFLICT, "Task worker requires an executor"
@@ -421,15 +472,18 @@ class TaskWorker:
 
         context = ExecutionContext(partial(self._progress, lease))
         action = asyncio.create_task(self.executor.execute(lease.state, context))
-        heartbeat = asyncio.create_task(self._heartbeat(lease))
         try:
             done, _ = await asyncio.wait(
                 (action, heartbeat), return_when=asyncio.FIRST_COMPLETED
             )
-            if heartbeat in done:
-                await heartbeat
+            if action in done:
+                return await action
 
-            return await action
+            await heartbeat
+            raise TaskServiceError(
+                TaskCode.LEASE_LOST,
+                f"Task {lease.state.task_id}: heartbeat ended before execution",
+            )
 
         except TaskExecutionError as exc:
             return TaskOutcome(status=TaskStatus.FAILED, error=exc.error)
@@ -456,11 +510,7 @@ class TaskWorker:
             )
 
         finally:
-            heartbeat.cancel()
             action.cancel()
-            with suppress(asyncio.CancelledError):
-                await heartbeat
-
             await self._stop_action(action)
 
     async def _stop_action(self, action: asyncio.Task[TaskOutcome]) -> None:

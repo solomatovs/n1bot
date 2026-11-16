@@ -6,19 +6,35 @@ params as not materialized (
         $3::uuid as lease_token,
         $4::double precision as lease_sec
 ),
+owned as materialized (
+    select
+        t.task_id,
+        t.lease_expires_at,
+        t.execution_deadline_at
+    from
+        boba.tasks t
+        cross join params p
+    where 1=1
+        and t.task_id = p.task_id
+        and t.worker_id = p.worker_id
+        and t.lease_token = p.lease_token
+        and t.status = 'running'
+    for update of t
+),
 changed as (
     update boba.tasks t
     set
         lease_expires_at = least(t.execution_deadline_at, clock_timestamp() + make_interval(secs => p.lease_sec))
     from
         params p
+        join owned o on o.task_id = p.task_id
     where 1=1
         and t.task_id = p.task_id
         and t.worker_id = p.worker_id
         and t.lease_token = p.lease_token
         and t.status = 'running'
-        and t.lease_expires_at > clock_timestamp()
-        and t.execution_deadline_at > clock_timestamp()
+        and o.lease_expires_at > clock_timestamp()
+        and o.execution_deadline_at > clock_timestamp()
     returning
         t.task_id,
         t.owner_id,
