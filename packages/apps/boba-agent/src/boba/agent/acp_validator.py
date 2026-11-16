@@ -69,7 +69,7 @@ class ToolCallUpdate(DataModel):
     name: str | None = None
     title: str | None = None
     kind: Literal["other"] | None = None
-    status: Literal["pending", "completed", "failed"]
+    status: Literal["pending", "in_progress", "completed", "failed"]
     raw_input: dict[str, JsonValue] | None = Field(default=None, alias="rawInput")
     content: tuple[schema.ContentToolCallContent, ...] | None = None
 
@@ -121,12 +121,21 @@ class CallSource(DataModel):
     call_id: str
 
 
+class ResultSource(CallSource):
+    definition_seq: PositiveInt | None
+    definition_key: str | None
+    source_record_id: str | None
+    source_seq: PositiveInt | None
+    source_category: str | None
+    source_parent_id: str | None
+
+
 class ValidationData(DataModel):
     unmapped_records: tuple[Source, ...]
     parts: tuple[PartSource, ...]
     copies: tuple[CopySource, ...]
     calls: tuple[CallSource, ...]
-    results: tuple[CallSource, ...]
+    results: tuple[ResultSource, ...]
 
 
 class NotificationParams(DataModel):
@@ -259,7 +268,7 @@ class AcpHistoryValidator:
     }
     PARTS: ClassVar = {
         "user": {"text", "image", "resource"},
-        "assistant": {"text", "reasoning", "tool_call"},
+        "assistant": {"text", "image", "resource", "reasoning", "tool_call_reference"},
         "result": {"text", "image", "resource", "tool_reference"},
         "compact": {"text"},
         "command_result": {"text", "image", "resource"},
@@ -289,21 +298,47 @@ class AcpHistoryValidator:
             ):
                 raise AcpAssemblyError("invalid_copy_reference", record=copy)
 
-    @staticmethod
-    def _require_calls(data: ValidationData) -> None:
+    def _require_calls(self, data: ValidationData) -> None:
         calls = {}
         for call in data.calls:
             if call.call_id in calls:
                 raise AcpAssemblyError("duplicate_tool_call", call_id=call.call_id)
             calls[call.call_id] = call
-        results = set()
         for result in data.results:
             call = calls.get(result.call_id)
-            if call is None or call.seq >= result.seq:
+            if call is None:
                 raise AcpAssemblyError("orphan_tool_result", record=result)
-            if result.call_id in results:
-                raise AcpAssemblyError("duplicate_tool_result", call_id=result.call_id)
-            results.add(result.call_id)
+
+            if call.seq >= result.seq:
+                raise AcpAssemblyError("orphan_tool_result", record=result)
+
+            if result.definition_seq is None:
+                raise AcpAssemblyError("invalid_tool_result_reference", record=result)
+
+            definition_valid = (
+                result.definition_seq < result.seq,
+                result.definition_key == result.call_id,
+            )
+            if not all(definition_valid):
+                raise AcpAssemblyError("invalid_tool_result_reference", record=result)
+
+            self._require_result_source(result)
+
+    @staticmethod
+    def _require_result_source(result: ResultSource) -> None:
+        if result.source_record_id is None:
+            return
+
+        if result.source_seq is None:
+            raise AcpAssemblyError("missing_result_source", record=result)
+
+        source_valid = (
+            result.source_seq < result.seq,
+            result.source_category == "tool_result",
+            result.source_parent_id is None,
+        )
+        if not all(source_valid):
+            raise AcpAssemblyError("invalid_result_source", record=result)
 
     def _require_history(self, draft: AcpHistoryDraft) -> None:
         through_seq = self.bounds(draft.bounds)
@@ -496,6 +531,9 @@ class AcpHistoryValidator:
         if draft.response_count:
             raise AcpAssemblyError("elicitation_already_resolved")
 
+        if draft.completion_count:
+            raise AcpAssemblyError("elicitation_already_resolved")
+
         if draft.required_mode is None:
             raise AcpAssemblyError("unsupported_elicitation_mode")
 
@@ -507,7 +545,11 @@ class AcpHistoryValidator:
         if model is None:
             raise AcpAssemblyError("unsupported_elicitation_mode")
 
-        return model.model_validate(draft.params)
+        result = model.model_validate(draft.params)
+        if result.session_id != draft.session_id:
+            raise AcpAssemblyError("session_mismatch")
+
+        return result
 
 
 class AcpNoticeDraft(DataModel):

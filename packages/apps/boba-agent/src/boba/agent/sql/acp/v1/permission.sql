@@ -16,7 +16,8 @@ history as not materialized (
         r.role,
         r.key,
         r.operation,
-        r.request_id,
+        r.operation_id,
+        r.scope,
         r.copied_from_id,
         r.created_at,
         r.version,
@@ -41,16 +42,14 @@ request as (
 ),
 calls as (
     select
-        part.value as payload
+        h.payload || jsonb_build_object('call_id', h.key) as payload
     from
         request q
-        join history h on h.record_id = q.payload ->> 'related_message_id'
-        cross join lateral jsonb_array_elements(h.payload -> 'content') part(value)
+        join history h on h.key = q.payload ->> 'call_id'
     where 1=1
-        and h.role = 'assistant'
+        and h.category = 'tool_call'
+        and h.payload ->> 'assistant_record_id' = q.payload ->> 'related_message_id'
         and h.seq < q.seq
-        and part.value ->> 'kind' = 'tool_call'
-        and part.value ->> 'call_id' = q.payload ->> 'call_id'
 ),
 responses as (
     select
@@ -70,7 +69,8 @@ results as (
         cross join request q
     where 1=1
         and h.kind = 'tool_result'
-        and h.payload ->> 'call_id' = q.payload ->> 'call_id'
+        and h.key = q.payload ->> 'call_id'
+        and h.payload ->> 'status' in ('completed', 'failed', 'cancelled', 'interrupted')
 ),
 kinds(decision, scope, kind) as (
     values

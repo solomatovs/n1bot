@@ -23,7 +23,7 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, SecretStr, TypeAdapter
 
 from boba.agent.history import HistoryStore
-from boba.agent.models import ReasoningPart, TextPart, TokenUsage, ToolCallPart
+from boba.agent.models import ReasoningPart, TextPart, TokenUsage, ToolCallReferencePart
 from boba.agent.queries import Query
 from boba.agent.settings import ProviderSettings, SettingsError
 from boba.crypto import SecretCipher, SecretCryptoError
@@ -83,17 +83,26 @@ class Generation:
 
     def content(
         self, *, partial: bool = False
-    ) -> tuple[TextPart | ReasoningPart | ToolCallPart, ...]:
+    ) -> tuple[TextPart | ReasoningPart | ToolCallReferencePart, ...]:
         return tuple(self._parts(partial=partial))
+
+    def calls(self) -> tuple[ToolCall, ...]:
+        calls = []
+        for part in self.response.parts(partial=False):
+            if isinstance(part, ToolCall):
+                calls.append(part)
+
+        return tuple(calls)
 
     def _parts(
         self, *, partial: bool
-    ) -> Iterator[TextPart | ReasoningPart | ToolCallPart]:
+    ) -> Iterator[TextPart | ReasoningPart | ToolCallReferencePart]:
         for part in self.response.parts(partial=partial):
             if isinstance(part, ToolCall):
-                yield ToolCallPart(
-                    call_id=part.id, name=part.name, arguments=dict(part.arguments)
-                )
+                if partial:
+                    continue
+
+                yield ToolCallReferencePart(call_id=part.id)
                 continue
 
             if part.kind == "reasoning":

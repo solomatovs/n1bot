@@ -71,7 +71,7 @@ async def test_new_user_adds_arbitrary_provider_and_keeps_private_configuration(
     assert system.inference.request_headers[-1]["x-client-route"] == "custom"
     attempt = await system.history.latest(sid, kind="llm_request_attempt")
     assert (
-        m.LlmRequestAttemptRecord.model_validate(attempt[0]).payload.url
+        str(m.LlmRequestAttemptRecord.model_validate(attempt[0]).payload.url)
         == url + "/chat/completions"
     )
 

@@ -1,7 +1,7 @@
 -- Запрос действия у клиента: одна elicitation_request -> вызов ACP elicitation/create.
 -- Вызывается после сохранения вопроса; восстановление истории его не запускает.
--- Ручной просмотр: в params подставить 'sql-acp-demo', 'pending-form' и выполнить весь файл.
--- 'url' выбирает внешнее действие; 'form' уже отвечен и будет отклонён валидатором.
+-- Ручной просмотр: в params подставить 'sql-acp-actions', 'form' и выполнить весь файл.
+-- 'url' выбирает внешнее действие; 'sql-acp-demo', 'question' уже отвечен.
 -- Результат: method, params и данные проверки. RPC id и отправку обеспечивает транспорт.
 -- Подробнее: docs/agent-history-to-acp.md, раздел «Как использовать запросы».
 with
@@ -20,7 +20,8 @@ history as not materialized (
         r.role,
         r.key,
         r.operation,
-        r.request_id,
+        r.operation_id,
+        r.scope,
         r.copied_from_id,
         r.created_at,
         r.version,

@@ -64,11 +64,8 @@ async def test_catalog_changes_and_compaction_keep_replay_deterministic(history)
         raise AssertionError(f"Unexpected notification: {method}")
 
     async def build():
-        boundary = agent.make(m.LlmRequestBoundaryRecord)
-        await agent.append([boundary])
-        return boundary.record_id, (
-            await history.openai(sid, boundary.record_id)
-        ).request
+        head = await history.head(sid)
+        return head, (await history.openai(sid, through_seq=head)).request
 
     try:
         user = agent.make(
@@ -81,10 +78,6 @@ async def test_catalog_changes_and_compaction_keep_replay_deterministic(history)
                     payload={"provider": "test", "value": {"model": "test"}},
                 ),
                 user,
-                agent.make(
-                    m.MessageAcceptedRecord,
-                    payload={"source_record_id": user.record_id},
-                ),
                 *tools.builtins(agent),
             ]
         )
@@ -140,8 +133,8 @@ async def test_catalog_changes_and_compaction_keep_replay_deterministic(history)
                 "content": [{"type": "text", "text": "Saved summary 世界\r\n"}],
             }
         ]
-        assert (await history.openai(sid, first_id)).request == first
-        assert (await history.openai(sid, before_id)).request == before
+        assert (await history.openai(sid, through_seq=first_id)).request == first
+        assert (await history.openai(sid, through_seq=before_id)).request == before
 
         await tools.compact(agent)
         _, twice = await build()
@@ -158,7 +151,7 @@ async def test_catalog_changes_and_compaction_keep_replay_deterministic(history)
         await tools.compact(agent)
         _, without_schema = await build()
         assert without_schema["tools"] == removed["tools"]
-        assert (await history.openai(sid, before_id)).request == before
+        assert (await history.openai(sid, through_seq=before_id)).request == before
 
         rows = (await history.read(sid)).rows
         assert any(row.kind == "request_output" for row in rows)
@@ -167,3 +160,92 @@ async def test_catalog_changes_and_compaction_keep_replay_deterministic(history)
         await agent.close()
         async with history.pool.connection() as conn:
             await conn.execute("delete from boba.records where session_id = %s", (sid,))
+
+
+@pytest.mark.anyio
+@pytest.mark.integration
+async def test_compaction_preserves_pending_call_group_and_remaps_results(history):
+    sid = "compact-pending-" + uuid4().hex
+    tools = ToolRunner()
+    agent = Agent(sid, history, Summary(), tools, version="test")
+    try:
+        model = agent.make(
+            m.ModelRecord, payload={"provider": "test", "value": {"model": "test"}}
+        )
+        origin = agent.make(
+            m.NoticeRecord,
+            payload={"level": "info", "content": [m.TextPart(text="Origin")]},
+        )
+        await agent.append([model, origin])
+        assistant = agent.make(
+            m.AssistantMessageRecord,
+            parent_operation_id=origin.operation_id,
+            payload={
+                "content": [
+                    m.ToolCallReferencePart(call_id="a"),
+                    m.ToolCallReferencePart(call_id="b"),
+                ]
+            },
+        )
+        pieces: list[m.HistoryRecord] = [assistant]
+        calls = []
+        for key in ("a", "b"):
+            call = agent.make(
+                m.ToolCallRecord,
+                key=key,
+                payload={
+                    "assistant_record_id": assistant.record_id,
+                    "name": "test",
+                    "arguments": {},
+                },
+            )
+            calls.append(call)
+            pieces.extend(
+                [
+                    call,
+                    agent.make(
+                        m.ToolResultRecord,
+                        key=key,
+                        payload={
+                            "call_record_id": call.record_id,
+                            "status": "pending",
+                            "content": [m.TextPart(text="Pending " + key)],
+                        },
+                    ),
+                ]
+            )
+        await agent.append(
+            agent.records.group(pieces, assistant.operation_id, origin.operation_id)
+        )
+        latest = agent.make(
+            m.ToolResultRecord,
+            key="a",
+            payload={
+                "call_record_id": calls[0].record_id,
+                "status": "completed",
+                "content": [m.TextPart(text="Completed a")],
+            },
+        )
+        await agent.append([latest])
+        original = await history.openai(sid)
+        await tools.compact(agent)
+        rebuilt = await history.openai(sid)
+        assert rebuilt.request["messages"][1:] == original.request["messages"]
+        rows = (await history.read(sid)).rows
+        copies = {
+            row.copied_from_id: row for row in rows if row.copied_from_id is not None
+        }
+        copied_call = m.ToolCallRecord.model_validate(copies[calls[0].record_id])
+        copied_result = m.ToolResultRecord.model_validate(copies[latest.record_id])
+        assert (
+            copied_call.payload.assistant_record_id
+            == copies[assistant.record_id].record_id
+        )
+        assert copied_result.payload.call_record_id == copied_call.record_id
+        assert copied_result.operation_id != copied_call.operation_id
+    finally:
+        await agent.close()
+        async with history.pool.connection() as connection:
+            await connection.execute(
+                "delete from boba.records where session_id = %s", (sid,)
+            )

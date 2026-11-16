@@ -30,7 +30,7 @@ class BackgroundTool:
 
 @pytest.mark.anyio
 @pytest.mark.integration
-async def test_background_result_is_admitted_after_tool_result_and_acknowledged(
+async def test_background_result_replaces_initial_snapshot_and_resumes_generation(
     history,
     agent_timeout: float,
 ):
@@ -38,13 +38,16 @@ async def test_background_result_is_admitted_after_tool_result_and_acknowledged(
     llm, tool = Llm(), BackgroundTool()
     agent = Agent(sid, history, llm, tool, version="test")
     try:
-        await agent.append(
+        await history.create_session(
+            sid,
+            "test",
+            "/workspace",
             [
                 agent.make(
                     m.ModelRecord,
                     payload={"provider": "test", "value": {"model": "test"}},
                 )
-            ]
+            ],
         )
         await agent.submit([m.TextPart(text="Start")])
         async with asyncio.timeout(agent_timeout):
@@ -60,12 +63,22 @@ async def test_background_result_is_admitted_after_tool_result_and_acknowledged(
         assert len(llm.requests) == 3
         assert "Background result 世界" in str(llm.requests[-1]["messages"])
         rows = (await history.read(sid)).rows
-        assert len([r for r in rows if r.kind == "task_notification"]) == 1
-        assert len([r for r in rows if r.kind == "task_acknowledged"]) == 1
-        for boundary, sent in zip(
-            [r for r in rows if r.category == "request"], llm.requests, strict=True
-        ):
-            assert (await history.openai(sid, boundary.record_id)).request == sent
+        results = [r for r in rows if isinstance(r, m.ToolResultRecord)]
+        assert [r.payload.status for r in results] == [
+            "pending",
+            "running",
+            "completed",
+        ]
+        assert len({r.key for r in results}) == 1
+        assert results[1].payload.state is not None
+        assert results[2].payload.state is not None
+        assert results[1].payload.state.task_id == results[2].payload.state.task_id
+        assert results[2].payload.state.revision > results[1].payload.state.revision
+        assert results[2].payload.content == (
+            m.TextPart(text="Background result 世界"),
+        )
+        assert all(r.category != "input" for r in rows)
+
     finally:
         await agent.close()
         async with history.pool.connection() as conn:
@@ -133,8 +146,8 @@ async def test_subagent_has_own_history_and_parent_call_keeps_normal_pair(
         parent_rows = (await history.read(parent.session_id)).rows
         child_rows = (await history.read(child.session_id)).rows
         assert any(row.kind == "subagent_session" for row in child_rows)
-        result = next(row for row in parent_rows if row.kind == "tool_result")
-        assert not result.payload.is_error
+        result = next(row for row in reversed(parent_rows) if row.kind == "tool_result")
+        assert result.payload.status == "completed"
         assert result.payload.content[0].text == "child done"
         assert [part["role"] for part in llm.requests[-1]["messages"]][-3:] == [
             "user",

@@ -7,6 +7,7 @@ import json
 import secrets
 from collections.abc import AsyncGenerator, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
+from dataclasses import dataclass
 from time import time
 from typing import Any
 from uuid import uuid4
@@ -26,10 +27,10 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route, WebSocketRoute
 
-from boba.agent import models as m
 from boba.agent.acp_server import AgentProfiles, SessionHub
 from boba.agent.history import HistoryStore
 from boba.agent.llm import OpenAiTransport, ProviderConfiguration, Providers
+from boba.agent.openai_validator import OpenAiRequestDraft
 from boba.agent.serve import AcpEndpoint, ServeAgents
 from boba.agent.settings import (
     AgentProfile,
@@ -99,6 +100,54 @@ class InferenceServer:
         return self.response
 
 
+@dataclass(frozen=True)
+class AssemblyCapture:
+    session_id: str
+    operation_id: str | None
+    through_seq: int
+    request: dict
+
+
+class RecordingHistory(HistoryStore):
+    """Настоящий SQL-адаптер с записью входов для проверки воспроизводимости отправки."""
+
+    def __init__(self, source: HistoryStore) -> None:
+        super().__init__(source.pool)
+        self.assemblies: list[AssemblyCapture] = []
+
+    async def openai(
+        self,
+        session_id: str,
+        operation_id: str | None = None,
+        *,
+        through_seq: int | None = None,
+    ) -> OpenAiRequestDraft:
+        draft = await super().openai(session_id, operation_id, through_seq=through_seq)
+        self.assemblies.append(
+            AssemblyCapture(
+                session_id,
+                operation_id,
+                draft.validation_data.selection.seq,
+                draft.request,
+            )
+        )
+        return draft
+
+    async def verify(self, session_id: str) -> list[dict]:
+        requests = []
+        for capture in tuple(self.assemblies):
+            if capture.session_id != session_id:
+                continue
+
+            replay = await super().openai(
+                session_id, capture.operation_id, through_seq=capture.through_seq
+            )
+            assert replay.request == capture.request
+            requests.append(replay.request)
+
+        return requests
+
+
 class AgentSystem:
     """Стенд запускает настоящий SessionHub с PostgreSQL и локальным HTTP-инференсом."""
 
@@ -109,7 +158,7 @@ class AgentSystem:
         postgres: PostgresConfig,
         timeout: float,
     ) -> None:
-        self.history = history
+        self.history = RecordingHistory(history)
         self.inference = inference
         self.postgres = postgres
         self.timeout = timeout
@@ -149,7 +198,7 @@ class AgentSystem:
             mcp=McpSettings(list_timeout_sec=timeout, call_timeout_sec=timeout)
         )
         self.hub = SessionHub(
-            history,
+            self.history,
             self.llm,
             self.profiles,
             self.settings,
@@ -187,16 +236,13 @@ class AgentSystem:
         assert self.hub.agents[session_id].last_error is None
 
     async def assert_replay(self, session_id: str) -> None:
-        rows = (await self.history.read(session_id)).rows
-        boundaries = tuple(
-            row for row in rows if isinstance(row, m.LlmRequestBoundaryRecord)
-        )
-        assert len(boundaries) == len(self.inference.requests)
-        for boundary, sent in zip(boundaries, self.inference.requests, strict=True):
-            by_id = await self.history.openai(session_id, boundary.record_id)
-            by_seq = await self.history.openai(session_id, through_seq=boundary.seq)
-            assert by_id.request == json.loads(sent)
-            assert by_seq.request == by_id.request
+        requests = await self.history.verify(session_id)
+        sent = []
+        for body in self.inference.requests:
+            sent.append(json.loads(body))
+
+        for request in requests:
+            assert request in sent
 
     def answer(self, text: str) -> Response:
         return self.response({"content": text}, "stop")

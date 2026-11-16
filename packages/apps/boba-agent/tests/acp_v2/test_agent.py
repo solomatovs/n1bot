@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from uuid import uuid4
 
 import pytest
@@ -235,14 +235,14 @@ async def test_mcp_timeout_does_not_select_another_binding(system: V2System) -> 
         client.mcp.connect_ready.set()
 
 
-async def test_acp_tools_accept_all_pending_inputs_and_resume_after_restart(  # noqa: PLR0915
+async def test_acp_tools_accept_all_pending_messages_and_resume_after_restart(  # noqa: PLR0915
     system: V2System,
 ) -> None:
     first = await system.client()
     first.mcp.release_tool.clear()
     finish_response = asyncio.Event()
 
-    async def body() -> AsyncIterator[bytes]:
+    async def body() -> AsyncGenerator[bytes, None]:
         yield b'data: {"choices":[{"delta":{"content":"First "}}]}\n\n'
         await finish_response.wait()
         yield (
@@ -270,7 +270,7 @@ async def test_acp_tools_accept_all_pending_inputs_and_resume_after_restart(  # 
             ids.append(await first.prompt(sid, text))
 
         assert [
-            row.record_id for row in await system.history.pending_inputs(sid)
+            row.record_id for row in await system.history.pending_messages(sid)
         ] == ids
         assert len(system.inference.requests) == 2
         assert not second.chunks()
@@ -307,7 +307,7 @@ async def test_acp_tools_accept_all_pending_inputs_and_resume_after_restart(  # 
             if message.message_id == chunks[0].message_id
         )
         assert final.content[0].text == "First answer"
-        assert not await system.history.pending_inputs(sid)
+        assert not await system.history.pending_messages(sid)
         await system.assert_replay(sid)
 
         await system.restart()
@@ -351,18 +351,20 @@ async def test_permission_selection_controls_execution_and_survives_resume(
     results = tuple(
         row
         for row in rows
-        if isinstance(row, m.ToolResultRecord) and row.payload.call_id != "select"
+        if isinstance(row, m.ToolResultRecord)
+        and row.key != "select"
+        and row.payload.status not in {"pending", "running"}
     )
     assert len(results) == 2
     if choice == "session":
         assert len(client.permissions) == 1
         assert len(client.mcp.tool_calls) == 2
-        assert all(not row.payload.is_error for row in results)
+        assert all(row.payload.status == "completed" for row in results)
 
     else:
         assert len(client.permissions) == 2
         assert not client.mcp.tool_calls
-        assert all(row.payload.is_error for row in results)
+        assert all(row.payload.status == "failed" for row in results)
 
     assert any(isinstance(row, m.PermissionResponseRecord) for row in rows)
     assert len(client.messages("agent_message")) == 1
@@ -434,13 +436,13 @@ async def test_permission_classifier_saves_failure_and_denies_execution(
     notices = await system.history.latest(sid, kind="notice")
     if failed:
         assert len(notices) == 1
-        notice = m.TextNoticeRecord.model_validate(notices[0])
+        notice = m.NoticeRecord.model_validate(notices[0])
         assert notice.payload.level == "error"
         assert notice.payload.content[0].text == verdict.payload.reason
         assert "execution denied" in verdict.payload.reason
         assert "mcp__workspace__echo" in verdict.payload.reason
-        assert notice.request_id is not None
-        assert notice.request_id in verdict.payload.reason
+        assert notice.parent_operation_id is not None
+        assert notice.parent_operation_id in verdict.payload.reason
         await client.until("notice")
 
     else:
@@ -458,7 +460,7 @@ async def test_acp_cancel_saves_partial_reply_and_next_prompt_recovers(
 ) -> None:
     blocked = asyncio.Event()
 
-    async def body() -> AsyncIterator[bytes]:
+    async def body() -> AsyncGenerator[bytes, None]:
         yield b'data: {"choices":[{"delta":{"content":"Partial"}}]}\n\n'
         await blocked.wait()
 
@@ -503,14 +505,13 @@ async def test_retries_share_request_id_and_session_is_private(
     await client.prompt(sid, "Retry")
     await system.idle(sid)
     rows = (await system.history.read(sid)).rows
-    boundaries = tuple(
-        row for row in rows if isinstance(row, m.LlmRequestBoundaryRecord)
-    )
     attempts = tuple(row for row in rows if isinstance(row, m.LlmRequestAttemptRecord))
-    assert len(boundaries) == 1
     assert [row.payload.attempt for row in attempts] == [1, 2, 3]
     assert [row.payload.status_code for row in attempts] == [503, 503, 200]
-    assert {row.request_id for row in attempts} == {boundaries[0].record_id}
+    assert len({row.operation_id for row in attempts}) == 3
+    assert attempts[0].parent_operation_id is None
+    assert attempts[1].parent_operation_id == attempts[0].operation_id
+    assert attempts[2].parent_operation_id == attempts[1].operation_id
     assert all(
         body == system.inference.requests[0] for body in system.inference.requests
     )
@@ -527,8 +528,7 @@ async def test_retries_share_request_id_and_session_is_private(
     assert not other.updates
     listing = await other.connection.send_request("session/list", {})
     assert listing["sessions"] == []
-    draft = await system.history.openai(sid, boundaries[0].record_id)
-    assert draft.request == json.loads(system.inference.requests[0])
+    await system.assert_replay(sid)
 
 
 async def test_two_sessions_stream_concurrently_and_keep_separate_histories(
@@ -536,7 +536,7 @@ async def test_two_sessions_stream_concurrently_and_keep_separate_histories(
 ) -> None:
     release = asyncio.Event()
 
-    async def body() -> AsyncIterator[bytes]:
+    async def body() -> AsyncGenerator[bytes, None]:
         yield b'data: {"choices":[{"delta":{"content":"Concurrent"}}]}\n\n'
         await release.wait()
         yield b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
@@ -570,13 +570,7 @@ async def test_two_sessions_stream_concurrently_and_keep_separate_histories(
             users = tuple(row for row in rows if isinstance(row, m.UserMessageRecord))
             assert len(users) == 1
             assert users[0].payload.content == (m.TextPart(text=text),)
-            boundary = next(
-                row for row in rows if isinstance(row, m.LlmRequestBoundaryRecord)
-            )
-            rebuilt = await system.history.openai(sid, boundary.record_id)
-            assert rebuilt.request in tuple(
-                json.loads(body) for body in system.inference.requests
-            )
+            await system.assert_replay(sid)
 
     finally:
         release.set()
@@ -812,13 +806,15 @@ async def test_missing_attachment_reader_preserves_tool_failure_without_chat_noi
     decisions = []
     for record in records:
         if isinstance(record, m.ToolResultRecord):
+            if record.payload.status == "pending":
+                continue
             results.append(record)
 
         if isinstance(record, m.PermissionDecisionRecord):
             decisions.append(record)
 
     assert len(results) == 1
-    assert results[0].payload.is_error
+    assert results[0].payload.status == "failed"
     error = results[0].payload.content[0]
     assert isinstance(error, m.TextPart)
     assert "Tool tool_search, call select-reader failed:" in error.text

@@ -29,6 +29,7 @@ from boba.agent.models import (
     HistoryRecord,
     HistoryWriteError,
     SessionForkedRecord,
+    ToolCallRecord,
 )
 from boba.agent.openai_validator import OpenAiRequestDraft, OpenAiRequestValidator
 from boba.agent.queries import Query
@@ -86,11 +87,30 @@ class HistoryStore:
         self, session_id: str, *, after_seq: int = 0, through_seq: int | None = None
     ) -> History:
         rows = await self.rows(Query.READ, session_id, after_seq, through_seq)
-        return History.model_validate({"session_id": session_id, "rows": rows})
+        records = []
+        for row in rows:
+            records.append(row["record"])
 
-    async def pending_inputs(self, session_id: str) -> tuple[HistoryRecord, ...]:
-        rows = await self.rows(Query.PENDING_INPUTS, session_id, None)
-        return tuple(HISTORY_RECORD_ADAPTER.validate_python(row) for row in rows)
+        return History.model_validate({"session_id": session_id, "rows": records})
+
+    async def pending_messages(self, session_id: str) -> tuple[HistoryRecord, ...]:
+        rows = await self.rows(Query.PENDING_MESSAGES, session_id)
+        return tuple(
+            HISTORY_RECORD_ADAPTER.validate_python(row["record"]) for row in rows
+        )
+
+    async def advance(self, session_id: str, input_seq: int) -> None:
+        await self.rows(Query.ADVANCE, session_id, input_seq)
+
+    async def tool_calls(
+        self, session_id: str, assistant_record_id: str
+    ) -> tuple[ToolCallRecord, ...]:
+        rows = await self.rows(Query.TOOL_CALLS, session_id, assistant_record_id)
+        calls = []
+        for row in rows:
+            calls.append(ToolCallRecord.model_validate(row["record"]))
+
+        return tuple(calls)
 
     async def head(self, session_id: str) -> int:
         return (await self.rows(Query.HEAD, session_id))[0]["seq"]
@@ -113,7 +133,9 @@ class HistoryStore:
         rows = await self.rows(
             Query.LATEST, session_id, category, kinds, key, through_seq
         )
-        return tuple(HISTORY_RECORD_ADAPTER.validate_python(row) for row in rows)
+        return tuple(
+            HISTORY_RECORD_ADAPTER.validate_python(row["record"]) for row in rows
+        )
 
     async def create_session(
         self,
@@ -149,7 +171,7 @@ class HistoryStore:
             if not source:
                 raise LookupError(f"Session {source_session_id!r} was not found")
 
-            pending = await transaction.pending_inputs()
+            pending = await transaction.pending_messages()
             if pending:
                 raise ValueError("Cannot fork a session with pending user messages")
 
@@ -165,12 +187,12 @@ class HistoryStore:
             draft = OpenAiRequestDraft.model_validate(raw)
             OpenAiRequestValidator().require_valid(draft)
 
-            tasks = await transaction.rows(Query.SESSION_TASKS, source_session_id)
+            tasks = await transaction.rows(Query.TOOL_RESULTS, source_session_id)
             for task in tasks:
                 if task["status"] in {"pending", "running"}:
                     raise ValueError(
                         f"Cannot fork session {source_session_id!r}: "
-                        f"task {task['task_id']!r} is {task['status']}"
+                        f"call {task['call_id']!r} is {task['status']}"
                     )
 
             await transaction.rows(Query.LOCK, session_id)
@@ -183,11 +205,11 @@ class HistoryStore:
     async def openai(
         self,
         session_id: str,
-        request_id: str | None = None,
+        operation_id: str | None = None,
         *,
         through_seq: int | None = None,
     ) -> OpenAiRequestDraft:
-        raw = (await self.rows(Query.OPENAI, session_id, request_id, through_seq))[0]
+        raw = (await self.rows(Query.OPENAI, session_id, operation_id, through_seq))[0]
         draft = OpenAiRequestDraft.model_validate(raw)
         OpenAiRequestValidator().require_valid(draft)
         return draft
@@ -236,9 +258,11 @@ class HistoryTransaction:
     async def head(self) -> int:
         return (await self.rows(Query.HEAD, self.session_id))[0]["seq"]
 
-    async def pending_inputs(self) -> tuple[HistoryRecord, ...]:
-        rows = await self.rows(Query.PENDING_INPUTS, self.session_id, None)
-        return tuple(HISTORY_RECORD_ADAPTER.validate_python(row) for row in rows)
+    async def pending_messages(self) -> tuple[HistoryRecord, ...]:
+        rows = await self.rows(Query.PENDING_MESSAGES, self.session_id)
+        return tuple(
+            HISTORY_RECORD_ADAPTER.validate_python(row["record"]) for row in rows
+        )
 
     async def append(
         self, records: Sequence[HistoryRecord], *, expected_seq: int | None = None
@@ -272,15 +296,15 @@ class HistoryTransaction:
                 )
             )[0]["errors"]
             if issues:
-                raise self.failure("invalid_reference")
+                raise self.failure("invalid_reference", details=str(issues))
         return saved
 
-    def failure(self, code: str) -> HistoryWriteError:
+    def failure(self, code: str, *, details: str = "") -> HistoryWriteError:
         return HistoryWriteError(
             session_id=self.session_id,
             record_ids=tuple(self.record_ids),
             code=code,
-            message=f"History write rejected: {code}",
+            message=f"History write rejected in {self.session_id}: {code}. {details}",
         )
 
 

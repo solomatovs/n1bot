@@ -53,7 +53,7 @@ class NegotiatedMcp:
 @dataclass(frozen=True)
 class McpInvocation:
     reply: m.AssistantMessageRecord
-    call: m.ToolCallPart
+    call: m.ToolCallRecord
 
 
 class McpPeer:
@@ -214,7 +214,7 @@ class McpPeer:
 
     @asynccontextmanager
     async def executing(
-        self, reply: m.AssistantMessageRecord, call: m.ToolCallPart
+        self, reply: m.AssistantMessageRecord, call: m.ToolCallRecord
     ) -> AsyncGenerator[None, None]:
         if self.invocation is not None:
             raise RuntimeError(
@@ -377,7 +377,7 @@ class ToolRunner:
         self.refresh_lock = asyncio.Lock()
         self.launch_agent: (
             Callable[
-                [Agent, m.AssistantMessageRecord, m.ToolCallPart], Awaitable[tuple]
+                [Agent, m.AssistantMessageRecord, m.ToolCallRecord], Awaitable[m.ToolResultRecord]
             ]
             | None
         ) = None
@@ -482,9 +482,9 @@ class ToolRunner:
                 question = peer.agent.make(
                     m.ElicitationRequestRecord,
                     payload={
-                        "source": invocation.call.name,
+                        "source": invocation.call.payload.name,
                         "related_message_id": invocation.reply.record_id,
-                        "call_id": invocation.call.call_id,
+                        "call_id": invocation.call.key,
                         "message": form.message,
                         "mode": mode,
                         "requested_schema": getattr(form, "requested_schema", None),
@@ -599,7 +599,7 @@ class ToolRunner:
                 )
             )
         if records:
-            await agent.append(records)
+            await agent.append(agent.records.group(records, uuid4().hex))
 
     def builtins(self, agent: Agent) -> list:
         definition = {
@@ -722,25 +722,27 @@ class ToolRunner:
                 m.ToolReferencePart(name=name, catalog_revision=catalog[name].record_id)
             )
         if records:
-            await agent.append(records)
+            await agent.append(agent.records.group(records, uuid4().hex))
         return tuple(parts)
 
-    async def call(self, agent: Agent, reply, call: m.ToolCallPart) -> tuple:
+    async def call(
+        self, agent: Agent, reply, call: m.ToolCallRecord
+    ) -> tuple[m.ToolResultPart, ...] | m.ToolResultRecord:
         if not await self.allowed(agent, reply, call):
             raise PermissionError("Tool execution denied")
-        if call.name == "tool_search":
-            return await self.search(agent, call.arguments)
-        if call.name == "agent" and self.launch_agent is not None:
+        if call.payload.name == "tool_search":
+            return await self.search(agent, call.payload.arguments)
+        if call.payload.name == "agent" and self.launch_agent is not None:
             return await self.launch_agent(agent, reply, call)
         catalog = await agent.store.latest(
-            agent.session_id, category="tool_catalog", key=call.name
+            agent.session_id, category="tool_catalog", key=call.payload.name
         )
         if not catalog or catalog[0].operation == "remove":
             raise LookupError("Tool is unavailable")
-        if not call.name.startswith("mcp__"):
+        if not call.payload.name.startswith("mcp__"):
             raise LookupError("No executor for this tool")
-        _, server, name = call.name.split("__", 2)
-        params = {"name": name, "arguments": call.arguments}
+        _, server, name = call.payload.name.split("__", 2)
+        params = {"name": name, "arguments": call.payload.arguments}
         for _ in range(self.input_rounds + 1):
             peer = self.clients[agent.session_id][server]
             async with peer.executing(reply, call):
@@ -757,9 +759,9 @@ class ToolRunner:
                 question = agent.make(
                     m.ElicitationRequestRecord,
                     payload={
-                        "source": call.name,
+                        "source": call.payload.name,
                         "related_message_id": reply.record_id,
-                        "call_id": call.call_id,
+                        "call_id": call.key,
                         "message": form["message"],
                         "mode": form.get("mode", "form"),
                         "requested_schema": form.get("requestedSchema"),
@@ -781,7 +783,7 @@ class ToolRunner:
             raise ToolExecutionError(content_parts(result.get("content", [])))
         return content_parts(result.get("content", []))
 
-    async def allowed(self, agent: Agent, reply, call: m.ToolCallPart) -> bool:
+    async def allowed(self, agent: Agent, reply, call: m.ToolCallRecord) -> bool:
         states = await agent.store.latest(agent.session_id, kind="permission_state")
         state = (
             m.PermissionStateRecord.model_validate(states[0]).payload
@@ -793,11 +795,11 @@ class ToolRunner:
         rules: dict[str, Literal["allow", "deny", "ask"]] = {
             rule.tool: rule.decision for rule in state.rules
         }
-        decision: Literal["allow", "deny", "ask"] | None = rules.get(call.name)
+        decision: Literal["allow", "deny", "ask"] | None = rules.get(call.payload.name)
         reason = "session_policy"
 
         if decision is None:
-            if call.name == "tool_search" or state.mode == "bypass_permissions":
+            if call.payload.name == "tool_search" or state.mode == "bypass_permissions":
                 decision = "allow"
             elif state.mode in {"plan", "dont_ask"}:
                 decision = "deny"
@@ -826,8 +828,8 @@ class ToolRunner:
                 m.PermissionRequestRecord,
                 payload={
                     "related_message_id": reply.record_id,
-                    "call_id": call.call_id,
-                    "title": f"Run {call.name}?",
+                    "call_id": call.key,
+                    "title": f"Run {call.payload.name}?",
                     "options": options,
                 },
             )
@@ -846,41 +848,48 @@ class ToolRunner:
                         )
                         action = "selected"
             finally:
-                await agent.append(
-                    [
-                        agent.make(
-                            m.PermissionResponseRecord,
-                            payload={
-                                "permission_request_id": question.record_id,
-                                "action": action,
-                                "option_id": selected.option_id if selected else None,
-                            },
+                option_id = None
+                decision = "deny"
+                if selected is not None:
+                    option_id = selected.option_id
+                    decision = selected.decision
+
+                records: list[m.HistoryRecord] = [
+                    agent.make(
+                        m.PermissionResponseRecord,
+                        payload={
+                            "permission_request_id": question.record_id,
+                            "action": action,
+                            "option_id": option_id,
+                        },
+                    )
+                ]
+                if selected is not None:
+                    if selected.scope == "session":
+                        rules[call.payload.name] = decision
+                        updated_rules = []
+                        for name, value in rules.items():
+                            updated_rules.append(
+                                m.PermissionRule(tool=name, decision=value)
+                            )
+
+                        records.append(
+                            agent.make(
+                                m.PermissionStateRecord,
+                                payload={"mode": state.mode, "rules": updated_rules},
+                            )
                         )
-                    ]
-                )
-            decision = selected.decision if selected else "deny"
-            if selected and selected.scope == "session":
-                rules[call.name] = decision
+
                 await agent.append(
-                    [
-                        agent.make(
-                            m.PermissionStateRecord,
-                            payload={
-                                "mode": state.mode,
-                                "rules": [
-                                    m.PermissionRule(tool=name, decision=value)
-                                    for name, value in rules.items()
-                                ],
-                            },
-                        )
-                    ]
+                    agent.records.group(records, uuid4().hex, question.operation_id)
                 )
+
         await agent.append(
             [
                 agent.make(
                     m.PermissionDecisionRecord,
                     payload={
-                        "call_id": call.call_id,
+                        "call_id": call.key,
                         "decision": decision,
                         "reason": reason,
                     },
@@ -890,20 +899,20 @@ class ToolRunner:
         return decision == "allow"
 
     async def classify(
-        self, agent: Agent, call: m.ToolCallPart
+        self, agent: Agent, call: m.ToolCallRecord
     ) -> m.PermissionDecisionRecord.Payload:
-        request_id = uuid4().hex
+        operation_id = uuid4().hex
         catalog = await agent.store.latest(
-            agent.session_id, category="tool_catalog", key=call.name
+            agent.session_id, category="tool_catalog", key=call.payload.name
         )
         description = ""
         for item in catalog:
             if isinstance(item, m.ToolAddedRecord):
                 description = item.payload.tool.description
 
-        inputs = tuple(self._classifier_inputs(agent, call, request_id, description))
+        inputs = tuple(self._classifier_inputs(agent, call, operation_id, description))
         try:
-            response = await agent.service_request(inputs, request_id)
+            response = await agent.service_request(inputs, operation_id)
             if response.payload.completion != "complete":
                 raise ValueError(
                     "Expected a complete classifier response, "
@@ -914,38 +923,38 @@ class ToolRunner:
             value = PermissionClassification.model_validate_json(text)
 
             return m.PermissionDecisionRecord.Payload(
-                call_id=call.call_id,
+                call_id=call.key,
                 decision=value.decision,
-                reason=f"Classifier request {request_id}",
+                reason=f"Classifier request {operation_id}",
             )
 
         except (LlmError, ValueError) as exc:
             reason = (
-                f"Permission classification for tool {call.name}, call {call.call_id}, "
-                f"request {request_id} failed; execution denied: {exc}"
+                f"Permission classification for tool {call.payload.name}, call {call.key}, "
+                f"request {operation_id} failed; execution denied: {exc}"
             )
             notice = agent.make(
-                m.TextNoticeRecord,
-                request_id=request_id,
+                m.NoticeRecord,
+                parent_operation_id=operation_id,
                 payload={"level": "error", "content": [m.TextPart(text=reason)]},
             )
             await agent.append([notice])
 
             return m.PermissionDecisionRecord.Payload(
-                call_id=call.call_id, decision="deny", reason=reason
+                call_id=call.key, decision="deny", reason=reason
             )
 
-    def _classification_text(self, content: Sequence[m.AssistantPart]) -> Iterator[str]:
+    def _classification_text(self, content: Sequence[m.MessagePart]) -> Iterator[str]:
         for part in content:
             if isinstance(part, m.TextPart):
                 yield part.text
 
     def _classifier_inputs(
-        self, agent: Agent, call: m.ToolCallPart, request_id: str, description: str
+        self, agent: Agent, call: m.ToolCallRecord, operation_id: str, description: str
     ) -> Iterator[m.HistoryRecord]:
         yield agent.make(
-            m.RequestContextRecord,
-            request_id=request_id,
+            m.AssemblyContextRecord,
+            operation_id=operation_id,
             payload={"mode": "isolated"},
         )
 
@@ -961,27 +970,28 @@ class ToolRunner:
         yield agent.make(
             m.SystemPromptAddedRecord,
             key="permission.classifier",
-            request_id=request_id,
+            scope="request",
+            operation_id=operation_id,
             payload={"content": [instruction]},
         )
 
         source = {
-            "tool": call.name,
+            "tool": call.payload.name,
             "description": description,
-            "arguments": call.arguments,
+            "arguments": call.payload.arguments,
         }
         text = json.dumps(source, ensure_ascii=False)
 
         yield agent.make(
             m.RequestMessageRecord,
-            request_id=request_id,
+            operation_id=operation_id,
             payload={"content": [m.TextPart(text=text)]},
         )
 
         schema = PermissionClassification.model_json_schema()
         yield agent.make(
             m.ResponseFormatRecord,
-            request_id=request_id,
+            operation_id=operation_id,
             payload={
                 "value": {
                     "response_format": {
@@ -1017,17 +1027,17 @@ class ToolRunner:
         if not agent.idle.is_set():
             raise RuntimeError("Compaction requires completed LLM and tool messages")
         head = await agent.store.head(agent.session_id)
-        request_id = uuid4().hex
+        operation_id = uuid4().hex
         reply = await agent.service_request(
             [
                 agent.make(
-                    m.RequestContextRecord,
-                    request_id=request_id,
+                    m.AssemblyContextRecord,
+                    operation_id=operation_id,
                     payload={"mode": "conversation", "through_seq": head},
                 ),
                 agent.make(
                     m.RequestMessageRecord,
-                    request_id=request_id,
+                    operation_id=operation_id,
                     payload={
                         "content": [
                             m.TextPart(
@@ -1038,56 +1048,38 @@ class ToolRunner:
                 ),
                 agent.make(
                     m.ToolChoiceRecord,
-                    request_id=request_id,
+                    operation_id=operation_id,
                     payload={"value": {"tool_choice": "none"}},
                 ),
             ],
-            request_id,
+            operation_id,
         )
         content = [
             part for part in reply.payload.content if isinstance(part, m.TextPart)
         ]
         if reply.payload.completion != "complete" or not content:
             raise ValueError("Compaction summary is incomplete")
-        # Snapshot/copies are prepared by the producer; the request adapter never rereads external data.
-        snapshots = await agent.store.rows(Query.COMPACT_STATE, agent.session_id, head)
-        ids = {row["record_id"]: uuid4().hex for row in snapshots}
-        copies = []
-        for row in snapshots:
-            source = row["record_id"]
-            row.update(
-                session_id=None, seq=None, record_id=ids[source], copied_from_id=source
-            )
-            if row["category"] == "tool_schema":
-                revision = row["payload"]["catalog_revision"]
-                row["payload"]["catalog_revision"] = ids[revision]
-            copies.append(m.HISTORY_RECORD_ADAPTER.validate_python(row))
-        # Refuse concurrent edits to persistent context; inputs may safely wait across compaction.
         async with agent.lock:
             async with agent.store.transaction(agent.session_id) as transaction:
-                newer = await transaction.rows(Query.READ, agent.session_id, head, None)
-                if any(
-                    row["category"]
-                    not in {
-                        "input",
-                        "operational",
-                        "request",
-                        "request_context",
-                        "request_message",
-                    }
-                    and row["request_id"] != request_id
-                    for row in newer
-                ):
-                    raise RuntimeError("Context changed during compaction")
-                saved = await transaction.append(
-                    [
-                        agent.make(
-                            m.CompactMessageRecord,
-                            payload={"reason": "manual", "content": content},
-                        ),
-                        *copies,
-                    ]
+                current = await transaction.head()
+                snapshots = await transaction.rows(
+                    Query.COMPACT_STATE, agent.session_id, current, head
                 )
+                values = []
+                for row in snapshots:
+                    values.append(
+                        m.HISTORY_RECORD_ADAPTER.validate_python(row["record"])
+                    )
+
+                copies = agent.records.copy(values)
+                marker = agent.make(
+                    m.CompactMessageRecord,
+                    payload={"reason": "manual", "content": content},
+                )
+                saved = await transaction.append(
+                    [marker, *copies], expected_seq=current
+                )
+
             await agent._publish_saved(saved)
 
 

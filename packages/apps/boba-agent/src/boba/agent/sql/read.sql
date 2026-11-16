@@ -6,19 +6,7 @@ params as (
         $3::bigint as through_seq
 )
 select
-    r.session_id,
-    r.seq,
-    r.record_id,
-    r.kind,
-    r.category,
-    r.role,
-    r.key,
-    r.operation,
-    r.request_id,
-    r.copied_from_id,
-    r.created_at,
-    r.version,
-    r.payload
+    to_jsonb(r) - 'scope' || jsonb_strip_nulls(jsonb_build_object('scope', r.scope)) as record
 from
     params p
     join boba.records r on r.session_id = p.session_id

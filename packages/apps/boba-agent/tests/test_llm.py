@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from uuid import uuid4
 
 import pytest
@@ -14,7 +14,7 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 from boba.agent import models as m
 from boba.agent.history import HistoryStore
 from boba.agent.llm import Generation, UserInference
-from boba.agent.runtime import record
+from boba.agent.runtime import RecordFactory
 from boba.llm.chat import LlmError, LlmServiceError
 
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]
@@ -37,38 +37,28 @@ async def test_sql_body_is_unchanged_and_text_arrives_before_response_finishes( 
     output = Generation()
     session_id = "http-stream-" + uuid4().hex
     request_id = uuid4().hex
-    user = record(
+    user = RecordFactory("test").make(
         m.UserMessageRecord,
-        "test",
         payload={"content": [m.TextPart(text="Hello 世界\r\n")]},
     )
     rows = [
-        record(
+        RecordFactory("test").make(
             m.ModelRecord,
-            "test",
             payload={"provider": "test", "value": {"model": "sql-model"}},
         ),
-        record(
+        RecordFactory("test").make(
             m.ProviderParametersRecord,
-            "test",
             payload={"value": {"vendor_option": {"enabled": True}}},
         ),
         user,
-        record(
-            m.MessageAcceptedRecord,
-            "test",
-            payload={"source_record_id": user.record_id},
-        ),
-        record(
+        RecordFactory("test").make(
             m.StreamingRecord,
-            "test",
-            request_id=request_id,
+            operation_id=request_id,
             payload={"value": {"stream": True}},
         ),
-        record(m.LlmRequestBoundaryRecord, "test", record_id=request_id),
     ]
 
-    async def body() -> AsyncIterator[bytes]:
+    async def body() -> AsyncGenerator[bytes, None]:
         yield b': keepalive\r\n\r\nevent: chunk\r\nid: 1\r\ndata: {"choices":\r\n'
         yield 'data: [{"delta":{"content":"Начало 世界\\r\\n"}}]}\r\n\r\n'.encode()
         await release.wait()
@@ -131,8 +121,8 @@ async def test_sql_body_is_unchanged_and_text_arrives_before_response_finishes( 
         assert output.content() == (
             m.TextPart(text="Начало 世界\r\n"),
             m.ReasoningPart(text="thought", signature=None, format=None),
-            m.ToolCallPart(call_id="one", name="first", arguments={"x": 1}),
-            m.ToolCallPart(call_id="two", name="second", arguments={}),
+            m.ToolCallReferencePart(call_id="one"),
+            m.ToolCallReferencePart(call_id="two"),
             m.TextPart(text="end"),
         )
         assert deltas[-1] == (5, "text", "end")
@@ -180,8 +170,8 @@ async def test_non_stream_response_keeps_both_calls_and_refusal(
     await transport.generate("test", {"model": "test", "messages": []}, output, emit)
     assert output.content() == (
         m.TextPart(text="Refused"),
-        m.ToolCallPart(call_id="one", name="first", arguments={}),
-        m.ToolCallPart(call_id="two", name="second", arguments={"x": 2}),
+        m.ToolCallReferencePart(call_id="one"),
+        m.ToolCallReferencePart(call_id="two"),
     )
     assert output.usage is None
     assert deltas == [(1, "text", "Refused")]
@@ -248,7 +238,7 @@ async def test_cancellation_closes_http_while_callback_is_waiting(
     blocked = asyncio.Event()
     output = Generation()
 
-    async def body() -> AsyncIterator[bytes]:
+    async def body() -> AsyncGenerator[bytes, None]:
         try:
             yield b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'
             await blocked.wait()

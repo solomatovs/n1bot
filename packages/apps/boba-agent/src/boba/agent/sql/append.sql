@@ -19,7 +19,10 @@ incoming as materialized (
         r.role,
         r.key,
         r.operation,
-        r.request_id,
+        r.operation_id,
+        r.operation_position,
+        r.parent_operation_id,
+        r.scope,
         r.copied_from_id,
         r.created_at,
         r.version,
@@ -40,7 +43,7 @@ existing as materialized (
     select
         i.number,
         r.seq,
-        to_jsonb(r) as record,
+        to_jsonb(r) - 'scope' || jsonb_strip_nulls(jsonb_build_object('scope', r.scope)) as record,
         (to_jsonb(r) - 'session_id' - 'seq') =
             (to_jsonb(i) - 'number' - 'session_id' - 'seq') as matches
     from
@@ -93,13 +96,40 @@ decision as (
 ),
 written as (
     insert into boba.records (
-        session_id, seq, record_id, kind, category, role, key, operation,
-        request_id, copied_from_id, created_at, version, payload
+        session_id,
+        seq,
+        record_id,
+        operation_id,
+        operation_position,
+        parent_operation_id,
+        kind,
+        category,
+        role,
+        scope,
+        key,
+        operation,
+        copied_from_id,
+        created_at,
+        version,
+        payload
     )
     select
-        p.session_id, h.seq + i.number, i.record_id, i.kind, i.category,
-        i.role, i.key, i.operation, i.request_id, i.copied_from_id,
-        i.created_at, i.version, i.payload
+        p.session_id,
+        h.seq + i.number,
+        i.record_id,
+        i.operation_id,
+        i.operation_position,
+        i.parent_operation_id,
+        i.kind,
+        i.category,
+        i.role,
+        i.scope,
+        i.key,
+        i.operation,
+        i.copied_from_id,
+        i.created_at,
+        i.version,
+        i.payload
     from
         incoming i
         cross join params p
@@ -114,12 +144,15 @@ written as (
         session_id,
         seq,
         record_id,
+        operation_id,
+        operation_position,
+        parent_operation_id,
         kind,
         category,
         role,
+        scope,
         key,
         operation,
-        request_id,
         copied_from_id,
         created_at,
         version,
@@ -128,7 +161,7 @@ written as (
 receipts as (
     select
         w.seq,
-        to_jsonb(w) as record
+        to_jsonb(w) - 'scope' || jsonb_strip_nulls(jsonb_build_object('scope', w.scope)) as record
     from
         written w
     union all

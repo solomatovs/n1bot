@@ -25,7 +25,7 @@ from boba.agent import models as m
 from boba.agent.history import HistoryStore, _rows
 from boba.agent.llm import Providers
 from boba.agent.queries import Query
-from boba.agent.runtime import Agent, SessionProtocol, Subscription, record
+from boba.agent.runtime import Agent, RecordFactory, SessionProtocol, Subscription
 from boba.agent.settings import (
     AgentProfile,
     ModelSettings,
@@ -143,6 +143,7 @@ class SessionHub:
         self.profiles = profiles
         self.settings = settings
         self.version = version
+        self.records = RecordFactory(version)
         self.providers = providers
         self.tools = ToolRunner(
             list_timeout=settings.mcp.list_timeout_sec,
@@ -209,7 +210,7 @@ class SessionHub:
         raise RuntimeError("Open session limit reached")
 
     def make(self, model, **fields):
-        return record(model, self.version, **fields)
+        return self.records.make(model, **fields)
 
     def _active_record_keys(
         self, records: Iterable[m.HistoryRecord]
@@ -473,7 +474,9 @@ class SessionHub:
                 *self.tools.builtins(agent),
             ]
             async with self._claim(sid):
-                await self.store.create_session(sid, owner, cwd, values)
+                await self.store.create_session(
+                    sid, owner, cwd, self.records.group(values, uuid4().hex)
+                )
                 self.agents[sid] = agent
                 self.owners[sid] = owner
 
@@ -577,10 +580,10 @@ class SessionHub:
             return target
 
     async def launch_subagent(self, parent: Agent, reply, call):
-        prompt = call.arguments["prompt"]
+        prompt = call.payload.arguments["prompt"]
         if not isinstance(prompt, str) or not prompt:
             raise ValueError("Subagent prompt must be nonempty text")
-        background = call.arguments.get("background", False)
+        background = call.payload.arguments.get("background", False)
         if not isinstance(background, bool):
             raise ValueError("background must be boolean")
         owner = self.owners[parent.session_id]
@@ -599,16 +602,20 @@ class SessionHub:
 
         async def execute(task_id):
             inherited = await self.store.rows(
-                Query.COMPACT_STATE, parent.session_id, reply.seq
+                Query.COMPACT_STATE, parent.session_id, reply.seq, None
             )
             values = []
-            for raw in inherited:
+            for item in inherited:
+                raw = item["record"]
                 if raw["category"] in {"setting", "prompt"}:
                     raw.update(
                         session_id=None,
                         seq=None,
                         record_id=uuid4().hex,
                         copied_from_id=None,
+                        operation_id=uuid4().hex,
+                        operation_position=0,
+                        parent_operation_id=None,
                     )
                     if raw["category"] == "prompt":
                         existing = await self.store.latest(
@@ -632,14 +639,14 @@ class SessionHub:
                     payload={
                         "parent_session_id": parent.session_id,
                         "parent_task_id": task_id,
-                        "parent_request_id": reply.request_id,
+                        "context_through_seq": reply.seq,
                     },
                 )
             )
-            await child.append(values)
+            await child.append(child.records.group(values, uuid4().hex))
             await self.tools.refresh(child)
             parts = []
-            agent_key = call.arguments.get("agent_key")
+            agent_key = call.payload.arguments.get("agent_key")
             if agent_key is not None:
                 agent_type = await self.store.latest(
                     parent.session_id, category="context", key=agent_key
@@ -774,7 +781,7 @@ class AcpOperations:
     ) -> None:
         await self._connect(agent, params, protocol)
         await self.subscribe(protocol, agent.session_id, replay_history=replay_history)
-        if await self.hub.store.pending_inputs(agent.session_id):
+        if await self.hub.store.pending_messages(agent.session_id):
             agent.wake()
 
     @asynccontextmanager
@@ -909,7 +916,9 @@ class AcpOperations:
 
             values = [self.hub.make(type(source), key=source.key, payload=updated)]
 
-        await agent.append(values, expected_seq=expected_seq)
+        await agent.append(
+            agent.records.group(values, uuid4().hex), expected_seq=expected_seq
+        )
         await agent.options_changed()
 
     async def command(self, agent: Agent, text: str) -> str:
@@ -944,6 +953,7 @@ class AcpOperations:
                 [
                     agent.make(
                         m.SlashCommandResultRecord,
+                        parent_operation_id=call.operation_id,
                         payload={
                             "command_id": call.record_id,
                             "outcome": outcome,

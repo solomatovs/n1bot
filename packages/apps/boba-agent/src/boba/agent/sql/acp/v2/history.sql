@@ -1,6 +1,6 @@
 -- Восстановление переписки: сохранённые записи -> массив ACP session/update.
 -- Ручной просмотр: в params подставить 'sql-acp-demo', null, null, true.
--- Для seq=17..27: 'sql-acp-demo', 16, 27, true. Границы относятся к records.seq.
+-- Для seq=6..8: 'sql-acp-demo', 5, 8, true. Границы относятся к records.seq.
 -- Результат: bounds, notifications, validation_data. После проверки отправляется
 -- notification каждого элемента массива; SQL сам ничего не отправляет.
 -- Подробнее: docs/agent-history-to-acp.md, раздел «Как использовать запросы».
@@ -22,7 +22,8 @@ history as not materialized (
         r.role,
         r.key,
         r.operation,
-        r.request_id,
+        r.operation_id,
+        r.scope,
         r.copied_from_id,
         r.created_at,
         r.version,
@@ -64,11 +65,12 @@ routes(kind, route) as (
         ('command_added',               'state'),
         ('command_removed',             'state'),
         ('request_output',              'state'),
+        ('request_message',             'state'),
+        ('tool_call',                   'state'),
         ('parameter_option',            'state'),
         ('parameter_option_removed',    'state'),
         ('notice',                      'notice'),
         ('llm_request_attempt',         'notice'),
-        ('task_state',                  'notice'),
         ('turn_end',                    'state'),
         ('elicitation_request',         'diagnostic'),
         ('elicitation_response',        'diagnostic'),
@@ -82,7 +84,7 @@ routes(kind, route) as (
         ('session_deleted',             'state'),
         ('session_forked',              'state'),
         ('skill_activated',             'state'),
-        ('task_notification',           'notice')
+        ('streaming_removed',           'state')
 ),
 category_routes(category, route) as (
     values
@@ -91,21 +93,38 @@ category_routes(category, route) as (
         ('setting',         'state'),
         ('tool_catalog',    'state'),
         ('tool_schema',     'state'),
-        ('request',         'state'),
-        ('admission',       'state'),
-        ('request_context', 'state'),
-        ('request_message', 'state')
+        ('assembly',        'state')
 ),
 -- The index supplies message order; scalar bounds preserve that order in the plan.
+statuses(status, acp_status) as (
+    values
+        ('pending',     'pending'),
+        ('running',     'in_progress'),
+        ('completed',   'completed'),
+        ('failed',      'failed'),
+        ('cancelled',   'failed'),
+        ('interrupted', 'failed')
+),
 stream as not materialized (
     select
-        h.seq, h.record_id, h.kind, h.payload,
+        h.seq,
+        h.record_id,
+        h.kind,
+        h.key,
+        h.payload || jsonb_strip_nulls(jsonb_build_object(
+            'content', source.payload -> 'content',
+            'state', source.payload -> 'state'
+        )) as payload,
         coalesce(
             (select route from routes where kind = h.kind),
             (select route from category_routes where category = h.category)
         ) as route
     from
         history h
+        left join history source
+            on h.category = 'tool_result'
+            and source.record_id = h.payload ->> 'source_record_id'
+            and source.seq < h.seq
     where 1=1
         and h.seq > (select after_seq from bounds)
         and h.seq <= (select through_seq from bounds)
@@ -126,6 +145,7 @@ entries as not materialized (
                     r.seq,
                     r.record_id,
                     r.kind,
+                    r.key,
                     r.payload,
                     r.route
             ),
@@ -136,12 +156,18 @@ entries as not materialized (
                     r.route,
                     array[p.number::integer] as position,
                     p.value ->> 'kind' as kind,
-                    p.value as payload,
+                    coalesce(call.payload || jsonb_build_object('call_id', call.key), p.value) as payload,
                     null::jsonb as resource
                 from
                     records r
                     cross join lateral jsonb_array_elements(r.payload -> 'content')
                         with ordinality p(value, number)
+                    left join history call
+                        on p.value ->> 'kind' = 'tool_call_reference'
+                        and call.category = 'tool_call'
+                        and call.key = p.value ->> 'call_id'
+                        and call.payload ->> 'assistant_record_id' = r.record_id
+                        and call.seq <= (select through_seq from bounds)
                 where 1=1
                     and r.route in ('user', 'assistant', 'result', 'compact', 'command_result', 'notice')
             ),
@@ -292,7 +318,7 @@ entries as not materialized (
                 from
                     parts
                 where 1=1
-                    and kind = 'tool_call'
+                    and kind = 'tool_call_reference'
             ),
             -- Separate adjacent message/thought/call runs without moving text across a tool call.
             run_starts as (
@@ -341,18 +367,17 @@ entries as not materialized (
                 select
                     r.seq, r.record_id,
                     jsonb_build_object('sessionUpdate', 'tool_call_update',
-                        'toolCallId', r.payload -> 'call_id', 'status', s.status,
+                        'toolCallId', r.key, 'status', s.acp_status,
                         'content', jsonb_agg(jsonb_build_object('type', 'content', 'content', b.value) order by b.position)
                     ) as value
                 from
                     blocks b
                     join records r on r.seq = b.seq
-                    join (values (false, 'completed'), (true, 'failed')) s(is_error, status)
-                        on s.is_error = (r.payload ->> 'is_error')::boolean
+                    join statuses s on s.status = r.payload ->> 'status'
                 where 1=1
                     and b.route = 'result'
                 group by
-                    r.seq, r.record_id, r.payload -> 'call_id', s.status
+                    r.seq, r.record_id, r.key, s.acp_status
             ),
             notice_text as materialized (
                 select
@@ -407,11 +432,10 @@ entries as not materialized (
                 select
                     seq, record_id, array[0],
                     jsonb_build_object('sessionUpdate', 'tool_call_update',
-                        'toolCallId', payload -> 'call_id', 'status', s.status, 'content', '[]'::jsonb)
+                        'toolCallId', key, 'status', s.acp_status, 'content', '[]'::jsonb)
                 from
                     records
-                    join (values (false, 'completed'), (true, 'failed')) s(is_error, status)
-                        on s.is_error = (payload ->> 'is_error')::boolean
+                    join statuses s on s.status = payload ->> 'status'
                 where 1=1
                     and route = 'result'
                     and payload -> 'content' = '[]'::jsonb
@@ -470,13 +494,13 @@ entries as not materialized (
                     and route = 'diagnostic'
                 union all
                 select
-                    seq, record_id, array[0],
+                    seq, record_id, array[1],
                     jsonb_build_object('sessionUpdate', 'subagent_update',
                         'sessionId', payload #> '{state,child_session_id}')
                 from
                     records
                 where 1=1
-                    and kind = 'task_state'
+                    and kind = 'tool_result'
                     and payload #>> '{state,child_session_id}' is not null
             
             )
@@ -547,26 +571,40 @@ select
         ),
         'calls', (
             select
-                coalesce(jsonb_agg(jsonb_build_object('seq', h.seq, 'record_id', h.record_id,
-                    'call_id', p.value -> 'call_id') order by h.seq, p.number), '[]'::jsonb)
+                coalesce(jsonb_agg(jsonb_build_object(
+                    'seq', h.seq,
+                    'record_id', h.record_id,
+                    'call_id', h.key
+                ) order by h.seq), '[]'::jsonb)
             from
                 history h
-                cross join lateral jsonb_array_elements(h.payload -> 'content')
-                    with ordinality p(value, number)
             where 1=1
-                and h.kind = 'assistant_message'
+                and h.category = 'tool_call'
                 and h.copied_from_id is null
                 and h.seq <= b.through_seq
-                and p.value ->> 'kind' = 'tool_call'
         ),
         'results', (
             select
-                coalesce(jsonb_agg(jsonb_build_object('seq', h.seq, 'record_id', h.record_id,
-                    'call_id', h.payload -> 'call_id') order by h.seq), '[]'::jsonb)
+                coalesce(jsonb_agg(jsonb_build_object(
+                    'seq', h.seq,
+                    'record_id', h.record_id,
+                    'call_id', h.key,
+                    'definition_seq', d.seq,
+                    'definition_key', d.key,
+                    'source_record_id', h.payload -> 'source_record_id',
+                    'source_seq', source.seq,
+                    'source_category', source.category,
+                    'source_parent_id', source.payload -> 'source_record_id'
+                ) order by h.seq), '[]'::jsonb)
             from
                 history h
+                left join history d
+                    on d.category = 'tool_call'
+                    and d.record_id = h.payload ->> 'call_record_id'
+                left join history source
+                    on source.record_id = h.payload ->> 'source_record_id'
             where 1=1
-                and h.kind = 'tool_result'
+                and h.category = 'tool_result'
                 and h.copied_from_id is null
                 and h.seq <= b.through_seq
         )

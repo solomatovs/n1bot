@@ -1,6 +1,6 @@
 import base64
 import secrets
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, Callable
 
 import pytest
 from agent_stand import FixtureTokens, InferenceServer, ServiceHost
@@ -23,7 +23,7 @@ async def system(
     inference: InferenceServer,
     postgres: PostgresConfig,
     agent_timeout: float,
-) -> AsyncIterator[V1System]:
+) -> AsyncGenerator[V1System]:
     stand = V1System(history, inference, postgres, agent_timeout)
     await stand.hub.start(postgres)
     await stand.seed_provider()
@@ -39,7 +39,7 @@ async def service(
     inference: InferenceServer,
     free_tcp_port_factory: Callable[[], int],
     agent_timeout: float,
-) -> AsyncIterator[ServiceHost]:
+) -> AsyncGenerator[ServiceHost]:
     profile = inference.profiles.default(frozenset({"test"})).config
     profiles = {"test": profile}
     encryption = ValueCipherConfig.model_validate(

@@ -8,20 +8,36 @@ params as (
         $4::text as cwd
 ),
 created as (
-    insert into boba.sessions (session_id, owner_id, cwd)
+    insert into boba.sessions (session_id, owner_id, cwd, processed_input_seq)
     select
         p.session_id,
         p.owner_id,
-        p.cwd
+        p.cwd,
+        s.processed_input_seq
     from
         params p
+        join boba.sessions s on s.session_id = p.source_session_id
     returning
         session_id
 ),
 copied as (
     insert into boba.records (
-        session_id, seq, record_id, kind, category, role, key, operation,
-        request_id, copied_from_id, created_at, version, payload
+        session_id,
+        seq,
+        record_id,
+        kind,
+        category,
+        role,
+        key,
+        operation,
+        operation_id,
+        operation_position,
+        parent_operation_id,
+        scope,
+        copied_from_id,
+        created_at,
+        version,
+        payload
     )
     select
         c.session_id,
@@ -32,7 +48,10 @@ copied as (
         r.role,
         r.key,
         r.operation,
-        r.request_id,
+        r.operation_id,
+        r.operation_position,
+        r.parent_operation_id,
+        r.scope,
         r.copied_from_id,
         r.created_at,
         r.version,

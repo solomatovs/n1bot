@@ -5,7 +5,7 @@ params as (
         $1::text as session_id,
         $2::text as record_id
 ),
-accepted as (
+submitted as (
     select
         a.seq
     from
@@ -13,8 +13,8 @@ accepted as (
         join boba.records a
             on a.session_id = p.session_id
     where 1=1
-        and a.kind = 'message_accepted'
-        and a.payload ->> 'source_record_id' = p.record_id
+        and a.kind = 'user_message'
+        and a.record_id = p.record_id
 ),
 finished as (
     select
@@ -26,7 +26,7 @@ finished as (
             on r.session_id = p.session_id
     where 1=1
         and r.kind = 'turn_end'
-        and r.seq > (select seq from accepted)
+        and r.seq > (select seq from submitted)
     order by
         r.seq
     limit
@@ -41,7 +41,7 @@ completion as (
             on r.session_id = p.session_id
     where 1=1
         and r.kind = 'assistant_message'
-        and r.seq > (select seq from accepted)
+        and r.seq > (select seq from submitted)
         and r.seq < (select seq from finished)
     order by
         r.seq desc

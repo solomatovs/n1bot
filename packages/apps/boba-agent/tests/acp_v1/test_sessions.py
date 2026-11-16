@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 
 import pytest
 from acp import RequestError, schema
@@ -21,7 +21,7 @@ async def test_delete_cancels_prompt_for_all_observers(system: V1System) -> None
     await observer.resume(sid)
     release = asyncio.Event()
 
-    async def body() -> AsyncIterator[bytes]:
+    async def body() -> AsyncGenerator[bytes, None]:
         yield b'data: {"choices":[{"delta":{"content":"Partial"}}]}\n\n'
         await release.wait()
 
@@ -94,12 +94,16 @@ async def test_fork_preserves_saved_requests_and_runs_new_prompt(
             exclude={"session_id"}
         )
 
-    for source in original:
-        if not isinstance(source, m.LlmRequestBoundaryRecord):
+    for capture in tuple(system.history.assemblies):
+        if capture.session_id != sid:
             continue
 
-        first = await system.history.openai(sid, source.record_id)
-        repeat = await system.history.openai(branch, source.record_id)
+        first = await system.history.openai(
+            sid, capture.operation_id, through_seq=capture.through_seq
+        )
+        repeat = await system.history.openai(
+            branch, capture.operation_id, through_seq=capture.through_seq
+        )
         assert repeat.request == first.request
 
     response = await client.connection.send_request(
@@ -146,7 +150,7 @@ async def test_fork_running_or_failed_mcp_does_not_leave_active_branch(
     sid = await client.new_session()
     release = asyncio.Event()
 
-    async def body() -> AsyncIterator[bytes]:
+    async def body() -> AsyncGenerator[bytes, None]:
         yield b'data: {"choices":[{"delta":{"content":"Partial"}}]}\n\n'
         await release.wait()
         yield b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'

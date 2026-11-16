@@ -20,7 +20,8 @@ history as not materialized (
         r.role,
         r.key,
         r.operation,
-        r.request_id,
+        r.operation_id,
+        r.scope,
         r.copied_from_id,
         r.created_at,
         r.version,
@@ -71,7 +72,7 @@ settings as (
         cross join compact c
     where 1=1
         and h.category = 'setting'
-        and h.request_id is null
+        and h.scope is distinct from 'request'
         and h.seq >= c.seq
         and h.seq <= b.through_seq
     order by
@@ -91,9 +92,9 @@ permissions as (
     order by
         h.key, h.seq desc
 ),
-request_usage as (
-    select distinct on (h.request_id)
-        h.request_id,
+answer_usage as (
+    select distinct on (h.operation_id)
+        h.operation_id,
         h.payload -> 'usage' as usage
     from
         history h
@@ -103,14 +104,14 @@ request_usage as (
         and h.copied_from_id is null
         and h.seq <= b.through_seq
     order by
-        h.request_id, h.seq desc
+        h.operation_id, h.seq desc
 ),
 usage_totals as (
     select
         v.key,
         sum(v.value::bigint) as value
     from
-        request_usage r
+        answer_usage r
         cross join lateral jsonb_each_text(r.usage) v
     group by
         v.key

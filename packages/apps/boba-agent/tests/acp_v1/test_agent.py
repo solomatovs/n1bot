@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from uuid import uuid4
 
 import pytest
@@ -24,7 +24,7 @@ async def test_v1_streams_before_prompt_response_and_replays_after_restart(
     sid = await client.new_session()
     release = asyncio.Event()
 
-    async def body() -> AsyncIterator[bytes]:
+    async def body() -> AsyncGenerator[bytes, None]:
         yield b'data: {"choices":[{"delta":{"reasoning_content":"Think"}}]}\n\n'
         yield b'data: {"choices":[{"delta":{"content":"First "}}]}\n\n'
         await release.wait()
@@ -107,7 +107,7 @@ async def test_tool_search_and_observer_share_history(
     assert len(client.mcp.tool_calls) == 1
     kinds = tuple(client.received_kinds())
     assert kinds.count("tool_call") == 2
-    assert kinds.count("tool_call_update") == 2
+    assert kinds.count("tool_call_update") == 4
     assert "agent_message" not in kinds
     await observer.until("agent_message_chunk")
     assert observer.messages()[-1].content.text == "Tool finished"
@@ -157,7 +157,7 @@ async def test_v1_cancel_returns_cancelled_and_keeps_partial_text_once(
     sid = await client.new_session()
     release = asyncio.Event()
 
-    async def body() -> AsyncIterator[bytes]:
+    async def body() -> AsyncGenerator[bytes, None]:
         yield b'data: {"choices":[{"delta":{"content":"Partial"}}]}\n\n'
         await release.wait()
         yield b"data: [DONE]\n\n"
@@ -285,13 +285,15 @@ async def test_missing_attachment_reader_preserves_tool_failure_without_chat_noi
     decisions = []
     for record in records:
         if isinstance(record, m.ToolResultRecord):
+            if record.payload.status == "pending":
+                continue
             results.append(record)
 
         if isinstance(record, m.PermissionDecisionRecord):
             decisions.append(record)
 
     assert len(results) == 1
-    assert results[0].payload.is_error
+    assert results[0].payload.status == "failed"
     error = results[0].payload.content[0]
     assert isinstance(error, m.TextPart)
     assert "Tool tool_search, call select-reader failed:" in error.text

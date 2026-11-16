@@ -51,36 +51,38 @@ async def test_latest_migration_installs_all_tables_on_empty_schema(
 @pytest.mark.anyio
 @pytest.mark.integration
 async def test_failed_reference_rolls_back_and_retry_is_idempotent(history):
-    from boba.agent.runtime import record
+    from boba.agent.runtime import RecordFactory
 
     sid = "write-test-" + uuid4().hex
-    value = record(
-        m.UserMessageRecord, "test", payload={"content": [m.TextPart(text="hello")]}
+    value = RecordFactory("test").make(
+        m.UserMessageRecord, payload={"content": [m.TextPart(text="hello")]}
     )
     try:
         first = await history.append(sid, [value], expected_seq=0)
         assert await history.append(sid, [value], expected_seq=0) == first
-        invalid = record(
-            m.MessageAcceptedRecord, "test", payload={"source_record_id": "missing"}
+        invalid = RecordFactory("test").make(
+            m.ToolResultRecord,
+            key="missing-call",
+            payload={"call_record_id": "missing", "status": "completed"},
         )
         with pytest.raises(m.HistoryWriteError):
             await history.append(sid, [invalid])
         assert await history.head(sid) == 1
-        accepted = record(
-            m.MessageAcceptedRecord,
-            "test",
-            payload={"source_record_id": value.record_id},
+        await history.append(
+            sid,
+            [
+                RecordFactory("test").make(
+                    m.SessionDeletedRecord,
+                )
+            ],
         )
-        assert (await history.append(sid, [accepted]))[0].seq == 2
-        await history.append(sid, [record(m.SessionDeletedRecord, "test")])
         assert await history.append(sid, [value]) == first
         with pytest.raises(m.HistoryWriteError) as deleted:
             await history.append(
                 sid,
                 [
-                    record(
+                    RecordFactory("test").make(
                         m.UserMessageRecord,
-                        "test",
                         payload={"content": [m.TextPart(text="Too late")]},
                     )
                 ],
@@ -95,14 +97,13 @@ async def test_failed_reference_rolls_back_and_retry_is_idempotent(history):
 @pytest.mark.anyio
 @pytest.mark.integration
 async def test_concurrent_batches_commit_without_duplicate_or_interleaved_seq(history):
-    from boba.agent.runtime import record
+    from boba.agent.runtime import RecordFactory
 
     sid = "parallel-write-" + uuid4().hex
     batches = tuple(
         tuple(
-            record(
+            RecordFactory("test").make(
                 m.UserMessageRecord,
-                "test",
                 payload={"content": [m.TextPart(text=f"writer {writer}, item {item}")]},
             )
             for item in range(3)
@@ -131,4 +132,130 @@ async def test_concurrent_batches_commit_without_duplicate_or_interleaved_seq(hi
         async with history.pool.connection() as connection:
             await connection.execute(
                 "delete from boba.records where session_id = %s", (sid,)
+            )
+
+
+@pytest.mark.anyio
+@pytest.mark.integration
+@pytest.mark.parametrize("last_override", ["value", "absent", "remove"])
+async def test_pending_batch_uses_only_last_operation_settings(
+    history, agent_timeout, last_override
+):
+    from agent_stand import Llm
+
+    from boba.agent.runtime import Agent
+
+    class BlockingTool:
+        def __init__(self):
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def call(self, agent, reply, call):
+            self.started.set()
+            await self.release.wait()
+            return (m.TextPart(text="Completed"),)
+
+    sid = "batch-settings-" + uuid4().hex
+    llm = Llm()
+    tool = BlockingTool()
+    agent = Agent(sid, history, llm, tool, version="test")
+    try:
+        await history.create_session(
+            sid,
+            "test",
+            "/workspace",
+            [
+                agent.make(
+                    m.ModelRecord,
+                    payload={"provider": "test", "value": {"model": "test"}},
+                ),
+                agent.make(m.SamplingRecord, payload={"value": {"temperature": 0.8}}),
+                agent.make(
+                    m.InferenceRecord, payload={"value": {"max_completion_tokens": 400}}
+                ),
+            ],
+        )
+        await agent.submit([m.TextPart(text="Start tool")])
+        async with asyncio.timeout(agent_timeout):
+            await tool.started.wait()
+
+        await agent.submit(
+            [m.TextPart(text="First waiting")],
+            settings=[
+                agent.make(
+                    m.SamplingRecord,
+                    scope="request",
+                    payload={"value": {"temperature": 0.1}},
+                ),
+                agent.make(
+                    m.InferenceRecord,
+                    scope="request",
+                    payload={"value": {"max_completion_tokens": 100}},
+                ),
+            ],
+        )
+        await agent.submit(
+            [m.TextPart(text="Second waiting")],
+            settings=[
+                agent.make(
+                    m.SamplingRecord,
+                    scope="request",
+                    payload={"value": {"temperature": 0.4}},
+                ),
+            ],
+        )
+        settings = []
+        if last_override == "value":
+            settings.append(
+                agent.make(
+                    m.SamplingRecord,
+                    scope="request",
+                    payload={"value": {"temperature": 0.7}},
+                )
+            )
+        if last_override == "remove":
+            settings.append(agent.make(m.SamplingRemovedRecord, scope="request"))
+
+        await agent.submit([m.TextPart(text="Last waiting")], settings=settings)
+        waiting = await history.pending_messages(sid)
+        assert len(waiting) == 3
+        selected = await agent._prepare(continue_tools=False)
+        assert selected is not None
+        assert selected.operation_id == waiting[-1].operation_id
+        tool.release.set()
+        async with asyncio.timeout(agent_timeout):
+            await agent.idle.wait()
+
+        assert agent.last_error is None
+        assert len(llm.requests) == 2
+        sent = llm.requests[-1]
+        assert sent["max_completion_tokens"] == 400
+        if last_override == "value":
+            assert sent["temperature"] == 0.7
+        elif last_override == "absent":
+            assert sent["temperature"] == 0.8
+        else:
+            assert "temperature" not in sent
+
+        assert [part["content"][0]["text"] for part in sent["messages"][-3:]] == [
+            "First waiting",
+            "Second waiting",
+            "Last waiting",
+        ]
+        replay = await history.openai(
+            sid, selected.operation_id, through_seq=selected.through_seq
+        )
+        # A historical cut made while the tool ran keeps pending; the later call includes completion.
+        assert replay.request["messages"][2]["role"] == "tool"
+        assert "pending" in str(replay.request["messages"][2]["content"])
+        assert not await history.pending_messages(sid)
+    finally:
+        tool.release.set()
+        await agent.close()
+        async with history.pool.connection() as connection:
+            await connection.execute(
+                "delete from boba.records where session_id = %s", (sid,)
+            )
+            await connection.execute(
+                "delete from boba.sessions where session_id = %s", (sid,)
             )

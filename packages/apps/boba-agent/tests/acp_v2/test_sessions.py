@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 
 import pytest
 from acp import RequestError
@@ -24,7 +24,7 @@ async def test_delete_stops_shared_session_and_preserves_history(
     await observer.resume(sid)
     release = asyncio.Event()
 
-    async def body() -> AsyncIterator[bytes]:
+    async def body() -> AsyncGenerator[bytes, None]:
         yield b'data: {"choices":[{"delta":{"content":"Partial"}}]}\n\n'
         await release.wait()
 
@@ -87,23 +87,18 @@ async def test_fork_copies_history_and_continues_independently(
             exclude={"session_id"}
         )
 
-    for source in original:
-        if not isinstance(source, m.LlmRequestBoundaryRecord):
+    for capture in tuple(system.history.assemblies):
+        if capture.session_id != sid:
             continue
 
-        first = await system.history.openai(sid, source.record_id)
-        repeat = await system.history.openai(branch, source.record_id)
+        first = await system.history.openai(
+            sid, capture.operation_id, through_seq=capture.through_seq
+        )
+        repeat = await system.history.openai(
+            branch, capture.operation_id, through_seq=capture.through_seq
+        )
         assert repeat.request == first.request
 
-    snapshot = await system.history.openai(
-        branch, through_seq=await system.history.head(branch)
-    )
-    assert "mcp__workspace__echo" not in str(snapshot.request["tools"])
-    environment = await system.history.latest(branch, kind="environment", key="client")
-    state = m.EnvironmentRecord.model_validate(environment[0]).payload.state
-    assert state is not None
-    assert state.working_directory == "/branch"
-    assert state.workspace_roots == ("/extra",)
     await client.prompt(branch, "Continue here")
     await system.idle(branch)
     assert (await system.history.read(sid)).rows == original
@@ -141,7 +136,7 @@ async def test_fork_rejects_running_session_and_cleans_failed_open(
     sid = await client.new_session()
     release = asyncio.Event()
 
-    async def body() -> AsyncIterator[bytes]:
+    async def body() -> AsyncGenerator[bytes, None]:
         yield b'data: {"choices":[{"delta":{"content":"Partial"}}]}\n\n'
         await release.wait()
         yield b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'

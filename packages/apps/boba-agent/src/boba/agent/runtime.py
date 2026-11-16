@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 from abc import abstractmethod
@@ -11,13 +10,13 @@ from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import partial
 from typing import Any, Literal, Protocol, TypeVar
 from uuid import uuid4
 
 from boba.agent import models as m
 from boba.agent.history import HistoryStore
 from boba.agent.llm import Generation
-from boba.agent.queries import Query
 
 logger = logging.getLogger(__name__)
 Send = Callable[[str, dict[str, Any]], Awaitable[None]]
@@ -77,17 +76,219 @@ class SessionProtocol(Protocol):
     ) -> dict: ...
 
 
-def record(model: type[R], version: str, *, payload: Any = None, **fields: Any) -> R:
-    """Производитель задаёт данные; seq назначает только INSERT в PostgreSQL."""
-    return model.model_validate(
-        {
-            "record_id": fields.pop("record_id", uuid4().hex),
+@dataclass(frozen=True)
+class AttemptContext:
+    """Идентификаторы и время одной HTTP-попытки; ответ получает отдельную операцию."""
+
+    number: int
+    operation_id: str
+    answer_operation_id: str
+    output_id: str
+    parent_operation_id: str | None
+    service: bool
+    started_at: datetime
+    started: float
+
+
+class RecordFactory:
+    """Создаёт записи производителя; operation_id объединяет части, seq назначает хранилище."""
+
+    def __init__(self, version: str) -> None:
+        self.version = version
+
+    def make(self, model: type[R], *, payload: Any = None, **fields: Any) -> R:
+        values: dict[str, Any] = {
+            "record_id": uuid4().hex,
+            "operation_id": uuid4().hex,
+            "operation_position": 0,
+            "parent_operation_id": None,
             "created_at": datetime.now(UTC),
-            "version": version,
-            "payload": {} if payload is None else payload,
-            **fields,
+            "version": self.version,
+            "payload": {},
         }
-    )
+        for field in ("role", "key"):
+            if model.model_fields[field].is_required():
+                values[field] = None
+
+        if payload is not None:
+            values["payload"] = payload
+
+        values.update(fields)
+        return model.model_validate(values)
+
+    def group(
+        self,
+        records: Sequence[m.HistoryRecord],
+        operation_id: str,
+        parent_operation_id: str | None = None,
+    ) -> tuple[m.HistoryRecord, ...]:
+        values = []
+        for position, item in enumerate(records):
+            data = item.model_dump()
+            data.update(
+                operation_id=operation_id,
+                operation_position=position,
+                parent_operation_id=parent_operation_id,
+            )
+            values.append(m.HISTORY_RECORD_ADAPTER.validate_python(data))
+
+        return tuple(values)
+
+    def attempt(
+        self, context: AttemptContext, output: Generation, failure: BaseException | None
+    ) -> m.LlmRequestAttemptRecord | None:
+        if output.address is None:
+            return None
+
+        status = "completed"
+        level = "info"
+        error = None
+        text = "Inference attempt completed."
+        if failure is not None:
+            status = "failed"
+            level = "warning"
+            error = f"{type(failure).__name__}: {failure}"
+            text = f"Inference attempt failed: {error}"
+
+        if isinstance(failure, asyncio.CancelledError):
+            status = "cancelled"
+
+        return self.make(
+            m.LlmRequestAttemptRecord,
+            operation_id=context.operation_id,
+            parent_operation_id=context.parent_operation_id,
+            payload={
+                "attempt": context.number,
+                "status": status,
+                "started_at": context.started_at,
+                "method": "POST",
+                "url": output.address,
+                "status_code": output.status,
+                "duration_ms": int((time.monotonic() - context.started) * 1000),
+                "error": error,
+                "level": level,
+                "content": [m.TextPart(text=text)],
+            },
+        )
+
+    def response(
+        self, context: AttemptContext, output: Generation, failure: BaseException | None
+    ) -> tuple[m.HistoryRecord, ...]:
+        completion = "complete"
+        if output.finish_reason == "length":
+            completion = "output_limit"
+        if failure is not None:
+            completion = "cancelled"
+
+        content = output.content(partial=completion != "complete")
+        answers: list[m.HistoryRecord] = []
+        if content:
+            model: type[m.AssistantMessageRecord] | type[m.RequestOutputRecord] = (
+                m.AssistantMessageRecord
+            )
+            if context.service:
+                model = m.RequestOutputRecord
+
+            answers.append(
+                self.make(
+                    model,
+                    record_id=context.output_id,
+                    parent_operation_id=context.operation_id,
+                    payload={"content": content, "completion": completion},
+                )
+            )
+            if completion == "complete":
+                answers.extend(self.invocations(context.output_id, output))
+
+        if output.usage is not None:
+            answers.append(
+                self.make(
+                    m.TokenUsageRecord,
+                    parent_operation_id=context.operation_id,
+                    payload={"usage": output.usage},
+                )
+            )
+
+        return self.group(answers, context.answer_operation_id, context.operation_id)
+
+    def invocations(
+        self, output_id: str, output: Generation
+    ) -> tuple[m.HistoryRecord, ...]:
+        records: list[m.HistoryRecord] = []
+        for call in output.calls():
+            invocation = self.make(
+                m.ToolCallRecord,
+                key=call.id,
+                payload={
+                    "assistant_record_id": output_id,
+                    "name": call.name,
+                    "arguments": dict(call.arguments),
+                },
+            )
+            records.append(invocation)
+            records.append(
+                self.make(
+                    m.ToolResultRecord,
+                    key=call.id,
+                    payload={
+                        "call_record_id": invocation.record_id,
+                        "status": "pending",
+                        "content": [
+                            m.TextPart(text=f"Call {call.id}: pending execution.")
+                        ],
+                    },
+                )
+            )
+
+        return tuple(records)
+
+    def copy(self, records: Sequence[m.HistoryRecord]) -> tuple[m.HistoryRecord, ...]:
+        identifiers = {}
+        operations = {}
+        positions: dict[str, int] = {}
+        for item in records:
+            identifiers[item.record_id] = uuid4().hex
+            if item.operation_id not in operations:
+                operations[item.operation_id] = uuid4().hex
+                positions[item.operation_id] = 0
+
+        copied = []
+        for item in records:
+            value = item.model_dump()
+            value.update(
+                session_id=None,
+                seq=None,
+                record_id=identifiers[item.record_id],
+                copied_from_id=item.record_id,
+                operation_id=operations[item.operation_id],
+                operation_position=positions[item.operation_id],
+                parent_operation_id=operations.get(
+                    item.parent_operation_id, item.parent_operation_id
+                ),
+            )
+            positions[item.operation_id] += 1
+            payload = value["payload"]
+            for field in (
+                "assistant_record_id",
+                "call_record_id",
+                "source_record_id",
+                "catalog_revision",
+                "related_message_id",
+            ):
+                reference = payload.get(field)
+                if reference in identifiers:
+                    payload[field] = identifiers[reference]
+
+            copied.append(m.HISTORY_RECORD_ADAPTER.validate_python(value))
+
+        return tuple(copied)
+
+
+@dataclass(frozen=True)
+class PreparedRequest:
+    operation_id: str | None
+    through_seq: int
+    input_seq: int = 0
 
 
 class Subscription:
@@ -196,6 +397,7 @@ class Agent:
             max_steps,
             subscriber_buffer,
         )
+        self.records = RecordFactory(version)
         self.changed = asyncio.Event()
         self.idle = asyncio.Event()
         self.idle.set()
@@ -207,9 +409,10 @@ class Agent:
         self.closed = False
         self.last_error: Exception | None = None
         self.background: set[asyncio.Task] = set()
+        self.continue_requested = False
 
     def make(self, model: type[R], **fields) -> R:
-        return record(model, self.version, **fields)
+        return self.records.make(model, **fields)
 
     async def append(self, records: Sequence[m.HistoryRecord], *, expected_seq=None):
         async with self.lock:
@@ -230,7 +433,7 @@ class Agent:
     async def _publish_saved(self, saved) -> None:
         notices = []
         for item in saved:
-            if isinstance(item, m.NoticeRecord):
+            if isinstance(item, (m.NoticeRecord, m.LlmRequestAttemptRecord)):
                 notices.append(item.record_id)
 
         batch = SavedBatch(
@@ -303,17 +506,34 @@ class Agent:
         return subscriber
 
     async def submit(
-        self, content: Sequence[m.UserPart], *, record_id: str | None = None
+        self,
+        content: Sequence[m.ContentPart],
+        *,
+        record_id: str | None = None,
+        settings: Sequence[m.ParameterRecord | m.ParameterRemovedRecord] = (),
     ) -> str:
         if self.closed:
             raise RuntimeError("Agent is closed")
         fields = {} if record_id is None else {"record_id": record_id}
         value = self.make(m.UserMessageRecord, payload={"content": content}, **fields)
-        await self.append([value])
+        inputs: list[m.HistoryRecord] = [value]
+        streaming = self.make(m.StreamingRecord, payload={"value": {"stream": True}})
+        inputs.append(streaming)
+        for setting in settings:
+            if setting.scope != "request":
+                raise ValueError("Input overrides require scope=request")
+
+            inputs.append(m.HISTORY_RECORD_ADAPTER.validate_python(setting))
+
+        records = self.records.group(inputs, value.operation_id)
+        await self.append(records)
         self.wake()
         return value.record_id
 
-    def wake(self) -> None:
+    def wake(self, *, continue_tools: bool = False) -> None:
+        if continue_tools:
+            self.continue_requested = True
+
         self.idle.clear()
         self.changed.set()
         if self.worker is None:
@@ -321,74 +541,29 @@ class Agent:
                 self._run(), name=f"agent:{self.session_id}"
             )
 
-    async def _prepare(self, *, continue_tools: bool) -> str | None:
-        # The advisory lock protects acceptance against concurrent writers.
-        async with self.lock:
-            async with self.store.transaction(self.session_id) as transaction:
-                pending = await transaction.pending_inputs()
-                tasks = await transaction.rows(Query.PENDING_TASKS, self.session_id)
-                if not pending and not tasks and not continue_tools:
+    async def _prepare(self, *, continue_tools: bool) -> PreparedRequest | None:
+        async with self.lock, self.store.transaction(self.session_id) as transaction:
+            pending = await transaction.pending_messages()
+            if not pending:
+                if not continue_tools and not self.continue_requested:
                     return None
-                request_id = uuid4().hex
-                records: list[m.HistoryRecord] = [
-                    self.make(
-                        m.MessageAcceptedRecord,
-                        payload={"source_record_id": item.record_id},
-                    )
-                    for item in pending
-                ]
-                for task in tasks:
-                    state = m.TaskStateRecord.model_validate(task["record"])
-                    records.append(
-                        self.make(
-                            m.TaskContextRecord,
-                            key=state.payload.task_id,
-                            payload={
-                                "related_message_id": state.record_id,
-                                "state": state.payload.state,
-                                "content": [
-                                    m.TextPart(
-                                        text=f"Task {state.payload.task_id}: {state.payload.state.status}"
-                                    )
-                                ],
-                            },
-                        )
-                    )
-                    if state.payload.state.status in {
-                        "completed",
-                        "failed",
-                        "cancelled",
-                    }:
-                        records.append(
-                            self.make(
-                                m.TaskNotificationRecord,
-                                payload={
-                                    "task_id": state.payload.task_id,
-                                    "status": state.payload.state.status,
-                                    "related_message_id": state.record_id,
-                                    "level": state.payload.level,
-                                    "content": state.payload.content,
-                                },
-                            )
-                        )
-                records.extend(
-                    [
-                        self.make(
-                            m.StreamingRecord,
-                            request_id=request_id,
-                            payload={
-                                "value": {
-                                    "stream": True,
-                                    "stream_options": {"include_usage": True},
-                                }
-                            },
-                        ),
-                        self.make(m.LlmRequestBoundaryRecord, record_id=request_id),
-                    ]
+
+            self.continue_requested = False
+
+            if pending:
+                latest = pending[-1]
+                if latest.seq is None:
+                    raise ValueError("Stored input is missing seq")
+
+                return PreparedRequest(
+                    latest.operation_id, await transaction.head(), latest.seq
                 )
-                saved = await transaction.append(records)
-            await self._publish_saved(saved)
-        return request_id
+
+            streaming = self.make(
+                m.StreamingRecord, payload={"value": {"stream": True}}
+            )
+            await transaction.append([streaming])
+            return PreparedRequest(streaming.operation_id, await transaction.head())
 
     async def _run(self) -> None:
         while not self.closed:
@@ -418,33 +593,17 @@ class Agent:
         continue_tools = False
         try:
             for _ in range(self.max_steps):
-                request_id = await self._prepare(continue_tools=continue_tools)
-                if request_id is None:
+                selection = await self._prepare(continue_tools=continue_tools)
+                if selection is None:
                     break
                 self.changed.clear()
-                reply = await self.generate(request_id)
-                acknowledgements = await self.store.rows(
-                    Query.TASK_ACKNOWLEDGEMENTS, self.session_id, request_id
-                )
-                if acknowledgements:
-                    await self.append(
-                        [
-                            self.make(
-                                m.TaskAcknowledgedRecord,
-                                key=row["task_id"],
-                                payload={
-                                    "notification_id": row["notification_id"],
-                                    "related_message_id": reply.record_id,
-                                },
-                            )
-                            for row in acknowledgements
-                        ]
+                try:
+                    reply = await self.generate(
+                        selection.operation_id, through_seq=selection.through_seq
                     )
-                calls = [
-                    part
-                    for part in reply.payload.content
-                    if isinstance(part, m.ToolCallPart)
-                ]
+                finally:
+                    await self.store.advance(self.session_id, selection.input_seq)
+                calls = await self.store.tool_calls(self.session_id, reply.record_id)
                 if calls:
                     await self._execute(reply, calls)
                 continue_tools = bool(calls)
@@ -458,7 +617,7 @@ class Agent:
             await self.append(
                 [
                     self.make(
-                        m.TextNoticeRecord,
+                        m.NoticeRecord,
                         payload={
                             "level": "error",
                             "content": [
@@ -487,182 +646,205 @@ class Agent:
             )
 
     async def generate(
-        self, request_id: str, *, service: bool = False, attempt: int = 1
-    ):
-        draft = await self.store.openai(self.session_id, request_id)
+        self,
+        operation_id: str | None,
+        *,
+        through_seq: int | None = None,
+        service: bool = False,
+        attempt: int = 1,
+        previous_attempt: str | None = None,
+    ) -> m.AssistantMessageRecord | m.RequestOutputRecord:
+        draft = await self.store.openai(
+            self.session_id, operation_id, through_seq=through_seq
+        )
         if draft.provider is None:
             raise RuntimeError("Validated request has no provider")
-        output_id = uuid4().hex
+
+        through_seq = draft.validation_data.selection.seq
+        context = AttemptContext(
+            attempt,
+            uuid4().hex,
+            uuid4().hex,
+            uuid4().hex,
+            previous_attempt,
+            service,
+            datetime.now(UTC),
+            time.monotonic(),
+        )
         output = Generation()
-
-        async def emit(position: int, kind: str, text: str) -> None:
-            if service:
-                return
-
-            channel: Literal["text", "reasoning"] = "text"
-            if kind == "reasoning":
-                channel = "reasoning"
-
-            delta = TextDelta(output_id, position, channel, text)
-            async with self.lock:
-                for protocol in self._protocols().values():
-                    frame = protocol.chunk(self.session_id, delta)
-                    self._publish([frame], protocol)
-
-                accumulated = text
-                if previous := self.partial.get(position):
-                    accumulated = previous.text + text
-
-                self.partial[position] = TextDelta(
-                    output_id, position, channel, accumulated
-                )
-
-        started = time.monotonic()
-        error = None
         failure = None
-        completion = "complete"
-        content = ()
+        reply = None
         try:
-            await self.llm.generate(draft.provider, draft.request, output, emit)
-            if output.finish_reason == "length":
-                completion = "output_limit"
-            content = output.content(partial=completion != "complete")
+            await self.llm.generate(
+                draft.provider, draft.request, output, partial(self._emit, context)
+            )
+            if service:
+                if output.calls():
+                    raise ValueError("Service inference returned tool calls")
         except BaseException as exc:
-            error = type(exc).__name__
             failure = exc
             if output.status is None:
                 output.status = getattr(exc, "status", None)
-            completion = "cancelled"
-            content = output.content(partial=True)
         finally:
-            records = []
-            reply = None
-            address = output.address
+            reply = await self._save_generation(context, output, failure)
 
-            if content:
-                reply = self.make(
-                    m.RequestOutputRecord if service else m.AssistantMessageRecord,
-                    record_id=output_id,
-                    request_id=request_id,
-                    payload={"content": content, "completion": completion},
-                )
-                records.append(reply)
-            if output.usage is not None:
-                records.append(
-                    self.make(
-                        m.TokenUsageRecord,
-                        request_id=request_id,
-                        payload={"usage": output.usage},
-                    )
-                )
-            if address is not None:
-                records.append(
-                    self.make(
-                        m.LlmRequestAttemptRecord,
-                        request_id=request_id,
-                        payload={
-                            "attempt": attempt,
-                            "method": "POST",
-                            "url": address,
-                            "status_code": output.status,
-                            "duration_ms": int((time.monotonic() - started) * 1000),
-                            "error": error,
-                            "level": "warning" if error else "info",
-                            "content": [
-                                m.TextPart(
-                                    text=f"LLM request {request_id}: {error or 'completed'}"
-                                )
-                            ],
-                        },
-                    )
-                )
-            async with self.lock:
-                saved = ()
-                if records:
-                    saved = await self.store.append(self.session_id, records)
-
-                if reply is not None:
-                    reply = next(
-                        row
-                        for row in saved
-                        if isinstance(row, m.AssistantMessageRecord)
-                        and row.record_id == output_id
-                    )
-                if saved:
-                    await self._publish_saved(saved)
-
-                if not service:
-                    self.partial.clear()
         if failure is not None:
-            retry = getattr(self.llm, "retry_delay", None)
-            if not output.has_content and retry is not None:
-                delay = retry(output, failure, attempt)
-                if delay is not None:
-                    await asyncio.sleep(delay)
-                    return await self.generate(
-                        request_id, service=service, attempt=attempt + 1
-                    )
-            raise failure
+            delay = self._retry_delay(output, failure, attempt)
+            if delay is None:
+                raise failure
+
+            await asyncio.sleep(delay)
+            return await self.generate(
+                operation_id,
+                through_seq=through_seq,
+                service=service,
+                attempt=attempt + 1,
+                previous_attempt=context.operation_id,
+            )
+
         if reply is None:
             raise ValueError("Inference returned no message")
+
         return reply
 
-    async def _execute(self, reply, calls: list[m.ToolCallPart]) -> None:
-        # Cancellation produces real execution outcomes, never a repair inside assembly.
+    def _retry_delay(
+        self, output: Generation, failure: BaseException, attempt: int
+    ) -> float | None:
+        if output.has_content:
+            return None
+
+        retry = getattr(self.llm, "retry_delay", None)
+        if retry is None:
+            return None
+
+        return retry(output, failure, attempt)
+
+    async def _emit(
+        self, context: AttemptContext, position: int, kind: str, text: str
+    ) -> None:
+        if context.service:
+            return
+
+        channel: Literal["text", "reasoning"] = "text"
+        if kind == "reasoning":
+            channel = "reasoning"
+
+        delta = TextDelta(context.output_id, position, channel, text)
+        async with self.lock:
+            for protocol in self._protocols().values():
+                self._publish([protocol.chunk(self.session_id, delta)], protocol)
+
+            accumulated = text
+            if previous := self.partial.get(position):
+                accumulated = previous.text + text
+
+            self.partial[position] = TextDelta(
+                context.output_id, position, channel, accumulated
+            )
+
+    async def _save_generation(
+        self, context: AttemptContext, output: Generation, failure: BaseException | None
+    ) -> m.AssistantMessageRecord | m.RequestOutputRecord | None:
+        records: list[m.HistoryRecord] = []
+        attempt = self.records.attempt(context, output, failure)
+        if attempt is not None:
+            records.append(attempt)
+            records.extend(self.records.response(context, output, failure))
+
+        reply = None
+        async with self.lock:
+            if records:
+                saved = await self.store.append(self.session_id, records)
+                for row in saved:
+                    if isinstance(
+                        row, (m.AssistantMessageRecord, m.RequestOutputRecord)
+                    ):
+                        reply = row
+
+                await self._publish_saved(saved)
+
+            if not context.service:
+                self.partial.clear()
+
+        return reply
+
+    async def _execute(self, reply, calls: Sequence[m.ToolCallRecord]) -> None:
         remaining = list(calls)
         try:
             for call in calls:
                 try:
                     content = await self.tools.call(self, reply, call)
-                    result = {
-                        "call_id": call.call_id,
-                        "content": content,
-                        "is_error": False,
-                    }
+                    if isinstance(content, m.ToolResultRecord):
+                        remaining.pop(0)
+                        continue
+
+                    status = "completed"
                 except Exception as exc:
-                    error_content = getattr(exc, "content", None)
-                    if error_content is None:
-                        error_content = (
+                    content = getattr(exc, "content", None)
+                    if content is None:
+                        content = (
                             m.TextPart(
-                                text=f"Tool {call.name}, call {call.call_id} failed: {exc}"
+                                text=f"Tool {call.payload.name}, call {call.key} failed: {exc}"
                             ),
                         )
+                    status = "failed"
 
-                    result = {
-                        "call_id": call.call_id,
-                        "content": error_content,
-                        "is_error": True,
-                    }
-
-                await self.append([self.make(m.ToolResultRecord, payload=result)])
-                remaining.pop(0)
-        finally:
-            if remaining:
                 await self.append(
                     [
                         self.make(
                             m.ToolResultRecord,
+                            key=call.key,
                             payload={
-                                "call_id": call.call_id,
-                                "is_error": True,
+                                "call_record_id": call.record_id,
+                                "status": status,
+                                "content": content,
+                            },
+                        )
+                    ]
+                )
+                remaining.pop(0)
+        finally:
+            for call in remaining:
+                await self.append(
+                    [
+                        self.make(
+                            m.ToolResultRecord,
+                            key=call.key,
+                            payload={
+                                "call_record_id": call.record_id,
+                                "status": "interrupted",
                                 "content": [
                                     m.TextPart(
-                                        text="Execution cancelled; completion is not confirmed."
+                                        text="Execution interrupted; completion is not confirmed."
                                     )
                                 ],
                             },
                         )
-                        for call in remaining
                     ]
                 )
 
-    async def service_request(self, inputs: Sequence[m.HistoryRecord], request_id: str):
-        if any(item.request_id != request_id for item in inputs):
-            raise ValueError("Service inputs must reference the same request_id")
-        await self.append(
-            [*inputs, self.make(m.LlmRequestBoundaryRecord, record_id=request_id)]
+    async def service_request(
+        self, inputs: Sequence[m.HistoryRecord], operation_id: str
+    ):
+        for item in inputs:
+            if item.operation_id != operation_id:
+                raise ValueError(
+                    "Service inputs must belong to the selected operation_id"
+                )
+
+        values = list(inputs)
+        values.append(
+            self.make(
+                m.StreamingRecord,
+                operation_id=operation_id,
+                payload={"value": {"stream": False}},
+            )
         )
-        return await self.generate(request_id, service=True)
+        records = self.records.group(values, operation_id)
+        saved = await self.append(records)
+        return await self.generate(
+            operation_id, through_seq=saved[-1].seq, service=True
+        )
 
     async def cancel(self) -> None:
         if self.operation is not None:
@@ -675,31 +857,41 @@ class Agent:
     ):
         """Одинаковое исполнение вызова; background меняет только ожидание результата."""
         task_id = uuid4().hex
-        mode = "background" if background else "foreground"
 
-        async def save(status, *, result=None, error=None):
-            text = f"Task {task_id} ({call.name}): {status}"
-            if result is not None:
-                text += "\n" + json.dumps(result, ensure_ascii=False)
+        revision = 0
+
+        async def save(status, *, content=(), error=None):
+            nonlocal revision
+            revision += 1
+            result = None
+            if status == "completed":
+                result = [part.model_dump(mode="json") for part in content]
+
+            if not content:
+                content = (
+                    m.TextPart(text=f"Task {task_id} ({call.payload.name}): {status}"),
+                )
+
             state = self.make(
-                m.TaskStateRecord,
+                m.ToolResultRecord,
+                key=call.key,
                 payload={
-                    "task_id": task_id,
-                    "related_message_id": reply.record_id,
-                    "call_id": call.call_id,
-                    "level": "error" if error else "info",
-                    "content": [m.TextPart(text=text)],
+                    "call_record_id": call.record_id,
+                    "status": status,
                     "state": {
-                        "execution_mode": mode,
-                        "description": call.name,
+                        "task_id": task_id,
+                        "revision": revision,
+                        "description": call.payload.name,
                         "status": status,
                         "child_session_id": child_session_id,
                         "result": result,
                         "error": error,
                     },
+                    "content": content,
                 },
             )
-            await self.append([state])
+            saved = await self.append([state])
+            return m.ToolResultRecord.model_validate(saved[0])
 
         async def run():
             try:
@@ -708,27 +900,21 @@ class Agent:
                 await save("cancelled")
                 raise
             except Exception as exc:
-                await save("failed", error=type(exc).__name__)
-                if not background:
-                    raise
-                return ()
+                return await save("failed", error=f"{type(exc).__name__}: {exc}")
             else:
-                await save(
-                    "completed",
-                    result=[part.model_dump(mode="json") for part in result],
-                )
-                return result
+                return await save("completed", content=result)
             finally:
                 if background and not self.closed:
-                    self.wake()
+                    self.wake(continue_tools=True)
 
-        await save("running")
+        started = await save("running")
         if not background:
             return await run()
+
         running = asyncio.create_task(run(), name=f"task:{task_id}")
         self.background.add(running)
         running.add_done_callback(self.background.discard)
-        return (m.TextPart(text=f"Started background task {task_id}"),)
+        return started
 
     async def close(self) -> None:
         self.closed = True

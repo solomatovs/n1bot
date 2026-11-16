@@ -16,7 +16,8 @@ history as not materialized (
         r.role,
         r.key,
         r.operation,
-        r.request_id,
+        r.operation_id,
+        r.scope,
         r.copied_from_id,
         r.created_at,
         r.version,
@@ -88,7 +89,7 @@ sources as (
             where 1=1
                 and h.kind = any(array(select jsonb_array_elements_text(o.payload -> 'source_kinds')))
                 and h.key is not distinct from o.payload ->> 'source_key'
-                and h.request_id is null
+                and h.scope is distinct from 'request'
                 and h.seq <= b.through_seq
             order by
                 h.seq desc

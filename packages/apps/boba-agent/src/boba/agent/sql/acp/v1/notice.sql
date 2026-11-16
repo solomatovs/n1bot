@@ -19,7 +19,7 @@ record as (
             on r.session_id = p.session_id
             and r.record_id = p.record_id
     where 1=1
-        and r.kind in ('notice', 'llm_request_attempt', 'task_state', 'task_notification')
+        and r.kind in ('notice', 'llm_request_attempt')
         and r.copied_from_id is null
 ),
 content as (

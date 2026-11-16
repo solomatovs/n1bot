@@ -1,13 +1,14 @@
-"""Pure validation of openai.sql output; no SQL, I/O or saved state.
+"""Проверяет результат SQL по целевым operation_id, scope и результатам вызовов.
 
-OpenAiRequestDraft contains the provider request and compact source metadata.
-validate() returns structured issues; require_valid() raises before the caller
-can send an invalid candidate to inference. Neither method changes the draft.
+Ошибки:
+RequestValidationError — кандидат запроса нарушает контракт истории или OpenAI.
+pydantic.ValidationError — SQL вернул метаданные неверной формы.
 """
 
 import json
-from collections import defaultdict
-from collections.abc import Iterable
+from collections import Counter
+from collections.abc import Iterable, Sequence
+from enum import StrEnum
 from typing import Literal
 
 from pydantic import (
@@ -17,6 +18,7 @@ from pydantic import (
     JsonValue,
     NonNegativeInt,
     PositiveInt,
+    ValidationError,
 )
 
 
@@ -29,108 +31,10 @@ class RecordSource(DataModel):
     record_id: str
 
 
-class RequestBoundary(DataModel):
-    seq: PositiveInt
-    request_id: str
-
-
-class RequestSelection(DataModel):
-    """SQL inputs and the last committed seq visible in the same snapshot."""
-
-    request_id: str | None
-    through_seq: int | None  # Invalid ranges are reported as AssemblyIssue.
-    request_seq: PositiveInt | None
-    last_seq: NonNegativeInt
-
-    @property
-    def seq(self) -> int | None:
-        """Both selectors resolve to the same inclusive history position."""
-        return self.through_seq if self.through_seq is not None else self.request_seq
-
-
-class StateSource(RecordSource):
-    """Operations before LAST; request_local/strict_remove are category policies."""
-
-    category: str
-    key: str | None
-    operation: Literal["set", "remove"]
-    request_id: str | None
-    request_local: bool
-    strict_remove: bool
-
-
-class SchemaSource(RecordSource):
-    key: str
-    catalog_revision: str
-    catalog_seq: PositiveInt | None
-    catalog_key: str | None
-    catalog_operation: Literal["set", "remove"] | None
-    removed_at: PositiveInt | None
-
-
-class ContentSource(RecordSource):
-    """No text, image bytes, arguments or schemas are repeated here."""
-
-    position: tuple[
-        PositiveInt, ...
-    ]  # Array ordinals within payload.content, not stored columns.
-    kind: str
-    role: str
-    call_id: str | None
-    content_type: (
-        str | None
-    )  # JSON type: "array", "null", or None for no content field.
-    signature_format: str | None
-
-
-class MessageSource(RecordSource):
-    section: int
-    role: str
-    call_id: str | None
-
-
 class ParameterSource(DataModel):
     name: str
     seq: PositiveInt | None  # Generated fields messages/tools have no single source.
     record_id: str | None
-
-
-class AdmissionSource(RecordSource):
-    source_record_id: str | None
-    source_seq: PositiveInt | None
-    source_category: str | None
-
-
-class RequestContext(DataModel):
-    seq: PositiveInt | None
-    record_id: str | None
-    mode: Literal["conversation", "isolated"]
-    from_seq: PositiveInt | None
-    through_seq: NonNegativeInt | None
-
-
-class ValidationData(DataModel):
-    """Required arrays: omitting metadata must never silently skip a check."""
-
-    selection: RequestSelection
-    request_boundary: RequestBoundary | None
-    compact_seq: NonNegativeInt
-    request_boundaries: tuple[RequestBoundary, ...]
-    state_sources: tuple[StateSource, ...]
-    schema_sources: tuple[SchemaSource, ...]
-    content_sources: tuple[ContentSource, ...]
-    message_sources: tuple[MessageSource, ...]
-    parameter_sources: tuple[ParameterSource, ...]
-    admission_sources: tuple[AdmissionSource, ...]
-    request_context: RequestContext
-
-
-class OpenAiRequestDraft(DataModel):
-    """Результат SQL до проверки; отсутствующий provider даёт missing_provider."""
-
-    provider: str | None
-    request: dict[str, JsonValue]
-    validation_data: ValidationData
 
 
 class AssemblyIssue(DataModel):
@@ -161,208 +65,343 @@ def issue(
     )
 
 
-class OpenAiRequestValidator:
-    """Provider content support and history structure; parameter values stay opaque."""
+class Category(StrEnum):
+    MESSAGE = "message"
+    ASSEMBLY = "assembly"
+    COMPACT = "compact"
+    PROMPT = "prompt"
+    CONTEXT = "context"
+    SETTING = "setting"
+    TOOL_CALL = "tool_call"
+    TOOL_RESULT = "tool_result"
+    TOOL_CATALOG = "tool_catalog"
+    TOOL_SCHEMA = "tool_schema"
 
-    SUPPORTED_PARTS = frozenset(
-        {
-            ("text", "system"),
-            ("text", "user"),
-            ("text", "assistant"),
-            ("reasoning", "assistant"),
-            ("text", "tool"),
-            ("image", "user"),
-            ("tool_call", "assistant"),
-            ("tool_reference", "tool"),
-            ("resource", "user"),
+    @property
+    def scoped(self) -> bool:
+        return self in (
+            self.MESSAGE,
+            self.ASSEMBLY,
+            self.PROMPT,
+            self.CONTEXT,
+            self.SETTING,
+        )
+
+
+class Selection(DataModel):
+    session_id: str
+    operation_id: str | None
+    seq: int
+    last_seq: NonNegativeInt
+    operation_seq: PositiveInt | None
+    compact_seq: NonNegativeInt
+    assembly_seq: PositiveInt | None
+    assembly_id: str | None
+    mode: str
+    from_seq: int | None
+    through_seq: int | None
+
+
+class InputType(DataModel):
+    category: str
+    scope: str | None
+    seq: PositiveInt
+
+
+class Removal(RecordSource):
+    category: str
+    key: str
+    operation: str
+    previous_operation: str | None
+
+
+class Schema(RecordSource):
+    key: str
+    catalog_revision: str
+    catalog_seq: PositiveInt | None
+    catalog_category: str | None
+    catalog_key: str | None
+    catalog_operation: str | None
+    removed_at: PositiveInt | None
+
+
+class Call(DataModel):
+    assistant_seq: PositiveInt | None
+    assistant_id: str | None
+    position: PositiveInt | None
+    call_id: str
+    call_seq: PositiveInt | None
+    call_record_id: str | None
+    call_assistant_id: str | None
+    task_id: str | None
+    result_seq: PositiveInt | None
+    result_id: str | None
+    result_call_record_id: str | None
+    status: str | None
+    source_record_id: str | None
+    source_seq: PositiveInt | None
+    source_category: str | None
+    source_parent_id: str | None
+    own_content_count: NonNegativeInt | None
+    own_state_type: str | None
+
+
+class Content(RecordSource):
+    role: str
+    ordering: tuple[int, ...]
+    position: tuple[PositiveInt, ...]
+    kind: str
+    signature_format: str | None
+    content_type: str | None
+
+
+class Message(RecordSource):
+    role: str
+    ordering: tuple[int, ...]
+    call_id: str | None
+
+
+class ValidationData(DataModel):
+    selection: Selection
+    input_types: tuple[InputType, ...]
+    removals: tuple[Removal, ...]
+    schemas: tuple[Schema, ...]
+    calls: tuple[Call, ...]
+    content: tuple[Content, ...]
+    messages: tuple[Message, ...]
+    parameters: tuple[ParameterSource, ...]
+
+
+class OpenAiRequestDraft(DataModel):
+    provider: str | None
+    request: dict[str, JsonValue]
+    validation_data: ValidationData
+
+
+class FunctionCall(DataModel):
+    name: str
+    arguments: str
+
+
+class WireCall(DataModel):
+    id: str
+    type: str
+    function: FunctionCall
+
+
+class WireMessage(DataModel):
+    role: Literal["system", "user", "assistant", "tool"]
+    content: JsonValue
+    tool_call_id: str | None = None
+    tool_calls: tuple[WireCall, ...] = ()
+    reasoning_content: str | None = None
+
+
+class OpenAiRequestValidator:
+    """Чистая проверка источников и собранного тела; исходные данные не исправляет."""
+
+    def __init__(self) -> None:
+        self._parts = {
+            "system": frozenset(("text",)),
+            "user": frozenset(("text", "image", "resource")),
+            "assistant": frozenset(
+                ("text", "reasoning", "resource", "tool_call_reference")
+            ),
+            "tool": frozenset(("text", "resource", "tool_reference")),
         }
-    )
+        self._statuses = frozenset(
+            ("pending", "running", "completed", "failed", "cancelled", "interrupted")
+        )
 
     def validate(self, draft: OpenAiRequestDraft) -> tuple[AssemblyIssue, ...]:
-        data = draft.validation_data
-        selection = data.selection
-        if selection.request_id is not None and selection.request_seq is None:
-            return (issue("missing_request"),)
-        if (
-            selection.request_id is not None
-            and selection.through_seq is not None
-            and selection.through_seq != selection.request_seq
-        ):
-            return (issue("conflicting_selection"),)
-        if selection.seq is None:
-            return (issue("missing_request"),)
-        if not 0 <= selection.seq <= selection.last_seq:
-            return (
-                issue(
-                    "invalid_history_range",
-                    through_seq=selection.seq,
-                    last_seq=selection.last_seq,
-                ),
-            )
+        initial = tuple(self._selection(draft.validation_data.selection))
+        if initial:
+            return initial
 
-        errors = [
-            *self._context(data),
-            *self._wire(draft),
-            *self._admissions(data),
-            *self._scopes(data),
-            *self._removals(data),
-            *self._schemas(data),
-            *self._content(data),
-            *self._tool_pairs(data, through_seq=selection.seq),
-            *self._parameters(data),
-        ]
-        if not data.message_sources:
-            errors.append(issue("empty_messages"))
-        return tuple(
-            sorted(
-                errors,
-                key=lambda e: (
-                    e.seq or 0,
-                    e.code,
-                    json.dumps(e.details, sort_keys=True, ensure_ascii=False),
-                ),
-            )
-        )
-
-    @staticmethod
-    def _context(data: ValidationData) -> Iterable[AssemblyIssue]:
-        context = data.request_context
-        lower = context.from_seq
-        upper = context.through_seq
-        if context.mode == "isolated" and (lower is not None or upper is not None):
-            yield issue("isolated_context_has_range")
-        if lower is not None and lower < data.compact_seq:
-            yield issue("context_range_before_compact")
-        if upper is not None and (
-            upper < max(lower or 0, data.compact_seq) or upper >= (context.seq or 0)
-        ):
-            yield issue("invalid_context_range")
-        if lower is not None and lower >= (context.seq or 0):
-            yield issue("invalid_context_range")
-
-    @staticmethod
-    def _wire(draft: OpenAiRequestDraft) -> Iterable[AssemblyIssue]:
-        """Check the actual outbound object as well as SQL source metadata."""
-        if not draft.provider:
-            yield issue("missing_provider")
-        messages = draft.request.get("messages")
-        if not isinstance(messages, list):
-            yield issue("invalid_messages")
-            return
-        sources = sorted(
-            draft.validation_data.message_sources, key=lambda s: (s.section, s.seq)
-        )
-        if len(messages) != len(sources):
-            yield issue("message_count_mismatch")
-        for index, message in enumerate(messages):
-            if not isinstance(message, dict):
-                yield issue("invalid_message", index=index)
-                continue
-            if index < len(sources) and message.get("role") != sources[index].role:
-                yield issue("message_role_mismatch", sources[index], index=index)
-            if "content" not in message:
-                yield issue("missing_message_content", index=index)
-            if message.get("role") == "tool" and not message.get("tool_call_id"):
-                yield issue("missing_tool_call_id", index=index)
-
-    @staticmethod
-    def _admissions(data: ValidationData) -> Iterable[AssemblyIssue]:
-        seen = set()
-        for source in data.admission_sources:
-            if (
-                source.source_seq is None
-                or source.source_seq >= source.seq
-                or source.source_category != "input"
-            ):
-                yield issue("invalid_admission_reference", source)
-            if source.source_record_id in seen:
-                yield issue("duplicate_admission", source)
-            seen.add(source.source_record_id)
+        return tuple(self._issues(draft))
 
     def require_valid(self, draft: OpenAiRequestDraft) -> dict[str, JsonValue]:
         errors = self.validate(draft)
         if errors:
             raise RequestValidationError(errors)
+
         return draft.request
 
-    @staticmethod
-    def _scopes(data: ValidationData) -> Iterable[AssemblyIssue]:
-        boundaries = {r.request_id: r.seq for r in data.request_boundaries}
-        last_boundary_seq = max(boundaries.values(), default=0)
-        pending = set()
-        for source in data.state_sources:
-            if not source.request_local:
-                continue
-            if source.request_id is None:
-                yield issue("invalid_request_scope", source)
-                continue
-            boundary_seq = boundaries.get(source.request_id)
-            # A pending request is assembled from its already saved local settings.
-            # Appending its boundary later must not change this earlier slice.
-            if boundary_seq is None and source.seq > last_boundary_seq:
-                pending.add(source.request_id)
-                continue
-            if boundary_seq is None or boundary_seq <= source.seq:
-                yield issue(
-                    "invalid_request_scope",
-                    source,
-                    request_id=source.request_id,
-                    boundary_seq=boundary_seq,
-                )
-        if len(pending) > 1:
-            yield issue("ambiguous_request_scope", request_ids=sorted(pending))
+    def _selection(self, value: Selection) -> Iterable[AssemblyIssue]:
+        if not 0 <= value.seq <= value.last_seq:
+            yield issue(
+                "invalid_history_range", through_seq=value.seq, last_seq=value.last_seq
+            )
+            return
 
-    @staticmethod
-    def _removals(data: ValidationData) -> Iterable[AssemblyIssue]:
-        # Global state is applied first; the selected request's overlay follows it.
-        boundaries = {r.request_id: r.seq for r in data.request_boundaries}
-        previous = {}
-        for source in sorted(
-            data.state_sources, key=lambda s: (s.request_local, s.seq)
-        ):
-            if (
-                source.request_local
-                and source.request_id is not None
-                and boundaries.get(source.request_id, data.selection.seq)
-                != data.selection.seq
-            ):
+        if value.operation_id is not None:
+            if value.operation_seq is None:
+                yield issue("unknown_operation", operation_id=value.operation_id)
+
+        if value.mode not in ("conversation", "isolated"):
+            yield issue("unknown_assembly_mode", mode=value.mode)
+
+        if value.mode == "isolated":
+            bounded = (value.from_seq is not None, value.through_seq is not None)
+            if any(bounded):
+                yield issue("isolated_context_has_range")
+
+            return
+
+        lower = value.compact_seq
+        if value.from_seq is not None:
+            lower = value.from_seq
+
+        upper = value.seq
+        if value.through_seq is not None:
+            upper = value.through_seq
+
+        if not value.compact_seq <= lower <= upper <= value.seq:
+            yield issue("invalid_context_range", from_seq=lower, through_seq=upper)
+
+    def _issues(self, draft: OpenAiRequestDraft) -> Iterable[AssemblyIssue]:
+        data = draft.validation_data
+        for source in data.input_types:
+            try:
+                category = Category(source.category)
+            except ValueError:
+                yield AssemblyIssue(
+                    code="unknown_category",
+                    seq=source.seq,
+                    details={"category": source.category},
+                )
                 continue
-            slot = source.category, source.key
-            if (
-                source.strict_remove
-                and source.operation == "remove"
-                and previous.get(slot) != "set"
-            ):
+
+            if category.scoped:
+                if source.scope not in ("session", "request"):
+                    yield AssemblyIssue(
+                        code="invalid_scope",
+                        seq=source.seq,
+                        details={"category": source.category},
+                    )
+                continue
+
+            if source.scope is not None:
+                yield AssemblyIssue(
+                    code="invalid_scope",
+                    seq=source.seq,
+                    details={"category": source.category},
+                )
+
+        for source in data.removals:
+            if source.previous_operation != "set":
                 yield issue(
                     "inactive_remove", source, category=source.category, key=source.key
                 )
-            previous[slot] = source.operation
 
-    @staticmethod
-    def _schemas(data: ValidationData) -> Iterable[AssemblyIssue]:
-        for source in data.schema_sources:
-            if (
-                source.catalog_seq is None
-                or source.catalog_seq >= source.seq
-                or source.catalog_key != source.key
-                or source.catalog_operation != "set"
-                or (source.removed_at is not None and source.removed_at <= source.seq)
-            ):
+        yield from self._schemas(data.schemas)
+        yield from self._calls(data.calls)
+        yield from self._content(data.content)
+        yield from self._wire(draft)
+        yield from self._parameters(draft)
+
+    def _schemas(self, schemas: tuple[Schema, ...]) -> Iterable[AssemblyIssue]:
+        for source in schemas:
+            if source.catalog_seq is None:
+                yield issue("invalid_dependency", source, key=source.key)
+                continue
+
+            valid_origin = (
+                source.catalog_category == "tool_catalog",
+                source.catalog_operation == "set",
+                source.catalog_key == source.key,
+                source.catalog_seq < source.seq,
+            )
+            if not all(valid_origin):
+                yield issue("invalid_dependency", source, key=source.key)
+                continue
+
+            if source.removed_at is not None:
+                if source.removed_at <= source.seq:
+                    yield issue("invalid_dependency", source, key=source.key)
+
+    def _calls(self, calls: tuple[Call, ...]) -> Iterable[AssemblyIssue]:
+        seen: set[str] = set()
+        tasks: set[str] = set()
+        for source in calls:
+            if source.call_id in seen:
+                yield issue("duplicate_tool_call", call_id=source.call_id)
+
+            seen.add(source.call_id)
+            if source.assistant_seq is None:
+                yield issue("orphan_tool_result", call_id=source.call_id)
+                continue
+
+            if source.call_seq is None:
+                yield issue("missing_tool_call_record", call_id=source.call_id)
+                continue
+
+            if source.assistant_id != source.call_assistant_id:
+                yield issue("invalid_tool_call_reference", call_id=source.call_id)
+
+            if source.call_seq <= source.assistant_seq:
+                yield issue("tool_call_before_message", call_id=source.call_id)
+
+            if source.task_id is not None:
+                if source.task_id in tasks:
+                    yield issue("duplicate_task_binding", task_id=source.task_id)
+                tasks.add(source.task_id)
+
+            yield from self._result(source, source.call_seq)
+
+    def _result(self, source: Call, call_seq: int) -> Iterable[AssemblyIssue]:
+        if source.result_seq is None:
+            yield issue("missing_tool_result", call_id=source.call_id)
+            return
+
+        if source.result_call_record_id != source.call_record_id:
+            yield issue("invalid_tool_result_reference", call_id=source.call_id)
+
+        if source.result_seq <= call_seq:
+            yield issue("tool_result_before_call", call_id=source.call_id)
+
+        if source.status not in self._statuses:
+            yield issue("invalid_tool_status", call_id=source.call_id)
+
+        if source.source_record_id is None:
+            return
+
+        if source.source_seq is None:
+            yield issue("missing_result_source", record_id=source.source_record_id)
+            return
+
+        source_checks = (
+            source.source_category == "tool_result",
+            source.source_seq < source.result_seq,
+            source.source_parent_id is None,
+            source.own_content_count == 0,
+            source.own_state_type == "null",
+        )
+        if not all(source_checks):
+            yield issue("invalid_result_source", record_id=source.source_record_id)
+
+    def _content(self, parts: tuple[Content, ...]) -> Iterable[AssemblyIssue]:
+        call_positions: dict[tuple[int, ...], tuple[int, ...]] = {}
+        for source in parts:
+            if source.kind == "tool_call_reference":
+                call_positions.setdefault(source.ordering, source.position)
+                continue
+
+            first_call = call_positions.get(source.ordering)
+            if first_call is not None:
+                if source.kind in ("text", "image", "resource", "reasoning"):
+                    yield issue("unrepresentable_content_order", source)
+
+        for source in parts:
+            if source.kind not in self._parts.get(source.role, ()):
                 yield issue(
-                    "invalid_dependency",
-                    source,
-                    key=source.key,
-                    catalog_revision=source.catalog_revision,
-                    catalog_seq=source.catalog_seq,
-                    removed_at=source.removed_at,
+                    "unsupported_content", source, kind=source.kind, role=source.role
                 )
 
-    def _content(self, data: ValidationData) -> Iterable[AssemblyIssue]:
-        calls = defaultdict(list)
-        for source in data.content_sources:
-            if source.kind == "tool_call":
-                calls[source.seq].append(source)
-        for source in data.content_sources:
+            if source.kind == "resource":
+                if source.content_type != "array":
+                    yield issue("unsupported_content", source, kind=source.kind)
+
             if source.signature_format is not None:
                 yield issue(
                     "unsupported_reasoning_signature",
@@ -370,87 +409,91 @@ class OpenAiRequestValidator:
                     format=source.signature_format,
                 )
 
-            if (source.kind, source.role) not in self.SUPPORTED_PARTS or (
-                source.kind == "resource" and source.content_type == "null"
-            ):
-                yield issue(
-                    "unsupported_content",
-                    source,
-                    kind=source.kind,
-                    role=source.role,
-                    position=list(source.position),
-                )
-            if source.kind == "text":
-                for call in calls[source.seq]:
-                    if call.position < source.position:
-                        yield issue(
-                            "unrepresentable_content_order",
-                            source,
-                            position=list(source.position),
-                            call_position=list(call.position),
-                        )
+    def _wire(self, draft: OpenAiRequestDraft) -> Iterable[AssemblyIssue]:
+        if not draft.provider:
+            yield issue("missing_provider")
 
-    def _tool_pairs(
-        self, data: ValidationData, *, through_seq: int
+        raw = draft.request.get("messages")
+        if not isinstance(raw, list):
+            yield issue("invalid_messages")
+            return
+
+        if not raw:
+            yield issue("empty_messages")
+
+        sources = draft.validation_data.messages
+        if len(raw) != len(sources):
+            yield issue("message_count_mismatch")
+            return
+
+        yield from self._exchange(raw, sources)
+
+    def _exchange(
+        self, raw: Sequence[JsonValue], sources: Sequence[Message]
     ) -> Iterable[AssemblyIssue]:
-        calls, results = defaultdict(list), defaultdict(list)
-        for source in data.content_sources:
-            if source.kind == "tool_call":
-                calls[source.call_id].append(source)
-        for source in data.message_sources:
-            if source.role == "tool":
-                results[source.call_id].append(source)
+        pending: set[str] = set()
+        for value, source in zip(raw, sources, strict=True):
+            try:
+                message = WireMessage.model_validate(value)
+            except ValidationError:
+                yield issue("invalid_message", source)
+                continue
 
-        yield from self._tool_id_issues(calls, results)
-        steps = sorted(
-            s.seq for s in data.message_sources if s.section == 1 and s.role != "tool"
-        )
-        next_step = dict(zip(steps, [*steps[1:], through_seq + 1], strict=False))
-        for call_id, sources in calls.items():
-            for source in sources:
-                following = next_step.get(source.seq)
-                if following is not None and not any(
-                    source.seq < result.seq < following for result in results[call_id]
-                ):
-                    yield issue("missing_tool_result", source, call_id=call_id)
+            if message.role != source.role:
+                yield issue("message_role_mismatch", source)
 
-    @staticmethod
-    def _tool_id_issues(calls, results) -> Iterable[AssemblyIssue]:
-        for code, groups in (
-            ("duplicate_tool_call", calls),
-            ("duplicate_tool_result", results),
-        ):
-            for call_id, sources in groups.items():
-                if len(sources) > 1:
-                    yield issue(
-                        code,
-                        min(sources, key=lambda s: s.seq),
-                        call_id=call_id,
-                        source_seqs=[s.seq for s in sources],
-                    )
-        for call_id, sources in results.items():
-            for source in sources:
-                if not any(call.seq < source.seq for call in calls[call_id]):
-                    yield issue("orphan_tool_result", source, call_id=call_id)
+            if message.role == "tool":
+                if message.tool_call_id not in pending:
+                    yield issue("orphan_tool_result", source)
+                    continue
 
-    @staticmethod
-    def _parameters(data: ValidationData) -> Iterable[AssemblyIssue]:
-        fields = defaultdict(list)
-        for source in data.parameter_sources:
-            fields[source.name].append(source)
+                pending.remove(message.tool_call_id)
+                continue
+
+            for call_id in sorted(pending):
+                yield issue("missing_tool_result", source, call_id=call_id)
+            pending.clear()
+
+            for call in message.tool_calls:
+                pending.add(call.id)
+
+        for call_id in sorted(pending):
+            yield issue("missing_tool_result", call_id=call_id)
+
+    def _parameters(self, draft: OpenAiRequestDraft) -> Iterable[AssemblyIssue]:
+        fields: Counter[str] = Counter()
+        for source in draft.validation_data.parameters:
+            fields[source.name] += 1
+
         if "model" not in fields:
             yield issue("missing_model")
-        for name, sources in fields.items():
-            if len(sources) > 1:
-                # SQL min(seq) ignores NULL origins of generated fields.
-                source = min(
-                    (s for s in sources if s.seq is not None),
-                    key=lambda s: s.seq,
-                    default=None,
-                )
-                yield issue(
-                    "duplicate_parameter",
-                    source,
-                    field=name,
-                    sources=[s.model_dump(mode="json") for s in sources],
-                )
+
+        for name, count in fields.items():
+            if count > 1:
+                yield issue("duplicate_parameter", field=name)
+
+        yield from self._tool_choice(draft)
+
+    def _tool_choice(self, draft: OpenAiRequestDraft) -> Iterable[AssemblyIssue]:
+        choice = draft.request.get("tool_choice")
+        if choice == "required":
+            if not draft.request.get("tools"):
+                yield issue("unavailable_tool_choice")
+            return
+
+        if not isinstance(choice, dict):
+            return
+
+        function = choice.get("function")
+        if not isinstance(function, dict):
+            return
+
+        name = function.get("name")
+        for source in draft.validation_data.schemas:
+            if source.key != name:
+                continue
+
+            if source.removed_at is None:
+                return
+
+        yield issue("unavailable_tool_choice", name=name)

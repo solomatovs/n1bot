@@ -35,13 +35,16 @@ async def test_inputs_persist_during_tool_and_enter_one_request_with_live_acp(
         events.append((method, params))
 
     try:
-        await agent.append(
+        await history.create_session(
+            sid,
+            "runtime-test",
+            "/workspace",
             [
                 agent.make(
                     m.ModelRecord,
                     payload={"provider": "test", "value": {"model": "test"}},
                 )
-            ]
+            ],
         )
         from boba.agent.acp_server import SessionHub
         from boba.agent.settings import SettingsLayer
@@ -62,7 +65,7 @@ async def test_inputs_persist_during_tool_and_enter_one_request_with_live_acp(
         submitted = []
         for text in ("Первое", "Второе\r\n世界", "Третье"):
             submitted.append(await agent.submit([m.TextPart(text=text)]))
-        pending = await history.pending_inputs(sid)
+        pending = await history.pending_messages(sid)
         assert [item.record_id for item in pending] == submitted
         assert all(item.seq is not None for item in pending)
         assert len(llm.requests) == 1
@@ -86,16 +89,12 @@ async def test_inputs_persist_during_tool_and_enter_one_request_with_live_acp(
             "Третье",
         ]
         rows = (await history.read(sid)).rows
-        boundaries = [r for r in rows if r.category == "request"]
-        assert (
-            await history.openai(sid, boundaries[0].record_id)
-        ).request == llm.requests[0]
-        assert (
-            await history.openai(sid, through_seq=boundaries[1].seq)
-        ).request == llm.requests[1]
+        attempts = [r for r in rows if isinstance(r, m.LlmRequestAttemptRecord)]
+        assert len(attempts) == 2
+        assert all(r.payload.status == "completed" for r in attempts)
         assert len([r for r in rows if r.kind == "token_usage"]) == 2
         assert len([r for r in rows if r.kind == "assistant_message"]) == 2
-        assert not await history.pending_inputs(sid)
+        assert not await history.pending_messages(sid)
         # Let the outgoing worker flush committed notifications.
         await asyncio.sleep(0.02)
         updates = [

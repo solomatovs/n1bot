@@ -6,7 +6,7 @@ import asyncio
 import os
 import re
 import tomllib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from pathlib import Path
 
 import psycopg
@@ -101,7 +101,7 @@ async def postgres(postgres_config: PostgresConfig) -> PostgresConfig:
 @pytest.fixture
 async def sql_connection(
     postgres: PostgresConfig,
-) -> AsyncIterator[psycopg.AsyncConnection]:
+) -> AsyncGenerator[psycopg.AsyncConnection, None]:
     async with (
         await AsyncPostgresPool.dedicated(postgres) as conn,
         conn.transaction(force_rollback=True),
@@ -110,7 +110,7 @@ async def sql_connection(
 
 
 @pytest.fixture
-async def history(postgres: PostgresConfig) -> AsyncIterator[HistoryStore]:
+async def history(postgres: PostgresConfig) -> AsyncGenerator[HistoryStore, None]:
     pool = AsyncPostgresPool(postgres)
     await pool.open()
     try:
@@ -122,7 +122,7 @@ async def history(postgres: PostgresConfig) -> AsyncIterator[HistoryStore]:
 @pytest.fixture
 async def inference(
     free_tcp_port: int, agent_timeout: float
-) -> AsyncIterator[InferenceServer]:
+) -> AsyncGenerator[InferenceServer, None]:
     server = InferenceServer(free_tcp_port, agent_timeout)
     worker = asyncio.create_task(server.server.serve())
     try:
@@ -148,7 +148,7 @@ async def system(
     inference: InferenceServer,
     postgres: PostgresConfig,
     agent_timeout: float,
-) -> AsyncIterator[AgentSystem]:
+) -> AsyncGenerator[AgentSystem, None]:
     stand = AgentSystem(history, inference, postgres, agent_timeout)
     await stand.hub.start(postgres)
     await stand.seed_provider()
@@ -161,14 +161,22 @@ async def system(
 @pytest.fixture
 async def demo_records(sql_connection):
     root = Path(__file__).resolve().parents[4]
-    source = (root / "experiments/history-sql/fixtures.sql").read_text()
-    source = re.sub(r"(?m)^(begin|commit);\s*$", "", source)
-    await sql_connection.execute(source, prepare=False)
+    for name in ("fixtures.sql", "openai_fixtures.sql"):
+        source = (root / "experiments/history-sql" / name).read_text()
+        source = re.sub(r"(?m)^(begin|commit);\s*$", "", source)
+        await sql_connection.execute(source, prepare=False)
+
     async with psycopg.AsyncRawCursor(sql_connection, row_factory=dict_row) as cursor:
         await cursor.execute(
-            "select to_jsonb(r) as record from boba.records r where session_id like 'sql-%' order by session_id, seq"
+            "select to_jsonb(r) - 'scope' || jsonb_strip_nulls(jsonb_build_object('scope', r.scope)) as record "
+            "from boba.records r where session_id in ('sql-acp-demo', 'sql-acp-actions') or session_id like 'openai-%' order by session_id, seq"
         )
         rows = [row["record"] for row in await cursor.fetchall()]
+
     for row in rows:
+        if row["session_id"].startswith("openai-error-"):
+            continue
+        if row["kind"] == "custom_context_kind":
+            continue
         HISTORY_RECORD_ADAPTER.validate_python(row)
     return rows

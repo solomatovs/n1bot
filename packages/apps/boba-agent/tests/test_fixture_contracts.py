@@ -1,3 +1,5 @@
+"""Прямые проверки целевой истории на SQL-адаптере пакета агента."""
+
 import psycopg
 import pytest
 from psycopg.rows import dict_row
@@ -9,22 +11,14 @@ pytestmark = [pytest.mark.anyio, pytest.mark.integration]
 
 
 async def test_history_records_and_openai_projection(sql_connection, demo_records):
-    rows = demo_records
+    sessions = sorted({row["session_id"] for row in demo_records})
+    validator = OpenAiRequestValidator()
     async with psycopg.AsyncRawCursor(sql_connection, row_factory=dict_row) as cursor:
-        good, invalid = 0, []
-        for row in rows:
-            if row["category"] != "request":
-                continue
-            await cursor.execute(
-                Query.OPENAI.text(), (row["session_id"], row["record_id"], None)
-            )
+        for sid in sessions:
+            await cursor.execute(Query.OPENAI.text(), (sid, None, None))
             draft = OpenAiRequestDraft.model_validate(await cursor.fetchone())
-            errors = OpenAiRequestValidator().validate(draft)
-            if errors:
-                invalid.append(
-                    (row["session_id"], row["record_id"], [e.code for e in errors])
-                )
-            else:
-                good += 1
-        assert good == 39
-        assert len(invalid) == 3, invalid
+            errors = validator.validate(draft)
+            if sid.startswith("openai-error-"):
+                assert errors, sid
+                continue
+            assert not errors, (sid, errors)
