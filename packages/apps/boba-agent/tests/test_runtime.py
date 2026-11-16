@@ -38,6 +38,7 @@ async def test_latest_migration_installs_all_tables_on_empty_schema(
             "sessions",
             "records",
             "providers",
+            "tasks",
         }
     finally:
         async with await AsyncPostgresPool.dedicated(postgres) as connection:

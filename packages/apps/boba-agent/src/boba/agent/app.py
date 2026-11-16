@@ -13,6 +13,7 @@ from boba.agent import Installed
 from boba.agent.queries import Query
 from boba.agent.settings import ServeConfig
 from boba.db.postgres.migration_options import MigrationArguments
+from boba.tasks.service import TaskQuery
 
 
 async def main(argv=None) -> None:
@@ -21,7 +22,7 @@ async def main(argv=None) -> None:
     )
     parser.add_argument("--version", action="version", version=Installed().version())
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("serve", "health", "migrate"):
+    for name in ("serve", "health", "migrate", "tasks-maintain"):
         command = commands.add_parser(name)
         command.add_argument("--config", type=Path, action="append", required=True)
         if name == "migrate":
@@ -34,6 +35,15 @@ async def main(argv=None) -> None:
     sql.add_argument("name")
     args = parser.parse_args(argv)
     if args.command == "sql":
+        if args.name.startswith("tasks/"):
+            name = args.name.removeprefix("tasks/")
+            try:
+                task_query = TaskQuery(name)
+            except ValueError:
+                parser.error("Unknown task SQL file")
+            sys.stdout.buffer.write(task_query.text())
+            return
+
         if args.name not in {item.value for item in Query}:
             parser.error("Unknown SQL file")
         sys.stdout.write(
@@ -42,6 +52,8 @@ async def main(argv=None) -> None:
     elif args.command == "self-check":
         for query in Query:
             query.text()
+        for task_query in TaskQuery:
+            task_query.text()
         sys.stdout.write("boba-agent SQL resources: OK\n")
     elif args.command == "settings-schema":
         sys.stdout.write(
@@ -66,7 +78,9 @@ async def main(argv=None) -> None:
             )
         else:
             entry = ServeEntry(args.config)
-            if args.command == "health":
+            if args.command == "tasks-maintain":
+                await entry.maintain_tasks()
+            elif args.command == "health":
                 entry.health()
             else:
                 await entry.run()

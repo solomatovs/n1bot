@@ -25,6 +25,7 @@ from boba.http_server import ProcessLogging, ServerConfig
 from boba.identity.service import ServiceAddress
 from boba.oauth.server.clients import TrustedClient
 from boba.oauth.server.config import TokenConfig
+from boba.tasks.models import WorkerConfig
 from boba.transport.http import HttpTransportConfig
 from boba.transport.http.connection import HttpConnection, UrlScheme, WebAuth
 
@@ -146,6 +147,7 @@ class SessionsSettings(SettingsModel):
 
 
 class SettingsLayer(SettingsModel):
+    tasks: WorkerConfig = Field(default_factory=WorkerConfig)
     permissions: PermissionSettings = Field(default_factory=PermissionSettings)
     limits: Limits = Field(default_factory=Limits)
     mcp: McpSettings = Field(default_factory=McpSettings)

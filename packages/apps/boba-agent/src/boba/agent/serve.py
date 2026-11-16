@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import uvicorn
 from acp.experimental.negotiation import AgentProtocolConnection, AgentProtocolRouter
@@ -79,6 +79,9 @@ from boba.oauth.server.provider import AuthServer
 from boba.oauth.server.resources import ServiceAuth
 from boba.oauth.server.sealed import SealedValues
 from boba.oauth.server.tokens import ServiceTokens
+from boba.tasks.models import WorkerIdentity
+from boba.tasks.service import TaskService
+from boba.tasks.worker import TaskWorker
 from boba.transport.acp.http import HttpServer
 
 __all__ = [
@@ -694,17 +697,13 @@ class ServeHost:
 
 
 class ServeEntry:
-    """Вход команд `boba serve` (конфиг из файлов, журнал, служба) и
-    `boba health` (проба готовности запущенной службы)."""
+    """Загружает конфиг для сервиса, проверки готовности и обслуживания задач."""
 
     def __init__(self, paths: Sequence[Path]) -> None:
         self._paths = tuple(paths)
         self._configs = ConfigFiles(ServeConfig, values=("auth",))
 
-    async def run(self) -> None:
-        """Ошибки:
-        SystemExit — конфиг не прочитан или служба не поднялась.
-        """
+    def _load(self) -> ServeConfig:
         try:
             config = self._configs.load(self._paths).value
             layout = InstanceLayout(
@@ -718,6 +717,25 @@ class ServeEntry:
             raise SystemExit(msg) from exc
 
         logging.config.dictConfig(config.logger)
+        return config
+
+    async def maintain_tasks(self) -> None:
+        config = self._load()
+        pool = AsyncPostgresPool(config.history.postgres)
+        await pool.open()
+        worker = TaskWorker(
+            TaskService(pool),
+            WorkerIdentity(uuid4().hex, frozenset(), all_owners=True),
+            config.agent.settings.tasks,
+        )
+        try:
+            await ProcessStop().run(worker.run_maintenance())
+
+        finally:
+            await pool.close()
+
+    async def run(self) -> None:
+        config = self._load()
         installed = Installed()
         version = installed.version()
         try:
